@@ -2,7 +2,8 @@ import struct
 
 import pytest
 
-from cueverge.lighting.ddp import DDP_PUSH, DDP_VERSION_1, encode_ddp_frame
+from cueverge.lighting.ddp import DDP_PUSH, DDP_VERSION_1, DdpUdpSink, encode_ddp_frame
+from cueverge.lighting.sink import RenderedFrame
 
 
 def test_encodes_exact_single_ddp_packet() -> None:
@@ -40,3 +41,33 @@ def test_rejects_invalid_sequence(sequence: int) -> None:
 def test_rejects_empty_frames() -> None:
     with pytest.raises(ValueError, match="at least one pixel"):
         encode_ddp_frame((), sequence=0)
+
+
+class FakeSocket:
+    def __init__(self) -> None:
+        self.packets: list[bytes] = []
+
+    def sendto(self, packet: bytes, address: tuple[str, int]) -> int:
+        assert address == ("wled.local", 4048)
+        self.packets.append(packet)
+        return len(packet)
+
+    def close(self) -> None:
+        pass
+
+
+def test_sink_enforces_pixel_count_and_brightness_limit() -> None:
+    fake_socket = FakeSocket()
+    sink = DdpUdpSink(
+        "wled.local",
+        expected_pixel_count=2,
+        brightness_limit=0.25,
+        _socket=fake_socket,  # type: ignore[arg-type]
+    )
+    frame = RenderedFrame("scene", 0, ((255, 128, 4), (0, 0, 0)))
+
+    sink.send(frame)
+    assert fake_socket.packets[0][10:] == bytes((64, 32, 1, 0, 0, 0))
+
+    with pytest.raises(ValueError, match="expected 2"):
+        sink.send(RenderedFrame("scene", 0, ((0, 0, 0),)))

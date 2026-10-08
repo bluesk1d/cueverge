@@ -53,6 +53,8 @@ class DdpUdpSink:
     port: int = DDP_PORT
     destination_id: int = 1
     max_payload_bytes: int = 1440
+    expected_pixel_count: int | None = None
+    brightness_limit: float = 0.25
     _sequence: int = 0
     frames_sent: int = 0
     _socket: socket.socket = field(
@@ -60,8 +62,22 @@ class DdpUdpSink:
     )
 
     def send(self, frame: RenderedFrame) -> None:
+        if self.expected_pixel_count is not None and len(frame.pixels) != self.expected_pixel_count:
+            raise ValueError(
+                f"DDP frame has {len(frame.pixels)} pixels; expected {self.expected_pixel_count}"
+            )
+        if not 0 < self.brightness_limit <= 1:
+            raise ValueError("DDP brightness_limit must be greater than 0 and at most 1")
+        pixels: tuple[Rgb, ...] = tuple(
+            (
+                round(pixel[0] * self.brightness_limit),
+                round(pixel[1] * self.brightness_limit),
+                round(pixel[2] * self.brightness_limit),
+            )
+            for pixel in frame.pixels
+        )
         packets = encode_ddp_frame(
-            frame.pixels,
+            pixels,
             sequence=self._sequence,
             destination_id=self.destination_id,
             max_payload_bytes=self.max_payload_bytes,

@@ -14,9 +14,11 @@ def test_hardware_output_is_disabled_by_default() -> None:
     assert config.show_package == Path("shows/demo")
 
 
-def test_enabled_ddp_requires_explicit_host() -> None:
+def test_enabled_ddp_requires_explicit_host_and_pixel_count() -> None:
     with pytest.raises(ValidationError, match="requires a host"):
         DdpOutputConfig(enabled=True)
+    with pytest.raises(ValidationError, match="expected_pixel_count"):
+        DdpOutputConfig(enabled=True, host="wled.local")
 
 
 def test_media_agent_requires_websocket_controller_url() -> None:

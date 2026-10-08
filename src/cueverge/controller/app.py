@@ -222,6 +222,8 @@ def _configured_runtime() -> ControllerRuntime:
             port=config.ddp.port,
             destination_id=config.ddp.destination_id,
             max_payload_bytes=config.ddp.max_payload_bytes,
+            expected_pixel_count=config.ddp.expected_pixel_count,
+            brightness_limit=config.ddp.brightness_limit,
         )
         if config.ddp.enabled
         else MemoryFrameSink()

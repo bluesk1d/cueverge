@@ -52,9 +52,12 @@
 ### Requires target-device input and opt-in testing
 
 - mpv build, display index, analog audio device, fullscreen, and media cache.
-- WLED host/version, pixel count, RGB/RGBW layout, color order, and power cap.
-- DDP throughput, loss behavior, ownership, preset restoration, and RGBW if
-  required.
+- WLED host/version, count, RGB layout, two-output linear indexing, 20 FPS dim
+  reception, 30 FPS black throughput, and off-state relinquish are validated.
+- Power capacity remains unknown and WLED reports no configured current limit;
+  software output now requires exact pixel count and applies a default 25% cap.
+- Packet loss, visible update latency, and restoration from an active preset
+  remain unmeasured.
 - Flash/click calibration and measured projector/audio/LED offsets and jitter.
 
 ## M3 integration and later work: planned
