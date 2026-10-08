@@ -32,9 +32,11 @@ A scene declares:
 - A media resource and optional package-relative asset.
 - A lighting resource, supported effect name, and RGB color.
 
-Referenced resources must be claimed and bound to the correct role. Asset paths
-are resolved canonically and must remain inside the package root. Missing files,
-path traversal, unsupported effects, duplicate IDs, invalid colors, and unknown
+Referenced resources must be claimed and bound to the correct role. Asset IDs
+must be normalized relative paths without traversal. The media agent resolves
+them beneath its configured local cache and rejects missing files during
+`prepare`; only after that acknowledgement does the controller send `play`.
+Path traversal, unsupported effects, duplicate IDs, invalid colors, and unknown
 schema fields prevent the package from loading.
 
 Version 1 intentionally supports only `media_synchronized` scenes and the

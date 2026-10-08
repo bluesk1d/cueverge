@@ -222,20 +222,7 @@ class ControllerRuntime:
         )
         self.active_scene = active
         self.follower.begin(active.scene_instance_id, active.playback_session_id)
-        for command_name in ("prepare", "play"):
-            command = AgentCommand(
-                request_id=str(uuid4()),
-                command=command_name,
-                agent_id=scene.agent_id,
-                agent_session_id=connection.session_id,
-                controller_epoch=self.controller_epoch,
-                scene_id=scene.definition.id,
-                scene_instance_id=active.scene_instance_id,
-                playback_session_id=active.playback_session_id,
-                asset_id=scene.definition.media.asset,
-            )
-            self._pending_commands[command.request_id] = PendingCommand(command, self.clock())
-            await connection.channel.send_json(command.model_dump(mode="json"))
+        await self._send_command(active, "prepare", connection)
         self._ensure_render_loop(active.scene_instance_id)
         return active
 
@@ -294,7 +281,7 @@ class ControllerRuntime:
             connection.last_seen_at = self.clock()
         return decision
 
-    def acknowledge_command(self, acknowledgment: CommandAck) -> TelemetryDecision:
+    async def acknowledge_command(self, acknowledgment: CommandAck) -> TelemetryDecision:
         connection = self._agents.get(acknowledgment.agent_id)
         if acknowledgment.controller_epoch != self.controller_epoch:
             self.rejected_protocol_messages += 1
@@ -313,7 +300,37 @@ class ControllerRuntime:
             self.command_errors += 1
             self._degraded_reason = f"command_error:{acknowledgment.error_code or 'unknown'}"
             self._cancel_render_loop()
+        elif pending.command.command == "prepare" and self.active_scene is not None:
+            await self._send_command(self.active_scene, "play", connection)
         return TelemetryDecision(True)
+
+    async def _send_command(
+        self,
+        active: ActiveScene,
+        command_name: Literal[
+            "prepare",
+            "play",
+            "pause",
+            "resume",
+            "seek",
+            "stop",
+            "get_status",
+        ],
+        connection: AgentConnection,
+    ) -> None:
+        command = AgentCommand(
+            request_id=str(uuid4()),
+            command=command_name,
+            agent_id=active.scene.agent_id,
+            agent_session_id=connection.session_id,
+            controller_epoch=self.controller_epoch,
+            scene_id=active.definition.id,
+            scene_instance_id=active.scene_instance_id,
+            playback_session_id=active.playback_session_id,
+            asset_id=active.scene.asset_id,
+        )
+        self._pending_commands[command.request_id] = PendingCommand(command, self.clock())
+        await connection.channel.send_json(command.model_dump(mode="json"))
 
     def heartbeat(self, heartbeat: AgentHeartbeat) -> TelemetryDecision:
         if heartbeat.controller_epoch != self.controller_epoch:

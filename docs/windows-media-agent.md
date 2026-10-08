@@ -28,6 +28,21 @@ options. It prepares media paused, acknowledges commands, reports actual mpv
 properties at the configured telemetry rate, sends heartbeats, and fences
 commands by controller epoch and agent session.
 
+## 2026-10-08 hardware checks
+
+The target Windows 11 laptop was checked with portable mpv 0.41.0:
+
+- `C:\Program Files\mpv\mpv.exe` launches successfully.
+- `--fs-screen=1` places fullscreen mpv on the extended projector only.
+- The wired Home Max AUX path is audible through the Realtek **Headphones**
+  WASAPI endpoint.
+- The headphones endpoint appears only after the 3.5 mm cable is connected.
+  Device enumeration and agent startup must therefore happen after cabling, or
+  readiness must fail with an actionable device error.
+
+The machine-specific WASAPI GUID is intentionally not committed. It belongs in
+the laptop's private environment configuration.
+
 ## Important timing limitation
 
 mpv `time-pos/full` is playback time, not proof that a frame is visible on the

@@ -38,7 +38,7 @@ def test_api_agent_timecode_rendering_and_disconnect() -> None:
         response = client.post("/api/v1/scenes/synthetic-sweep/start")
         assert response.status_code == 200
         started = response.json()
-        assert [command["command"] for command in commands.sent] == ["prepare", "play"]
+        assert [command["command"] for command in commands.sent] == ["prepare"]
         assert commands.sent[0]["playback_session_id"] == started["playback_session_id"]
         agent.attach(started["scene_instance_id"], started["playback_session_id"])
 

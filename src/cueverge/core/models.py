@@ -80,7 +80,7 @@ class LoadedScene(FrozenModel):
     agent_id: str
     pixel_count: int
     color: tuple[int, int, int]
-    asset_path: Path | None = None
+    asset_id: str | None = None
 
 
 class SceneCatalog(FrozenModel):

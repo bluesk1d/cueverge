@@ -14,7 +14,7 @@ def test_loads_demo_package_with_bound_resources() -> None:
     assert scene.agent_id == "fake-media-1"
     assert scene.pixel_count == 8
     assert scene.color == (0, 255, 96)
-    assert scene.asset_path is None
+    assert scene.asset_id is None
 
 
 @pytest.mark.parametrize(
@@ -24,8 +24,8 @@ def test_loads_demo_package_with_bound_resources() -> None:
         ({"lighting": {"resource": "roofline.demo", "effect": "unknown"}}, "literal"),
         ({"media": {"resource": "projector.demo", "asset": "../outside.mp4"}}, "escapes"),
         (
-            {"media": {"resource": "projector.demo", "asset": "assets/missing.mp4"}},
-            "does not exist",
+            {"media": {"resource": "projector.demo", "asset": "C:\\outside.mp4"}},
+            "escapes",
         ),
     ],
 )
@@ -44,19 +44,15 @@ def test_rejects_invalid_scene_packages(
         load_show_package(root)
 
 
-def test_resolves_asset_inside_package(tmp_path: Path) -> None:
+def test_normalizes_safe_asset_id_without_requiring_controller_copy(tmp_path: Path) -> None:
     root = _package(tmp_path)
-    assets = root / "assets"
-    assets.mkdir()
-    asset = assets / "demo.bin"
-    asset.write_bytes(b"synthetic")
     scene_path = root / "scenes/scene.json"
     scene = json.loads(scene_path.read_text(encoding="utf-8"))
     scene["media"]["asset"] = "assets/demo.bin"
     scene_path.write_text(json.dumps(scene), encoding="utf-8")
 
     loaded = load_show_package(root).require("scene")
-    assert loaded.asset_path == asset.resolve()
+    assert loaded.asset_id == "assets/demo.bin"
 
 
 def test_rejects_duplicate_scene_ids(tmp_path: Path) -> None:

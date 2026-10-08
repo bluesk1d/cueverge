@@ -175,7 +175,7 @@ def create_app(runtime: ControllerRuntime | None = None) -> FastAPI:
                         )
                     elif message_type == "command.ack":
                         command_ack = CommandAck.model_validate(payload)
-                        decision = controller.acknowledge_command(command_ack)
+                        decision = await controller.acknowledge_command(command_ack)
                         response = {
                             "type": "command.ack.received",
                             "protocol_version": 1,

@@ -1,5 +1,5 @@
 import json
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from pydantic import BaseModel, ValidationError
@@ -93,21 +93,22 @@ def _bind_scene(
     if lighting.kind is not ResourceKind.PIXEL_OUTPUT or lighting.pixel_count is None:
         raise ShowPackageError(f"scene {scene.id} lighting resource is not a pixel_output")
 
-    asset_path = _resolve_asset(root, scene.media.asset) if scene.media.asset else None
+    asset_id = _validate_asset_id(scene.media.asset) if scene.media.asset else None
     color = tuple(bytes.fromhex(scene.lighting.color.removeprefix("#")))
     return LoadedScene(
         definition=scene,
         agent_id=media.target,
         pixel_count=lighting.pixel_count,
         color=(color[0], color[1], color[2]),
-        asset_path=asset_path,
+        asset_id=asset_id,
     )
 
 
-def _resolve_asset(root: Path, asset: str) -> Path:
-    candidate = (root / asset).resolve()
-    if not candidate.is_relative_to(root):
+def _validate_asset_id(asset: str) -> str:
+    candidate = PurePosixPath(asset)
+    if candidate.is_absolute() or ".." in candidate.parts or "\\" in asset:
         raise ShowPackageError(f"asset path escapes show package: {asset}")
-    if not candidate.is_file():
-        raise ShowPackageError(f"media asset does not exist: {asset}")
-    return candidate
+    normalized = candidate.as_posix()
+    if normalized in {"", "."}:
+        raise ShowPackageError("media asset id cannot be empty")
+    return normalized

@@ -38,20 +38,21 @@ def test_command_acknowledgments_are_fenced_and_time_out() -> None:
         agent.accept_welcome(runtime.register_agent(agent.hello(), channel))
         await runtime.start_scene("synthetic-sweep")
 
-        first, second = channel.sent
+        first = channel.sent[0]
         completed = agent.acknowledge(first["request_id"])
-        assert runtime.acknowledge_command(completed).accepted
+        assert (await runtime.acknowledge_command(completed)).accepted
+        second = channel.sent[1]
         assert runtime.status()["pending_commands"] == 1
-        assert runtime.acknowledge_command(completed).reason == "unknown_request"
+        assert (await runtime.acknowledge_command(completed)).reason == "unknown_request"
 
         old_epoch = agent.acknowledge(second["request_id"]).model_copy(
             update={"controller_epoch": "old-controller"}
         )
-        assert runtime.acknowledge_command(old_epoch).reason == "controller_epoch_fence"
+        assert (await runtime.acknowledge_command(old_epoch)).reason == "controller_epoch_fence"
         old_session = agent.acknowledge(second["request_id"]).model_copy(
             update={"agent_session_id": "old-agent-session"}
         )
-        assert runtime.acknowledge_command(old_session).reason == "agent_session_fence"
+        assert (await runtime.acknowledge_command(old_session)).reason == "agent_session_fence"
 
         clock.now += 0.2
         status = runtime.status()
@@ -61,14 +62,14 @@ def test_command_acknowledgments_are_fenced_and_time_out() -> None:
         assert not status["render_loop_running"]
 
         await runtime.start_scene("synthetic-sweep")
-        error_command = channel.sent[-2]
+        error_command = channel.sent[-1]
         failed = agent.acknowledge(
             error_command["request_id"],
             status="error",
             error_code="prepare_failed",
             detail="synthetic failure",
         )
-        assert runtime.acknowledge_command(failed).accepted
+        assert (await runtime.acknowledge_command(failed)).accepted
         assert runtime.status()["degraded_reason"] == "command_error:prepare_failed"
         assert runtime.status()["command_errors"] == 1
         await runtime.shutdown()
@@ -90,8 +91,12 @@ def test_heartbeat_refreshes_liveness_and_expiry_stops_rendering() -> None:
         agent.accept_welcome(runtime.register_agent(agent.hello(), channel))
         active = await runtime.start_scene("synthetic-sweep")
         agent.attach(active.scene_instance_id, active.playback_session_id)
-        for command in channel.sent:
-            assert runtime.acknowledge_command(agent.acknowledge(command["request_id"])).accepted
+        prepare = channel.sent[0]
+        assert (
+            await runtime.acknowledge_command(agent.acknowledge(prepare["request_id"]))
+        ).accepted
+        play = channel.sent[1]
+        assert (await runtime.acknowledge_command(agent.acknowledge(play["request_id"]))).accepted
         assert runtime.ingest(agent.position(100)).accepted
 
         clock.now += 0.2

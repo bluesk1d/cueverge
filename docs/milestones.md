@@ -51,7 +51,10 @@
 
 ### Requires target-device input and opt-in testing
 
-- mpv build, display index, analog audio device, fullscreen, and media cache.
+- Windows 11 portable mpv 0.41.0, projector fullscreen screen index, and wired
+  Home Max analog WASAPI route are validated manually.
+- Named-pipe control, end-to-end agent telemetry, media cache behavior, and
+  unattended startup remain unvalidated on the laptop.
 - WLED host/version, count, RGB layout, two-output linear indexing, 20 FPS dim
   reception, 30 FPS black throughput, and off-state relinquish are validated.
 - Power capacity remains unknown and WLED reports no configured current limit;
