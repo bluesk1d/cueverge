@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import time
 from dataclasses import dataclass
 from typing import Literal, Protocol
@@ -20,6 +21,8 @@ from cueverge.protocol.models import (
     PlaybackSnapshot,
     PlaybackState,
 )
+
+LOGGER = logging.getLogger(__name__)
 
 
 class PlayerError(RuntimeError):
@@ -64,9 +67,12 @@ class MediaAgentClient:
     async def run_forever(self) -> None:
         while True:
             try:
+                LOGGER.info("connecting to controller at %s", self.config.controller_url)
                 async with connect(str(self.config.controller_url)) as websocket:
+                    LOGGER.info("connected to controller")
                     await self._run_connection(websocket)
-            except (OSError, ValidationError, PlayerError, ConnectionClosed):
+            except (OSError, ValidationError, PlayerError, ConnectionClosed) as error:
+                LOGGER.warning("agent connection failed: %s", error)
                 await asyncio.sleep(self.config.reconnect_delay_ms / 1000)
                 self.agent_session_id = str(uuid4())
 
@@ -74,6 +80,7 @@ class MediaAgentClient:
         await websocket.send((await self.hello()).model_dump_json())
         welcome = AgentWelcome.model_validate_json(await websocket.recv())
         self.controller_epoch = welcome.controller_epoch
+        LOGGER.info("controller reconciliation action: %s", welcome.reconciliation)
         if welcome.reconciliation == "stop":
             await self.player.stop()
             self._clear_playback()
@@ -119,8 +126,10 @@ class MediaAgentClient:
         )
 
     async def handle_command(self, command: AgentCommand) -> CommandAck:
+        LOGGER.info("handling command %s request_id=%s", command.command, command.request_id)
         rejection = self._command_rejection(command)
         if rejection is not None:
+            LOGGER.warning("rejected command %s: %s", command.request_id, rejection)
             return self._ack(command, "error", rejection, rejection)
         try:
             if command.command == "prepare":
@@ -142,7 +151,9 @@ class MediaAgentClient:
             elif command.command == "get_status":
                 await self.player.status()
         except (PlayerError, OSError, ValueError) as error:
+            LOGGER.error("player command %s failed: %s", command.command, error)
             return self._ack(command, "error", "player_error", str(error))
+        LOGGER.info("completed command %s request_id=%s", command.command, command.request_id)
         return self._ack(command, "completed")
 
     async def telemetry(self) -> MediaPosition | None:

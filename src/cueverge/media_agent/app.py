@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from contextlib import suppress
 
 from cueverge.config import MediaAgentConfig
@@ -29,5 +30,9 @@ async def run() -> None:
 
 
 def main() -> None:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
     with suppress(KeyboardInterrupt):
         asyncio.run(run())

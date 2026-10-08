@@ -1,9 +1,9 @@
 from dataclasses import dataclass
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 from cueverge.media_agent.client import PlayerError, PlayerStatus
-from cueverge.media_agent.mpv import MpvClient, resolve_local_asset
+from cueverge.media_agent.mpv import MpvClient, MpvError, resolve_local_asset
 from cueverge.protocol.models import PlaybackState
 
 
@@ -15,31 +15,34 @@ class MpvPlayer:
     async def prepare(self, asset_id: str | None) -> None:
         if asset_id is None:
             raise PlayerError("media-backed scene did not provide an asset")
-        asset = resolve_local_asset(self.asset_root, asset_id)
-        await self.client.command("loadfile", str(asset), "replace")
-        await self.client.command("set_property", "pause", True)
+        try:
+            asset = resolve_local_asset(self.asset_root, asset_id)
+        except MpvError as error:
+            raise PlayerError(str(error)) from error
+        await self._command("loadfile", str(asset), "replace")
+        await self._command("set_property", "pause", True)
 
     async def play(self) -> None:
-        await self.client.command("set_property", "pause", False)
+        await self._command("set_property", "pause", False)
 
     async def pause(self) -> None:
-        await self.client.command("set_property", "pause", True)
+        await self._command("set_property", "pause", True)
 
     async def resume(self) -> None:
         await self.play()
 
     async def seek(self, position_ms: int) -> None:
-        await self.client.command("seek", position_ms / 1000, "absolute+exact")
+        await self._command("seek", position_ms / 1000, "absolute+exact")
 
     async def stop(self) -> None:
-        await self.client.command("stop")
+        await self._command("stop")
 
     async def status(self) -> PlayerStatus:
-        position = await self.client.command("get_property", "time-pos/full")
-        paused = await self.client.command("get_property", "pause")
-        duration = await self.client.command("get_property", "duration")
-        rate = await self.client.command("get_property", "speed")
-        idle = await self.client.command("get_property", "idle-active")
+        position = await self._command("get_property", "time-pos/full")
+        paused = await self._command("get_property", "pause")
+        duration = await self._command("get_property", "duration")
+        rate = await self._command("get_property", "speed")
+        idle = await self._command("get_property", "idle-active")
         if not all(
             (
                 isinstance(position, int | float),
@@ -65,3 +68,9 @@ class MpvPlayer:
             state=state,
             duration_ms=duration_ms,
         )
+
+    async def _command(self, *items: object) -> Any:
+        try:
+            return await self.client.command(*items)
+        except MpvError as error:
+            raise PlayerError(str(error)) from error

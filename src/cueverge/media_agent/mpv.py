@@ -115,6 +115,7 @@ class MpvProcess:
 @dataclass
 class MpvClient:
     transport: MpvTransport
+    command_timeout_seconds: float = 5.0
     _next_request_id: int = 1
     _pending: dict[int, asyncio.Future[dict[str, Any]]] = field(default_factory=dict)
     _events: asyncio.Queue[dict[str, Any]] = field(default_factory=asyncio.Queue)
@@ -132,10 +133,16 @@ class MpvClient:
         future = asyncio.get_running_loop().create_future()
         self._pending[request_id] = future
         await self.transport.write(JsonLineCodec.encode(list(items), request_id))
-        response = await future
-        error = response.get("error")
-        if error != "success":
-            raise MpvError(f"mpv command failed: {error}")
+        try:
+            response = await asyncio.wait_for(future, timeout=self.command_timeout_seconds)
+        except TimeoutError as timeout_error:
+            self._pending.pop(request_id, None)
+            raise MpvError(
+                f"mpv command timed out after {self.command_timeout_seconds}s"
+            ) from timeout_error
+        response_error = response.get("error")
+        if response_error != "success":
+            raise MpvError(f"mpv command failed: {response_error}")
         return response.get("data")
 
     async def observe_property(self, observer_id: int, name: str) -> None:
@@ -159,10 +166,10 @@ class MpvClient:
                 self._pending.pop(request_id).set_result(message)
             else:
                 await self._events.put(message)
-        error = MpvError("mpv IPC connection closed")
+        closed_error = MpvError("mpv IPC connection closed")
         for future in self._pending.values():
             if not future.done():
-                future.set_exception(error)
+                future.set_exception(closed_error)
         self._pending.clear()
 
 

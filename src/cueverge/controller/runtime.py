@@ -67,7 +67,7 @@ class ControllerRuntime:
         render_fps: float = 25.0,
         heartbeat_interval_ms: int = 1000,
         heartbeat_timeout_ms: int = 3000,
-        command_timeout_ms: int = 2000,
+        command_timeout_ms: int = 10000,
         controller_epoch: str | None = None,
         catalog: SceneCatalog | None = None,
         event_clock: EventClock | None = None,

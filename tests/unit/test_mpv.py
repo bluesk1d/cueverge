@@ -68,6 +68,18 @@ def test_mpv_client_correlates_responses_and_preserves_events() -> None:
     asyncio.run(scenario())
 
 
+def test_mpv_client_bounds_command_wait() -> None:
+    async def scenario() -> None:
+        transport = FakeTransport()
+        client = MpvClient(transport, command_timeout_seconds=0.01)
+        client.start_reader()
+        with pytest.raises(MpvError, match="timed out"):
+            await client.command("get_property", "pause")
+        await client.close()
+
+    asyncio.run(scenario())
+
+
 def test_builds_windows_mpv_command_without_device_assumptions() -> None:
     process = MpvProcess(
         executable=Path("C:/tools/mpv/mpv.exe"),
