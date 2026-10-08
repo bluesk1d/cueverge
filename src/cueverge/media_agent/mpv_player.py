@@ -51,7 +51,11 @@ class MpvPlayer:
                 isinstance(idle, bool),
             )
         ):
-            raise PlayerError("mpv returned invalid playback property types")
+            raise PlayerError(
+                "mpv returned invalid playback properties: "
+                f"position={position!r}, paused={paused!r}, "
+                f"duration={duration!r}, rate={rate!r}, idle={idle!r}"
+            )
         duration_ms = (
             round(cast(float, duration) * 1000) if isinstance(duration, int | float) else None
         )

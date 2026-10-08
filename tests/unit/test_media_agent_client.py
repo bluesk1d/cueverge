@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from cueverge.config import MediaAgentConfig
-from cueverge.media_agent.client import MediaAgentClient, PlayerStatus
+from cueverge.media_agent.client import MediaAgentClient, PlayerError, PlayerStatus
 from cueverge.protocol.models import AgentCommand, PlaybackState
 
 
@@ -12,6 +12,7 @@ class FakePlayer:
     prepared: str | None = None
     playing: bool = False
     position_ms: int = 1250
+    status_error: bool = False
 
     async def prepare(self, asset_id: str | None) -> None:
         self.prepared = asset_id
@@ -32,6 +33,8 @@ class FakePlayer:
         self.playing = False
 
     async def status(self) -> PlayerStatus:
+        if self.status_error:
+            raise PlayerError("synthetic status failure")
         return PlayerStatus(
             position_ms=self.position_ms,
             playback_rate=1.0,

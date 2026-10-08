@@ -210,9 +210,12 @@ class MediaAgentClient:
     async def _telemetry_loop(self, websocket: ClientConnection) -> None:
         interval = 1 / self.config.telemetry_hz
         while True:
-            telemetry = await self.telemetry()
-            if telemetry is not None:
-                await websocket.send(telemetry.model_dump_json())
+            try:
+                telemetry = await self.telemetry()
+                if telemetry is not None:
+                    await websocket.send(telemetry.model_dump_json())
+            except PlayerError as error:
+                LOGGER.error("could not read player telemetry: %s", error)
             await asyncio.sleep(interval)
 
     def _command_rejection(self, command: AgentCommand) -> str | None:
