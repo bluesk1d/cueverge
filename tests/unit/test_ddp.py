@@ -56,7 +56,20 @@ class FakeSocket:
         pass
 
 
-def test_sink_enforces_pixel_count_and_brightness_limit() -> None:
+def test_sink_preserves_channels_by_default() -> None:
+    fake_socket = FakeSocket()
+    sink = DdpUdpSink(
+        "wled.local",
+        expected_pixel_count=2,
+        _socket=fake_socket,  # type: ignore[arg-type]
+    )
+
+    sink.send(RenderedFrame("scene", 0, ((255, 128, 4), (0, 0, 0))))
+
+    assert fake_socket.packets[0][10:] == bytes((255, 128, 4, 0, 0, 0))
+
+
+def test_sink_enforces_pixel_count_and_optional_brightness_limit() -> None:
     fake_socket = FakeSocket()
     sink = DdpUdpSink(
         "wled.local",

@@ -65,8 +65,6 @@
 
 ### Remaining target-device work
 
-- Power capacity remains unknown and WLED reports no configured current limit;
-  software output now requires exact pixel count and applies a default 25% cap.
 - Packet loss, visible update latency, and restoration from an active preset
   remain unmeasured.
 - Flash/click calibration and measured projector/audio/LED offsets and jitter.

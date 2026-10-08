@@ -9,16 +9,21 @@ The controller includes an opt-in unicast DDP v1 UDP sink:
 - No optional DDP timecode because WLED does not consume it.
 
 `CUEVERGE_DDP_ENABLED` defaults to false. Enabling it requires an explicit host
-and expected pixel count. A software brightness limit defaults to 25% and is
-applied to every channel before packetization.
+and expected pixel count. RGB channel values are sent unscaled by default.
+`CUEVERGE_DDP_BRIGHTNESS_LIMIT` can optionally scale output for artistic or
+installation-specific reasons; Cueverge does not treat it as an electrical
+safety control.
 
 Before enabling output, validate:
 
 - WLED version, configured LED count, RGB/RGBW layout, and color order.
 - Unicast reachability from the NAS and sustainable frame rate.
-- Brightness and power ceiling.
 - Realtime ownership and behavior when packets stop.
 - How to restore or relinquish to the prior WLED preset.
+
+The downstream controller and physical installation own electrical
+provisioning, protection, and safe operating limits. Cueverge assumes an
+enabled output target has already been configured appropriately.
 
 RGBW output is not implemented. Do not enable the sink for an RGBW installation.
 
@@ -37,6 +42,4 @@ Read-only inspection and an authorized controlled test established:
 
 WLED's instantaneous JSON FPS field reported values different from commanded
 cadence and is treated as diagnostic only. Packet loss and visible update
-latency were not measured. The device reported no configured power/current
-limit, so the software cap is not a substitute for confirming electrical power
-capacity before bright full-roof output.
+latency were not measured.

@@ -54,7 +54,7 @@ class DdpUdpSink:
     destination_id: int = 1
     max_payload_bytes: int = 1440
     expected_pixel_count: int | None = None
-    brightness_limit: float = 0.25
+    brightness_limit: float = 1.0
     _sequence: int = 0
     frames_sent: int = 0
     _socket: socket.socket = field(

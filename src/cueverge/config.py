@@ -50,7 +50,7 @@ class DdpOutputConfig(RuntimeConfig):
     destination_id: int = Field(default=1, ge=1, le=255)
     max_payload_bytes: int = Field(default=1440, ge=3, le=65535)
     expected_pixel_count: int | None = Field(default=None, gt=0)
-    brightness_limit: float = Field(default=0.25, gt=0, le=1)
+    brightness_limit: float = Field(default=1.0, gt=0, le=1)
 
     @model_validator(mode="after")
     def validate_enabled_host(self) -> "DdpOutputConfig":
@@ -75,7 +75,7 @@ class ControllerConfig(RuntimeConfig):
                 host=os.environ.get("CUEVERGE_DDP_HOST"),
                 port=int(os.environ.get("CUEVERGE_DDP_PORT", "4048")),
                 expected_pixel_count=_optional_int(os.environ.get("CUEVERGE_DDP_PIXEL_COUNT")),
-                brightness_limit=float(os.environ.get("CUEVERGE_DDP_BRIGHTNESS_LIMIT", "0.25")),
+                brightness_limit=float(os.environ.get("CUEVERGE_DDP_BRIGHTNESS_LIMIT", "1.0")),
             ),
         )
 
