@@ -14,18 +14,51 @@ class ResourceKind(StrEnum):
     PIXEL_OUTPUT = "pixel_output"
 
 
+class PixelSegment(FrozenModel):
+    id: str = Field(min_length=1)
+    start: int = Field(ge=0)
+    end: int = Field(gt=0)
+    strand: str | None = Field(default=None, min_length=1)
+
+    @model_validator(mode="after")
+    def validate_range(self) -> "PixelSegment":
+        if self.end <= self.start:
+            raise ValueError("pixel segment end must be greater than start")
+        return self
+
+    @property
+    def pixel_count(self) -> int:
+        return self.end - self.start
+
+
 class ResourceBinding(FrozenModel):
     resource: str = Field(min_length=1)
     kind: ResourceKind
     target: str = Field(min_length=1)
     pixel_count: int | None = Field(default=None, gt=0)
+    segments: tuple[PixelSegment, ...] = ()
 
     @model_validator(mode="after")
     def validate_pixel_count(self) -> "ResourceBinding":
         if self.kind is ResourceKind.PIXEL_OUTPUT and self.pixel_count is None:
             raise ValueError("pixel_output binding requires pixel_count")
-        if self.kind is ResourceKind.MEDIA_AGENT and self.pixel_count is not None:
-            raise ValueError("media_agent binding cannot define pixel_count")
+        if self.kind is ResourceKind.MEDIA_AGENT:
+            if self.pixel_count is not None:
+                raise ValueError("media_agent binding cannot define pixel_count")
+            if self.segments:
+                raise ValueError("media_agent binding cannot define pixel segments")
+            return self
+
+        segment_ids = [segment.id for segment in self.segments]
+        if len(segment_ids) != len(set(segment_ids)):
+            raise ValueError("pixel segment ids must be unique")
+        expected_start = 0
+        for segment in self.segments:
+            if segment.start != expected_start:
+                raise ValueError("pixel segments must form a contiguous partition starting at zero")
+            expected_start = segment.end
+        if self.segments and expected_start != self.pixel_count:
+            raise ValueError("pixel segments must end at pixel_count")
         return self
 
 
@@ -79,6 +112,7 @@ class LoadedScene(FrozenModel):
     definition: SceneDefinition
     agent_id: str
     pixel_count: int
+    pixel_segments: tuple[PixelSegment, ...] = ()
     color: tuple[int, int, int]
     asset_id: str | None = None
 

@@ -23,6 +23,28 @@ supports only the simulated roles needed by the vertical slice:
 Bindings must be unique. Addresses, credentials, and real hardware parameters
 do not belong in the redistributable demo.
 
+A pixel output may optionally declare named `segments` as half-open
+`[start, end)` ranges. Segment IDs must be unique and the declared order must
+form a contiguous partition from zero through `pixel_count`. An optional
+`strand` label can identify separately wired physical runs without exposing
+adapter-specific output concepts to scenes. For example:
+
+```json
+{
+  "resource": "roofline",
+  "kind": "pixel_output",
+  "target": "wled",
+  "pixel_count": 8,
+  "segments": [
+    {"id": "right-eave", "start": 0, "end": 3, "strand": "lower"},
+    {"id": "left-eave", "start": 3, "end": 8, "strand": "lower"}
+  ]
+}
+```
+
+Half-open ranges avoid an extra address at the endpoint: `start: 0, end: 8`
+contains the eight addressable pixels `0` through `7`.
+
 ## Scenes
 
 A scene declares:

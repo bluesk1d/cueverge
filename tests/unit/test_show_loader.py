@@ -13,6 +13,7 @@ def test_loads_demo_package_with_bound_resources() -> None:
     scene = catalog.require("synthetic-sweep")
     assert scene.agent_id == "fake-media-1"
     assert scene.pixel_count == 8
+    assert scene.pixel_segments == ()
     assert scene.color == (0, 255, 96)
     assert scene.asset_id is None
 
@@ -61,6 +62,36 @@ def test_rejects_duplicate_scene_ids(tmp_path: Path) -> None:
     (root / "scenes/copy.json").write_text(original.read_text(encoding="utf-8"), encoding="utf-8")
 
     with pytest.raises(ShowPackageError, match="duplicate scene id"):
+        load_show_package(root)
+
+
+def test_loads_contiguous_pixel_segments(tmp_path: Path) -> None:
+    root = _package(tmp_path)
+    installation_path = root / "installation.json"
+    installation = json.loads(installation_path.read_text(encoding="utf-8"))
+    installation["resources"][1]["segments"] = [
+        {"id": "right", "start": 0, "end": 3, "strand": "output-1"},
+        {"id": "left", "start": 3, "end": 8, "strand": "output-1"},
+    ]
+    installation_path.write_text(json.dumps(installation), encoding="utf-8")
+
+    loaded = load_show_package(root).require("scene")
+
+    assert [segment.id for segment in loaded.pixel_segments] == ["right", "left"]
+    assert [segment.pixel_count for segment in loaded.pixel_segments] == [3, 5]
+
+
+def test_rejects_non_contiguous_pixel_segments(tmp_path: Path) -> None:
+    root = _package(tmp_path)
+    installation_path = root / "installation.json"
+    installation = json.loads(installation_path.read_text(encoding="utf-8"))
+    installation["resources"][1]["segments"] = [
+        {"id": "first", "start": 0, "end": 3},
+        {"id": "gap", "start": 4, "end": 8},
+    ]
+    installation_path.write_text(json.dumps(installation), encoding="utf-8")
+
+    with pytest.raises(ShowPackageError, match="contiguous partition"):
         load_show_package(root)
 
 

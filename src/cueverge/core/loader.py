@@ -99,6 +99,7 @@ def _bind_scene(
         definition=scene,
         agent_id=media.target,
         pixel_count=lighting.pixel_count,
+        pixel_segments=lighting.segments,
         color=(color[0], color[1], color[2]),
         asset_id=asset_id,
     )
