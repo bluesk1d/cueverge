@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "resources": [
+    {
+      "resource": "projector.demo",
+      "kind": "media_agent",
+      "target": "fake-media-1"
+    },
+    {
+      "resource": "roofline.demo",
+      "kind": "pixel_output",
+      "target": "memory",
+      "pixel_count": 8
+    }
+  ]
+}

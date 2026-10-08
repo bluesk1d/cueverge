@@ -4,8 +4,9 @@ Cueverge is an early-stage, self-hosted reactive show engine. A controller owns
 scene selection and lifecycle, while a media agent reports the authoritative
 playback position used to render synchronized lighting.
 
-This repository currently contains the M0/M1 software-only vertical slice. It
-does not control mpv, WLED, projectors, speakers, or Home Assistant.
+This repository currently contains the M0/M1 software-only vertical slice,
+protocol reliability, fixed-rate simulated rendering, and declarative show
+loading. It does not control mpv, WLED, projectors, speakers, or Home Assistant.
 
 ## Development
 

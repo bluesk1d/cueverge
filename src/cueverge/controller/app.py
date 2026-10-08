@@ -75,8 +75,12 @@ def create_app(runtime: ControllerRuntime | None = None) -> FastAPI:
         return {"status": "ready", "connected_agents": controller.connected_agent_count}
 
     @app.get("/api/v1/scenes")
-    async def scenes() -> list[dict[str, str]]:
-        return [{"id": "synthetic-sweep", "name": "Synthetic Sweep"}]
+    async def scenes(request: Request) -> list[dict[str, str]]:
+        controller: ControllerRuntime = request.app.state.runtime
+        return [
+            {"id": scene.definition.id, "name": scene.definition.name}
+            for scene in controller.catalog.scenes.values()
+        ]
 
     @app.post("/api/v1/scenes/{scene_id}/start", response_model=StartSceneResponse)
     async def start_scene(scene_id: str, request: Request) -> StartSceneResponse:

@@ -72,8 +72,7 @@ def test_pause_and_stale_telemetry_render_bounded_hold_frames() -> None:
 
 def _active_scene(runtime: ControllerRuntime):
     from cueverge.controller.runtime import ActiveScene
-    from cueverge.core.models import SYNTHETIC_SWEEP
 
-    active = ActiveScene(SYNTHETIC_SWEEP, "scene-1", "playback-1")
+    active = ActiveScene(runtime.catalog.require("synthetic-sweep"), "scene-1", "playback-1")
     runtime.follower.begin(active.scene_instance_id, active.playback_session_id)
     return active

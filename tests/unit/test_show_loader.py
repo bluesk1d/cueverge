@@ -1,0 +1,106 @@
+import json
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from cueverge.core.loader import ShowPackageError, load_show_package
+
+
+def test_loads_demo_package_with_bound_resources() -> None:
+    catalog = load_show_package(Path("shows/demo"))
+
+    scene = catalog.require("synthetic-sweep")
+    assert scene.agent_id == "fake-media-1"
+    assert scene.pixel_count == 8
+    assert scene.color == (0, 255, 96)
+    assert scene.asset_path is None
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        ({"lighting": {"resource": "missing", "effect": "synthetic_sweep"}}, "claim"),
+        ({"lighting": {"resource": "roofline.demo", "effect": "unknown"}}, "literal"),
+        ({"media": {"resource": "projector.demo", "asset": "../outside.mp4"}}, "escapes"),
+        (
+            {"media": {"resource": "projector.demo", "asset": "assets/missing.mp4"}},
+            "does not exist",
+        ),
+    ],
+)
+def test_rejects_invalid_scene_packages(
+    tmp_path: Path,
+    mutation: dict[str, Any],
+    message: str,
+) -> None:
+    root = _package(tmp_path)
+    scene_path = root / "scenes/scene.json"
+    scene = json.loads(scene_path.read_text(encoding="utf-8"))
+    scene.update(mutation)
+    scene_path.write_text(json.dumps(scene), encoding="utf-8")
+
+    with pytest.raises(ShowPackageError, match=message):
+        load_show_package(root)
+
+
+def test_resolves_asset_inside_package(tmp_path: Path) -> None:
+    root = _package(tmp_path)
+    assets = root / "assets"
+    assets.mkdir()
+    asset = assets / "demo.bin"
+    asset.write_bytes(b"synthetic")
+    scene_path = root / "scenes/scene.json"
+    scene = json.loads(scene_path.read_text(encoding="utf-8"))
+    scene["media"]["asset"] = "assets/demo.bin"
+    scene_path.write_text(json.dumps(scene), encoding="utf-8")
+
+    loaded = load_show_package(root).require("scene")
+    assert loaded.asset_path == asset.resolve()
+
+
+def test_rejects_duplicate_scene_ids(tmp_path: Path) -> None:
+    root = _package(tmp_path)
+    original = root / "scenes/scene.json"
+    (root / "scenes/copy.json").write_text(original.read_text(encoding="utf-8"), encoding="utf-8")
+
+    with pytest.raises(ShowPackageError, match="duplicate scene id"):
+        load_show_package(root)
+
+
+def _package(tmp_path: Path) -> Path:
+    root = tmp_path / "show"
+    scenes = root / "scenes"
+    scenes.mkdir(parents=True)
+    installation = {
+        "schema_version": 1,
+        "resources": [
+            {
+                "resource": "projector.demo",
+                "kind": "media_agent",
+                "target": "fake-media-1",
+            },
+            {
+                "resource": "roofline.demo",
+                "kind": "pixel_output",
+                "target": "memory",
+                "pixel_count": 8,
+            },
+        ],
+    }
+    scene = {
+        "schema_version": 1,
+        "id": "scene",
+        "name": "Scene",
+        "mode": "media_synchronized",
+        "resources": ["projector.demo", "roofline.demo"],
+        "duration_ms": 4000,
+        "media": {"resource": "projector.demo"},
+        "lighting": {
+            "resource": "roofline.demo",
+            "effect": "synthetic_sweep",
+        },
+    }
+    (root / "installation.json").write_text(json.dumps(installation), encoding="utf-8")
+    (scenes / "scene.json").write_text(json.dumps(scene), encoding="utf-8")
+    return root

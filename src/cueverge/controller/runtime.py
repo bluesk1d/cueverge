@@ -3,10 +3,12 @@ import time
 from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Literal, Protocol
 from uuid import uuid4
 
-from cueverge.core.models import SYNTHETIC_SWEEP, SceneDefinition
+from cueverge.core.loader import load_show_package
+from cueverge.core.models import LoadedScene, SceneCatalog, SceneDefinition
 from cueverge.lighting.renderer import SyntheticSweep
 from cueverge.lighting.sink import MemoryFrameSink, RenderedFrame
 from cueverge.protocol.models import (
@@ -28,9 +30,13 @@ class CommandChannel(Protocol):
 
 @dataclass(frozen=True)
 class ActiveScene:
-    definition: SceneDefinition
+    scene: LoadedScene
     scene_instance_id: str
     playback_session_id: str
+
+    @property
+    def definition(self) -> SceneDefinition:
+        return self.scene.definition
 
 
 @dataclass
@@ -59,6 +65,7 @@ class ControllerRuntime:
         heartbeat_timeout_ms: int = 3000,
         command_timeout_ms: int = 2000,
         controller_epoch: str | None = None,
+        catalog: SceneCatalog | None = None,
     ) -> None:
         if render_fps <= 0:
             raise ValueError("render_fps must be positive")
@@ -74,6 +81,7 @@ class ControllerRuntime:
         self.heartbeat_timeout_ms = heartbeat_timeout_ms
         self.command_timeout_ms = command_timeout_ms
         self.controller_epoch = controller_epoch or str(uuid4())
+        self.catalog = catalog or load_show_package(Path("shows/demo"))
         self.active_scene: ActiveScene | None = None
         self._agents: dict[str, AgentConnection] = {}
         self._pending_commands: dict[str, PendingCommand] = {}
@@ -164,15 +172,13 @@ class ControllerRuntime:
         if connection is not None and connection.channel is websocket:
             del self._agents[agent_id]
             self._abandon_commands(agent_id)
-            if self.active_scene is not None and self.active_scene.definition.agent_id == agent_id:
+            if self.active_scene is not None and self.active_scene.scene.agent_id == agent_id:
                 self.follower.disconnect()
                 self._degraded_reason = "agent_disconnected"
                 self._cancel_render_loop()
 
     async def start_scene(self, scene_id: str) -> ActiveScene:
-        if scene_id != SYNTHETIC_SWEEP.id:
-            raise LookupError(f"unknown scene: {scene_id}")
-        scene = SYNTHETIC_SWEEP
+        scene = self.catalog.require(scene_id)
         connection = self._agents.get(scene.agent_id)
         if connection is None:
             raise RuntimeError(f"required agent is not connected: {scene.agent_id}")
@@ -181,7 +187,7 @@ class ControllerRuntime:
         self._abandon_commands(scene.agent_id)
         self._degraded_reason = None
         active = ActiveScene(
-            definition=scene,
+            scene=scene,
             scene_instance_id=str(uuid4()),
             playback_session_id=str(uuid4()),
         )
@@ -194,7 +200,7 @@ class ControllerRuntime:
                 agent_id=scene.agent_id,
                 agent_session_id=connection.session_id,
                 controller_epoch=self.controller_epoch,
-                scene_id=scene.id,
+                scene_id=scene.definition.id,
                 scene_instance_id=active.scene_instance_id,
                 playback_session_id=active.playback_session_id,
             )
@@ -209,7 +215,7 @@ class ControllerRuntime:
         if active is None:
             self.rejected_telemetry += 1
             return TelemetryDecision(False, "no_active_scene")
-        if telemetry.agent_id != active.definition.agent_id:
+        if telemetry.agent_id != active.scene.agent_id:
             self.rejected_telemetry += 1
             return TelemetryDecision(False, "wrong_agent")
         connection = self._agents.get(telemetry.agent_id)
@@ -275,7 +281,7 @@ class ControllerRuntime:
             del self._agents[agent_id]
             self._abandon_commands(agent_id)
             self.heartbeat_timeouts += 1
-            if self.active_scene is not None and self.active_scene.definition.agent_id == agent_id:
+            if self.active_scene is not None and self.active_scene.scene.agent_id == agent_id:
                 self.follower.disconnect()
                 self._degraded_reason = "heartbeat_timeout"
                 self._cancel_render_loop()
@@ -304,8 +310,9 @@ class ControllerRuntime:
 
         rendered_at = self.clock()
         renderer = SyntheticSweep(
-            pixel_count=active.definition.pixel_count,
+            pixel_count=active.scene.pixel_count,
             cycle_ms=active.definition.duration_ms,
+            color=active.scene.color,
         )
         self.sink.send(
             RenderedFrame(

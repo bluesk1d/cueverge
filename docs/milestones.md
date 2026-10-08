@@ -23,11 +23,20 @@
 - Sequenced heartbeats and active-scene liveness expiry.
 - Matching reconnect continuation and safe mismatch stop behavior.
 
+## Declarative show-package increment: implemented
+
+- Versioned JSON scene and installation schemas.
+- Logical media and pixel-output resource bindings.
+- Supported-effect, role, duplicate, color, and claim validation.
+- Canonical package-confined asset resolution.
+- Controller scene registry loaded from the demo package.
+
 ## Next smallest increment
 
-Load and validate the synthetic scene from its declarative show package instead
-of the hardcoded registry. Add logical resource bindings, path-safe asset
-resolution, and schema failure tests while keeping all outputs simulated.
+Implement the software-only M3 event and encounter domain: generic event
+intake, TTL/idempotency, debouncing, cooldowns, explicit encounter transitions,
+priority/resource arbitration, operator interruption, timeout, and ambient
+fallback. Keep HA, Frigate, MQTT, and physical outputs out of this increment.
 
 ## M2: planned, hardware opt-in
 

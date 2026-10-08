@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "id": "synthetic-sweep",
+  "name": "Synthetic Sweep",
+  "mode": "media_synchronized",
+  "priority": 50,
+  "resources": [
+    "projector.demo",
+    "roofline.demo"
+  ],
+  "duration_ms": 4000,
+  "media": {
+    "resource": "projector.demo"
+  },
+  "lighting": {
+    "resource": "roofline.demo",
+    "effect": "synthetic_sweep",
+    "color": "#00FF60"
+  }
+}

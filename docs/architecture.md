@@ -32,6 +32,8 @@ from earlier runs.
 8. Controller epochs and agent session IDs fence all runtime messages.
    Commands require acknowledgements, heartbeats enforce liveness, and matching
    playback snapshots allow safe reconnect continuation.
+9. A versioned show-package loader validates scenes, logical resource bindings,
+   supported effects, and package-confined assets before runtime.
 
 The M1 runtime is intentionally in-memory and supports one active scene. It
 does not persist state across restarts or attempt hardware recovery.
@@ -61,3 +63,6 @@ The `cueverge` package has no Halloween concepts, local addresses, device
 credentials, or private geometry. Generic synthetic content lives in
 `shows/demo`; the future installation-specific package lives separately in
 `shows/halloween`.
+
+Scenes refer only to logical resource names. The installation document owns
+the mapping from those names to agent and output targets.
