@@ -7,6 +7,7 @@ def configured() -> tuple[TimecodeFollower, FakeMediaAgent]:
     follower = TimecodeFollower(stale_after_ms=500)
     follower.begin("scene-1", "playback-1")
     agent = FakeMediaAgent()
+    agent.controller_epoch = "controller-1"
     agent.attach("scene-1", "playback-1")
     return follower, agent
 

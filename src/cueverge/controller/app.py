@@ -5,7 +5,14 @@ from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconn
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from cueverge.controller.runtime import ControllerRuntime
-from cueverge.protocol.models import AgentHello, MediaPosition, TelemetryAck
+from cueverge.protocol.models import (
+    AgentHeartbeat,
+    AgentHello,
+    CommandAck,
+    HeartbeatAck,
+    MediaPosition,
+    TelemetryAck,
+)
 
 
 class StartSceneResponse(BaseModel):
@@ -19,6 +26,7 @@ class StartSceneResponse(BaseModel):
 class StatusResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    controller_epoch: str
     active_scene: str | None
     scene_instance_id: str | None
     playback_session_id: str | None
@@ -27,6 +35,13 @@ class StatusResponse(BaseModel):
     degraded: bool
     degraded_reason: str | None
     connected_agents: list[str]
+    pending_commands: int = Field(ge=0)
+    command_errors: int = Field(ge=0)
+    command_timeouts: int = Field(ge=0)
+    abandoned_commands: int = Field(ge=0)
+    heartbeat_timeouts: int = Field(ge=0)
+    reconciliations: int = Field(ge=0)
+    rejected_protocol_messages: int = Field(ge=0)
     rendered_frames: int = Field(ge=0)
     rejected_telemetry: int = Field(ge=0)
     render_target_fps: float = Field(gt=0)
@@ -56,6 +71,7 @@ def create_app(runtime: ControllerRuntime | None = None) -> FastAPI:
     @app.get("/health/ready")
     async def ready(request: Request) -> dict[str, object]:
         controller: ControllerRuntime = request.app.state.runtime
+        controller.check_timeouts()
         return {"status": "ready", "connected_agents": controller.connected_agent_count}
 
     @app.get("/api/v1/scenes")
@@ -96,20 +112,56 @@ def create_app(runtime: ControllerRuntime | None = None) -> FastAPI:
         try:
             hello = AgentHello.model_validate(await websocket.receive_json())
             agent_id = hello.agent_id
-            controller.register_agent(agent_id, websocket)
-            await websocket.send_json({"type": "agent.welcome", "protocol_version": 1})
+            welcome = controller.register_agent(hello, websocket)
+            await websocket.send_json(welcome.model_dump(mode="json"))
             while True:
                 payload = await websocket.receive_json()
                 try:
-                    telemetry = MediaPosition.model_validate(payload)
-                    decision = controller.ingest(telemetry)
-                    acknowledgment = TelemetryAck(
-                        sequence=telemetry.sequence,
-                        accepted=decision.accepted,
-                        reason=decision.reason,
-                    )
-                    await websocket.send_json(acknowledgment.model_dump(mode="json"))
+                    if not isinstance(payload, dict):
+                        raise ValueError("protocol message must be a JSON object")
+                    message_type = payload.get("type")
+                    response: BaseModel | dict[str, object]
+                    if message_type == "media.position":
+                        telemetry = MediaPosition.model_validate(payload)
+                        decision = controller.ingest(telemetry)
+                        response = TelemetryAck(
+                            sequence=telemetry.sequence,
+                            accepted=decision.accepted,
+                            reason=decision.reason,
+                        )
+                    elif message_type == "agent.heartbeat":
+                        heartbeat = AgentHeartbeat.model_validate(payload)
+                        decision = controller.heartbeat(heartbeat)
+                        response = HeartbeatAck(
+                            sequence=heartbeat.sequence,
+                            accepted=decision.accepted,
+                            reason=decision.reason,
+                        )
+                    elif message_type == "command.ack":
+                        command_ack = CommandAck.model_validate(payload)
+                        decision = controller.acknowledge_command(command_ack)
+                        response = {
+                            "type": "command.ack.received",
+                            "protocol_version": 1,
+                            "request_id": command_ack.request_id,
+                            "accepted": decision.accepted,
+                            "reason": decision.reason,
+                        }
+                    else:
+                        raise ValueError(f"unsupported message type: {message_type}")
+                    if isinstance(response, BaseModel):
+                        await websocket.send_json(response.model_dump(mode="json"))
+                    else:
+                        await websocket.send_json(response)
                 except ValidationError as error:
+                    await websocket.send_json(
+                        {
+                            "type": "protocol.error",
+                            "protocol_version": 1,
+                            "detail": str(error),
+                        }
+                    )
+                except ValueError as error:
                     await websocket.send_json(
                         {
                             "type": "protocol.error",

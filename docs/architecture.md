@@ -29,6 +29,9 @@ from earlier runs.
 6. An in-memory sink records frames without network or hardware access.
 7. A deterministic fake agent creates valid pause, seek, loop, jitter,
    duplicate, and out-of-order scenarios for tests.
+8. Controller epochs and agent session IDs fence all runtime messages.
+   Commands require acknowledgements, heartbeats enforce liveness, and matching
+   playback snapshots allow safe reconnect continuation.
 
 The M1 runtime is intentionally in-memory and supports one active scene. It
 does not persist state across restarts or attempt hardware recovery.
@@ -49,6 +52,8 @@ does not persist state across restarts or attempt hardware recovery.
   when a projector or physical pixel visibly updates.
 - Authentication, durable state, multi-scene arbitration, and rate limiting
   are required before deployment but do not block the local software slice.
+- The controller intentionally tells an agent to stop after an epoch or
+  playback mismatch. It does not adopt or replay unknown playback.
 
 ## Package boundaries
 

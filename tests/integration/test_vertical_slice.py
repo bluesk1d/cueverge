@@ -32,7 +32,7 @@ def test_api_agent_timecode_rendering_and_disconnect() -> None:
     runtime = ControllerRuntime(clock=clock)
     agent = FakeMediaAgent()
     commands = MemoryCommandChannel(sent=[])
-    runtime.register_agent(agent.agent_id, commands)
+    agent.accept_welcome(runtime.register_agent(agent.hello(), commands))
 
     with TestClient(create_app(runtime)) as client:
         response = client.post("/api/v1/scenes/synthetic-sweep/start")
@@ -43,8 +43,16 @@ def test_api_agent_timecode_rendering_and_disconnect() -> None:
         agent.attach(started["scene_instance_id"], started["playback_session_id"])
 
         with client.websocket_connect("/api/v1/agent/ws") as socket:
-            socket.send_json(agent.hello().model_dump(mode="json"))
-            assert socket.receive_json()["type"] == "agent.welcome"
+            agent.reconnect()
+            socket.send_json(agent.hello(agent.snapshot(0)).model_dump(mode="json"))
+            welcome = socket.receive_json()
+            assert welcome["type"] == "agent.welcome"
+            assert welcome["reconciliation"] == "continue"
+
+            socket.send_json(agent.heartbeat(100).model_dump(mode="json"))
+            heartbeat_ack = socket.receive_json()
+            assert heartbeat_ack["type"] == "agent.heartbeat.ack"
+            assert heartbeat_ack["accepted"]
 
             socket.send_json(agent.position(1000).model_dump(mode="json"))
             assert socket.receive_json()["accepted"]
@@ -91,6 +99,7 @@ def test_api_agent_timecode_rendering_and_disconnect() -> None:
         assert disconnected["rendered_frames"] >= 4
         assert disconnected["render_ticks_without_timecode"] >= 1
         assert disconnected["rejected_telemetry"] == 2
+        assert disconnected["reconciliations"] == 1
 
 
 def test_start_requires_known_scene_and_connected_agent() -> None:

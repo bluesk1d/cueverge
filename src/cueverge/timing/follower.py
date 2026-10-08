@@ -52,6 +52,18 @@ class TimecodeFollower:
         self._disconnected = False
         return TelemetryDecision(True)
 
+    def reconcile(self, telemetry: MediaPosition, received_at: float) -> TelemetryDecision:
+        if (
+            telemetry.scene_instance_id != self._scene_instance_id
+            or telemetry.playback_session_id != self._playback_session_id
+        ):
+            return TelemetryDecision(False, "session_fence")
+        if self._anchor is not None and telemetry.sequence < self._anchor.telemetry.sequence:
+            return TelemetryDecision(False, "out_of_order")
+        self._anchor = _Anchor(telemetry, received_at)
+        self._disconnected = False
+        return TelemetryDecision(True)
+
     def disconnect(self) -> None:
         self._disconnected = True
 

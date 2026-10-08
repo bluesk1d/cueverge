@@ -21,7 +21,7 @@ def test_render_loop_runs_at_independent_cadence_and_stops() -> None:
         runtime = ControllerRuntime(render_fps=50)
         agent = FakeMediaAgent()
         channel = MemoryCommandChannel([])
-        runtime.register_agent(agent.agent_id, channel)
+        agent.accept_welcome(runtime.register_agent(agent.hello(), channel))
 
         active = await runtime.start_scene("synthetic-sweep")
         agent.attach(active.scene_instance_id, active.playback_session_id)
@@ -53,8 +53,9 @@ def test_pause_and_stale_telemetry_render_bounded_hold_frames() -> None:
 
     clock = ManualClock()
     runtime = ControllerRuntime(clock=clock, stale_after_ms=500)
-    runtime.active_scene = active = _active_scene(runtime)
     agent = FakeMediaAgent()
+    agent.accept_welcome(runtime.register_agent(agent.hello(), MemoryCommandChannel([])))
+    runtime.active_scene = active = _active_scene(runtime)
     agent.attach(active.scene_instance_id, active.playback_session_id)
 
     runtime.ingest(agent.position(1000, state=PlaybackState.PAUSED))

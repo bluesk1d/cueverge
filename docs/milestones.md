@@ -16,11 +16,18 @@
 - Frame interval, missed deadline, stale frame, and no-timecode metrics.
 - In-memory output only, with cadence and lifecycle tests.
 
+## Protocol reliability increment: implemented
+
+- Controller epochs and per-connection agent session fencing.
+- Command acknowledgement, error, abandonment, and timeout tracking.
+- Sequenced heartbeats and active-scene liveness expiry.
+- Matching reconnect continuation and safe mismatch stop behavior.
+
 ## Next smallest increment
 
-Add controller epochs, command acknowledgements, heartbeat timeout, and agent
-reconnection reconciliation to the simulated protocol. Keep all I/O
-software-only so restart and stale-command behavior is proven before mpv.
+Load and validate the synthetic scene from its declarative show package instead
+of the hardcoded registry. Add logical resource bindings, path-safe asset
+resolution, and schema failure tests while keeping all outputs simulated.
 
 ## M2: planned, hardware opt-in
 
