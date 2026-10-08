@@ -28,6 +28,10 @@ options. It prepares media paused, acknowledges commands, reports actual mpv
 properties at the configured telemetry rate, sends heartbeats, and fences
 commands by controller epoch and agent session.
 
+Windows named-pipe reads and writes use direct duplex Win32 calls through the
+Windows-only `pywin32` dependency. A generic Python file wrapper must not be
+used because a blocking read can serialize writes and deadlock command IPC.
+
 ## 2026-10-08 hardware checks
 
 The target Windows 11 laptop was checked with portable mpv 0.41.0:

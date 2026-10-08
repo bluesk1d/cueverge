@@ -5,7 +5,7 @@ import sys
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, BinaryIO, Protocol
+from typing import Any, Protocol
 
 
 class MpvError(RuntimeError):
@@ -46,34 +46,63 @@ class JsonLineCodec:
 @dataclass
 class WindowsNamedPipeTransport:
     pipe_path: str
-    _pipe: BinaryIO | None = None
+    _handle: Any = None
+    _read_buffer: bytearray = field(default_factory=bytearray)
 
     async def connect(self, attempts: int = 50, delay_seconds: float = 0.1) -> None:
         if sys.platform != "win32":
             raise MpvError("Windows named-pipe transport requires Windows")
+        import pywintypes  # type: ignore[import-untyped]
+        import win32file  # type: ignore[import-untyped]
+
         for attempt in range(attempts):
             try:
-                self._pipe = await asyncio.to_thread(open, self.pipe_path, "r+b", buffering=0)
+                self._handle = await asyncio.to_thread(
+                    win32file.CreateFile,
+                    self.pipe_path,
+                    win32file.GENERIC_READ | win32file.GENERIC_WRITE,
+                    0,
+                    None,
+                    win32file.OPEN_EXISTING,
+                    0,
+                    None,
+                )
                 return
-            except FileNotFoundError:
+            except pywintypes.error as error:
+                if error.winerror not in {2, 231}:
+                    raise MpvError(f"could not open mpv IPC pipe: {error}") from error
                 if attempt == attempts - 1:
                     raise MpvError(f"mpv IPC pipe was not created: {self.pipe_path}") from None
                 await asyncio.sleep(delay_seconds)
 
     async def write(self, payload: bytes) -> None:
-        if self._pipe is None:
+        if self._handle is None:
             raise MpvError("mpv IPC pipe is not connected")
-        await asyncio.to_thread(self._pipe.write, payload)
+        import win32file
+
+        await asyncio.to_thread(win32file.WriteFile, self._handle, payload)
 
     async def readline(self) -> bytes:
-        if self._pipe is None:
+        if self._handle is None:
             raise MpvError("mpv IPC pipe is not connected")
-        return await asyncio.to_thread(self._pipe.readline)
+        import win32file
+
+        while b"\n" not in self._read_buffer:
+            _, chunk = await asyncio.to_thread(win32file.ReadFile, self._handle, 4096)
+            if not chunk:
+                return b""
+            self._read_buffer.extend(chunk)
+        line, _, remainder = self._read_buffer.partition(b"\n")
+        self._read_buffer = bytearray(remainder)
+        return bytes(line) + b"\n"
 
     async def close(self) -> None:
-        if self._pipe is not None:
-            await asyncio.to_thread(self._pipe.close)
-            self._pipe = None
+        if self._handle is not None:
+            import win32file
+
+            await asyncio.to_thread(win32file.CloseHandle, self._handle)
+            self._handle = None
+            self._read_buffer.clear()
 
 
 @dataclass
