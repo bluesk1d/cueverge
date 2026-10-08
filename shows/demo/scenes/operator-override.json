@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "id": "operator-override",
+  "name": "Synthetic Operator Override",
+  "mode": "media_synchronized",
+  "priority": 90,
+  "resources": ["projector.demo", "roofline.demo"],
+  "duration_ms": 4000,
+  "media": {"resource": "projector.demo"},
+  "lighting": {
+    "resource": "roofline.demo",
+    "effect": "synthetic_sweep",
+    "color": "#FFFFFF"
+  }
+}

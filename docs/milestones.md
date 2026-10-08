@@ -31,12 +31,13 @@
 - Canonical package-confined asset resolution.
 - Controller scene registry loaded from the demo package.
 
-## Next smallest increment
+## Software-only M3 encounter increment: implemented
 
-Implement the software-only M3 event and encounter domain: generic event
-intake, TTL/idempotency, debouncing, cooldowns, explicit encounter transitions,
-priority/resource arbitration, operator interruption, timeout, and ambient
-fallback. Keep HA, Frigate, MQTT, and physical outputs out of this increment.
+- Generic event API with TTL, future-time, idempotency, and debounce checks.
+- Declarative encounter states, guards, and scene transitions.
+- Inactivity timeout, cooldown, and unattended ambient fallback.
+- Priority/resource arbitration with operator precedence and queued policy.
+- Synthetic end-to-end tests without cameras or home automation.
 
 ## M2: planned, hardware opt-in
 
@@ -44,8 +45,8 @@ After learning the laptop OS and validating actual devices: mpv IPC, asset
 validation/cache, DDP packetization, WLED restoration policy, calibration
 scene, and measured latency/jitter.
 
-## M3+: planned
+## M3 integration and later work: planned
 
-Generic event ingestion, encounter state, arbitration/cooldowns, HA/Frigate
-examples, then a private Halloween reference show. OSS hardening, naming, and
-licensing remain later decisions.
+HA/Frigate/MQTT adapters require deployment choices and live payload examples.
+The private Halloween package requires actual geometry and authored media.
+OSS hardening, naming, and licensing remain later decisions.

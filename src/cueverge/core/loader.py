@@ -5,6 +5,7 @@ from typing import Any
 from pydantic import BaseModel, ValidationError
 
 from cueverge.core.models import (
+    EncounterDefinition,
     InstallationDefinition,
     LoadedScene,
     ResourceBinding,
@@ -39,7 +40,23 @@ def load_show_package(package_root: Path) -> SceneCatalog:
         if scene.id in scenes:
             raise ShowPackageError(f"duplicate scene id: {scene.id}")
         scenes[scene.id] = _bind_scene(root, scene, bindings)
-    return SceneCatalog(package_root=root, scenes=scenes)
+    encounter_path = root / "encounter.json"
+    encounter = (
+        _validate_json(encounter_path, EncounterDefinition, "encounter")
+        if encounter_path.exists()
+        else None
+    )
+    if encounter is not None:
+        referenced = {encounter.ambient_scene_id}
+        referenced.update(
+            transition.scene_id
+            for transition in encounter.transitions
+            if transition.scene_id is not None
+        )
+        missing = referenced.difference(scenes)
+        if missing:
+            raise ShowPackageError(f"encounter references unknown scenes: {sorted(missing)}")
+    return SceneCatalog(package_root=root, scenes=scenes, encounter=encounter)
 
 
 def _validate_json[ModelT: BaseModel](

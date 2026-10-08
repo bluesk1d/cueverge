@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "initial_state": "ambient",
+  "cooldown_state": "cooldown",
+  "ambient_scene_id": "ambient",
+  "encounter_timeout_ms": 15000,
+  "cooldown_ms": 5000,
+  "debounce_ms": 500,
+  "event_ttl_ms": 3000,
+  "transitions": [
+    {
+      "event_type": "person.entered",
+      "from_states": ["ambient"],
+      "to_state": "suspicious",
+      "scene_id": "encounter-suspicious"
+    },
+    {
+      "event_type": "person.present",
+      "from_states": ["suspicious"],
+      "to_state": "interested",
+      "scene_id": "encounter-interested",
+      "min_state_age_ms": 5000
+    },
+    {
+      "event_type": "porch.entered",
+      "from_states": ["suspicious", "interested"],
+      "to_state": "reaction",
+      "scene_id": "encounter-reaction"
+    },
+    {
+      "event_type": "person.left",
+      "from_states": ["suspicious", "interested", "reaction"],
+      "to_state": "cooldown"
+    }
+  ]
+}

@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "id": "encounter-suspicious",
+  "name": "Synthetic Suspicious",
+  "mode": "media_synchronized",
+  "priority": 30,
+  "resources": ["projector.demo", "roofline.demo"],
+  "duration_ms": 4000,
+  "media": {"resource": "projector.demo"},
+  "lighting": {
+    "resource": "roofline.demo",
+    "effect": "synthetic_sweep",
+    "color": "#8040C0"
+  }
+}

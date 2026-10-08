@@ -40,3 +40,10 @@ schema fields prevent the package from loading.
 Version 1 intentionally supports only `media_synchronized` scenes and the
 `synthetic_sweep` effect. Expanding those literals requires an implemented
 runtime behavior, not only a schema change.
+
+## Encounters
+
+An optional `encounter.json` defines initial and cooldown states, ambient scene,
+timeouts, debounce, event TTL, and transitions. Each transition names an event,
+eligible source states, destination state, optional scene, and optional minimum
+state age. Every referenced scene must exist in the same package.

@@ -109,3 +109,34 @@ def test_start_requires_known_scene_and_connected_agent() -> None:
     response = client.post("/api/v1/scenes/synthetic-sweep/start")
     assert response.status_code == 409
     assert "not connected" in response.json()["detail"]
+
+
+def test_generic_event_api_starts_declarative_encounter() -> None:
+    event_clock = ManualClock(now=10.0)
+    runtime = ControllerRuntime(event_clock=lambda: round(event_clock.now * 1000))
+    agent = FakeMediaAgent()
+    commands = MemoryCommandChannel(sent=[])
+    agent.accept_welcome(runtime.register_agent(agent.hello(), commands))
+
+    with TestClient(create_app(runtime)) as client:
+        response = client.post(
+            "/api/v1/events",
+            json={
+                "event_id": "event-1",
+                "event_type": "person.entered",
+                "occurred_at_ms": 10_000,
+                "attributes": {"zone": "demo"},
+            },
+        )
+
+        assert response.status_code == 200
+        assert response.json() == {
+            "accepted": True,
+            "reason": None,
+            "state": "suspicious",
+            "scene_decision": "start",
+        }
+        status = client.get("/api/v1/status").json()
+        assert status["active_scene"] == "encounter-suspicious"
+        assert status["encounter"]["state"] == "suspicious"
+        assert status["encounter_loop_running"]

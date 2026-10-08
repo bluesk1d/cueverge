@@ -58,6 +58,7 @@ class SceneDefinition(FrozenModel):
     name: str = Field(min_length=1)
     mode: Literal["media_synchronized"]
     priority: int = Field(default=50, ge=0, le=100)
+    interruption: Literal["replace_by_priority", "queue", "ignore"] = "replace_by_priority"
     resources: tuple[str, ...] = Field(min_length=1)
     duration_ms: int = Field(gt=0)
     media: MediaDefinition
@@ -85,9 +86,37 @@ class LoadedScene(FrozenModel):
 class SceneCatalog(FrozenModel):
     package_root: Path
     scenes: dict[str, LoadedScene]
+    encounter: "EncounterDefinition | None" = None
 
     def require(self, scene_id: str) -> LoadedScene:
         try:
             return self.scenes[scene_id]
         except KeyError as error:
             raise LookupError(f"unknown scene: {scene_id}") from error
+
+
+class EncounterTransition(FrozenModel):
+    event_type: str = Field(min_length=1)
+    from_states: tuple[str, ...] = Field(min_length=1)
+    to_state: str = Field(min_length=1)
+    scene_id: str | None = None
+    min_state_age_ms: int = Field(default=0, ge=0)
+
+
+class EncounterDefinition(FrozenModel):
+    schema_version: Literal[1]
+    initial_state: str = Field(min_length=1)
+    cooldown_state: str = Field(min_length=1)
+    ambient_scene_id: str
+    encounter_timeout_ms: int = Field(gt=0)
+    cooldown_ms: int = Field(ge=0)
+    debounce_ms: int = Field(ge=0)
+    event_ttl_ms: int = Field(gt=0)
+    transitions: tuple[EncounterTransition, ...] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_states(self) -> "EncounterDefinition":
+        for transition in self.transitions:
+            if self.cooldown_state in transition.from_states:
+                raise ValueError("cooldown transitions are controlled by cooldown expiry")
+        return self

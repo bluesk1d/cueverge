@@ -34,6 +34,8 @@ from earlier runs.
    playback snapshots allow safe reconnect continuation.
 9. A versioned show-package loader validates scenes, logical resource bindings,
    supported effects, and package-confined assets before runtime.
+10. Generic events drive declarative encounter transitions with deduplication,
+    debounce, timeout, cooldown, and priority-aware scene requests.
 
 The M1 runtime is intentionally in-memory and supports one active scene. It
 does not persist state across restarts or attempt hardware recovery.
@@ -66,3 +68,7 @@ credentials, or private geometry. Generic synthetic content lives in
 
 Scenes refer only to logical resource names. The installation document owns
 the mapping from those names to agent and output targets.
+
+The synthetic demo owns its event names and encounter states. Core logic only
+interprets the versioned transition model and never imports detector-specific
+schemas or Halloween content.

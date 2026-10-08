@@ -7,6 +7,9 @@ from pathlib import Path
 from typing import Any, Literal, Protocol
 from uuid import uuid4
 
+from cueverge.core.arbitration import ArbitrationDecision, ResourceArbiter
+from cueverge.core.encounter import EncounterEngine, EventOutcome
+from cueverge.core.events import ExternalEvent
 from cueverge.core.loader import load_show_package
 from cueverge.core.models import LoadedScene, SceneCatalog, SceneDefinition
 from cueverge.lighting.renderer import SyntheticSweep
@@ -22,6 +25,7 @@ from cueverge.protocol.models import (
 from cueverge.timing.follower import TelemetryDecision, TimecodeFollower
 
 Clock = Callable[[], float]
+EventClock = Callable[[], int]
 
 
 class CommandChannel(Protocol):
@@ -66,6 +70,7 @@ class ControllerRuntime:
         command_timeout_ms: int = 2000,
         controller_epoch: str | None = None,
         catalog: SceneCatalog | None = None,
+        event_clock: EventClock | None = None,
     ) -> None:
         if render_fps <= 0:
             raise ValueError("render_fps must be positive")
@@ -82,10 +87,22 @@ class ControllerRuntime:
         self.command_timeout_ms = command_timeout_ms
         self.controller_epoch = controller_epoch or str(uuid4())
         self.catalog = catalog or load_show_package(Path("shows/demo"))
+        self.event_clock = event_clock or (lambda: round(time.time() * 1000))
+        self.arbiter = ResourceArbiter()
+        self.encounter = (
+            EncounterEngine(
+                self.catalog.encounter,
+                self.request_scene,
+                self._stop_encounter_scene,
+            )
+            if self.catalog.encounter is not None
+            else None
+        )
         self.active_scene: ActiveScene | None = None
         self._agents: dict[str, AgentConnection] = {}
         self._pending_commands: dict[str, PendingCommand] = {}
         self._render_task: asyncio.Task[None] | None = None
+        self._encounter_task: asyncio.Task[None] | None = None
         self._degraded_reason: str | None = None
         self.rejected_telemetry = 0
         self.rejected_protocol_messages = 0
@@ -109,6 +126,17 @@ class ControllerRuntime:
     @property
     def render_loop_running(self) -> bool:
         return self._render_task is not None and not self._render_task.done()
+
+    @property
+    def encounter_loop_running(self) -> bool:
+        return self._encounter_task is not None and not self._encounter_task.done()
+
+    def start_background_tasks(self) -> None:
+        if self.encounter is not None and not self.encounter_loop_running:
+            self._encounter_task = asyncio.create_task(
+                self._run_encounter_loop(),
+                name="encounter-timer",
+            )
 
     def register_agent(self, hello: AgentHello, websocket: CommandChannel) -> AgentWelcome:
         previous = self._agents.get(hello.agent_id)
@@ -208,6 +236,37 @@ class ControllerRuntime:
             await connection.channel.send_json(command.model_dump(mode="json"))
         self._ensure_render_loop(active.scene_instance_id)
         return active
+
+    async def request_scene(self, scene_id: str) -> str:
+        incoming = self.catalog.require(scene_id)
+        active = self.active_scene.scene if self.active_scene is not None else None
+        decision = self.arbiter.evaluate(active, incoming)
+        if decision is ArbitrationDecision.START:
+            await self.start_scene(scene_id)
+        return decision.value
+
+    async def ingest_event(self, event: ExternalEvent) -> EventOutcome:
+        if self.encounter is None:
+            raise RuntimeError("show package does not define an encounter")
+        now_ms = self.event_clock()
+        await self.encounter.tick(now_ms)
+        return await self.encounter.ingest(event, now_ms)
+
+    async def tick_encounter(self) -> None:
+        if self.encounter is not None:
+            await self.encounter.tick(self.event_clock())
+
+    async def _stop_encounter_scene(self) -> None:
+        if self.encounter is None or self.active_scene is None:
+            return
+        managed = {self.encounter.definition.ambient_scene_id}
+        managed.update(
+            transition.scene_id
+            for transition in self.encounter.definition.transitions
+            if transition.scene_id is not None
+        )
+        if self.active_scene.definition.id in managed:
+            await self.stop(continue_queue=False)
 
     def ingest(self, telemetry: MediaPosition) -> TelemetryDecision:
         self.check_timeouts()
@@ -329,14 +388,19 @@ class ControllerRuntime:
         self._last_frame_at = rendered_at
         return True
 
-    async def stop(self) -> None:
+    async def stop(self, *, continue_queue: bool = True) -> None:
         await self._stop_render_loop()
         self._pending_commands.clear()
         self._degraded_reason = None
         self.active_scene = None
+        if continue_queue:
+            queued = self.arbiter.pop_next()
+            if queued is not None:
+                await self.start_scene(queued.definition.id)
 
     async def shutdown(self) -> None:
         await self._stop_render_loop()
+        await self._stop_encounter_loop()
 
     async def _run_render_loop(self, scene_instance_id: str) -> None:
         interval = 1 / self.render_fps
@@ -361,6 +425,17 @@ class ControllerRuntime:
         finally:
             if asyncio.current_task() is self._render_task:
                 self._render_task = None
+
+    async def _run_encounter_loop(self) -> None:
+        try:
+            while self.encounter is not None:
+                await self.encounter.tick(self.event_clock())
+                await asyncio.sleep(0.1)
+        except asyncio.CancelledError:
+            raise
+        finally:
+            if asyncio.current_task() is self._encounter_task:
+                self._encounter_task = None
 
     def _ensure_render_loop(self, scene_instance_id: str) -> None:
         if self.render_loop_running:
@@ -390,6 +465,14 @@ class ControllerRuntime:
         task = self._render_task
         self._cancel_render_loop()
         if task is not None:
+            with suppress(asyncio.CancelledError):
+                await task
+
+    async def _stop_encounter_loop(self) -> None:
+        task = self._encounter_task
+        self._encounter_task = None
+        if task is not None:
+            task.cancel()
             with suppress(asyncio.CancelledError):
                 await task
 
@@ -433,4 +516,7 @@ class ControllerRuntime:
             "stale_frames": self.stale_frames,
             "skipped_render_deadlines": self.skipped_render_deadlines,
             "mean_render_interval_ms": mean_interval_ms,
+            "encounter": self.encounter.status() if self.encounter is not None else None,
+            "encounter_loop_running": self.encounter_loop_running,
+            "queued_scenes": [scene.definition.id for scene in self.arbiter.queued],
         }

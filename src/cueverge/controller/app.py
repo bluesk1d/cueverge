@@ -5,6 +5,7 @@ from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconn
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from cueverge.controller.runtime import ControllerRuntime
+from cueverge.core.events import ExternalEvent
 from cueverge.protocol.models import (
     AgentHeartbeat,
     AgentHello,
@@ -51,6 +52,18 @@ class StatusResponse(BaseModel):
     stale_frames: int = Field(ge=0)
     skipped_render_deadlines: int = Field(ge=0)
     mean_render_interval_ms: float | None = Field(default=None, ge=0)
+    encounter: dict[str, object] | None
+    encounter_loop_running: bool
+    queued_scenes: list[str]
+
+
+class EventResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    accepted: bool
+    reason: str | None
+    state: str
+    scene_decision: str | None
 
 
 def create_app(runtime: ControllerRuntime | None = None) -> FastAPI:
@@ -58,6 +71,7 @@ def create_app(runtime: ControllerRuntime | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+        controller.start_background_tasks()
         yield
         await controller.shutdown()
 
@@ -107,6 +121,20 @@ def create_app(runtime: ControllerRuntime | None = None) -> FastAPI:
         controller: ControllerRuntime = request.app.state.runtime
         await controller.stop()
         return {"status": "stopped"}
+
+    @app.post("/api/v1/events", response_model=EventResponse)
+    async def ingest_event(event: ExternalEvent, request: Request) -> EventResponse:
+        controller: ControllerRuntime = request.app.state.runtime
+        try:
+            outcome = await controller.ingest_event(event)
+        except RuntimeError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        return EventResponse(
+            accepted=outcome.accepted,
+            reason=outcome.reason,
+            state=outcome.state,
+            scene_decision=outcome.scene_decision,
+        )
 
     @app.websocket("/api/v1/agent/ws")
     async def agent_socket(websocket: WebSocket) -> None:
