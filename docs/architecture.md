@@ -36,6 +36,8 @@ from earlier runs.
    supported effects, and package-confined assets before runtime.
 10. Generic events drive declarative encounter transitions with deduplication,
     debounce, timeout, cooldown, and priority-aware scene requests.
+11. Replaceable adapter boundaries now include Windows mpv JSON IPC and RGB
+    DDP packet output. Hardware output remains explicitly disabled by default.
 
 The M1 runtime is intentionally in-memory and supports one active scene. It
 does not persist state across restarts or attempt hardware recovery.

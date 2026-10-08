@@ -41,9 +41,21 @@
 
 ## M2: planned, hardware opt-in
 
-After learning the laptop OS and validating actual devices: mpv IPC, asset
-validation/cache, DDP packetization, WLED restoration policy, calibration
-scene, and measured latency/jitter.
+### Software adapter portion: implemented, not hardware validated
+
+- Windows named-pipe mpv JSON IPC and local asset confinement.
+- Outbound media agent with commands, acknowledgements, telemetry, heartbeat,
+  reconnection snapshot, and epoch/session fencing.
+- Exact RGB DDP packet encoding, segmentation, and opt-in unicast UDP sink.
+- Environment configuration with hardware output disabled by default.
+
+### Requires target-device input and opt-in testing
+
+- mpv build, display index, analog audio device, fullscreen, and media cache.
+- WLED host/version, pixel count, RGB/RGBW layout, color order, and power cap.
+- DDP throughput, loss behavior, ownership, preset restoration, and RGBW if
+  required.
+- Flash/click calibration and measured projector/audio/LED offsets and jitter.
 
 ## M3 integration and later work: planned
 

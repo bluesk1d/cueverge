@@ -7,7 +7,8 @@ playback position used to render synchronized lighting.
 This repository currently contains the M0/M1 software-only vertical slice,
 protocol reliability, fixed-rate simulated rendering, and declarative show
 loading plus generic encounter simulation. It does not control mpv, WLED,
-projectors, speakers, or Home Assistant.
+projectors, speakers, or Home Assistant by default. Windows mpv and RGB DDP
+adapters exist but remain opt-in and hardware-unvalidated.
 
 ## Development
 

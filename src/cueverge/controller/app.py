@@ -4,8 +4,12 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from cueverge.config import ControllerConfig
 from cueverge.controller.runtime import ControllerRuntime
 from cueverge.core.events import ExternalEvent
+from cueverge.core.loader import load_show_package
+from cueverge.lighting.ddp import DdpUdpSink
+from cueverge.lighting.sink import FrameSink, MemoryFrameSink
 from cueverge.protocol.models import (
     AgentHeartbeat,
     AgentHello,
@@ -67,7 +71,7 @@ class EventResponse(BaseModel):
 
 
 def create_app(runtime: ControllerRuntime | None = None) -> FastAPI:
-    controller = runtime or ControllerRuntime()
+    controller = runtime or _configured_runtime()
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
@@ -208,6 +212,24 @@ def create_app(runtime: ControllerRuntime | None = None) -> FastAPI:
                 controller.disconnect_agent(agent_id, websocket)
 
     return app
+
+
+def _configured_runtime() -> ControllerRuntime:
+    config = ControllerConfig.from_environment()
+    sink: FrameSink = (
+        DdpUdpSink(
+            host=config.ddp.host or "",
+            port=config.ddp.port,
+            destination_id=config.ddp.destination_id,
+            max_payload_bytes=config.ddp.max_payload_bytes,
+        )
+        if config.ddp.enabled
+        else MemoryFrameSink()
+    )
+    return ControllerRuntime(
+        sink=sink,
+        catalog=load_show_package(config.show_package),
+    )
 
 
 app = create_app()

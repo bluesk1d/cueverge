@@ -13,7 +13,7 @@ from cueverge.core.events import ExternalEvent
 from cueverge.core.loader import load_show_package
 from cueverge.core.models import LoadedScene, SceneCatalog, SceneDefinition
 from cueverge.lighting.renderer import SyntheticSweep
-from cueverge.lighting.sink import MemoryFrameSink, RenderedFrame
+from cueverge.lighting.sink import FrameSink, MemoryFrameSink, RenderedFrame
 from cueverge.protocol.models import (
     AgentCommand,
     AgentHeartbeat,
@@ -62,7 +62,7 @@ class ControllerRuntime:
         self,
         *,
         clock: Clock = time.monotonic,
-        sink: MemoryFrameSink | None = None,
+        sink: FrameSink | None = None,
         stale_after_ms: int = 500,
         render_fps: float = 25.0,
         heartbeat_interval_ms: int = 1000,
@@ -112,6 +112,7 @@ class ControllerRuntime:
         self.heartbeat_timeouts = 0
         self.reconciliations = 0
         self.render_ticks = 0
+        self.rendered_frames = 0
         self.render_ticks_without_timecode = 0
         self.stale_frames = 0
         self.skipped_render_deadlines = 0
@@ -231,6 +232,7 @@ class ControllerRuntime:
                 scene_id=scene.definition.id,
                 scene_instance_id=active.scene_instance_id,
                 playback_session_id=active.playback_session_id,
+                asset_id=scene.definition.media.asset,
             )
             self._pending_commands[command.request_id] = PendingCommand(command, self.clock())
             await connection.channel.send_json(command.model_dump(mode="json"))
@@ -380,6 +382,7 @@ class ControllerRuntime:
                 pixels=renderer.render(estimate.position_ms),
             )
         )
+        self.rendered_frames += 1
         if estimate.degraded:
             self.stale_frames += 1
         if self._last_frame_at is not None:
@@ -401,6 +404,7 @@ class ControllerRuntime:
     async def shutdown(self) -> None:
         await self._stop_render_loop()
         await self._stop_encounter_loop()
+        self.sink.close()
 
     async def _run_render_loop(self, scene_instance_id: str) -> None:
         interval = 1 / self.render_fps
@@ -507,7 +511,7 @@ class ControllerRuntime:
             "heartbeat_timeouts": self.heartbeat_timeouts,
             "reconciliations": self.reconciliations,
             "rejected_protocol_messages": self.rejected_protocol_messages,
-            "rendered_frames": len(self.sink.frames),
+            "rendered_frames": self.rendered_frames,
             "rejected_telemetry": self.rejected_telemetry,
             "render_target_fps": self.render_fps,
             "render_loop_running": self.render_loop_running,

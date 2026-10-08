@@ -80,6 +80,8 @@ class AgentCommand(ProtocolMessage):
     scene_id: str
     scene_instance_id: str
     playback_session_id: str
+    asset_id: str | None = None
+    target_position_ms: int | None = Field(default=None, ge=0)
 
 
 class CommandAck(ProtocolMessage):
