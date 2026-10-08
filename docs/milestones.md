@@ -41,22 +41,30 @@
 
 ## M2: planned, hardware opt-in
 
-### Software adapter portion: implemented, not hardware validated
+### Software adapter portion: implemented and hardware validated
 
 - Windows named-pipe mpv JSON IPC and local asset confinement.
 - Outbound media agent with commands, acknowledgements, telemetry, heartbeat,
   reconnection snapshot, and epoch/session fencing.
+- Controller APIs for pause, resume, seek, and explicit agent stop.
 - Exact RGB DDP packet encoding, segmentation, and opt-in unicast UDP sink.
 - Environment configuration with hardware output disabled by default.
 
-### Requires target-device input and opt-in testing
+### Target-device validation completed
 
 - Windows 11 portable mpv 0.41.0, projector fullscreen screen index, and wired
-  Home Max analog WASAPI route are validated manually.
-- Named-pipe control, end-to-end agent telemetry, media cache behavior, and
-  unattended startup remain unvalidated on the laptop.
+  Home Max analog WASAPI route are validated.
+- Named-pipe prepare/play, telemetry, pause, seek, resume, explicit stop, and
+  controller restart reconciliation are validated end to end.
+- The agent runs in the logged-in Windows desktop through Task Scheduler and
+  can be managed remotely over key-authenticated SSH.
 - WLED host/version, count, RGB layout, two-output linear indexing, 20 FPS dim
   reception, 30 FPS black throughput, and off-state relinquish are validated.
+- The integrated media/lighting slice renders at 25 FPS with no missed local
+  deadlines and restores a clean idle state after stop.
+
+### Remaining target-device work
+
 - Power capacity remains unknown and WLED reports no configured current limit;
   software output now requires exact pixel count and applies a default 25% cap.
 - Packet loss, visible update latency, and restoration from an active preset

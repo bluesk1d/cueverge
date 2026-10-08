@@ -234,6 +234,23 @@ class ControllerRuntime:
             await self.start_scene(scene_id)
         return decision.value
 
+    async def pause(self) -> None:
+        active, connection = self._active_media_connection()
+        await self._send_command(active, "pause", connection)
+
+    async def resume(self) -> None:
+        active, connection = self._active_media_connection()
+        await self._send_command(active, "resume", connection)
+
+    async def seek(self, position_ms: int) -> None:
+        active, connection = self._active_media_connection()
+        await self._send_command(
+            active,
+            "seek",
+            connection,
+            target_position_ms=position_ms,
+        )
+
     async def ingest_event(self, event: ExternalEvent) -> EventOutcome:
         if self.encounter is None:
             raise RuntimeError("show package does not define an encounter")
@@ -317,6 +334,8 @@ class ControllerRuntime:
             "get_status",
         ],
         connection: AgentConnection,
+        *,
+        target_position_ms: int | None = None,
     ) -> None:
         command = AgentCommand(
             request_id=str(uuid4()),
@@ -328,9 +347,19 @@ class ControllerRuntime:
             scene_instance_id=active.scene_instance_id,
             playback_session_id=active.playback_session_id,
             asset_id=active.scene.asset_id,
+            target_position_ms=target_position_ms,
         )
         self._pending_commands[command.request_id] = PendingCommand(command, self.clock())
         await connection.channel.send_json(command.model_dump(mode="json"))
+
+    def _active_media_connection(self) -> tuple[ActiveScene, AgentConnection]:
+        active = self.active_scene
+        if active is None:
+            raise RuntimeError("no active scene")
+        connection = self._agents.get(active.scene.agent_id)
+        if connection is None:
+            raise RuntimeError(f"required agent is not connected: {active.scene.agent_id}")
+        return active, connection
 
     def heartbeat(self, heartbeat: AgentHeartbeat) -> TelemetryDecision:
         if heartbeat.controller_epoch != self.controller_epoch:
@@ -410,9 +439,15 @@ class ControllerRuntime:
 
     async def stop(self, *, continue_queue: bool = True) -> None:
         await self._stop_render_loop()
-        self._pending_commands.clear()
+        active = self.active_scene
+        if active is not None:
+            connection = self._agents.get(active.scene.agent_id)
+            self._abandon_commands(active.scene.agent_id)
+            if connection is not None:
+                await self._send_command(active, "stop", connection)
         self._degraded_reason = None
         self.active_scene = None
+        self.follower.reset()
         if continue_queue:
             queued = self.arbiter.pop_next()
             if queued is not None:

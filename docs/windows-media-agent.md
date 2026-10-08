@@ -1,10 +1,9 @@
 # Windows 11 media agent
 
-The media-agent adapter is implemented but has not been run on the target
-laptop. It uses mpv JSON IPC through a Windows named pipe and initiates an
-outbound WebSocket connection to the controller.
+The media-agent adapter uses mpv JSON IPC through a Windows named pipe and
+initiates an outbound WebSocket connection to the controller.
 
-## Prerequisites requiring local validation
+## Prerequisites
 
 1. Install a current mpv build and record its version/source.
 2. Place show media in a local asset directory. Agent commands carry only
@@ -47,6 +46,17 @@ The target Windows 11 laptop was checked with portable mpv 0.41.0:
 
 The machine-specific WASAPI GUID is intentionally not committed. It belongs in
 the laptop's private environment configuration.
+
+The agent is deployed as a Task Scheduler job configured for the logged-in
+user's interactive desktop. A process launched directly by OpenSSH runs in a
+non-interactive Windows session and cannot reliably create the projector GPU
+swapchain. Remote administration therefore starts and stops the scheduled task
+rather than hosting the media process in the SSH session.
+
+Live validation covered prepare/play, authoritative position telemetry, pause,
+seek while paused, resume, explicit stop, and controller restart
+reconciliation. The integrated lighting loop maintained 25 FPS without missed
+local deadlines and returned to an idle state after stop.
 
 ## Important timing limitation
 

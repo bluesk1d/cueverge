@@ -111,6 +111,55 @@ def test_start_requires_known_scene_and_connected_agent() -> None:
     assert "not connected" in response.json()["detail"]
 
 
+def test_media_control_api_dispatches_fenced_agent_commands() -> None:
+    runtime = ControllerRuntime()
+    agent = FakeMediaAgent()
+    commands = MemoryCommandChannel(sent=[])
+    agent.accept_welcome(runtime.register_agent(agent.hello(), commands))
+
+    with TestClient(create_app(runtime)) as client:
+        started = client.post("/api/v1/scenes/synthetic-sweep/start")
+        assert started.status_code == 200
+        prepare = commands.sent[-1]
+        agent.attach(
+            started.json()["scene_instance_id"],
+            started.json()["playback_session_id"],
+        )
+        assert client.post("/api/v1/pause").json()["status"] == "pause_requested"
+        assert client.post("/api/v1/seek", json={"position_ms": 2500}).json() == {
+            "status": "seek_requested",
+            "position_ms": 2500,
+        }
+        assert client.post("/api/v1/resume").json()["status"] == "resume_requested"
+        assert client.post("/api/v1/stop").json()["status"] == "stopped"
+
+    assert [command["command"] for command in commands.sent] == [
+        "prepare",
+        "pause",
+        "seek",
+        "resume",
+        "stop",
+    ]
+    assert commands.sent[2]["target_position_ms"] == 2500
+    assert all(
+        command["agent_session_id"] == prepare["agent_session_id"] for command in commands.sent
+    )
+    assert runtime.active_scene is None
+    assert not runtime.render_loop_running
+    status = runtime.status()
+    assert status["estimated_position_ms"] is None
+    assert status["playback_state"] is None
+    assert not status["degraded"]
+
+
+def test_media_control_api_requires_active_scene() -> None:
+    with TestClient(create_app()) as client:
+        assert client.post("/api/v1/pause").status_code == 409
+        assert client.post("/api/v1/resume").status_code == 409
+        assert client.post("/api/v1/seek", json={"position_ms": 0}).status_code == 409
+        assert client.post("/api/v1/seek", json={"position_ms": -1}).status_code == 422
+
+
 def test_generic_event_api_starts_declarative_encounter() -> None:
     event_clock = ManualClock(now=10.0)
     runtime = ControllerRuntime(event_clock=lambda: round(event_clock.now * 1000))

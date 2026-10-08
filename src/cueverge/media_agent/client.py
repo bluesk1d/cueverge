@@ -137,8 +137,10 @@ class MediaAgentClient:
                 self.scene_instance_id = command.scene_instance_id
                 self.playback_session_id = command.playback_session_id
                 self.sequence = 0
-            elif command.command in {"play", "resume"}:
-                await self.player.play() if command.command == "play" else self.player.resume()
+            elif command.command == "play":
+                await self.player.play()
+            elif command.command == "resume":
+                await self.player.resume()
             elif command.command == "pause":
                 await self.player.pause()
             elif command.command == "seek":

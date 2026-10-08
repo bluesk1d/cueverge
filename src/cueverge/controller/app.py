@@ -70,6 +70,12 @@ class EventResponse(BaseModel):
     scene_decision: str | None
 
 
+class SeekRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    position_ms: int = Field(ge=0)
+
+
 def create_app(runtime: ControllerRuntime | None = None) -> FastAPI:
     controller = runtime or _configured_runtime()
 
@@ -125,6 +131,33 @@ def create_app(runtime: ControllerRuntime | None = None) -> FastAPI:
         controller: ControllerRuntime = request.app.state.runtime
         await controller.stop()
         return {"status": "stopped"}
+
+    @app.post("/api/v1/pause")
+    async def pause(request: Request) -> dict[str, str]:
+        controller: ControllerRuntime = request.app.state.runtime
+        try:
+            await controller.pause()
+        except RuntimeError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        return {"status": "pause_requested"}
+
+    @app.post("/api/v1/resume")
+    async def resume(request: Request) -> dict[str, str]:
+        controller: ControllerRuntime = request.app.state.runtime
+        try:
+            await controller.resume()
+        except RuntimeError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        return {"status": "resume_requested"}
+
+    @app.post("/api/v1/seek")
+    async def seek(body: SeekRequest, request: Request) -> dict[str, int | str]:
+        controller: ControllerRuntime = request.app.state.runtime
+        try:
+            await controller.seek(body.position_ms)
+        except RuntimeError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        return {"status": "seek_requested", "position_ms": body.position_ms}
 
     @app.post("/api/v1/events", response_model=EventResponse)
     async def ingest_event(event: ExternalEvent, request: Request) -> EventResponse:

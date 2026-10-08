@@ -67,6 +67,12 @@ class TimecodeFollower:
     def disconnect(self) -> None:
         self._disconnected = True
 
+    def reset(self) -> None:
+        self._scene_instance_id = None
+        self._playback_session_id = None
+        self._anchor = None
+        self._disconnected = False
+
     def estimate(self, now: float) -> TimeEstimate | None:
         if self._anchor is None:
             return None

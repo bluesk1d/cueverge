@@ -62,6 +62,14 @@ def test_commands_are_fenced_acknowledged_and_emit_telemetry() -> None:
         assert telemetry.state is PlaybackState.PLAYING
         assert telemetry.sequence == 1
 
+        pause = _command(client, "pause")
+        assert (await client.handle_command(pause)).status == "completed"
+        assert not player.playing
+
+        resume = _command(client, "resume")
+        assert (await client.handle_command(resume)).status == "completed"
+        assert player.playing
+
         stale = play.model_copy(update={"controller_epoch": "old"})
         rejected = await client.handle_command(stale)
         assert rejected.status == "error"
