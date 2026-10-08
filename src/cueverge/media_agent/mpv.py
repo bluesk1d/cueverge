@@ -5,7 +5,7 @@ import sys
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, BinaryIO, Protocol
 
 
 class MpvError(RuntimeError):
@@ -46,63 +46,34 @@ class JsonLineCodec:
 @dataclass
 class WindowsNamedPipeTransport:
     pipe_path: str
-    _handle: Any = None
-    _read_buffer: bytearray = field(default_factory=bytearray)
+    _pipe: BinaryIO | None = None
 
     async def connect(self, attempts: int = 50, delay_seconds: float = 0.1) -> None:
         if sys.platform != "win32":
             raise MpvError("Windows named-pipe transport requires Windows")
-        import pywintypes  # type: ignore[import-untyped]
-        import win32file  # type: ignore[import-untyped]
-
         for attempt in range(attempts):
             try:
-                self._handle = await asyncio.to_thread(
-                    win32file.CreateFile,
-                    self.pipe_path,
-                    win32file.GENERIC_READ | win32file.GENERIC_WRITE,
-                    0,
-                    None,
-                    win32file.OPEN_EXISTING,
-                    0,
-                    None,
-                )
+                self._pipe = await asyncio.to_thread(open, self.pipe_path, "r+b", buffering=0)
                 return
-            except pywintypes.error as error:
-                if error.winerror not in {2, 231}:
-                    raise MpvError(f"could not open mpv IPC pipe: {error}") from error
+            except FileNotFoundError:
                 if attempt == attempts - 1:
                     raise MpvError(f"mpv IPC pipe was not created: {self.pipe_path}") from None
                 await asyncio.sleep(delay_seconds)
 
     async def write(self, payload: bytes) -> None:
-        if self._handle is None:
+        if self._pipe is None:
             raise MpvError("mpv IPC pipe is not connected")
-        import win32file
-
-        await asyncio.to_thread(win32file.WriteFile, self._handle, payload)
+        await asyncio.to_thread(self._pipe.write, payload)
 
     async def readline(self) -> bytes:
-        if self._handle is None:
+        if self._pipe is None:
             raise MpvError("mpv IPC pipe is not connected")
-        import win32file
-
-        while b"\n" not in self._read_buffer:
-            _, chunk = await asyncio.to_thread(win32file.ReadFile, self._handle, 4096)
-            if not chunk:
-                return b""
-            self._read_buffer.extend(chunk)
-        line, _, remainder = self._read_buffer.partition(b"\n")
-        self._read_buffer = bytearray(remainder)
-        return bytes(line) + b"\n"
+        return await asyncio.to_thread(self._pipe.readline)
 
     async def close(self) -> None:
-        if self._handle is not None:
-            import win32file
-
-            await asyncio.to_thread(win32file.CloseHandle, self._handle)
-            self._handle = None
-            self._read_buffer.clear()
+        if self._pipe is not None:
+            await asyncio.to_thread(self._pipe.close)
+            self._pipe = None
 
 
 @dataclass
@@ -146,29 +117,29 @@ class MpvClient:
     transport: MpvTransport
     command_timeout_seconds: float = 5.0
     _next_request_id: int = 1
-    _pending: dict[int, asyncio.Future[dict[str, Any]]] = field(default_factory=dict)
     _events: asyncio.Queue[dict[str, Any]] = field(default_factory=asyncio.Queue)
-    _reader_task: asyncio.Task[None] | None = None
+    _command_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    _started: bool = False
 
     def start_reader(self) -> None:
-        if self._reader_task is None:
-            self._reader_task = asyncio.create_task(self._read_messages(), name="mpv-ipc-reader")
+        self._started = True
 
     async def command(self, *items: object) -> Any:
-        if self._reader_task is None:
-            raise MpvError("mpv reader is not running")
-        request_id = self._next_request_id
-        self._next_request_id += 1
-        future = asyncio.get_running_loop().create_future()
-        self._pending[request_id] = future
-        await self.transport.write(JsonLineCodec.encode(list(items), request_id))
-        try:
-            response = await asyncio.wait_for(future, timeout=self.command_timeout_seconds)
-        except TimeoutError as timeout_error:
-            self._pending.pop(request_id, None)
-            raise MpvError(
-                f"mpv command timed out after {self.command_timeout_seconds}s"
-            ) from timeout_error
+        if not self._started:
+            raise MpvError("mpv client is not started")
+        async with self._command_lock:
+            request_id = self._next_request_id
+            self._next_request_id += 1
+            await self.transport.write(JsonLineCodec.encode(list(items), request_id))
+            try:
+                response = await asyncio.wait_for(
+                    self._read_response(request_id),
+                    timeout=self.command_timeout_seconds,
+                )
+            except TimeoutError as timeout_error:
+                raise MpvError(
+                    f"mpv command timed out after {self.command_timeout_seconds}s"
+                ) from timeout_error
         response_error = response.get("error")
         if response_error != "success":
             raise MpvError(f"mpv command failed: {response_error}")
@@ -181,25 +152,18 @@ class MpvClient:
         return await self._events.get()
 
     async def close(self) -> None:
-        if self._reader_task is not None:
-            self._reader_task.cancel()
-            await asyncio.gather(self._reader_task, return_exceptions=True)
-            self._reader_task = None
+        self._started = False
         await self.transport.close()
 
-    async def _read_messages(self) -> None:
-        while payload := await self.transport.readline():
+    async def _read_response(self, request_id: int) -> dict[str, Any]:
+        while True:
+            payload = await self.transport.readline()
+            if not payload:
+                raise MpvError("mpv IPC connection closed")
             message = JsonLineCodec.decode(payload)
-            request_id = message.get("request_id")
-            if isinstance(request_id, int) and request_id in self._pending:
-                self._pending.pop(request_id).set_result(message)
-            else:
-                await self._events.put(message)
-        closed_error = MpvError("mpv IPC connection closed")
-        for future in self._pending.values():
-            if not future.done():
-                future.set_exception(closed_error)
-        self._pending.clear()
+            if message.get("request_id") == request_id:
+                return message
+            await self._events.put(message)
 
 
 def resolve_local_asset(asset_root: Path, asset_id: str) -> Path:

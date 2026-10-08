@@ -28,9 +28,10 @@ options. It prepares media paused, acknowledges commands, reports actual mpv
 properties at the configured telemetry rate, sends heartbeats, and fences
 commands by controller epoch and agent session.
 
-Windows named-pipe reads and writes use direct duplex Win32 calls through the
-Windows-only `pywin32` dependency. A generic Python file wrapper must not be
-used because a blocking read can serialize writes and deadlock command IPC.
+Named-pipe commands use a serialized write-then-read request/response loop.
+This avoids concurrent operations on a synchronous Windows pipe handle, which
+can deadlock when a blocking read begins before the corresponding write.
+Intervening unsolicited mpv events are queued while awaiting the response ID.
 
 ## 2026-10-08 hardware checks
 
