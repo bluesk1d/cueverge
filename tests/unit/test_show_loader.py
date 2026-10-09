@@ -91,6 +91,61 @@ def test_rejects_invalid_completion_configuration(tmp_path: Path) -> None:
         load_show_package(root)
 
 
+def test_loads_declarative_show_program(tmp_path: Path) -> None:
+    root = _package(tmp_path)
+    original = json.loads((root / "scenes/scene.json").read_text(encoding="utf-8"))
+    second = {**original, "id": "scene-b", "name": "Scene B"}
+    (root / "scenes/scene-b.json").write_text(json.dumps(second), encoding="utf-8")
+    program = {
+        "schema_version": 1,
+        "initial_scene_id": "scene",
+        "default_pool_id": "ambient",
+        "recent_history_size": 1,
+        "random_seed": 42,
+        "pools": [
+            {
+                "id": "ambient",
+                "category": "ambient",
+                "scenes": [
+                    {"scene_id": "scene", "weight": 1, "cooldown_ms": 1000},
+                    {
+                        "scene_id": "scene-b",
+                        "weight": 2,
+                        "conditions": {"audience": False},
+                    },
+                ],
+            }
+        ],
+    }
+    (root / "program.json").write_text(json.dumps(program), encoding="utf-8")
+
+    loaded = load_show_package(root)
+
+    assert loaded.program is not None
+    assert loaded.program.initial_scene_id == "scene"
+    assert loaded.program.pools[0].scenes[1].conditions == {"audience": False}
+
+
+def test_rejects_unknown_program_scene(tmp_path: Path) -> None:
+    root = _package(tmp_path)
+    program = {
+        "schema_version": 1,
+        "initial_scene_id": "missing",
+        "default_pool_id": "ambient",
+        "pools": [
+            {
+                "id": "ambient",
+                "category": "ambient",
+                "scenes": [{"scene_id": "scene"}],
+            }
+        ],
+    }
+    (root / "program.json").write_text(json.dumps(program), encoding="utf-8")
+
+    with pytest.raises(ShowPackageError, match=r"unknown scenes.*missing"):
+        load_show_package(root)
+
+
 def test_loads_contiguous_pixel_segments(tmp_path: Path) -> None:
     root = _package(tmp_path)
     installation_path = root / "installation.json"

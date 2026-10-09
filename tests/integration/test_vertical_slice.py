@@ -131,6 +131,7 @@ def test_start_requires_known_scene_and_connected_agent() -> None:
     response = client.post("/api/v1/scenes/synthetic-sweep/start")
     assert response.status_code == 409
     assert "not connected" in response.json()["detail"]
+    assert client.post("/api/v1/show/start").status_code == 409
 
 
 def test_media_control_api_dispatches_fenced_agent_commands() -> None:

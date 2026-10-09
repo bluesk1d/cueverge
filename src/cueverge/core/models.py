@@ -162,12 +162,51 @@ class SceneCatalog(FrozenModel):
     package_root: Path
     scenes: dict[str, LoadedScene]
     encounter: "EncounterDefinition | None" = None
+    program: "ShowProgramDefinition | None" = None
 
     def require(self, scene_id: str) -> LoadedScene:
         try:
             return self.scenes[scene_id]
         except KeyError as error:
             raise LookupError(f"unknown scene: {scene_id}") from error
+
+
+class ProgramScene(FrozenModel):
+    scene_id: str = Field(min_length=1)
+    weight: int = Field(default=1, ge=1, le=1000)
+    cooldown_ms: int = Field(default=0, ge=0)
+    conditions: dict[str, str | int | float | bool] = Field(default_factory=dict)
+
+
+class ScenePool(FrozenModel):
+    id: str = Field(min_length=1)
+    category: str = Field(min_length=1)
+    scenes: tuple[ProgramScene, ...] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_unique_scenes(self) -> "ScenePool":
+        scene_ids = [scene.scene_id for scene in self.scenes]
+        if len(scene_ids) != len(set(scene_ids)):
+            raise ValueError("scene pool entries must be unique")
+        return self
+
+
+class ShowProgramDefinition(FrozenModel):
+    schema_version: Literal[1]
+    initial_scene_id: str = Field(min_length=1)
+    default_pool_id: str = Field(min_length=1)
+    recent_history_size: int = Field(default=1, ge=0, le=100)
+    random_seed: int = 0
+    pools: tuple[ScenePool, ...] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_pools(self) -> "ShowProgramDefinition":
+        pool_ids = [pool.id for pool in self.pools]
+        if len(pool_ids) != len(set(pool_ids)):
+            raise ValueError("show program pool IDs must be unique")
+        if self.default_pool_id not in pool_ids:
+            raise ValueError("show program default_pool_id must reference a pool")
+        return self
 
 
 class EncounterTransition(FrozenModel):

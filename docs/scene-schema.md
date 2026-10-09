@@ -4,6 +4,8 @@ A show package is a directory containing:
 
 ```text
 installation.json
+program.json
+encounter.json
 scenes/
   scene-id.json
 assets/
@@ -11,6 +13,8 @@ assets/
 ```
 
 All documents use `schema_version: 1` and reject unknown fields.
+
+`program.json` and `encounter.json` are optional.
 
 ## Installation bindings
 
@@ -94,6 +98,56 @@ Completion is fenced by playback session and applied once even if completed
 telemetry is delivered repeatedly or late. `select_next` requires a configured
 director; without one, the active scene is held and status reports
 `scene_selector_unavailable`.
+
+## Show programming
+
+An optional `program.json` defines continuous scene selection:
+
+```json
+{
+  "schema_version": 1,
+  "initial_scene_id": "quiet-ambient",
+  "default_pool_id": "ambient",
+  "recent_history_size": 2,
+  "random_seed": 42,
+  "pools": [
+    {
+      "id": "ambient",
+      "category": "ambient",
+      "scenes": [
+        {
+          "scene_id": "quiet-ambient",
+          "weight": 3,
+          "cooldown_ms": 120000,
+          "conditions": {"audience": false}
+        },
+        {
+          "scene_id": "machinery-ambient",
+          "weight": 1
+        }
+      ]
+    }
+  ]
+}
+```
+
+The initial scene starts through `POST /api/v1/show/start`. A scene whose
+completion policy is `select_next` asks the director to choose from the active
+pool. Entries support integer weights, selection cooldowns, and exact-match
+scalar conditions. Pools carry semantic categories for future engagement and
+operations policy.
+
+Selection is deterministic for a configured random seed. The director first
+excludes recent history, then relaxes history if that is the only way to keep
+a valid program running. It never relaxes cooldown, condition, or availability
+checks. If no scene is eligible, the active scene stops. Program status reports
+the active pool/category, recent history, selection count, and empty-selection
+count.
+
+Every program scene must exist in the package. Conditions default to an empty
+runtime context until an observation or operations component supplies semantic
+values; show files must not use raw Frigate payload fields as director
+conditions.
 
 ## Encounters
 

@@ -9,6 +9,7 @@ from typing import Any, Literal, Protocol
 from uuid import uuid4
 
 from cueverge.core.arbitration import ArbitrationDecision, ResourceArbiter
+from cueverge.core.director import ShowDirector
 from cueverge.core.encounter import EncounterEngine, EventOutcome
 from cueverge.core.events import ExternalEvent
 from cueverge.core.loader import load_show_package
@@ -76,6 +77,7 @@ class ControllerRuntime:
         catalog: SceneCatalog | None = None,
         event_clock: EventClock | None = None,
         scene_selector: SceneSelector | None = None,
+        director: ShowDirector | None = None,
     ) -> None:
         if render_fps <= 0:
             raise ValueError("render_fps must be positive")
@@ -96,7 +98,12 @@ class ControllerRuntime:
         self.controller_epoch = controller_epoch or str(uuid4())
         self.catalog = catalog or load_show_package(Path("shows/demo"))
         self.event_clock = event_clock or (lambda: round(time.time() * 1000))
-        self.scene_selector = scene_selector
+        if scene_selector is not None and director is not None:
+            raise ValueError("configure either scene_selector or director, not both")
+        self.director = director
+        self.scene_selector = scene_selector or (
+            self._select_from_director if director is not None else None
+        )
         self.arbiter = ResourceArbiter()
         self.encounter = (
             EncounterEngine(
@@ -240,6 +247,11 @@ class ControllerRuntime:
         await self._send_command(active, "prepare", connection)
         self._ensure_render_loop(active.scene_instance_id)
         return active
+
+    async def start_show(self) -> ActiveScene:
+        if self.director is None:
+            raise RuntimeError("show package does not define a program")
+        return await self.start_scene(self.director.start())
 
     async def request_scene(self, scene_id: str) -> str:
         incoming = self.catalog.require(scene_id)
@@ -554,6 +566,11 @@ class ControllerRuntime:
         else:
             await self.start_scene(selected)
 
+    async def _select_from_director(self, completed: ActiveScene) -> str | None:
+        if self.director is None:
+            return None
+        return self.director.select_next(completed.definition.id)
+
     def _lifecycle_task_done(self, task: asyncio.Task[None]) -> None:
         self._lifecycle_tasks.discard(task)
         if task.cancelled():
@@ -681,6 +698,7 @@ class ControllerRuntime:
             "skipped_render_deadlines": self.skipped_render_deadlines,
             "mean_render_interval_ms": mean_interval_ms,
             "encounter": self.encounter.status() if self.encounter is not None else None,
+            "director": self.director.status() if self.director is not None else None,
             "encounter_loop_running": self.encounter_loop_running,
             "queued_scenes": [scene.definition.id for scene in self.arbiter.queued],
         }

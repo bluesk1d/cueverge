@@ -104,9 +104,11 @@ Supported now:
 
 Important current limitations:
 
-- There is no declarative playlist or multi-scene sequence.
+- Declarative show pools now support deterministic weights, cooldowns,
+  exact-match eligibility conditions, and recent-history exclusion.
 - Completion can loop, stop, hold, transition to a declared scene, or call a
-  show-director selector. Declarative director programming is not yet
+  show-director selector.
+- Audience-derived director context and safe-cut scheduling are not yet
   implemented.
 - There is no independent sound-effect channel or audio ducking.
 - There is no video compositing, transparency layer, or simultaneous playback.

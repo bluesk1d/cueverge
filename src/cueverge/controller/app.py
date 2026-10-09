@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from cueverge.config import ControllerConfig
 from cueverge.controller.runtime import ControllerRuntime
+from cueverge.core.director import ShowDirector
 from cueverge.core.events import ExternalEvent
 from cueverge.core.loader import load_show_package
 from cueverge.integrations.mqtt import FrigateMqttIngress
@@ -62,6 +63,7 @@ class StatusResponse(BaseModel):
     skipped_render_deadlines: int = Field(ge=0)
     mean_render_interval_ms: float | None = Field(default=None, ge=0)
     encounter: dict[str, object] | None
+    director: dict[str, object] | None
     encounter_loop_running: bool
     queued_scenes: list[str]
 
@@ -136,6 +138,19 @@ def create_app(
             active = await controller.start_scene(scene_id)
         except LookupError as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
+        except RuntimeError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        return StartSceneResponse(
+            scene_id=active.definition.id,
+            scene_instance_id=active.scene_instance_id,
+            playback_session_id=active.playback_session_id,
+        )
+
+    @app.post("/api/v1/show/start", response_model=StartSceneResponse)
+    async def start_show(request: Request) -> StartSceneResponse:
+        controller: ControllerRuntime = request.app.state.runtime
+        try:
+            active = await controller.start_show()
         except RuntimeError as error:
             raise HTTPException(status_code=409, detail=str(error)) from error
         return StartSceneResponse(
@@ -272,6 +287,7 @@ def create_app(
 
 def _configured_components() -> tuple[ControllerRuntime, EventIngress | None]:
     config = ControllerConfig.from_environment()
+    catalog = load_show_package(config.show_package)
     sink: FrameSink = (
         DdpUdpSink(
             host=config.ddp.host or "",
@@ -286,8 +302,9 @@ def _configured_components() -> tuple[ControllerRuntime, EventIngress | None]:
     )
     runtime = ControllerRuntime(
         sink=sink,
-        catalog=load_show_package(config.show_package),
+        catalog=catalog,
         lighting_delay_ms=config.lighting_delay_ms,
+        director=ShowDirector(catalog.program) if catalog.program is not None else None,
     )
     ingress = (
         FrigateMqttIngress(config.frigate_mqtt, runtime.ingest_event)

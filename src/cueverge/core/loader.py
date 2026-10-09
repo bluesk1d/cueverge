@@ -12,6 +12,7 @@ from cueverge.core.models import (
     ResourceKind,
     SceneCatalog,
     SceneDefinition,
+    ShowProgramDefinition,
 )
 
 
@@ -70,7 +71,24 @@ def load_show_package(package_root: Path) -> SceneCatalog:
         missing = referenced.difference(scenes)
         if missing:
             raise ShowPackageError(f"encounter references unknown scenes: {sorted(missing)}")
-    return SceneCatalog(package_root=root, scenes=scenes, encounter=encounter)
+    program_path = root / "program.json"
+    program = (
+        _validate_json(program_path, ShowProgramDefinition, "show program")
+        if program_path.exists()
+        else None
+    )
+    if program is not None:
+        program_scene_ids = {program.initial_scene_id}
+        program_scene_ids.update(entry.scene_id for pool in program.pools for entry in pool.scenes)
+        missing = program_scene_ids.difference(scenes)
+        if missing:
+            raise ShowPackageError(f"show program references unknown scenes: {sorted(missing)}")
+    return SceneCatalog(
+        package_root=root,
+        scenes=scenes,
+        encounter=encounter,
+        program=program,
+    )
 
 
 def _validate_json[ModelT: BaseModel](
