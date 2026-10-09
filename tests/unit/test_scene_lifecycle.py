@@ -7,7 +7,7 @@ import pytest
 
 from cueverge.controller.runtime import ActiveScene, ControllerRuntime
 from cueverge.core.loader import load_show_package
-from cueverge.core.models import CompletionDefinition, SceneCatalog
+from cueverge.core.models import CompletionDefinition, SceneCatalog, SchedulingDefinition
 from cueverge.media_agent.fake import FakeMediaAgent
 from cueverge.protocol.models import PlaybackState
 
@@ -134,6 +134,52 @@ def test_prepare_failure_starts_declared_fallback() -> None:
         assert runtime.active_scene.definition.id == "ambient"
         assert runtime.scene_failovers == 1
         assert [command["command"] for command in channel.sent] == ["prepare", "prepare"]
+        await runtime.shutdown()
+
+    asyncio.run(scenario())
+
+
+def test_queued_automatic_scene_starts_when_media_crosses_safe_point() -> None:
+    async def scenario() -> None:
+        catalog = load_show_package(Path("shows/demo"))
+        active_scene = catalog.require("synthetic-sweep")
+        active_definition = active_scene.definition.model_copy(
+            update={
+                "priority": 10,
+                "scheduling": SchedulingDefinition(safe_points_ms=(1000,)),
+            }
+        )
+        incoming_scene = catalog.require("ambient")
+        incoming_definition = incoming_scene.definition.model_copy(
+            update={
+                "priority": 50,
+                "scheduling": SchedulingDefinition(request_policy="at_safe_point"),
+            }
+        )
+        scenes = dict(catalog.scenes)
+        scenes[active_definition.id] = active_scene.model_copy(
+            update={"definition": active_definition}
+        )
+        scenes[incoming_definition.id] = incoming_scene.model_copy(
+            update={"definition": incoming_definition}
+        )
+        runtime = ControllerRuntime(catalog=catalog.model_copy(update={"scenes": scenes}))
+        agent = FakeMediaAgent()
+        channel = MemoryCommandChannel([])
+        agent.accept_welcome(runtime.register_agent(agent.hello(), channel))
+        active = await runtime.start_scene("synthetic-sweep")
+        agent.attach(active.scene_instance_id, active.playback_session_id)
+
+        assert await runtime.request_scene("ambient") == "queue"
+        assert runtime.ingest(agent.position(900)).accepted
+        await runtime.wait_for_lifecycle_idle()
+        assert runtime.active_scene is not None
+        assert runtime.active_scene.definition.id == "synthetic-sweep"
+
+        assert runtime.ingest(agent.position(1100)).accepted
+        await runtime.wait_for_lifecycle_idle()
+        assert runtime.active_scene is not None
+        assert runtime.active_scene.definition.id == "ambient"
         await runtime.shutdown()
 
     asyncio.run(scenario())

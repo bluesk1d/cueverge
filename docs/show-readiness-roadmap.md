@@ -20,8 +20,9 @@ the reusable engine.
 | CV-01 Automatic scene lifecycle | Implemented |
 | CV-02 Declarative show director | Implemented |
 | CV-03 Aggregate audience presence | Implemented |
-| CV-04 Safe transitions and request arbitration | Next |
-| CV-05 through CV-09 | Planned |
+| CV-04 Safe transitions and request arbitration | Implemented |
+| CV-05 Engagement opportunities | Next |
+| CV-06 through CV-09 | Planned |
 
 ## Milestone 1: continuous autonomous programming
 

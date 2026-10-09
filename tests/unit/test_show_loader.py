@@ -91,6 +91,20 @@ def test_rejects_invalid_completion_configuration(tmp_path: Path) -> None:
         load_show_package(root)
 
 
+def test_rejects_scene_scheduling_outside_duration(tmp_path: Path) -> None:
+    root = _package(tmp_path)
+    scene_path = root / "scenes/scene.json"
+    scene = json.loads(scene_path.read_text(encoding="utf-8"))
+    scene["scheduling"] = {
+        "safe_points_ms": [5000],
+        "protected_intervals": [{"start_ms": 1000, "end_ms": 4500}],
+    }
+    scene_path.write_text(json.dumps(scene), encoding="utf-8")
+
+    with pytest.raises(ShowPackageError, match="exceeds scene duration"):
+        load_show_package(root)
+
+
 def test_loads_declarative_show_program(tmp_path: Path) -> None:
     root = _package(tmp_path)
     original = json.loads((root / "scenes/scene.json").read_text(encoding="utf-8"))

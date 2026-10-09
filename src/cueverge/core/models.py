@@ -1,4 +1,5 @@
 from enum import StrEnum
+from itertools import pairwise
 from pathlib import Path
 from typing import Literal
 
@@ -114,6 +115,39 @@ class CompletionDefinition(FrozenModel):
         return self
 
 
+class TimeInterval(FrozenModel):
+    start_ms: int = Field(ge=0)
+    end_ms: int = Field(gt=0)
+
+    @model_validator(mode="after")
+    def validate_range(self) -> "TimeInterval":
+        if self.end_ms <= self.start_ms:
+            raise ValueError("time interval end_ms must be greater than start_ms")
+        return self
+
+
+class SchedulingDefinition(FrozenModel):
+    request_policy: Literal[
+        "priority",
+        "immediate",
+        "at_safe_point",
+        "after_completion",
+        "ignore",
+    ] = "priority"
+    request_ttl_ms: int = Field(default=30000, gt=0)
+    safe_points_ms: tuple[int, ...] = ()
+    protected_intervals: tuple[TimeInterval, ...] = ()
+
+    @model_validator(mode="after")
+    def validate_ordering(self) -> "SchedulingDefinition":
+        if tuple(sorted(set(self.safe_points_ms))) != self.safe_points_ms:
+            raise ValueError("safe_points_ms must be unique and strictly increasing")
+        for left, right in pairwise(self.protected_intervals):
+            if right.start_ms < left.end_ms:
+                raise ValueError("protected intervals must not overlap")
+        return self
+
+
 class SceneDefinition(FrozenModel):
     schema_version: Literal[1]
     id: str = Field(min_length=1)
@@ -127,6 +161,7 @@ class SceneDefinition(FrozenModel):
     lighting: LightingDefinition
     completion: CompletionDefinition = CompletionDefinition()
     failure_scene_id: str | None = Field(default=None, min_length=1)
+    scheduling: SchedulingDefinition = SchedulingDefinition()
 
     @model_validator(mode="after")
     def validate_claims(self) -> "SceneDefinition":
@@ -145,6 +180,12 @@ class SceneDefinition(FrozenModel):
             raise ValueError("scene failure fallback cannot reference itself")
         if self.completion.target_scene_id == self.id:
             raise ValueError("scene completion target cannot reference itself")
+        if any(point > self.duration_ms for point in self.scheduling.safe_points_ms):
+            raise ValueError("safe point exceeds scene duration")
+        if any(
+            interval.end_ms > self.duration_ms for interval in self.scheduling.protected_intervals
+        ):
+            raise ValueError("protected interval exceeds scene duration")
         return self
 
 

@@ -243,7 +243,12 @@ Current automatic behavior:
 - With no active scene, the incoming scene starts.
 - If scenes claim a common resource, a strictly higher-priority incoming scene
   replaces the active scene.
-- An equal- or lower-priority incoming scene with `queue` is queued once.
+- Automatic requests can run immediately, at a declared media safe point, or
+  after completion.
+- Scene-defined protected intervals defer otherwise immediate requests.
+- Deferred requests expire and repeated requests for the same scene coalesce.
+- An equal- or lower-priority incoming scene with legacy `queue` behavior is
+  queued once.
 - Other equal- or lower-priority conflicting scenes are ignored.
 - Stopping a scene can start the next queued scene.
 

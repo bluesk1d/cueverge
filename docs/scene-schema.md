@@ -150,6 +150,51 @@ runtime context until an observation or operations component supplies semantic
 values; show files must not use raw Frigate payload fields as director
 conditions.
 
+## Safe transitions and automatic requests
+
+Scenes may declare scheduling behavior:
+
+```json
+{
+  "scheduling": {
+    "request_policy": "at_safe_point",
+    "request_ttl_ms": 10000,
+    "safe_points_ms": [5000, 12000],
+    "protected_intervals": [
+      {"start_ms": 7000, "end_ms": 11000}
+    ]
+  }
+}
+```
+
+`safe_points_ms` and `protected_intervals` describe when the scene is safe to
+leave. They are media-relative, must fit within scene duration, and protected
+intervals cannot overlap. Intervals are half-open: the end time itself is not
+protected.
+
+The incoming scene's `request_policy` controls an automatic request:
+
+- `priority`: preserve the legacy priority and `interruption` behavior.
+- `immediate`: replace a lower-priority scene unless its current media time is
+  protected.
+- `at_safe_point`: wait until the active scene crosses its next unprotected
+  safe point.
+- `after_completion`: wait for the active playback session to complete,
+  regardless of relative priority.
+- `ignore`: reject the automatic request.
+
+Direct operator starts remain authoritative and bypass automatic scheduling.
+Deferred requests expire after `request_ttl_ms`, and repeated requests for the
+same scene coalesce without extending the original expiration. When multiple
+requests become ready together, higher priority wins, followed by the oldest
+request. A ready completion-boundary request runs before autonomous director
+selection, preventing a stale director choice from hiding an audience or
+operator-requested transition.
+
+If an immediate request arrives during a protected interval, it waits for a
+safe point when one exists; otherwise it waits for completion. Equal- or
+lower-priority `immediate` and `at_safe_point` requests remain ignored.
+
 ## Aggregate audience presence
 
 An optional `audience.json` converts granular object tracking into semantic

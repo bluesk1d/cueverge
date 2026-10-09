@@ -129,6 +129,7 @@ class ControllerRuntime:
         self._lifecycle_tasks: set[asyncio.Task[None]] = set()
         self._handled_completion_sessions: set[str] = set()
         self._completion_history: deque[str] = deque()
+        self._last_media_positions: dict[str, int] = {}
         self._degraded_reason: str | None = None
         self.rejected_telemetry = 0
         self.rejected_protocol_messages = 0
@@ -252,6 +253,7 @@ class ControllerRuntime:
             playback_session_id=str(uuid4()),
         )
         self.active_scene = active
+        self._last_media_positions[active.playback_session_id] = 0
         self.follower.begin(active.scene_instance_id, active.playback_session_id)
         await self._send_command(active, "prepare", connection)
         self._ensure_render_loop(active.scene_instance_id)
@@ -265,7 +267,13 @@ class ControllerRuntime:
     async def request_scene(self, scene_id: str) -> str:
         incoming = self.catalog.require(scene_id)
         active = self.active_scene.scene if self.active_scene is not None else None
-        decision = self.arbiter.evaluate(active, incoming)
+        estimate = self.follower.estimate(self.clock())
+        decision = self.arbiter.evaluate(
+            active,
+            incoming,
+            now_ms=round(self.clock() * 1000),
+            position_ms=estimate.position_ms if estimate is not None else None,
+        )
         if decision is ArbitrationDecision.START:
             await self.start_scene(scene_id)
         return decision.value
@@ -363,8 +371,22 @@ class ControllerRuntime:
             self.rejected_telemetry += 1
         else:
             connection.last_seen_at = self.clock()
+            previous_position_ms = self._last_media_positions.get(
+                active.playback_session_id,
+                telemetry.position_ms,
+            )
+            self._last_media_positions[active.playback_session_id] = telemetry.position_ms
             if telemetry.state is PlaybackState.COMPLETED:
                 self._schedule_completion(active)
+            else:
+                ready = self.arbiter.pop_ready(
+                    active.scene,
+                    previous_position_ms=previous_position_ms,
+                    position_ms=telemetry.position_ms,
+                    now_ms=round(self.clock() * 1000),
+                )
+                if ready is not None:
+                    self._schedule_scene_start(ready.definition.id, active)
         return decision
 
     async def acknowledge_command(self, acknowledgment: CommandAck) -> TelemetryDecision:
@@ -542,7 +564,7 @@ class ControllerRuntime:
         self.active_scene = None
         self.follower.reset()
         if continue_queue:
-            queued = self.arbiter.pop_next()
+            queued = self.arbiter.pop_next(now_ms=round(self.clock() * 1000))
             if queued is not None:
                 await self.start_scene(queued.definition.id)
 
@@ -582,6 +604,19 @@ class ControllerRuntime:
         if active is None or active.playback_session_id != completed.playback_session_id:
             return
         self.scene_completions += 1
+        queued = self.arbiter.pop_ready(
+            completed.scene,
+            previous_position_ms=self._last_media_positions.get(
+                completed.playback_session_id,
+                0,
+            ),
+            position_ms=completed.definition.duration_ms,
+            now_ms=round(self.clock() * 1000),
+            completed=True,
+        )
+        if queued is not None:
+            await self.start_scene(queued.definition.id)
+            return
         completion = completed.definition.completion
         if completion.policy == "hold":
             return
@@ -610,6 +645,21 @@ class ControllerRuntime:
         if self.director is None:
             return None
         return self.director.select_next(completed.definition.id)
+
+    def _schedule_scene_start(self, scene_id: str, expected_active: ActiveScene) -> None:
+        async def start_if_current() -> None:
+            if (
+                self.active_scene is not None
+                and self.active_scene.playback_session_id == expected_active.playback_session_id
+            ):
+                await self.start_scene(scene_id)
+
+        task = asyncio.create_task(
+            start_if_current(),
+            name=f"scheduled-scene-{scene_id}",
+        )
+        self._lifecycle_tasks.add(task)
+        task.add_done_callback(self._lifecycle_task_done)
 
     def _lifecycle_task_done(self, task: asyncio.Task[None]) -> None:
         self._lifecycle_tasks.discard(task)

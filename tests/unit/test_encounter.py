@@ -7,6 +7,7 @@ from cueverge.controller.runtime import ControllerRuntime
 from cueverge.core.arbitration import ArbitrationDecision, ResourceArbiter
 from cueverge.core.events import ExternalEvent
 from cueverge.core.loader import load_show_package
+from cueverge.core.models import SchedulingDefinition, TimeInterval
 from cueverge.media_agent.fake import FakeMediaAgent
 
 
@@ -201,6 +202,142 @@ def test_resource_arbiter_queues_once_and_releases_in_order() -> None:
     assert [scene.definition.id for scene in arbiter.queued] == ["queued"]
     assert arbiter.pop_next() == queued
     assert arbiter.pop_next() is None
+
+
+def test_resource_arbiter_releases_coalesced_request_at_safe_point() -> None:
+    runtime = ControllerRuntime()
+    source = runtime.catalog.require("ambient")
+    active = source.model_copy(
+        update={
+            "definition": source.definition.model_copy(
+                update={
+                    "priority": 10,
+                    "scheduling": SchedulingDefinition(
+                        safe_points_ms=(1000, 2000),
+                    ),
+                }
+            )
+        }
+    )
+    incoming = source.model_copy(
+        update={
+            "definition": source.definition.model_copy(
+                update={
+                    "id": "reaction",
+                    "priority": 50,
+                    "scheduling": SchedulingDefinition(
+                        request_policy="at_safe_point",
+                        request_ttl_ms=5000,
+                    ),
+                }
+            )
+        }
+    )
+    arbiter = ResourceArbiter()
+
+    assert (
+        arbiter.evaluate(active, incoming, now_ms=100, position_ms=100) is ArbitrationDecision.QUEUE
+    )
+    assert (
+        arbiter.evaluate(active, incoming, now_ms=200, position_ms=200) is ArbitrationDecision.QUEUE
+    )
+    assert len(arbiter.queued) == 1
+    assert (
+        arbiter.pop_ready(
+            active,
+            previous_position_ms=500,
+            position_ms=900,
+            now_ms=900,
+        )
+        is None
+    )
+    assert (
+        arbiter.pop_ready(
+            active,
+            previous_position_ms=900,
+            position_ms=1100,
+            now_ms=1100,
+        )
+        == incoming
+    )
+
+
+def test_protected_interval_defers_immediate_request_and_expiration_discards_it() -> None:
+    runtime = ControllerRuntime()
+    source = runtime.catalog.require("ambient")
+    active = source.model_copy(
+        update={
+            "definition": source.definition.model_copy(
+                update={
+                    "priority": 10,
+                    "scheduling": SchedulingDefinition(
+                        safe_points_ms=(2000,),
+                        protected_intervals=(TimeInterval(start_ms=0, end_ms=2000),),
+                    ),
+                }
+            )
+        }
+    )
+    incoming = source.model_copy(
+        update={
+            "definition": source.definition.model_copy(
+                update={
+                    "id": "arrival",
+                    "priority": 50,
+                    "scheduling": SchedulingDefinition(
+                        request_policy="immediate",
+                        request_ttl_ms=500,
+                    ),
+                }
+            )
+        }
+    )
+    arbiter = ResourceArbiter()
+
+    assert (
+        arbiter.evaluate(active, incoming, now_ms=100, position_ms=500) is ArbitrationDecision.QUEUE
+    )
+    assert (
+        arbiter.pop_ready(
+            active,
+            previous_position_ms=1900,
+            position_ms=2100,
+            now_ms=601,
+        )
+        is None
+    )
+    assert arbiter.queued == []
+
+
+def test_after_completion_request_runs_even_at_lower_priority() -> None:
+    runtime = ControllerRuntime()
+    active = runtime.catalog.require("operator-override")
+    source = runtime.catalog.require("ambient")
+    incoming = source.model_copy(
+        update={
+            "definition": source.definition.model_copy(
+                update={
+                    "id": "next-ambient",
+                    "scheduling": SchedulingDefinition(
+                        request_policy="after_completion",
+                    ),
+                }
+            )
+        }
+    )
+    arbiter = ResourceArbiter()
+
+    assert arbiter.evaluate(active, incoming, now_ms=0) is ArbitrationDecision.QUEUE
+    assert (
+        arbiter.pop_ready(
+            active,
+            previous_position_ms=0,
+            position_ms=active.definition.duration_ms,
+            now_ms=1000,
+            completed=True,
+        )
+        == incoming
+    )
 
 
 def _event(
