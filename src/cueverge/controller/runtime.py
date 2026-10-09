@@ -16,6 +16,7 @@ from cueverge.core.loader import load_show_package
 from cueverge.core.models import LoadedScene, SceneCatalog, SceneDefinition
 from cueverge.lighting.renderer import SegmentPulse, SyntheticSweep
 from cueverge.lighting.sink import FrameSink, MemoryFrameSink, RenderedFrame
+from cueverge.observation.presence import AudiencePresenceEstimator
 from cueverge.protocol.models import (
     AgentCommand,
     AgentHeartbeat,
@@ -78,6 +79,7 @@ class ControllerRuntime:
         event_clock: EventClock | None = None,
         scene_selector: SceneSelector | None = None,
         director: ShowDirector | None = None,
+        audience: AudiencePresenceEstimator | None = None,
     ) -> None:
         if render_fps <= 0:
             raise ValueError("render_fps must be positive")
@@ -101,6 +103,11 @@ class ControllerRuntime:
         if scene_selector is not None and director is not None:
             raise ValueError("configure either scene_selector or director, not both")
         self.director = director
+        self.audience = audience or (
+            AudiencePresenceEstimator(self.catalog.audience)
+            if self.catalog.audience is not None
+            else None
+        )
         self.scene_selector = scene_selector or (
             self._select_from_director if director is not None else None
         )
@@ -155,7 +162,9 @@ class ControllerRuntime:
         return self._encounter_task is not None and not self._encounter_task.done()
 
     def start_background_tasks(self) -> None:
-        if self.encounter is not None and not self.encounter_loop_running:
+        if (
+            self.encounter is not None or self.audience is not None
+        ) and not self.encounter_loop_running:
             self._encounter_task = asyncio.create_task(
                 self._run_encounter_loop(),
                 name="encounter-timer",
@@ -279,15 +288,46 @@ class ControllerRuntime:
         )
 
     async def ingest_event(self, event: ExternalEvent) -> EventOutcome:
-        if self.encounter is None:
+        if self.encounter is None and self.audience is None:
             raise RuntimeError("show package does not define an encounter")
         now_ms = self.event_clock()
+        presence_update = self.audience.ingest(event, now_ms) if self.audience else None
+        if self.encounter is None:
+            assert self.audience is not None
+            return EventOutcome(
+                presence_update.relevant if presence_update is not None else False,
+                None if presence_update is not None and presence_update.relevant else "irrelevant",
+                self.audience.state.value,
+                None,
+            )
         await self.encounter.tick(now_ms)
-        return await self.encounter.ingest(event, now_ms)
+        semantic_outcome = await self._ingest_semantic_events(
+            presence_update.events if presence_update is not None else (),
+            now_ms,
+        )
+        source_outcome = await self.encounter.ingest(event, now_ms)
+        return semantic_outcome if semantic_outcome is not None else source_outcome
 
     async def tick_encounter(self) -> None:
+        now_ms = self.event_clock()
+        semantic_events = self.audience.tick(now_ms) if self.audience else ()
         if self.encounter is not None:
-            await self.encounter.tick(self.event_clock())
+            await self.encounter.tick(now_ms)
+            await self._ingest_semantic_events(semantic_events, now_ms)
+
+    async def _ingest_semantic_events(
+        self,
+        events: tuple[ExternalEvent, ...],
+        now_ms: int,
+    ) -> EventOutcome | None:
+        if self.encounter is None:
+            return None
+        accepted: EventOutcome | None = None
+        for event in events:
+            outcome = await self.encounter.ingest(event, now_ms)
+            if outcome.accepted:
+                accepted = outcome
+        return accepted
 
     async def _stop_encounter_scene(self) -> None:
         if self.encounter is None or self.active_scene is None:
@@ -606,8 +646,8 @@ class ControllerRuntime:
 
     async def _run_encounter_loop(self) -> None:
         try:
-            while self.encounter is not None:
-                await self.encounter.tick(self.event_clock())
+            while self.encounter is not None or self.audience is not None:
+                await self.tick_encounter()
                 await asyncio.sleep(0.1)
         except asyncio.CancelledError:
             raise
@@ -699,6 +739,7 @@ class ControllerRuntime:
             "mean_render_interval_ms": mean_interval_ms,
             "encounter": self.encounter.status() if self.encounter is not None else None,
             "director": self.director.status() if self.director is not None else None,
+            "audience": self.audience.status() if self.audience is not None else None,
             "encounter_loop_running": self.encounter_loop_running,
             "queued_scenes": [scene.definition.id for scene in self.arbiter.queued],
         }

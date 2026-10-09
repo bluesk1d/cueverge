@@ -224,9 +224,8 @@ should use only zones that have a deliberate narrative purpose.
 - Numeric comparisons or arbitrary predicates.
 - Time-of-day, weather, calendar, or show-enabled guards.
 - Per-transition debounce or per-scene cooldown.
-- Counting people.
-- Correlating multiple Frigate objects as one group beyond the single active
-  encounter policy.
+- Accurate crowd counting. Cueverge now merges overlapping relevant objects
+  into one audience state with arrival confirmation and absence grace.
 - Weighted or non-repeating reaction selection.
 - Automatic scene transition on media completion.
 - Branching based on prior variant history.

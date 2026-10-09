@@ -146,6 +146,27 @@ def test_rejects_unknown_program_scene(tmp_path: Path) -> None:
         load_show_package(root)
 
 
+def test_loads_audience_presence_configuration(tmp_path: Path) -> None:
+    root = _package(tmp_path)
+    audience = {
+        "schema_version": 1,
+        "labels": ["person"],
+        "cameras": ["doorbell"],
+        "zones": ["Porch"],
+        "observation_freshness_ms": 5000,
+        "arrival_confirmation_ms": 1000,
+        "absence_grace_ms": 5000,
+        "long_idle_ms": 300000,
+    }
+    (root / "audience.json").write_text(json.dumps(audience), encoding="utf-8")
+
+    loaded = load_show_package(root)
+
+    assert loaded.audience is not None
+    assert loaded.audience.cameras == ("doorbell",)
+    assert loaded.audience.zones == ("Porch",)
+
+
 def test_loads_contiguous_pixel_segments(tmp_path: Path) -> None:
     root = _package(tmp_path)
     installation_path = root / "installation.json"

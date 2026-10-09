@@ -5,6 +5,7 @@ A show package is a directory containing:
 ```text
 installation.json
 program.json
+audience.json
 encounter.json
 scenes/
   scene-id.json
@@ -14,7 +15,7 @@ assets/
 
 All documents use `schema_version: 1` and reject unknown fields.
 
-`program.json` and `encounter.json` are optional.
+`program.json`, `audience.json`, and `encounter.json` are optional.
 
 ## Installation bindings
 
@@ -148,6 +149,37 @@ Every program scene must exist in the package. Conditions default to an empty
 runtime context until an observation or operations component supplies semantic
 values; show files must not use raw Frigate payload fields as director
 conditions.
+
+## Aggregate audience presence
+
+An optional `audience.json` converts granular object tracking into semantic
+audience state:
+
+```json
+{
+  "schema_version": 1,
+  "labels": ["person"],
+  "cameras": ["doorbell"],
+  "zones": ["Porch"],
+  "observation_freshness_ms": 5000,
+  "arrival_confirmation_ms": 1000,
+  "absence_grace_ms": 5000,
+  "long_idle_ms": 300000
+}
+```
+
+At least one camera or zone must scope the estimator. When zones are declared,
+an object becomes relevant only after entering one of them; later updates keep
+that object fresh. Multiple overlapping objects still represent one audience.
+Arrival requires continuous relevant tracking for the confirmation interval.
+The audience remains present through short tracking gaps and departs only after
+the absence grace period.
+
+The estimator emits `audience.arrived`, `audience.present`,
+`audience.departed`, and `audience.long_idle`. It exposes `audience`,
+`audience_state`, and `audience_active_objects` as semantic director context.
+The active-object value is diagnostic overlap, not an assertion of accurate
+crowd counting.
 
 ## Encounters
 

@@ -13,6 +13,7 @@ from cueverge.core.loader import load_show_package
 from cueverge.integrations.mqtt import FrigateMqttIngress
 from cueverge.lighting.ddp import DdpUdpSink
 from cueverge.lighting.sink import FrameSink, MemoryFrameSink
+from cueverge.observation.presence import AudiencePresenceEstimator
 from cueverge.protocol.models import (
     AgentHeartbeat,
     AgentHello,
@@ -64,6 +65,7 @@ class StatusResponse(BaseModel):
     mean_render_interval_ms: float | None = Field(default=None, ge=0)
     encounter: dict[str, object] | None
     director: dict[str, object] | None
+    audience: dict[str, object] | None
     encounter_loop_running: bool
     queued_scenes: list[str]
 
@@ -288,6 +290,7 @@ def create_app(
 def _configured_components() -> tuple[ControllerRuntime, EventIngress | None]:
     config = ControllerConfig.from_environment()
     catalog = load_show_package(config.show_package)
+    audience = AudiencePresenceEstimator(catalog.audience) if catalog.audience is not None else None
     sink: FrameSink = (
         DdpUdpSink(
             host=config.ddp.host or "",
@@ -304,7 +307,15 @@ def _configured_components() -> tuple[ControllerRuntime, EventIngress | None]:
         sink=sink,
         catalog=catalog,
         lighting_delay_ms=config.lighting_delay_ms,
-        director=ShowDirector(catalog.program) if catalog.program is not None else None,
+        director=(
+            ShowDirector(
+                catalog.program,
+                context_provider=audience.context if audience is not None else None,
+            )
+            if catalog.program is not None
+            else None
+        ),
+        audience=audience,
     )
     ingress = (
         FrigateMqttIngress(config.frigate_mqtt, runtime.ingest_event)

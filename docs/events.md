@@ -94,3 +94,22 @@ ambient -> suspicious -> interested -> reaction -> cooldown -> ambient
 ```
 
 These state names and event types are demo content, not engine constants.
+
+## Audience presence semantics
+
+Show packages may define aggregate audience presence independently of their
+encounter state machine. Relevant Frigate objects are tracked by object ID only
+to merge overlapping observations and apply freshness; Cueverge does not
+identify people or claim an accurate crowd count.
+
+The presence estimator emits:
+
+- `audience.arrived` after configured arrival confirmation.
+- `audience.present` with the confirmed arrival.
+- `audience.departed` after every relevant object has been absent for the
+  configured grace period.
+- `audience.long_idle` once after sustained post-departure absence.
+
+Semantic events can drive encounter transitions. Current audience state is also
+available to declarative show-program conditions, keeping raw camera and zone
+fields out of director policy.

@@ -163,6 +163,7 @@ class SceneCatalog(FrozenModel):
     scenes: dict[str, LoadedScene]
     encounter: "EncounterDefinition | None" = None
     program: "ShowProgramDefinition | None" = None
+    audience: "AudiencePresenceDefinition | None" = None
 
     def require(self, scene_id: str) -> LoadedScene:
         try:
@@ -206,6 +207,25 @@ class ShowProgramDefinition(FrozenModel):
             raise ValueError("show program pool IDs must be unique")
         if self.default_pool_id not in pool_ids:
             raise ValueError("show program default_pool_id must reference a pool")
+        return self
+
+
+class AudiencePresenceDefinition(FrozenModel):
+    schema_version: Literal[1]
+    labels: tuple[str, ...] = ("person",)
+    cameras: tuple[str, ...] = ()
+    zones: tuple[str, ...] = ()
+    observation_freshness_ms: int = Field(default=5000, gt=0)
+    arrival_confirmation_ms: int = Field(default=1000, ge=0)
+    absence_grace_ms: int = Field(default=5000, ge=0)
+    long_idle_ms: int = Field(default=300000, gt=0)
+
+    @model_validator(mode="after")
+    def validate_scope(self) -> "AudiencePresenceDefinition":
+        if not self.labels:
+            raise ValueError("audience presence labels must not be empty")
+        if not self.cameras and not self.zones:
+            raise ValueError("audience presence requires at least one camera or zone")
         return self
 
 

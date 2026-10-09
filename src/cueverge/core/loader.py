@@ -5,6 +5,7 @@ from typing import Any
 from pydantic import BaseModel, ValidationError
 
 from cueverge.core.models import (
+    AudiencePresenceDefinition,
     EncounterDefinition,
     InstallationDefinition,
     LoadedScene,
@@ -83,11 +84,18 @@ def load_show_package(package_root: Path) -> SceneCatalog:
         missing = program_scene_ids.difference(scenes)
         if missing:
             raise ShowPackageError(f"show program references unknown scenes: {sorted(missing)}")
+    audience_path = root / "audience.json"
+    audience = (
+        _validate_json(audience_path, AudiencePresenceDefinition, "audience presence")
+        if audience_path.exists()
+        else None
+    )
     return SceneCatalog(
         package_root=root,
         scenes=scenes,
         encounter=encounter,
         program=program,
+        audience=audience,
     )
 
 
