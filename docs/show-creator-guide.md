@@ -104,16 +104,26 @@ Supported now:
 - Lighting that pauses and seeks with media.
 - Controller/agent restart fencing and matching-session reconciliation.
 
+Autonomous media behavior supported now:
+
+- Scene completion can loop, stop, hold, transition to a declared scene, or
+  ask the show director to select the next scene.
+- Declarative show pools support deterministic weighted selection, categories,
+  per-scene cooldowns, exact-match eligibility conditions, unavailable-scene
+  filtering, and recent-history exclusion.
+- Director conditions can use semantic audience context, including presence
+  state, active tracked-object diagnostics, continuous presence duration, and
+  prior absence duration.
+- Playback-session fencing ensures one completed playback session advances at
+  most once.
+- A scene may declare a fallback scene for media prepare failure.
+
 Important current limitations:
 
-- Declarative show pools now support deterministic weights, cooldowns,
-  exact-match eligibility conditions, and recent-history exclusion.
-- Completion can loop, stop, hold, transition to a declared scene, or call a
-  show-director selector.
-- Audience-derived director context and safe-cut scheduling are not yet
-  implemented.
 - There is no independent sound-effect channel or audio ducking.
 - There is no video compositing, transparency layer, or simultaneous playback.
+- Conditions are exact scalar matches rather than arbitrary expressions.
+- Cueverge does not yet start programs from wall-clock schedules by itself.
 - Media assets are deployed to the laptop's private asset root manually.
 
 For the first show, each authored media file should normally contain all video
@@ -147,7 +157,7 @@ This is primarily a diagnostic primitive, not a finished creative effect.
 
 This is suitable for synchronized accents but cannot yet express fades,
 traveling pulses, multisegment choreography, brightness curves, or layered
-looks.
+looks by itself. Use a multi-cue timeline for those behaviors.
 
 ### Multi-cue lighting timelines
 
@@ -188,6 +198,22 @@ Semantic fixtures and ordered paths are supported in installation
 configuration. A scene can target a segment, a fixture such as the concealed
 mouth lighting, or a direction-aware architectural path without embedding
 pixel indices.
+
+### Persistent looks
+
+A show package may define a persistent lighting baseline and an explicit safe
+state. The baseline runs on controller-monotonic time, so its phase continues
+across scene changes. Timeline scenes affect only addressed pixels and then
+reveal the continuing baseline. An explicit stop renders the configured safe
+state; a queued scene-to-scene continuation does not insert an unintended safe
+frame.
+
+The show definition should specify:
+
+- Baseline fixtures, colors, cycle duration, and maximum brightness.
+- Which scene cues replace, add to, maximize, or multiply the baseline.
+- The safe lighting state for stop, disabled, and shutdown behavior.
+- Whether blackout should differ from the normal safe state.
 
 ## 4. Encounters and external events
 
@@ -233,29 +259,42 @@ should use only zones that have a deliberate narrative purpose.
 - Duplicate source deliveries are idempotent.
 - Stale observations are rejected.
 - Repeated event types are debounced.
-- A person or group can be treated as one active encounter.
+- Relevant overlapping objects are aggregated into one semantic audience
+  presence rather than treated as an exact crowd count.
+- Camera, zone, and object-label filters define relevant observations.
+- Arrival confirmation, observation freshness, and absence grace suppress
+  short tracking glitches.
+- Semantic `audience.arrived`, `audience.present`, `audience.departed`, and
+  `audience.long_idle` events can drive encounters and opportunities.
 - A porch-zone event can advance an encounter.
 - An object-end event can enter cooldown.
 - Inactivity can force cooldown.
 - Cooldown expiry returns to ambient.
 - The same flow can be tested with synthetic events and no camera.
 
-### Encounter behavior not yet supported declaratively
+### Engagement opportunities
 
-- Boolean combinations such as “Porch and present for 8 seconds.”
+Time-limited engagement opportunities can combine exact source-event
+attributes with current audience context, minimum continuous presence, minimum
+prior absence, freshness, qualification windows, expiry, priority, and
+acknowledgement cooldown. Sustained-presence opportunities mature on controller
+timer ticks rather than requiring a detector event at the exact threshold.
+
+An opportunity is consumed once at an eligible completion boundary before
+normal director selection. It does not interrupt the active scene, and repeated
+source observations coalesce instead of creating a reaction backlog.
+
+### Remaining declarative limitations
+
+- Arbitrary Boolean expressions beyond the supported exact matches and
+  opportunity duration thresholds.
 - Numeric comparisons or arbitrary predicates.
 - Time-of-day, weather, calendar, or show-enabled guards.
-- Per-transition debounce or per-scene cooldown.
+- Per-transition debounce.
 - Accurate crowd counting. Cueverge now merges overlapping relevant objects
   into one audience state with arrival confirmation and absence grace.
-- Weighted or non-repeating reaction selection.
-- Automatic scene transition on media completion.
-- Branching based on prior variant history.
-
-Time-limited engagement opportunities can now combine exact event attributes
-with audience state, minimum continuous presence, prior absence, expiry, and
-acknowledgement cooldown. They are consumed once at eligible scene completion
-boundaries and do not interrupt protected scenes.
+- Free-form branching expressions over arbitrary prior scene history. The show
+  director supports bounded recent-history exclusion.
 
 If the creative design needs one of these, describe the desired rule plainly.
 Do not simulate it with fragile camera-zone naming.
@@ -331,6 +370,10 @@ A private show package has this conceptual structure:
 show-package/
   installation.json
   encounter.json
+  program.json
+  audience.json
+  opportunities.json
+  looks.json
   scenes/
     scene-id.json
   assets/
@@ -354,6 +397,11 @@ For each media asset, specify:
 - Required black handles or transition frames.
 - All sync-critical cue timestamps.
 - Whether the content is original, licensed, or otherwise private.
+
+`program.json`, `audience.json`, `opportunities.json`, and `looks.json` are
+optional. Include only the documents the show uses, but define their creative
+requirements in the returned show specification even if final values remain
+TBD.
 
 Do not place copyrighted media, camera footage, credentials, private network
 addresses, or house-specific geometry in the public demo package.
@@ -387,6 +435,33 @@ For each desired mode, state whether it is required for the first release:
 - Disabled/maintenance look.
 - Startup and shutdown sequence.
 
+Also define the intended behavior of Cueverge's runtime modes:
+
+| Runtime mode | When entered | Active scene behavior | Lighting look | How automatic mode resumes |
+|---|---|---|---|---|
+| `automatic` | Normal show operation | Director/encounter controlled | Show baseline | N/A |
+| `disabled` | TBD | Stop | TBD safe state | TBD |
+| `maintenance` | TBD | Operator controlled | TBD work light or safe state | TBD |
+| `blackout` | Emergency/manual blackout | Stop | Full black | TBD |
+
+External observations are rejected in disabled, maintenance, and blackout
+modes, but direct operator scene starts remain available. State whether the
+observation ingress should remain connected and whether reset should start the
+encounter ambient scene or the program's initial scene.
+
+#### Autonomous program plan
+
+Define the initial scene, default pool, repeat-history window, and deterministic
+seed policy. Provide one row for every program pool entry:
+
+| Pool ID | Category | Scene ID | Weight | Cooldown | Eligibility conditions | Availability dependency |
+|---|---|---|---:|---:|---|---|
+| `ambient` | Ambient | TBD | 1 | 0 ms | None | Media asset available |
+
+Conditions must be expressible as exact scalar matches against semantic
+context. Describe more complex desired predicates plainly so they can be
+identified as an engine gap.
+
 ### C. Encounter state table
 
 Provide one row per state:
@@ -417,6 +492,23 @@ Also answer:
 - What should happen when no porch-zone event ever arrives?
 - How long is cooldown?
 
+Define the audience estimator separately from narrative transitions:
+
+| Setting | Required value |
+|---|---|
+| Relevant labels | Usually `person` |
+| Relevant cameras | TBD |
+| Relevant zones | TBD |
+| Observation freshness | TBD ms |
+| Arrival confirmation | TBD ms |
+| Absence grace | TBD ms |
+| Long-idle threshold | TBD ms |
+
+Provide one row for every engagement opportunity:
+
+| Opportunity ID | Source event/attributes | Required audience context | Minimum presence | Minimum prior absence | Qualification window | TTL | Acknowledgement cooldown | Priority | Scene |
+|---|---|---|---:|---:|---:|---:|---:|---:|---|
+
 ### E. Scene inventory
 
 Provide one row per scene:
@@ -441,7 +533,8 @@ For every scene, provide:
 5. **Cue timeline:** One row per synchronized cue.
 6. **Completion:** Hold, stop, loop, transition, return to ambient, or await
    another event.
-7. **Interruption:** Safe cut points and desired behavior if replaced.
+7. **Interruption:** Request policy, safe cut points, protected intervals,
+   request expiry, and desired behavior if replaced.
 8. **Failure look:** What should happen if media or lighting is unavailable.
 
 Use this cue table:
@@ -452,6 +545,16 @@ Use this cue table:
 Use timestamps such as `00:12.400` and durations in milliseconds. If an effect
 does not exist yet, describe the desired appearance rather than choosing the
 closest current effect.
+
+For lighting, also provide:
+
+- Segment, semantic fixture, or ordered path target.
+- Section-local direction reversals where needed.
+- Cue precedence and replace/add/max/multiply blend mode.
+- Scene brightness limit.
+- Persistent baseline interaction.
+- Seed for deterministic flicker, sparkle, or other variation.
+- The intended frame after scene completion, queued continuation, and stop.
 
 ### G. Variation plan
 
@@ -487,6 +590,10 @@ Explicitly decide:
 - WLED is unavailable.
 - Controller restarts during a scene.
 - Show is stopped manually.
+- Show enters disabled, maintenance, or blackout mode.
+- Automatic observations arrive while the show is not automatic.
+- An engagement opportunity expires before a completion boundary.
+- A queued request expires or its target asset becomes unavailable.
 - Power returns after an outage.
 - A scene asset is missing.
 
@@ -519,6 +626,17 @@ The generic controller API now provides:
 Automatic observations are rejected outside automatic mode. Direct scene
 starts remain available in maintenance and blackout modes so an operator can
 test or recover the installation deliberately.
+
+Projector and audio health are not independently detectable and are reported as
+such rather than as healthy. Specify whether operations require external smart
+plugs, receiver/projector telemetry, visual confirmation, or only media-agent
+connectivity. Recent observation diagnostics intentionally omit detector object
+IDs.
+
+The hardware-free simulator can run synthetic observations, accelerated time,
+automatic completion, operator overrides, queued requests, and media-agent
+disconnect/reconnect scenarios. List the repeatable acceptance scenarios the
+creative team wants before physical rehearsal.
 
 List the controls needed for:
 
