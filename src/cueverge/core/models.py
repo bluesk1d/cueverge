@@ -157,6 +157,7 @@ class EncounterTransition(FrozenModel):
     to_state: str = Field(min_length=1)
     scene_id: str | None = None
     min_state_age_ms: int = Field(default=0, ge=0)
+    attributes: dict[str, str | int | float | bool] = Field(default_factory=dict)
 
 
 class EncounterDefinition(FrozenModel):

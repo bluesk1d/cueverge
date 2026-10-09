@@ -78,4 +78,6 @@ consistent with other lighting effects.
 An optional `encounter.json` defines initial and cooldown states, ambient scene,
 timeouts, debounce, event TTL, and transitions. Each transition names an event,
 eligible source states, destination state, optional scene, and optional minimum
-state age. Every referenced scene must exist in the same package.
+state age. A transition may also declare scalar `attributes`; all declared
+key-value pairs must exactly match the incoming event. Every referenced scene
+must exist in the same package.

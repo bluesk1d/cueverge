@@ -1,10 +1,12 @@
 import asyncio
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from cueverge.controller.runtime import ControllerRuntime
 from cueverge.core.arbitration import ArbitrationDecision, ResourceArbiter
 from cueverge.core.events import ExternalEvent
+from cueverge.core.loader import load_show_package
 from cueverge.media_agent.fake import FakeMediaAgent
 
 
@@ -138,6 +140,52 @@ def test_ttl_debounce_and_no_transition_are_rejected() -> None:
     asyncio.run(scenario())
 
 
+def test_transition_attribute_guards_filter_normalized_events() -> None:
+    async def scenario() -> None:
+        event_clock = ManualEventClock()
+        catalog = load_show_package(Path("shows/demo"))
+        assert catalog.encounter is not None
+        transitions = list(catalog.encounter.transitions)
+        transitions[0] = transitions[0].model_copy(
+            update={
+                "event_type": "frigate.object.new",
+                "attributes": {"label": "person", "camera": "porch_east"},
+            }
+        )
+        encounter = catalog.encounter.model_copy(update={"transitions": tuple(transitions)})
+        runtime = ControllerRuntime(
+            event_clock=event_clock,
+            catalog=catalog.model_copy(update={"encounter": encounter}),
+        )
+        agent = FakeMediaAgent()
+        agent.accept_welcome(runtime.register_agent(agent.hello(), MemoryCommandChannel([])))
+
+        wrong_camera = await runtime.ingest_event(
+            _event(
+                "event-1",
+                "frigate.object.new",
+                event_clock.now_ms,
+                attributes={"label": "person", "camera": "driveway"},
+            )
+        )
+        assert wrong_camera.reason == "no_transition"
+
+        event_clock.now_ms += encounter.debounce_ms
+        porch = await runtime.ingest_event(
+            _event(
+                "event-2",
+                "frigate.object.new",
+                event_clock.now_ms,
+                attributes={"label": "person", "camera": "porch_east"},
+            )
+        )
+        assert porch.accepted
+        assert porch.state == "suspicious"
+        await runtime.shutdown()
+
+    asyncio.run(scenario())
+
+
 def test_resource_arbiter_queues_once_and_releases_in_order() -> None:
     runtime = ControllerRuntime()
     active = runtime.catalog.require("operator-override")
@@ -155,9 +203,16 @@ def test_resource_arbiter_queues_once_and_releases_in_order() -> None:
     assert arbiter.pop_next() is None
 
 
-def _event(event_id: str, event_type: str, occurred_at_ms: int) -> ExternalEvent:
+def _event(
+    event_id: str,
+    event_type: str,
+    occurred_at_ms: int,
+    *,
+    attributes: dict[str, str | int | float | bool] | None = None,
+) -> ExternalEvent:
     return ExternalEvent(
         event_id=event_id,
         event_type=event_type,
         occurred_at_ms=occurred_at_ms,
+        attributes=attributes or {},
     )

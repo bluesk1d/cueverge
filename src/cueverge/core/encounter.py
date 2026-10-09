@@ -54,7 +54,7 @@ class EncounterEngine:
             return self._reject("debounced")
         self._last_type_at[event.event_type] = now_ms
 
-        transition = self._find_transition(event.event_type, now_ms)
+        transition = self._find_transition(event, now_ms)
         if transition is None:
             return self._reject("no_transition")
 
@@ -108,15 +108,23 @@ class EncounterEngine:
             "rejected_events": self.rejected_events,
         }
 
-    def _find_transition(self, event_type: str, now_ms: int) -> EncounterTransition | None:
+    def _find_transition(
+        self,
+        event: ExternalEvent,
+        now_ms: int,
+    ) -> EncounterTransition | None:
         state_age = max(0, now_ms - self.state_entered_at_ms)
         return next(
             (
                 transition
                 for transition in self.definition.transitions
-                if transition.event_type == event_type
+                if transition.event_type == event.event_type
                 and self.state in transition.from_states
                 and state_age >= transition.min_state_age_ms
+                and all(
+                    event.attributes.get(name) == expected
+                    for name, expected in transition.attributes.items()
+                )
             ),
             None,
         )
