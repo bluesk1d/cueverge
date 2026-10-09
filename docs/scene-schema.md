@@ -52,6 +52,53 @@ adapter-specific output concepts to scenes. For example:
 Half-open ranges avoid an extra address at the endpoint: `start: 0, end: 8`
 contains the eight addressable pixels `0` through `7`.
 
+Pixel outputs may additionally define semantic fixtures and ordered paths:
+
+```json
+{
+  "fixtures": [
+    {
+      "id": "mouth",
+      "precedence": 100,
+      "segments": [
+        {"segment": "right-gable"},
+        {"segment": "left-gable", "reverse": true}
+      ]
+    }
+  ],
+  "paths": [
+    {
+      "id": "eave-to-mouth",
+      "segments": [
+        {"segment": "eave"},
+        {"segment": "connector"},
+        {"segment": "right-gable"}
+      ]
+    }
+  ]
+}
+```
+
+Fixtures are logical groups and carry explicit precedence for future blended
+lighting timelines. Different fixtures may overlap. Paths preserve section and
+pixel order for traveling effects. Each section can reverse its local wiring
+direction without changing the authoritative segment range. A target cannot
+repeat a segment, and every referenced segment must exist on the same output.
+
+`segment_pulse` can target a segment, fixture, or path:
+
+```json
+{
+  "effect": "segment_pulse",
+  "target": {"kind": "fixture", "id": "mouth"},
+  "pulse_times_ms": [1000],
+  "pulse_duration_ms": 120
+}
+```
+
+The legacy `segment` field remains supported, but a pulse must specify exactly
+one legacy segment or semantic target.
+
 ## Scenes
 
 A scene declares:

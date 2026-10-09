@@ -22,8 +22,9 @@ the reusable engine.
 | CV-03 Aggregate audience presence | Implemented |
 | CV-04 Safe transitions and request arbitration | Implemented |
 | CV-05 Engagement opportunities | Implemented |
-| CV-07 Semantic lighting geometry | Next |
-| CV-06, CV-08, and CV-09 | Planned |
+| CV-07 Semantic lighting geometry | Implemented |
+| CV-06 Multi-cue deterministic lighting | Next |
+| CV-08 and CV-09 | Planned |
 
 ## Milestone 1: continuous autonomous programming
 

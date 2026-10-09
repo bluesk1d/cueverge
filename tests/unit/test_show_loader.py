@@ -277,6 +277,87 @@ def test_binds_segment_pulse_to_declared_geometry(tmp_path: Path) -> None:
 
     assert loaded.lighting_segment is not None
     assert loaded.lighting_segment.id == "porch"
+    assert loaded.lighting_target_indices == tuple(range(8))
+
+
+def test_resolves_semantic_fixture_and_reversed_path_targets(tmp_path: Path) -> None:
+    root = _package(tmp_path)
+    installation_path = root / "installation.json"
+    installation = json.loads(installation_path.read_text(encoding="utf-8"))
+    installation["resources"][1].update(
+        {
+            "segments": [
+                {"id": "garage", "start": 0, "end": 3},
+                {"id": "connector", "start": 3, "end": 5},
+                {"id": "mouth-right", "start": 5, "end": 7},
+                {"id": "mouth-left", "start": 7, "end": 8},
+            ],
+            "fixtures": [
+                {
+                    "id": "mouth",
+                    "precedence": 20,
+                    "segments": [
+                        {"segment": "mouth-right"},
+                        {"segment": "mouth-left", "reverse": True},
+                    ],
+                },
+                {
+                    "id": "exterior",
+                    "segments": [
+                        {"segment": "garage"},
+                        {"segment": "connector"},
+                        {"segment": "mouth-right"},
+                    ],
+                },
+            ],
+            "paths": [
+                {
+                    "id": "garage-to-mouth",
+                    "segments": [
+                        {"segment": "garage", "reverse": True},
+                        {"segment": "connector"},
+                        {"segment": "mouth-right"},
+                    ],
+                }
+            ],
+        }
+    )
+    installation_path.write_text(json.dumps(installation), encoding="utf-8")
+    scene_path = root / "scenes/scene.json"
+    scene = json.loads(scene_path.read_text(encoding="utf-8"))
+    scene["lighting"] = {
+        "resource": "roofline.demo",
+        "effect": "segment_pulse",
+        "target": {"kind": "path", "id": "garage-to-mouth"},
+        "pulse_times_ms": [1000],
+    }
+    scene_path.write_text(json.dumps(scene), encoding="utf-8")
+
+    path_scene = load_show_package(root).require("scene")
+    assert path_scene.lighting_target_kind == "path"
+    assert path_scene.lighting_target_indices == (2, 1, 0, 3, 4, 5, 6)
+
+    scene["lighting"]["target"] = {"kind": "fixture", "id": "mouth"}
+    scene_path.write_text(json.dumps(scene), encoding="utf-8")
+    fixture_scene = load_show_package(root).require("scene")
+    assert fixture_scene.lighting_target_indices == (5, 6, 7)
+    assert fixture_scene.lighting_target_precedence == 20
+
+
+def test_rejects_unknown_semantic_pixel_target(tmp_path: Path) -> None:
+    root = _package(tmp_path)
+    scene_path = root / "scenes/scene.json"
+    scene = json.loads(scene_path.read_text(encoding="utf-8"))
+    scene["lighting"] = {
+        "resource": "roofline.demo",
+        "effect": "segment_pulse",
+        "target": {"kind": "fixture", "id": "missing"},
+        "pulse_times_ms": [1000],
+    }
+    scene_path.write_text(json.dumps(scene), encoding="utf-8")
+
+    with pytest.raises(ShowPackageError, match="unknown pixel fixture"):
+        load_show_package(root)
 
 
 def _package(tmp_path: Path) -> Path:

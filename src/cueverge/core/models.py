@@ -32,12 +32,30 @@ class PixelSegment(FrozenModel):
         return self.end - self.start
 
 
+class SegmentReference(FrozenModel):
+    segment: str = Field(min_length=1)
+    reverse: bool = False
+
+
+class PixelFixture(FrozenModel):
+    id: str = Field(min_length=1)
+    segments: tuple[SegmentReference, ...] = Field(min_length=1)
+    precedence: int = Field(default=0, ge=0, le=1000)
+
+
+class PixelPath(FrozenModel):
+    id: str = Field(min_length=1)
+    segments: tuple[SegmentReference, ...] = Field(min_length=1)
+
+
 class ResourceBinding(FrozenModel):
     resource: str = Field(min_length=1)
     kind: ResourceKind
     target: str = Field(min_length=1)
     pixel_count: int | None = Field(default=None, gt=0)
     segments: tuple[PixelSegment, ...] = ()
+    fixtures: tuple[PixelFixture, ...] = ()
+    paths: tuple[PixelPath, ...] = ()
 
     @model_validator(mode="after")
     def validate_pixel_count(self) -> "ResourceBinding":
@@ -48,6 +66,8 @@ class ResourceBinding(FrozenModel):
                 raise ValueError("media_agent binding cannot define pixel_count")
             if self.segments:
                 raise ValueError("media_agent binding cannot define pixel segments")
+            if self.fixtures or self.paths:
+                raise ValueError("media_agent binding cannot define pixel fixtures or paths")
             return self
 
         segment_ids = [segment.id for segment in self.segments]
@@ -60,6 +80,25 @@ class ResourceBinding(FrozenModel):
             expected_start = segment.end
         if self.segments and expected_start != self.pixel_count:
             raise ValueError("pixel segments must end at pixel_count")
+        fixture_ids = [fixture.id for fixture in self.fixtures]
+        path_ids = [path.id for path in self.paths]
+        if len(fixture_ids) != len(set(fixture_ids)):
+            raise ValueError("pixel fixture ids must be unique")
+        if len(path_ids) != len(set(path_ids)):
+            raise ValueError("pixel path ids must be unique")
+        known_segments = set(segment_ids)
+        targets = tuple((fixture.id, fixture.segments) for fixture in self.fixtures) + tuple(
+            (path.id, path.segments) for path in self.paths
+        )
+        for target_id, references in targets:
+            referenced = [reference.segment for reference in references]
+            missing = set(referenced).difference(known_segments)
+            if missing:
+                raise ValueError(
+                    f"pixel target {target_id} references unknown segments: {sorted(missing)}"
+                )
+            if len(referenced) != len(set(referenced)):
+                raise ValueError(f"pixel target {target_id} repeats a segment")
         return self
 
 
@@ -80,19 +119,25 @@ class MediaDefinition(FrozenModel):
     asset: str | None = None
 
 
+class LightingTargetDefinition(FrozenModel):
+    kind: Literal["segment", "fixture", "path"]
+    id: str = Field(min_length=1)
+
+
 class LightingDefinition(FrozenModel):
     resource: str = Field(min_length=1)
     effect: Literal["synthetic_sweep", "segment_pulse"]
     color: str = Field(default="#00FF60", pattern=r"^#[0-9A-Fa-f]{6}$")
     segment: str | None = Field(default=None, min_length=1)
+    target: LightingTargetDefinition | None = None
     pulse_times_ms: tuple[int, ...] = ()
     pulse_duration_ms: int = Field(default=120, gt=0)
 
     @model_validator(mode="after")
     def validate_effect_configuration(self) -> "LightingDefinition":
         if self.effect == "segment_pulse":
-            if self.segment is None:
-                raise ValueError("segment_pulse effect requires a segment")
+            if (self.segment is None) == (self.target is None):
+                raise ValueError("segment_pulse effect requires exactly one segment or target")
             if not self.pulse_times_ms:
                 raise ValueError("segment_pulse effect requires pulse_times_ms")
             if any(time_ms < 0 for time_ms in self.pulse_times_ms):
@@ -195,6 +240,10 @@ class LoadedScene(FrozenModel):
     pixel_count: int
     pixel_segments: tuple[PixelSegment, ...] = ()
     lighting_segment: PixelSegment | None = None
+    lighting_target_kind: Literal["segment", "fixture", "path"] | None = None
+    lighting_target_id: str | None = None
+    lighting_target_indices: tuple[int, ...] = ()
+    lighting_target_precedence: int = 0
     color: tuple[int, int, int]
     asset_id: str | None = None
 

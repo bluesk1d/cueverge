@@ -167,6 +167,12 @@ until explicitly added and tested. For every requested effect, describe its
 visible result, target geometry, timing, colors, direction, repetition, and
 behavior under pause or seek.
 
+Semantic fixtures and ordered paths are now supported in installation
+configuration. A scene can target a segment, a fixture such as the concealed
+mouth lighting, or a direction-aware architectural path without embedding
+pixel indices. Multi-cue effects and blending remain the next renderer
+increment.
+
 ## 4. Encounters and external events
 
 An encounter is a state machine that turns observations into scene requests.

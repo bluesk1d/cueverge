@@ -1,6 +1,6 @@
 import json
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ValidationError
 
@@ -10,10 +10,12 @@ from cueverge.core.models import (
     InstallationDefinition,
     LoadedScene,
     OpportunityProgramDefinition,
+    PixelSegment,
     ResourceBinding,
     ResourceKind,
     SceneCatalog,
     SceneDefinition,
+    SegmentReference,
     ShowProgramDefinition,
 )
 
@@ -156,6 +158,10 @@ def _bind_scene(
         raise ShowPackageError(f"scene {scene.id} lighting resource is not a pixel_output")
 
     lighting_segment = None
+    lighting_target_kind: Literal["segment", "fixture", "path"] | None = None
+    lighting_target_id = None
+    lighting_target_indices: tuple[int, ...] = ()
+    lighting_target_precedence = 0
     if scene.lighting.segment is not None:
         lighting_segment = next(
             (segment for segment in lighting.segments if segment.id == scene.lighting.segment),
@@ -165,6 +171,44 @@ def _bind_scene(
             raise ShowPackageError(
                 f"scene {scene.id} uses unknown pixel segment: {scene.lighting.segment}"
             )
+        lighting_target_kind = "segment"
+        lighting_target_id = lighting_segment.id
+        lighting_target_indices = tuple(range(lighting_segment.start, lighting_segment.end))
+    elif scene.lighting.target is not None:
+        target = scene.lighting.target
+        if target.kind == "segment":
+            lighting_segment = next(
+                (segment for segment in lighting.segments if segment.id == target.id),
+                None,
+            )
+            if lighting_segment is None:
+                raise ShowPackageError(f"scene {scene.id} uses unknown pixel segment: {target.id}")
+            references: tuple[tuple[PixelSegment, bool], ...] = ((lighting_segment, False),)
+        elif target.kind == "fixture":
+            fixture = next(
+                (fixture for fixture in lighting.fixtures if fixture.id == target.id),
+                None,
+            )
+            if fixture is None:
+                raise ShowPackageError(f"scene {scene.id} uses unknown pixel fixture: {target.id}")
+            lighting_target_precedence = fixture.precedence
+            references = _resolve_references(lighting, fixture.segments)
+        else:
+            path = next((path for path in lighting.paths if path.id == target.id), None)
+            if path is None:
+                raise ShowPackageError(f"scene {scene.id} uses unknown pixel path: {target.id}")
+            references = _resolve_references(lighting, path.segments)
+        lighting_target_kind = target.kind
+        lighting_target_id = target.id
+        lighting_target_indices = tuple(
+            index
+            for segment, reverse in references
+            for index in (
+                range(segment.end - 1, segment.start - 1, -1)
+                if reverse
+                else range(segment.start, segment.end)
+            )
+        )
 
     asset_id = _validate_asset_id(scene.media.asset) if scene.media.asset else None
     color = tuple(bytes.fromhex(scene.lighting.color.removeprefix("#")))
@@ -174,9 +218,21 @@ def _bind_scene(
         pixel_count=lighting.pixel_count,
         pixel_segments=lighting.segments,
         lighting_segment=lighting_segment,
+        lighting_target_kind=lighting_target_kind,
+        lighting_target_id=lighting_target_id,
+        lighting_target_indices=lighting_target_indices,
+        lighting_target_precedence=lighting_target_precedence,
         color=(color[0], color[1], color[2]),
         asset_id=asset_id,
     )
+
+
+def _resolve_references(
+    binding: ResourceBinding,
+    references: tuple[SegmentReference, ...],
+) -> tuple[tuple[PixelSegment, bool], ...]:
+    segments = {segment.id: segment for segment in binding.segments}
+    return tuple((segments[reference.segment], reference.reverse) for reference in references)
 
 
 def _validate_asset_id(asset: str) -> str:

@@ -15,7 +15,7 @@ from cueverge.core.events import ExternalEvent
 from cueverge.core.loader import load_show_package
 from cueverge.core.models import LoadedScene, SceneCatalog, SceneDefinition
 from cueverge.core.opportunities import OpportunityManager
-from cueverge.lighting.renderer import SegmentPulse, SyntheticSweep
+from cueverge.lighting.renderer import SegmentPulse, SyntheticSweep, TargetPulse
 from cueverge.lighting.sink import FrameSink, MemoryFrameSink, RenderedFrame
 from cueverge.observation.presence import AudiencePresenceEstimator
 from cueverge.protocol.models import (
@@ -539,16 +539,25 @@ class ControllerRuntime:
         lighting = active.definition.lighting
         if lighting.effect == "segment_pulse":
             segment = active.scene.lighting_segment
-            if segment is None:
-                raise RuntimeError("segment_pulse scene has no bound pixel segment")
-            pixels = SegmentPulse(
-                pixel_count=active.scene.pixel_count,
-                segment_start=segment.start,
-                segment_end=segment.end,
-                pulse_times_ms=lighting.pulse_times_ms,
-                pulse_duration_ms=lighting.pulse_duration_ms,
-                color=active.scene.color,
-            ).render(render_position_ms)
+            if active.scene.lighting_target_indices:
+                pixels = TargetPulse(
+                    pixel_count=active.scene.pixel_count,
+                    target_indices=active.scene.lighting_target_indices,
+                    pulse_times_ms=lighting.pulse_times_ms,
+                    pulse_duration_ms=lighting.pulse_duration_ms,
+                    color=active.scene.color,
+                ).render(render_position_ms)
+            elif segment is not None:
+                pixels = SegmentPulse(
+                    pixel_count=active.scene.pixel_count,
+                    segment_start=segment.start,
+                    segment_end=segment.end,
+                    pulse_times_ms=lighting.pulse_times_ms,
+                    pulse_duration_ms=lighting.pulse_duration_ms,
+                    color=active.scene.color,
+                ).render(render_position_ms)
+            else:
+                raise RuntimeError("segment_pulse scene has no bound pixel target")
         else:
             pixels = SyntheticSweep(
                 pixel_count=active.scene.pixel_count,
