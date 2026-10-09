@@ -65,6 +65,32 @@ def test_rejects_duplicate_scene_ids(tmp_path: Path) -> None:
         load_show_package(root)
 
 
+def test_rejects_unknown_completion_and_failure_scenes(tmp_path: Path) -> None:
+    root = _package(tmp_path)
+    scene_path = root / "scenes/scene.json"
+    scene = json.loads(scene_path.read_text(encoding="utf-8"))
+    scene["completion"] = {
+        "policy": "transition_to",
+        "target_scene_id": "missing-next",
+    }
+    scene["failure_scene_id"] = "missing-fallback"
+    scene_path.write_text(json.dumps(scene), encoding="utf-8")
+
+    with pytest.raises(ShowPackageError, match=r"missing-fallback.*missing-next"):
+        load_show_package(root)
+
+
+def test_rejects_invalid_completion_configuration(tmp_path: Path) -> None:
+    root = _package(tmp_path)
+    scene_path = root / "scenes/scene.json"
+    scene = json.loads(scene_path.read_text(encoding="utf-8"))
+    scene["completion"] = {"policy": "transition_to"}
+    scene_path.write_text(json.dumps(scene), encoding="utf-8")
+
+    with pytest.raises(ShowPackageError, match="requires target_scene_id"):
+        load_show_package(root)
+
+
 def test_loads_contiguous_pixel_segments(tmp_path: Path) -> None:
     root = _package(tmp_path)
     installation_path = root / "installation.json"

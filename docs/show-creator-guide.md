@@ -105,8 +105,9 @@ Supported now:
 Important current limitations:
 
 - There is no declarative playlist or multi-scene sequence.
-- Scene completion does not yet automatically select a next scene.
-- Loop behavior is not declared per scene.
+- Completion can loop, stop, hold, transition to a declared scene, or call a
+  show-director selector. Declarative director programming is not yet
+  implemented.
 - There is no independent sound-effect channel or audio ducking.
 - There is no video compositing, transparency layer, or simultaneous playback.
 - Media assets are deployed to the laptop's private asset root manually.

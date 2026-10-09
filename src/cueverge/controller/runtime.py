@@ -1,6 +1,7 @@
 import asyncio
 import time
-from collections.abc import Callable
+from collections import deque
+from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -21,11 +22,13 @@ from cueverge.protocol.models import (
     AgentWelcome,
     CommandAck,
     MediaPosition,
+    PlaybackState,
 )
 from cueverge.timing.follower import TelemetryDecision, TimecodeFollower
 
 Clock = Callable[[], float]
 EventClock = Callable[[], int]
+SceneSelector = Callable[["ActiveScene"], Awaitable[str | None]]
 
 
 class CommandChannel(Protocol):
@@ -72,6 +75,7 @@ class ControllerRuntime:
         controller_epoch: str | None = None,
         catalog: SceneCatalog | None = None,
         event_clock: EventClock | None = None,
+        scene_selector: SceneSelector | None = None,
     ) -> None:
         if render_fps <= 0:
             raise ValueError("render_fps must be positive")
@@ -92,6 +96,7 @@ class ControllerRuntime:
         self.controller_epoch = controller_epoch or str(uuid4())
         self.catalog = catalog or load_show_package(Path("shows/demo"))
         self.event_clock = event_clock or (lambda: round(time.time() * 1000))
+        self.scene_selector = scene_selector
         self.arbiter = ResourceArbiter()
         self.encounter = (
             EncounterEngine(
@@ -107,6 +112,9 @@ class ControllerRuntime:
         self._pending_commands: dict[str, PendingCommand] = {}
         self._render_task: asyncio.Task[None] | None = None
         self._encounter_task: asyncio.Task[None] | None = None
+        self._lifecycle_tasks: set[asyncio.Task[None]] = set()
+        self._handled_completion_sessions: set[str] = set()
+        self._completion_history: deque[str] = deque()
         self._degraded_reason: str | None = None
         self.rejected_telemetry = 0
         self.rejected_protocol_messages = 0
@@ -115,6 +123,9 @@ class ControllerRuntime:
         self.abandoned_commands = 0
         self.heartbeat_timeouts = 0
         self.reconciliations = 0
+        self.scene_completions = 0
+        self.scene_completion_errors = 0
+        self.scene_failovers = 0
         self.render_ticks = 0
         self.rendered_frames = 0
         self.render_ticks_without_timecode = 0
@@ -300,6 +311,8 @@ class ControllerRuntime:
             self.rejected_telemetry += 1
         else:
             connection.last_seen_at = self.clock()
+            if telemetry.state is PlaybackState.COMPLETED:
+                self._schedule_completion(active)
         return decision
 
     async def acknowledge_command(self, acknowledgment: CommandAck) -> TelemetryDecision:
@@ -321,6 +334,15 @@ class ControllerRuntime:
             self.command_errors += 1
             self._degraded_reason = f"command_error:{acknowledgment.error_code or 'unknown'}"
             self._cancel_render_loop()
+            if (
+                pending.command.command == "prepare"
+                and self.active_scene is not None
+                and self.active_scene.playback_session_id == pending.command.playback_session_id
+                and self.active_scene.definition.failure_scene_id is not None
+            ):
+                fallback = self.active_scene.definition.failure_scene_id
+                self.scene_failovers += 1
+                await self.start_scene(fallback)
         elif pending.command.command == "prepare" and self.active_scene is not None:
             await self._send_command(self.active_scene, "play", connection)
         return TelemetryDecision(True)
@@ -475,7 +497,71 @@ class ControllerRuntime:
     async def shutdown(self) -> None:
         await self._stop_render_loop()
         await self._stop_encounter_loop()
+        lifecycle_tasks = tuple(self._lifecycle_tasks)
+        for task in lifecycle_tasks:
+            task.cancel()
+        for task in lifecycle_tasks:
+            with suppress(asyncio.CancelledError):
+                await task
         self.sink.close()
+
+    async def wait_for_lifecycle_idle(self) -> None:
+        while self._lifecycle_tasks:
+            await asyncio.gather(*tuple(self._lifecycle_tasks), return_exceptions=True)
+
+    def _schedule_completion(self, active: ActiveScene) -> None:
+        session_id = active.playback_session_id
+        if session_id in self._handled_completion_sessions:
+            return
+        self._handled_completion_sessions.add(session_id)
+        self._completion_history.append(session_id)
+        if len(self._completion_history) > 1024:
+            expired = self._completion_history.popleft()
+            self._handled_completion_sessions.discard(expired)
+        task = asyncio.create_task(
+            self._apply_completion(active),
+            name=f"complete-{active.scene_instance_id}",
+        )
+        self._lifecycle_tasks.add(task)
+        task.add_done_callback(self._lifecycle_task_done)
+
+    async def _apply_completion(self, completed: ActiveScene) -> None:
+        active = self.active_scene
+        if active is None or active.playback_session_id != completed.playback_session_id:
+            return
+        self.scene_completions += 1
+        completion = completed.definition.completion
+        if completion.policy == "hold":
+            return
+        if completion.policy == "stop":
+            await self.stop()
+            return
+        if completion.policy == "loop":
+            await self.start_scene(completed.definition.id)
+            return
+        if completion.policy == "transition_to":
+            if completion.target_scene_id is None:
+                raise RuntimeError("transition_to completion has no target scene")
+            await self.start_scene(completion.target_scene_id)
+            return
+        if self.scene_selector is None:
+            self.scene_completion_errors += 1
+            self._degraded_reason = "scene_selector_unavailable"
+            return
+        selected = await self.scene_selector(completed)
+        if selected is None:
+            await self.stop()
+        else:
+            await self.start_scene(selected)
+
+    def _lifecycle_task_done(self, task: asyncio.Task[None]) -> None:
+        self._lifecycle_tasks.discard(task)
+        if task.cancelled():
+            return
+        error = task.exception()
+        if error is not None:
+            self.scene_completion_errors += 1
+            self._degraded_reason = f"scene_completion_error:{type(error).__name__}"
 
     async def _run_render_loop(self, scene_instance_id: str) -> None:
         interval = 1 / self.render_fps
@@ -581,6 +667,9 @@ class ControllerRuntime:
             "abandoned_commands": self.abandoned_commands,
             "heartbeat_timeouts": self.heartbeat_timeouts,
             "reconciliations": self.reconciliations,
+            "scene_completions": self.scene_completions,
+            "scene_completion_errors": self.scene_completion_errors,
+            "scene_failovers": self.scene_failovers,
             "rejected_protocol_messages": self.rejected_protocol_messages,
             "rendered_frames": self.rendered_frames,
             "rejected_telemetry": self.rejected_telemetry,

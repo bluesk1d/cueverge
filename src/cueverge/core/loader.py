@@ -40,6 +40,20 @@ def load_show_package(package_root: Path) -> SceneCatalog:
         if scene.id in scenes:
             raise ShowPackageError(f"duplicate scene id: {scene.id}")
         scenes[scene.id] = _bind_scene(root, scene, bindings)
+    for loaded_scene in scenes.values():
+        lifecycle_references = {
+            loaded_scene.definition.completion.target_scene_id,
+            loaded_scene.definition.failure_scene_id,
+        }
+        missing = {
+            scene_id
+            for scene_id in lifecycle_references
+            if scene_id is not None and scene_id not in scenes
+        }
+        if missing:
+            raise ShowPackageError(
+                f"scene {loaded_scene.definition.id} references unknown scenes: {sorted(missing)}"
+            )
     encounter_path = root / "encounter.json"
     encounter = (
         _validate_json(encounter_path, EncounterDefinition, "encounter")

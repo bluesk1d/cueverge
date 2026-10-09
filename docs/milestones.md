@@ -1,5 +1,8 @@
 # Milestones
 
+The current autonomous-show buildout is tracked in the
+[show readiness roadmap](show-readiness-roadmap.md).
+
 ## M0/M1: implemented in this bootstrap
 
 - Typed project, development commands, CI, architecture docs, and ADRs.

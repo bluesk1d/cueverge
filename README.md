@@ -44,4 +44,6 @@ deployment configuration are planned before any non-loopback deployment.
 
 See [the architecture](docs/architecture.md), [the protocol](docs/protocol.md),
 [the milestone plan](docs/milestones.md), and the
-[show creator guide](docs/show-creator-guide.md).
+[show creator guide](docs/show-creator-guide.md). Autonomous show capabilities
+are tracked in the
+[show readiness roadmap](docs/show-readiness-roadmap.md).

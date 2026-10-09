@@ -101,6 +101,19 @@ class LightingDefinition(FrozenModel):
         return self
 
 
+class CompletionDefinition(FrozenModel):
+    policy: Literal["loop", "select_next", "transition_to", "hold", "stop"] = "hold"
+    target_scene_id: str | None = Field(default=None, min_length=1)
+
+    @model_validator(mode="after")
+    def validate_target(self) -> "CompletionDefinition":
+        if self.policy == "transition_to" and self.target_scene_id is None:
+            raise ValueError("transition_to completion requires target_scene_id")
+        if self.policy != "transition_to" and self.target_scene_id is not None:
+            raise ValueError("target_scene_id is only valid for transition_to completion")
+        return self
+
+
 class SceneDefinition(FrozenModel):
     schema_version: Literal[1]
     id: str = Field(min_length=1)
@@ -112,6 +125,8 @@ class SceneDefinition(FrozenModel):
     duration_ms: int = Field(gt=0)
     media: MediaDefinition
     lighting: LightingDefinition
+    completion: CompletionDefinition = CompletionDefinition()
+    failure_scene_id: str | None = Field(default=None, min_length=1)
 
     @model_validator(mode="after")
     def validate_claims(self) -> "SceneDefinition":
@@ -126,6 +141,10 @@ class SceneDefinition(FrozenModel):
             for time_ms in self.lighting.pulse_times_ms
         ):
             raise ValueError("lighting pulse extends beyond scene duration")
+        if self.failure_scene_id == self.id:
+            raise ValueError("scene failure fallback cannot reference itself")
+        if self.completion.target_scene_id == self.id:
+            raise ValueError("scene completion target cannot reference itself")
         return self
 
 

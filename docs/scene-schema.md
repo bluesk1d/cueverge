@@ -53,6 +53,7 @@ A scene declares:
 - Every logical resource it claims.
 - A media resource and optional package-relative asset.
 - A lighting resource, supported effect name, and RGB color.
+- An optional completion policy and failure fallback scene.
 
 Referenced resources must be claimed and bound to the correct role. Asset IDs
 must be normalized relative paths without traversal. The media agent resolves
@@ -72,6 +73,27 @@ Version 1 supports `media_synchronized` scenes with:
 The pulse effect is useful for calibration and deterministic emphasis cues. It
 is driven by authoritative media time, so pause and seek behavior remains
 consistent with other lighting effects.
+
+## Scene lifecycle
+
+The optional `completion` object defaults to `{"policy": "hold"}` so existing
+scenes retain their final state. Supported policies are:
+
+- `loop`: start a new playback session for the same scene.
+- `transition_to`: start `target_scene_id`.
+- `select_next`: ask the configured show director for the next scene.
+- `hold`: retain the completed scene and deterministic final frame.
+- `stop`: stop media-dependent rendering and relinquish the active scene.
+
+Only `transition_to` accepts `target_scene_id`. A scene may also declare
+`failure_scene_id`; a failed `prepare` command starts that scene. Completion
+targets and failure scenes must exist in the same package and cannot reference
+the originating scene.
+
+Completion is fenced by playback session and applied once even if completed
+telemetry is delivered repeatedly or late. `select_next` requires a configured
+director; without one, the active scene is held and status reports
+`scene_selector_unavailable`.
 
 ## Encounters
 
