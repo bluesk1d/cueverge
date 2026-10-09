@@ -43,4 +43,5 @@ deployment configuration are planned before any non-loopback deployment.
   engine or public demo.
 
 See [the architecture](docs/architecture.md), [the protocol](docs/protocol.md),
-and [the milestone plan](docs/milestones.md).
+[the milestone plan](docs/milestones.md), and the
+[show creator guide](docs/show-creator-guide.md).
