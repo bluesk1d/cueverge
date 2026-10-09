@@ -360,6 +360,62 @@ def test_rejects_unknown_semantic_pixel_target(tmp_path: Path) -> None:
         load_show_package(root)
 
 
+def test_binds_multi_cue_lighting_timeline_targets(tmp_path: Path) -> None:
+    root = _package(tmp_path)
+    installation_path = root / "installation.json"
+    installation = json.loads(installation_path.read_text(encoding="utf-8"))
+    installation["resources"][1].update(
+        {
+            "segments": [
+                {"id": "left", "start": 0, "end": 4},
+                {"id": "right", "start": 4, "end": 8},
+            ],
+            "fixtures": [
+                {
+                    "id": "both",
+                    "precedence": 20,
+                    "segments": [
+                        {"segment": "left"},
+                        {"segment": "right", "reverse": True},
+                    ],
+                }
+            ],
+        }
+    )
+    installation_path.write_text(json.dumps(installation), encoding="utf-8")
+    scene_path = root / "scenes/scene.json"
+    scene = json.loads(scene_path.read_text(encoding="utf-8"))
+    scene["lighting"] = {
+        "resource": "roofline.demo",
+        "brightness_limit": 0.8,
+        "timeline": [
+            {
+                "id": "baseline",
+                "primitive": "solid",
+                "start_ms": 0,
+                "duration_ms": 4000,
+                "color": "#100020",
+            },
+            {
+                "id": "fixture-pulse",
+                "primitive": "pulse",
+                "start_ms": 1000,
+                "duration_ms": 1000,
+                "target": {"kind": "fixture", "id": "both"},
+                "precedence": 5,
+            },
+        ],
+    }
+    scene_path.write_text(json.dumps(scene), encoding="utf-8")
+
+    loaded = load_show_package(root).require("scene")
+
+    assert len(loaded.lighting_cues) == 2
+    assert loaded.lighting_cues[0].target_indices == tuple(range(8))
+    assert loaded.lighting_cues[1].target_indices == (0, 1, 2, 3, 7, 6, 5, 4)
+    assert loaded.lighting_cues[1].target_precedence == 25
+
+
 def _package(tmp_path: Path) -> Path:
     root = tmp_path / "show"
     scenes = root / "scenes"

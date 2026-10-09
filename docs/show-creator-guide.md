@@ -124,7 +124,7 @@ Lighting is evaluated deterministically from media milliseconds. This means a
 frame can be recalculated after pause, seek, reconnection, or timing
 correction.
 
-Two effects are implemented:
+Legacy scenes support two single effects:
 
 #### `synthetic_sweep`
 
@@ -147,7 +147,18 @@ This is suitable for synchronized accents but cannot yet express fades,
 traveling pulses, multisegment choreography, brightness curves, or layered
 looks.
 
-### Lighting features that may be requested
+### Multi-cue lighting timelines
+
+Scenes can now combine timecoded solid, blackout, envelope, pulse, chase,
+path-sweep, seeded flicker, seeded sparkle, ripple, and color-transition cues.
+Cues target the full output or semantic segments, fixtures, and paths. Explicit
+precedence and replace/add/max/multiply blending allow simultaneous effects,
+and a scene-level brightness limit applies after composition.
+
+Every effect remains a pure function of media time and seed, so pause, seek,
+and reconnect reproduce the same frame.
+
+### Lighting features that may still be requested
 
 The show definition should freely request effects such as:
 
@@ -162,16 +173,14 @@ The show definition should freely request effects such as:
 - Multiple colors or simultaneous segment groups.
 - Deterministic variation selected from a seed.
 
-These are reasonable generic Cueverge features, but they are not implemented
-until explicitly added and tested. For every requested effect, describe its
-visible result, target geometry, timing, colors, direction, repetition, and
-behavior under pause or seek.
+The initial generic set is implemented and tested. For any additional
+primitive, describe its visible result, target geometry, timing, colors,
+direction, repetition, and behavior under pause or seek.
 
-Semantic fixtures and ordered paths are now supported in installation
+Semantic fixtures and ordered paths are supported in installation
 configuration. A scene can target a segment, a fixture such as the concealed
 mouth lighting, or a direction-aware architectural path without embedding
-pixel indices. Multi-cue effects and blending remain the next renderer
-increment.
+pixel indices.
 
 ## 4. Encounters and external events
 

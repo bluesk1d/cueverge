@@ -99,6 +99,71 @@ repeat a segment, and every referenced segment must exist on the same output.
 The legacy `segment` field remains supported, but a pulse must specify exactly
 one legacy segment or semantic target.
 
+## Multi-cue lighting timelines
+
+Instead of one legacy effect, a scene may declare a deterministic timeline:
+
+```json
+{
+  "resource": "roofline",
+  "brightness_limit": 0.8,
+  "timeline": [
+    {
+      "id": "ship-baseline",
+      "primitive": "solid",
+      "start_ms": 0,
+      "duration_ms": 12000,
+      "target": {"kind": "fixture", "id": "spaceship-exterior"},
+      "color": "#100020",
+      "precedence": 0
+    },
+    {
+      "id": "raygun-path",
+      "primitive": "path_sweep",
+      "start_ms": 8200,
+      "duration_ms": 1900,
+      "target": {"kind": "path", "id": "garage-to-mouth"},
+      "color": "#00FF66",
+      "width_pixels": 5,
+      "blend_mode": "max",
+      "precedence": 20
+    }
+  ]
+}
+```
+
+Every cue has a unique ID, start, duration, optional semantic target, color,
+brightness, blend mode, and precedence. A cue without a target addresses the
+whole output. Fixture precedence is added to cue precedence; lower values
+render first and higher values render later. Declaration order resolves equal
+precedence.
+
+Supported primitives:
+
+| Primitive | Behavior |
+|---|---|
+| `solid` | Constant color and brightness |
+| `blackout` | Replaces the target with black |
+| `envelope` | Color with optional fade-in and fade-out |
+| `pulse` | Smooth periodic sine-squared brightness pulse |
+| `chase` | Moving pixel window across target order |
+| `path_sweep` | Moving window across an ordered semantic path |
+| `flicker` | Seeded, bucketed whole-target brightness variation |
+| `sparkle` | Seeded, bucketed spatial accents using `density` |
+| `ripple` | Expanding symmetric ring through target order |
+| `color_transition` | Linear RGB interpolation to `end_color` |
+
+Common parameters include `brightness`, `end_brightness`, `fade_in_ms`,
+`fade_out_ms`, `period_ms`, `width_pixels`, `density`, `seed`, and `reverse`.
+Blend modes are `replace`, saturating `add`, per-channel `max`, and
+`multiply`. After all active cues blend, `brightness_limit` scales the final
+RGB frame.
+
+All randomness is derived from cue seed, media-time bucket, and pixel index.
+Rendering the same media timestamp therefore returns the same frame after
+pause, seek, or reconnect. Cue ranges and fades must fit within the scene.
+Timeline form and legacy `effect` form are mutually exclusive.
+
 ## Scenes
 
 A scene declares:

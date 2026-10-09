@@ -8,6 +8,8 @@ from cueverge.core.models import (
     AudiencePresenceDefinition,
     EncounterDefinition,
     InstallationDefinition,
+    LightingTargetDefinition,
+    LoadedLightingCue,
     LoadedScene,
     OpportunityProgramDefinition,
     PixelSegment,
@@ -176,39 +178,29 @@ def _bind_scene(
         lighting_target_indices = tuple(range(lighting_segment.start, lighting_segment.end))
     elif scene.lighting.target is not None:
         target = scene.lighting.target
-        if target.kind == "segment":
-            lighting_segment = next(
-                (segment for segment in lighting.segments if segment.id == target.id),
-                None,
-            )
-            if lighting_segment is None:
-                raise ShowPackageError(f"scene {scene.id} uses unknown pixel segment: {target.id}")
-            references: tuple[tuple[PixelSegment, bool], ...] = ((lighting_segment, False),)
-        elif target.kind == "fixture":
-            fixture = next(
-                (fixture for fixture in lighting.fixtures if fixture.id == target.id),
-                None,
-            )
-            if fixture is None:
-                raise ShowPackageError(f"scene {scene.id} uses unknown pixel fixture: {target.id}")
-            lighting_target_precedence = fixture.precedence
-            references = _resolve_references(lighting, fixture.segments)
-        else:
-            path = next((path for path in lighting.paths if path.id == target.id), None)
-            if path is None:
-                raise ShowPackageError(f"scene {scene.id} uses unknown pixel path: {target.id}")
-            references = _resolve_references(lighting, path.segments)
+        (
+            lighting_target_indices,
+            lighting_target_precedence,
+            lighting_segment,
+        ) = _resolve_target(lighting, target, scene.id)
         lighting_target_kind = target.kind
         lighting_target_id = target.id
-        lighting_target_indices = tuple(
-            index
-            for segment, reverse in references
-            for index in (
-                range(segment.end - 1, segment.start - 1, -1)
-                if reverse
-                else range(segment.start, segment.end)
-            )
+    loaded_cues = tuple(
+        LoadedLightingCue(
+            definition=cue,
+            target_indices=(
+                _resolve_target(lighting, cue.target, scene.id)[0]
+                if cue.target is not None
+                else tuple(range(lighting.pixel_count))
+            ),
+            target_precedence=(
+                _resolve_target(lighting, cue.target, scene.id)[1] + cue.precedence
+                if cue.target is not None
+                else cue.precedence
+            ),
         )
+        for cue in scene.lighting.timeline
+    )
 
     asset_id = _validate_asset_id(scene.media.asset) if scene.media.asset else None
     color = tuple(bytes.fromhex(scene.lighting.color.removeprefix("#")))
@@ -222,9 +214,51 @@ def _bind_scene(
         lighting_target_id=lighting_target_id,
         lighting_target_indices=lighting_target_indices,
         lighting_target_precedence=lighting_target_precedence,
+        lighting_cues=loaded_cues,
         color=(color[0], color[1], color[2]),
         asset_id=asset_id,
     )
+
+
+def _resolve_target(
+    binding: ResourceBinding,
+    target: LightingTargetDefinition,
+    scene_id: str,
+) -> tuple[tuple[int, ...], int, PixelSegment | None]:
+    lighting_segment = None
+    precedence = 0
+    if target.kind == "segment":
+        lighting_segment = next(
+            (segment for segment in binding.segments if segment.id == target.id),
+            None,
+        )
+        if lighting_segment is None:
+            raise ShowPackageError(f"scene {scene_id} uses unknown pixel segment: {target.id}")
+        references: tuple[tuple[PixelSegment, bool], ...] = ((lighting_segment, False),)
+    elif target.kind == "fixture":
+        fixture = next(
+            (fixture for fixture in binding.fixtures if fixture.id == target.id),
+            None,
+        )
+        if fixture is None:
+            raise ShowPackageError(f"scene {scene_id} uses unknown pixel fixture: {target.id}")
+        precedence = fixture.precedence
+        references = _resolve_references(binding, fixture.segments)
+    else:
+        path = next((path for path in binding.paths if path.id == target.id), None)
+        if path is None:
+            raise ShowPackageError(f"scene {scene_id} uses unknown pixel path: {target.id}")
+        references = _resolve_references(binding, path.segments)
+    indices = tuple(
+        index
+        for segment, reverse in references
+        for index in (
+            range(segment.end - 1, segment.start - 1, -1)
+            if reverse
+            else range(segment.start, segment.end)
+        )
+    )
+    return indices, precedence, lighting_segment
 
 
 def _resolve_references(

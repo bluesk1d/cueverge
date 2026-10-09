@@ -17,6 +17,7 @@ from cueverge.core.models import LoadedScene, SceneCatalog, SceneDefinition
 from cueverge.core.opportunities import OpportunityManager
 from cueverge.lighting.renderer import SegmentPulse, SyntheticSweep, TargetPulse
 from cueverge.lighting.sink import FrameSink, MemoryFrameSink, RenderedFrame
+from cueverge.lighting.timeline import LightingTimeline
 from cueverge.observation.presence import AudiencePresenceEstimator
 from cueverge.protocol.models import (
     AgentCommand,
@@ -537,7 +538,13 @@ class ControllerRuntime:
         rendered_at = self.clock()
         render_position_ms = max(0, estimate.position_ms - self.lighting_delay_ms)
         lighting = active.definition.lighting
-        if lighting.effect == "segment_pulse":
+        if lighting.timeline:
+            pixels = LightingTimeline(
+                pixel_count=active.scene.pixel_count,
+                cues=active.scene.lighting_cues,
+                brightness_limit=lighting.brightness_limit,
+            ).render(render_position_ms)
+        elif lighting.effect == "segment_pulse":
             segment = active.scene.lighting_segment
             if active.scene.lighting_target_indices:
                 pixels = TargetPulse(

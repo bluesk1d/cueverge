@@ -124,17 +124,68 @@ class LightingTargetDefinition(FrozenModel):
     id: str = Field(min_length=1)
 
 
+class LightingCue(FrozenModel):
+    id: str = Field(min_length=1)
+    primitive: Literal[
+        "solid",
+        "blackout",
+        "envelope",
+        "pulse",
+        "chase",
+        "path_sweep",
+        "flicker",
+        "sparkle",
+        "ripple",
+        "color_transition",
+    ]
+    start_ms: int = Field(ge=0)
+    duration_ms: int = Field(gt=0)
+    target: LightingTargetDefinition | None = None
+    color: str = Field(default="#FFFFFF", pattern=r"^#[0-9A-Fa-f]{6}$")
+    end_color: str | None = Field(default=None, pattern=r"^#[0-9A-Fa-f]{6}$")
+    brightness: float = Field(default=1.0, ge=0, le=1)
+    end_brightness: float | None = Field(default=None, ge=0, le=1)
+    fade_in_ms: int = Field(default=0, ge=0)
+    fade_out_ms: int = Field(default=0, ge=0)
+    period_ms: int = Field(default=200, gt=0)
+    width_pixels: int = Field(default=1, gt=0)
+    density: float = Field(default=0.1, gt=0, le=1)
+    seed: int = 0
+    reverse: bool = False
+    blend_mode: Literal["replace", "add", "max", "multiply"] = "replace"
+    precedence: int = Field(default=0, ge=0, le=1000)
+
+    @model_validator(mode="after")
+    def validate_timing(self) -> "LightingCue":
+        if self.fade_in_ms + self.fade_out_ms > self.duration_ms:
+            raise ValueError("cue fades exceed cue duration")
+        if self.primitive == "color_transition" and self.end_color is None:
+            raise ValueError("color_transition requires end_color")
+        return self
+
+
 class LightingDefinition(FrozenModel):
     resource: str = Field(min_length=1)
-    effect: Literal["synthetic_sweep", "segment_pulse"]
+    effect: Literal["synthetic_sweep", "segment_pulse"] | None = None
     color: str = Field(default="#00FF60", pattern=r"^#[0-9A-Fa-f]{6}$")
     segment: str | None = Field(default=None, min_length=1)
     target: LightingTargetDefinition | None = None
     pulse_times_ms: tuple[int, ...] = ()
     pulse_duration_ms: int = Field(default=120, gt=0)
+    timeline: tuple[LightingCue, ...] = ()
+    brightness_limit: float = Field(default=1.0, gt=0, le=1)
 
     @model_validator(mode="after")
     def validate_effect_configuration(self) -> "LightingDefinition":
+        if (self.effect is None) == (not self.timeline):
+            raise ValueError("lighting requires exactly one legacy effect or timeline")
+        if self.timeline:
+            cue_ids = [cue.id for cue in self.timeline]
+            if len(cue_ids) != len(set(cue_ids)):
+                raise ValueError("lighting cue IDs must be unique")
+            if self.segment is not None or self.target is not None or self.pulse_times_ms:
+                raise ValueError("timeline lighting cannot define legacy effect fields")
+            return self
         if self.effect == "segment_pulse":
             if (self.segment is None) == (self.target is None):
                 raise ValueError("segment_pulse effect requires exactly one segment or target")
@@ -221,6 +272,8 @@ class SceneDefinition(FrozenModel):
             for time_ms in self.lighting.pulse_times_ms
         ):
             raise ValueError("lighting pulse extends beyond scene duration")
+        if any(cue.start_ms + cue.duration_ms > self.duration_ms for cue in self.lighting.timeline):
+            raise ValueError("lighting cue extends beyond scene duration")
         if self.failure_scene_id == self.id:
             raise ValueError("scene failure fallback cannot reference itself")
         if self.completion.target_scene_id == self.id:
@@ -244,8 +297,15 @@ class LoadedScene(FrozenModel):
     lighting_target_id: str | None = None
     lighting_target_indices: tuple[int, ...] = ()
     lighting_target_precedence: int = 0
+    lighting_cues: tuple["LoadedLightingCue", ...] = ()
     color: tuple[int, int, int]
     asset_id: str | None = None
+
+
+class LoadedLightingCue(FrozenModel):
+    definition: LightingCue
+    target_indices: tuple[int, ...]
+    target_precedence: int = 0
 
 
 class SceneCatalog(FrozenModel):
