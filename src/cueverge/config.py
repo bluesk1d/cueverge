@@ -1,7 +1,7 @@
 import os
 from pathlib import Path
 
-from pydantic import AnyUrl, BaseModel, ConfigDict, Field, model_validator
+from pydantic import AnyUrl, BaseModel, ConfigDict, Field, SecretStr, model_validator
 
 
 class RuntimeConfig(BaseModel):
@@ -63,23 +63,60 @@ class DdpOutputConfig(RuntimeConfig):
         return self
 
 
+class FrigateMqttConfig(RuntimeConfig):
+    enabled: bool = False
+    host: str | None = None
+    port: int = Field(default=1883, ge=1, le=65535)
+    topic: str = Field(default="frigate/events", min_length=1)
+    username: str | None = None
+    password: SecretStr | None = None
+    reconnect_delay_ms: int = Field(default=5000, ge=100)
+    accepted_labels: tuple[str, ...] = ("person",)
+
+    @model_validator(mode="after")
+    def validate_connection(self) -> "FrigateMqttConfig":
+        if self.enabled and not self.host:
+            raise ValueError("enabled Frigate MQTT ingress requires a host")
+        if self.password is not None and self.username is None:
+            raise ValueError("Frigate MQTT password requires a username")
+        if not self.accepted_labels or any(not label for label in self.accepted_labels):
+            raise ValueError("Frigate MQTT accepted_labels must not be empty")
+        return self
+
+
 class ControllerConfig(RuntimeConfig):
     show_package: Path = Path("shows/demo")
     ddp: DdpOutputConfig = DdpOutputConfig()
+    frigate_mqtt: FrigateMqttConfig = FrigateMqttConfig()
     lighting_delay_ms: int = Field(default=0, ge=0, le=5000)
 
     @classmethod
     def from_environment(cls) -> "ControllerConfig":
-        enabled = os.environ.get("CUEVERGE_DDP_ENABLED", "").lower() in {"1", "true", "yes"}
+        ddp_enabled = _env_enabled("CUEVERGE_DDP_ENABLED")
+        frigate_enabled = _env_enabled("CUEVERGE_FRIGATE_MQTT_ENABLED")
         return cls(
             show_package=Path(os.environ.get("CUEVERGE_SHOW_PACKAGE", "shows/demo")),
             lighting_delay_ms=int(os.environ.get("CUEVERGE_LIGHTING_DELAY_MS", "0")),
             ddp=DdpOutputConfig(
-                enabled=enabled,
+                enabled=ddp_enabled,
                 host=os.environ.get("CUEVERGE_DDP_HOST"),
                 port=int(os.environ.get("CUEVERGE_DDP_PORT", "4048")),
                 expected_pixel_count=_optional_int(os.environ.get("CUEVERGE_DDP_PIXEL_COUNT")),
                 brightness_limit=float(os.environ.get("CUEVERGE_DDP_BRIGHTNESS_LIMIT", "1.0")),
+            ),
+            frigate_mqtt=FrigateMqttConfig(
+                enabled=frigate_enabled,
+                host=os.environ.get("CUEVERGE_FRIGATE_MQTT_HOST"),
+                port=int(os.environ.get("CUEVERGE_FRIGATE_MQTT_PORT", "1883")),
+                topic=os.environ.get("CUEVERGE_FRIGATE_MQTT_TOPIC", "frigate/events"),
+                username=os.environ.get("CUEVERGE_FRIGATE_MQTT_USERNAME"),
+                password=_optional_secret(os.environ.get("CUEVERGE_FRIGATE_MQTT_PASSWORD")),
+                reconnect_delay_ms=int(
+                    os.environ.get("CUEVERGE_FRIGATE_MQTT_RECONNECT_DELAY_MS", "5000")
+                ),
+                accepted_labels=_csv_values(
+                    os.environ.get("CUEVERGE_FRIGATE_ACCEPTED_LABELS", "person")
+                ),
             ),
         )
 
@@ -93,3 +130,15 @@ def _required_env(name: str) -> str:
     if not value:
         raise ValueError(f"missing media agent environment setting: {name}")
     return value
+
+
+def _env_enabled(name: str) -> bool:
+    return os.environ.get(name, "").lower() in {"1", "true", "yes"}
+
+
+def _csv_values(value: str) -> tuple[str, ...]:
+    return tuple(item.strip() for item in value.split(",") if item.strip())
+
+
+def _optional_secret(value: str | None) -> SecretStr | None:
+    return SecretStr(value) if value is not None else None

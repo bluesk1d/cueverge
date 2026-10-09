@@ -27,6 +27,28 @@ class MemoryCommandChannel:
         self.sent.append(data)
 
 
+@dataclass
+class FakeEventIngress:
+    started: bool = False
+    stopped: bool = False
+
+    def start(self) -> None:
+        self.started = True
+
+    async def stop(self) -> None:
+        self.stopped = True
+
+
+def test_event_ingress_follows_application_lifespan() -> None:
+    ingress = FakeEventIngress()
+
+    with TestClient(create_app(ControllerRuntime(), ingress)):
+        assert ingress.started
+        assert not ingress.stopped
+
+    assert ingress.stopped
+
+
 def test_api_agent_timecode_rendering_and_disconnect() -> None:
     clock = ManualClock()
     runtime = ControllerRuntime(clock=clock)

@@ -1,5 +1,6 @@
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import Protocol
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -8,6 +9,7 @@ from cueverge.config import ControllerConfig
 from cueverge.controller.runtime import ControllerRuntime
 from cueverge.core.events import ExternalEvent
 from cueverge.core.loader import load_show_package
+from cueverge.integrations.mqtt import FrigateMqttIngress
 from cueverge.lighting.ddp import DdpUdpSink
 from cueverge.lighting.sink import FrameSink, MemoryFrameSink
 from cueverge.protocol.models import (
@@ -76,14 +78,32 @@ class SeekRequest(BaseModel):
     position_ms: int = Field(ge=0)
 
 
-def create_app(runtime: ControllerRuntime | None = None) -> FastAPI:
-    controller = runtime or _configured_runtime()
+class EventIngress(Protocol):
+    def start(self) -> None: ...
+
+    async def stop(self) -> None: ...
+
+
+def create_app(
+    runtime: ControllerRuntime | None = None,
+    event_ingress: EventIngress | None = None,
+) -> FastAPI:
+    controller, configured_ingress = (
+        (runtime, event_ingress) if runtime is not None else _configured_components()
+    )
+    ingress = event_ingress or configured_ingress
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         controller.start_background_tasks()
-        yield
-        await controller.shutdown()
+        if ingress is not None:
+            ingress.start()
+        try:
+            yield
+        finally:
+            if ingress is not None:
+                await ingress.stop()
+            await controller.shutdown()
 
     app = FastAPI(title="Cueverge Controller", version="0.1.0", lifespan=lifespan)
     app.state.runtime = controller
@@ -247,7 +267,7 @@ def create_app(runtime: ControllerRuntime | None = None) -> FastAPI:
     return app
 
 
-def _configured_runtime() -> ControllerRuntime:
+def _configured_components() -> tuple[ControllerRuntime, EventIngress | None]:
     config = ControllerConfig.from_environment()
     sink: FrameSink = (
         DdpUdpSink(
@@ -261,11 +281,17 @@ def _configured_runtime() -> ControllerRuntime:
         if config.ddp.enabled
         else MemoryFrameSink()
     )
-    return ControllerRuntime(
+    runtime = ControllerRuntime(
         sink=sink,
         catalog=load_show_package(config.show_package),
         lighting_delay_ms=config.lighting_delay_ms,
     )
+    ingress = (
+        FrigateMqttIngress(config.frigate_mqtt, runtime.ingest_event)
+        if config.frigate_mqtt.enabled
+        else None
+    )
+    return runtime, ingress
 
 
 app = create_app()

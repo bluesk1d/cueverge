@@ -61,6 +61,26 @@ bounded by the local receive time to prevent future observations from entering
 the controller. MQTT transport is an opt-in adapter and is not required for
 direct `POST /api/v1/events` ingestion.
 
+Enable direct MQTT ingestion with environment configuration:
+
+```text
+CUEVERGE_FRIGATE_MQTT_ENABLED=true
+CUEVERGE_FRIGATE_MQTT_HOST=mqtt.example
+CUEVERGE_FRIGATE_MQTT_PORT=1883
+CUEVERGE_FRIGATE_MQTT_TOPIC=frigate/events
+CUEVERGE_FRIGATE_MQTT_USERNAME=cueverge
+CUEVERGE_FRIGATE_MQTT_PASSWORD=...
+CUEVERGE_FRIGATE_ACCEPTED_LABELS=person
+```
+
+Only the enabled flag and host are required; the port, topic, reconnect delay,
+and accepted labels have defaults. Username and password are optional for
+anonymous brokers, but a password requires a username. Credentials belong in
+the deployment environment and must not be stored in show packages or source
+control. The ingress reconnects after broker failures, logs invalid payloads
+without stopping, and starts and stops with the controller application
+lifespan.
+
 An independent controller timer advances inactivity and cooldown transitions
 without requiring new traffic. Automatic scene requests use declared scene
 priority and interruption policy. Direct scene-start API calls are operator
