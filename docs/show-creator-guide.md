@@ -24,6 +24,8 @@ coordinates:
 - External observations such as Frigate person and zone events.
 - Stateful encounters with timeout, cooldown, priority, and ambient recovery.
 - Direct operator scene control.
+- Automatic, disabled, maintenance, and blackout operating modes.
+- Accelerated deterministic simulation using fake media and in-memory lighting.
 
 The controller decides **which scene is active**. The media player decides
 **where that scene is in time**. Lighting follows the observed media clock, not
@@ -501,6 +503,22 @@ Explicitly decide:
 - Copyright/licensing status.
 
 ### K. Operator controls
+
+The generic controller API now provides:
+
+- `POST /api/v1/show/mode` with `automatic`, `disabled`, `maintenance`, or
+  `blackout`.
+- `POST /api/v1/show/reset` to return to encounter ambient or the program's
+  initial scene.
+- `POST /api/v1/blackout` for an explicit all-black output frame.
+- Direct scene start, pause, resume, seek, stop, and show-start endpoints.
+- `GET /api/v1/status` for current mode, active scene, queued scenes, audience
+  state, recent privacy-preserving observations, opportunities, director
+  eligibility/cooldowns, connected agents, and adapter capability status.
+
+Automatic observations are rejected outside automatic mode. Direct scene
+starts remain available in maintenance and blackout modes so an operator can
+test or recover the installation deliberately.
 
 List the controls needed for:
 

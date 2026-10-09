@@ -136,6 +136,15 @@ def test_runtime_starts_program_and_uses_director_at_completion() -> None:
             "recent_history": ["ambient"],
             "selection_count": 2,
             "no_eligible_scene_count": 0,
+            "eligible_scene_ids": ["ambient"],
+            "eligibility": {
+                "ambient": {
+                    "eligible": True,
+                    "available": True,
+                    "conditions_match": True,
+                    "cooldown_remaining_ms": 0,
+                }
+            },
         }
         await runtime.shutdown()
 

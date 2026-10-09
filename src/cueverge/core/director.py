@@ -61,10 +61,19 @@ class ShowDirector:
 
     def status(self) -> dict[str, object]:
         pool = self._pools[self._active_pool_id]
+        now_ms = self._clock()
+        context = self._context_provider()
+        eligibility = {
+            entry.scene_id: self._eligibility(entry, now_ms, context) for entry in pool.scenes
+        }
         return {
             "active_pool_id": self._active_pool_id,
             "active_category": pool.category,
             "recent_history": list(self._history),
+            "eligible_scene_ids": [
+                scene_id for scene_id, details in eligibility.items() if details["eligible"]
+            ],
+            "eligibility": eligibility,
             "selection_count": self.selection_count,
             "no_eligible_scene_count": self.no_eligible_scene_count,
         }
@@ -81,11 +90,28 @@ class ShowDirector:
             entry
             for entry in self._pools[self._active_pool_id].scenes
             if entry.scene_id not in recent
-            and self._scene_available(entry.scene_id)
-            and now_ms - self._selected_at.get(entry.scene_id, -entry.cooldown_ms)
-            >= entry.cooldown_ms
-            and all(context.get(key) == value for key, value in entry.conditions.items())
+            and self._eligibility(entry, now_ms, context)["eligible"]
         ]
+
+    def _eligibility(
+        self,
+        entry: ProgramScene,
+        now_ms: int,
+        context: Mapping[str, str | int | float | bool],
+    ) -> dict[str, object]:
+        available = self._scene_available(entry.scene_id)
+        cooldown_remaining_ms = max(
+            0,
+            entry.cooldown_ms
+            - (now_ms - self._selected_at.get(entry.scene_id, -entry.cooldown_ms)),
+        )
+        conditions_match = all(context.get(key) == value for key, value in entry.conditions.items())
+        return {
+            "eligible": available and cooldown_remaining_ms == 0 and conditions_match,
+            "available": available,
+            "cooldown_remaining_ms": cooldown_remaining_ms,
+            "conditions_match": conditions_match,
+        }
 
     def _weighted_choice(self, entries: list[ProgramScene]) -> ProgramScene:
         total = sum(entry.weight for entry in entries)

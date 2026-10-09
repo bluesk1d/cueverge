@@ -183,6 +183,34 @@ def test_media_control_api_requires_active_scene() -> None:
         assert client.post("/api/v1/seek", json={"position_ms": -1}).status_code == 422
 
 
+def test_operations_api_controls_mode_reset_and_blackout() -> None:
+    runtime = ControllerRuntime()
+    agent = FakeMediaAgent()
+    agent.accept_welcome(runtime.register_agent(agent.hello(), MemoryCommandChannel(sent=[])))
+
+    with TestClient(create_app(runtime)) as client:
+        assert client.post(
+            "/api/v1/show/mode",
+            json={"mode": "maintenance"},
+        ).json() == {"mode": "maintenance"}
+        assert client.get("/api/v1/status").json()["operations"] == {
+            "show_enabled": False,
+            "mode": "maintenance",
+        }
+
+        started = client.post("/api/v1/scenes/operator-override/start")
+        assert started.status_code == 200
+        reset = client.post("/api/v1/show/reset")
+        assert reset.status_code == 200
+        assert reset.json()["scene_id"] == "ambient"
+
+        assert client.post("/api/v1/blackout").json() == {"mode": "blackout"}
+        status = client.get("/api/v1/status").json()
+        assert status["active_scene"] is None
+        assert status["health"]["media_agent"] == "connected"
+        assert status["health"]["projector"] == "not_independently_detectable"
+
+
 def test_generic_event_api_starts_declarative_encounter() -> None:
     event_clock = ManualClock(now=10.0)
     runtime = ControllerRuntime(event_clock=lambda: round(event_clock.now * 1000))

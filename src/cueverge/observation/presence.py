@@ -1,3 +1,4 @@
+from collections import deque
 from dataclasses import dataclass
 from enum import StrEnum
 
@@ -31,6 +32,7 @@ class AudiencePresenceEstimator:
         self._previous_absence_ms = 0
         self._now_ms = 0
         self._long_idle_emitted = False
+        self._recent_observations: deque[dict[str, object]] = deque(maxlen=20)
         self.semantic_events_emitted = 0
         self.relevant_observations = 0
         self.ignored_observations = 0
@@ -45,6 +47,16 @@ class AudiencePresenceEstimator:
         self._seen_events[dedupe_key] = now_ms + self.definition.observation_freshness_ms
 
         relevant = self._apply_observation(event, now_ms)
+        self._recent_observations.append(
+            {
+                "event_type": event.event_type,
+                "camera": event.attributes.get("camera"),
+                "zone": event.attributes.get("zone"),
+                "occurred_at_ms": event.occurred_at_ms,
+                "received_at_ms": now_ms,
+                "relevant": relevant,
+            }
+        )
         if relevant:
             self.relevant_observations += 1
         else:
@@ -80,6 +92,7 @@ class AudiencePresenceEstimator:
             "semantic_events_emitted": self.semantic_events_emitted,
             "relevant_observations": self.relevant_observations,
             "ignored_observations": self.ignored_observations,
+            "recent_observations": list(self._recent_observations),
         }
 
     def _apply_observation(self, event: ExternalEvent, now_ms: int) -> bool:

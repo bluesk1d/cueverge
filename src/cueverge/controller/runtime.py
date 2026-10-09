@@ -4,6 +4,7 @@ from collections import deque
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 from typing import Any, Literal, Protocol
 from uuid import uuid4
@@ -37,6 +38,13 @@ SceneSelector = Callable[["ActiveScene"], Awaitable[str | None]]
 
 class CommandChannel(Protocol):
     async def send_json(self, data: Any) -> None: ...
+
+
+class ShowMode(StrEnum):
+    AUTOMATIC = "automatic"
+    DISABLED = "disabled"
+    MAINTENANCE = "maintenance"
+    BLACKOUT = "blackout"
 
 
 @dataclass(frozen=True)
@@ -143,6 +151,7 @@ class ControllerRuntime:
         self._completion_history: deque[str] = deque()
         self._last_media_positions: dict[str, int] = {}
         self._degraded_reason: str | None = None
+        self.show_mode = ShowMode.AUTOMATIC
         self.rejected_telemetry = 0
         self.rejected_protocol_messages = 0
         self.command_errors = 0
@@ -277,6 +286,23 @@ class ControllerRuntime:
             raise RuntimeError("show package does not define a program")
         return await self.start_scene(self.director.start())
 
+    async def set_show_mode(self, mode: ShowMode) -> None:
+        self.show_mode = mode
+        if mode is ShowMode.AUTOMATIC:
+            return
+        await self.stop(continue_queue=False)
+        if mode is ShowMode.BLACKOUT:
+            self._emit_blackout()
+
+    async def reset_ambient(self) -> ActiveScene:
+        if self.encounter is not None:
+            scene_id = self.encounter.definition.ambient_scene_id
+        elif self.director is not None:
+            scene_id = self.director.definition.initial_scene_id
+        else:
+            raise RuntimeError("show package does not define an ambient scene")
+        return await self.start_scene(scene_id)
+
     async def request_scene(self, scene_id: str) -> str:
         incoming = self.catalog.require(scene_id)
         active = self.active_scene.scene if self.active_scene is not None else None
@@ -309,6 +335,15 @@ class ControllerRuntime:
         )
 
     async def ingest_event(self, event: ExternalEvent) -> EventOutcome:
+        if self.show_mode is not ShowMode.AUTOMATIC:
+            state = (
+                self.encounter.state
+                if self.encounter is not None
+                else self.audience.state.value
+                if self.audience is not None
+                else "inactive"
+            )
+            return EventOutcome(False, "show_not_automatic", state, None)
         if self.encounter is None and self.audience is None:
             raise RuntimeError("show package does not define an encounter")
         now_ms = self.event_clock()
@@ -646,6 +681,21 @@ class ControllerRuntime:
         )
         self.rendered_frames += 1
 
+    def _emit_blackout(self) -> None:
+        pixel_count = (
+            self.catalog.lighting_looks.pixel_count
+            if self.catalog.lighting_looks is not None
+            else next(iter(self.catalog.scenes.values())).pixel_count
+        )
+        self.sink.send(
+            RenderedFrame(
+                scene_instance_id="blackout",
+                position_ms=0,
+                pixels=((0, 0, 0),) * pixel_count,
+            )
+        )
+        self.rendered_frames += 1
+
     async def shutdown(self) -> None:
         await self._stop_render_loop()
         await self._stop_encounter_loop()
@@ -879,4 +929,14 @@ class ControllerRuntime:
             ),
             "encounter_loop_running": self.encounter_loop_running,
             "queued_scenes": [scene.definition.id for scene in self.arbiter.queued],
+            "operations": {
+                "show_enabled": self.show_mode is ShowMode.AUTOMATIC,
+                "mode": self.show_mode.value,
+            },
+            "health": {
+                "media_agent": ("connected" if self.connected_agent_count > 0 else "disconnected"),
+                "lighting_output": type(self.sink).__name__,
+                "projector": "not_independently_detectable",
+                "audio": "not_independently_detectable",
+            },
         }

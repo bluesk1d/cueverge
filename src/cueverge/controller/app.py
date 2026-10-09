@@ -6,7 +6,7 @@ from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconn
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from cueverge.config import ControllerConfig
-from cueverge.controller.runtime import ControllerRuntime
+from cueverge.controller.runtime import ControllerRuntime, ShowMode
 from cueverge.core.director import ShowDirector
 from cueverge.core.events import ExternalEvent
 from cueverge.core.loader import load_show_package
@@ -69,6 +69,8 @@ class StatusResponse(BaseModel):
     opportunities: dict[str, object] | None
     encounter_loop_running: bool
     queued_scenes: list[str]
+    operations: dict[str, object]
+    health: dict[str, object]
 
 
 class EventResponse(BaseModel):
@@ -84,6 +86,12 @@ class SeekRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     position_ms: int = Field(ge=0)
+
+
+class ShowModeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    mode: ShowMode
 
 
 class EventIngress(Protocol):
@@ -161,6 +169,31 @@ def create_app(
             scene_instance_id=active.scene_instance_id,
             playback_session_id=active.playback_session_id,
         )
+
+    @app.post("/api/v1/show/mode")
+    async def set_show_mode(body: ShowModeRequest, request: Request) -> dict[str, str]:
+        controller: ControllerRuntime = request.app.state.runtime
+        await controller.set_show_mode(body.mode)
+        return {"mode": controller.show_mode.value}
+
+    @app.post("/api/v1/show/reset", response_model=StartSceneResponse)
+    async def reset_show(request: Request) -> StartSceneResponse:
+        controller: ControllerRuntime = request.app.state.runtime
+        try:
+            active = await controller.reset_ambient()
+        except RuntimeError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        return StartSceneResponse(
+            scene_id=active.definition.id,
+            scene_instance_id=active.scene_instance_id,
+            playback_session_id=active.playback_session_id,
+        )
+
+    @app.post("/api/v1/blackout")
+    async def blackout(request: Request) -> dict[str, str]:
+        controller: ControllerRuntime = request.app.state.runtime
+        await controller.set_show_mode(ShowMode.BLACKOUT)
+        return {"mode": controller.show_mode.value}
 
     @app.get("/api/v1/status", response_model=StatusResponse)
     async def status(request: Request) -> dict[str, object]:

@@ -4,11 +4,12 @@ Cueverge is an early-stage, self-hosted reactive show engine. A controller owns
 scene selection and lifecycle, while a media agent reports the authoritative
 playback position used to render synchronized lighting.
 
-This repository currently contains the M0/M1 software-only vertical slice,
-protocol reliability, fixed-rate simulated rendering, and declarative show
-loading plus generic encounter simulation. It does not control mpv, WLED,
-projectors, speakers, or Home Assistant by default. Windows mpv and RGB DDP
-adapters exist but remain opt-in and hardware-unvalidated.
+This repository contains the software vertical slice, declarative autonomous
+show direction, aggregate audience presence, safe transition arbitration,
+deterministic semantic lighting, persistent looks, operational controls, and
+accelerated in-memory simulation. Windows mpv, RGB DDP, and Frigate MQTT
+adapters are opt-in; no physical output or observation ingress is enabled by
+default.
 
 ## Development
 
@@ -33,6 +34,8 @@ uv run uvicorn cueverge.controller.app:app --host 127.0.0.1 --port 8000
 
 Control endpoints bind wherever Uvicorn is configured; authentication and
 deployment configuration are planned before any non-loopback deployment.
+See [operations and simulation](docs/operations.md) for mode semantics,
+diagnostics, and the hardware-free test harness.
 
 ## Repository boundaries
 

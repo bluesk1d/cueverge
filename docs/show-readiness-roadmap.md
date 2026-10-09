@@ -25,7 +25,7 @@ the reusable engine.
 | CV-07 Semantic lighting geometry | Implemented |
 | CV-06 Multi-cue deterministic lighting | Implemented |
 | CV-08 Persistent lighting looks | Implemented |
-| CV-09 Operations, simulation, and observability | Next |
+| CV-09 Operations, simulation, and observability | Implemented |
 
 ## Milestone 1: continuous autonomous programming
 
@@ -141,6 +141,12 @@ repeatable scheduling, and simulated lighting.
 **Acceptance:** a reproducible 30-minute scenario covers overlapping arrivals,
 sustained attendance, tracking gaps, absence, protected scenes, opportunities,
 operator overrides, and restart behavior without hardware.
+
+Implemented with automatic, disabled, maintenance, and blackout modes;
+capability-aware status diagnostics; privacy-preserving observation history;
+director eligibility diagnostics; and an in-memory accelerated simulation
+harness. The acceptance scenario runs without constructing MQTT, mpv, DDP, or
+other physical-output adapters.
 
 ## Dependency order
 

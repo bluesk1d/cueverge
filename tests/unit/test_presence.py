@@ -83,6 +83,29 @@ def test_tracking_gap_and_irrelevant_zone_do_not_change_presence() -> None:
     assert estimator.tick(10_000) == ()
 
 
+def test_recent_observations_are_bounded_and_do_not_expose_object_ids() -> None:
+    estimator = AudiencePresenceEstimator(_definition(arrival_confirmation_ms=0))
+
+    for index in range(25):
+        estimator.ingest(
+            _event(
+                str(index),
+                "frigate.zone.entered",
+                f"private-object-{index}",
+                zone="Porch" if index % 2 == 0 else "Street",
+            ),
+            index,
+        )
+
+    observations = estimator.status()["recent_observations"]
+    assert isinstance(observations, list)
+    assert len(observations) == 20
+    assert observations[0]["received_at_ms"] == 5
+    assert {observation["relevant"] for observation in observations} == {True, False}
+    assert all("object_id" not in observation for observation in observations)
+    assert "private-object" not in repr(observations)
+
+
 def test_runtime_can_drive_encounter_from_semantic_arrival() -> None:
     async def scenario() -> None:
         clock = ManualEventClock()
