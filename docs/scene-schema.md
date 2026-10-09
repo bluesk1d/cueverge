@@ -6,6 +6,7 @@ A show package is a directory containing:
 installation.json
 program.json
 audience.json
+opportunities.json
 encounter.json
 scenes/
   scene-id.json
@@ -15,7 +16,8 @@ assets/
 
 All documents use `schema_version: 1` and reject unknown fields.
 
-`program.json`, `audience.json`, and `encounter.json` are optional.
+`program.json`, `audience.json`, `opportunities.json`, and `encounter.json` are
+optional.
 
 ## Installation bindings
 
@@ -222,9 +224,50 @@ the absence grace period.
 
 The estimator emits `audience.arrived`, `audience.present`,
 `audience.departed`, and `audience.long_idle`. It exposes `audience`,
-`audience_state`, and `audience_active_objects` as semantic director context.
-The active-object value is diagnostic overlap, not an assertion of accurate
-crowd counting.
+`audience_state`, `audience_active_objects`, `audience_present_ms`, and
+`audience_previous_absence_ms` as semantic context. The active-object value is
+diagnostic overlap, not an assertion of accurate crowd counting.
+
+## Engagement opportunities
+
+An optional `opportunities.json` turns observations and audience context into
+time-limited scene opportunities:
+
+```json
+{
+  "schema_version": 1,
+  "opportunities": [
+    {
+      "id": "porch-reaction",
+      "scene_id": "mouth-gotcha",
+      "trigger_event": "frigate.zone.entered",
+      "trigger_attributes": {"label": "person", "zone": "Porch"},
+      "required_context": {"audience": true},
+      "event_ttl_ms": 3000,
+      "qualification_window_ms": 600000,
+      "ttl_ms": 30000,
+      "min_presence_ms": 10000,
+      "min_absence_before_arrival_ms": 120000,
+      "acknowledgement_cooldown_ms": 120000,
+      "priority": 60
+    }
+  ]
+}
+```
+
+The trigger event and scalar attributes establish a qualifying candidate.
+Candidates remain bounded by `qualification_window_ms`, allowing conditions
+such as sustained presence to mature on the controller timer without requiring
+a detector update at the exact threshold. Future or older-than-`event_ttl_ms`
+source events do not create candidates.
+
+When all required context, minimum presence, prior-absence, and acknowledgement
+cooldown conditions hold, the candidate becomes an active opportunity for
+`ttl_ms`. Opportunities with the same ID coalesce. At a `select_next`
+completion boundary, the highest-priority oldest opportunity is consumed once
+before autonomous program selection. It never interrupts the currently playing
+scene. Expired opportunities are discarded and every opportunity scene must
+exist in the same package.
 
 ## Encounters
 

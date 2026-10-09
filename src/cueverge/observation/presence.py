@@ -28,12 +28,15 @@ class AudiencePresenceEstimator:
         self._absence_since_ms: int | None = None
         self._present_since_ms: int | None = None
         self._departed_at_ms: int | None = None
+        self._previous_absence_ms = 0
+        self._now_ms = 0
         self._long_idle_emitted = False
         self.semantic_events_emitted = 0
         self.relevant_observations = 0
         self.ignored_observations = 0
 
     def ingest(self, event: ExternalEvent, now_ms: int) -> PresenceUpdate:
+        self._now_ms = now_ms
         self._expire(now_ms)
         dedupe_key = event.idempotency_key or event.event_id
         if dedupe_key in self._seen_events:
@@ -49,6 +52,7 @@ class AudiencePresenceEstimator:
         return PresenceUpdate(relevant, self._evaluate(now_ms))
 
     def tick(self, now_ms: int) -> tuple[ExternalEvent, ...]:
+        self._now_ms = now_ms
         self._expire(now_ms)
         return self._evaluate(now_ms)
 
@@ -57,6 +61,12 @@ class AudiencePresenceEstimator:
             "audience": self.state is AudienceState.PRESENT,
             "audience_state": self.state.value,
             "audience_active_objects": len(self._objects),
+            "audience_present_ms": (
+                max(0, self._now_ms - self._present_since_ms)
+                if self._present_since_ms is not None
+                else 0
+            ),
+            "audience_previous_absence_ms": self._previous_absence_ms,
         }
 
     def status(self) -> dict[str, object]:
@@ -129,6 +139,9 @@ class AudiencePresenceEstimator:
             self._departed_at_ms = None
             self._long_idle_emitted = False
             if self.state is AudienceState.ABSENT:
+                self._previous_absence_ms = (
+                    max(0, now_ms - self._departed_at_ms) if self._departed_at_ms is not None else 0
+                )
                 self.state = AudienceState.CANDIDATE
                 self._candidate_since_ms = now_ms
             if (

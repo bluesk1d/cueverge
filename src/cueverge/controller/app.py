@@ -66,6 +66,7 @@ class StatusResponse(BaseModel):
     encounter: dict[str, object] | None
     director: dict[str, object] | None
     audience: dict[str, object] | None
+    opportunities: dict[str, object] | None
     encounter_loop_running: bool
     queued_scenes: list[str]
 

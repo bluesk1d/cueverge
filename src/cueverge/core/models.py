@@ -205,6 +205,7 @@ class SceneCatalog(FrozenModel):
     encounter: "EncounterDefinition | None" = None
     program: "ShowProgramDefinition | None" = None
     audience: "AudiencePresenceDefinition | None" = None
+    opportunities: "OpportunityProgramDefinition | None" = None
 
     def require(self, scene_id: str) -> LoadedScene:
         try:
@@ -267,6 +268,33 @@ class AudiencePresenceDefinition(FrozenModel):
             raise ValueError("audience presence labels must not be empty")
         if not self.cameras and not self.zones:
             raise ValueError("audience presence requires at least one camera or zone")
+        return self
+
+
+class OpportunityDefinition(FrozenModel):
+    id: str = Field(min_length=1)
+    scene_id: str = Field(min_length=1)
+    trigger_event: str = Field(min_length=1)
+    trigger_attributes: dict[str, str | int | float | bool] = Field(default_factory=dict)
+    required_context: dict[str, str | int | float | bool] = Field(default_factory=dict)
+    ttl_ms: int = Field(gt=0)
+    event_ttl_ms: int = Field(default=3000, gt=0)
+    qualification_window_ms: int = Field(default=3600000, gt=0)
+    min_presence_ms: int = Field(default=0, ge=0)
+    min_absence_before_arrival_ms: int = Field(default=0, ge=0)
+    acknowledgement_cooldown_ms: int = Field(default=0, ge=0)
+    priority: int = Field(default=50, ge=0, le=100)
+
+
+class OpportunityProgramDefinition(FrozenModel):
+    schema_version: Literal[1]
+    opportunities: tuple[OpportunityDefinition, ...] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_unique_opportunities(self) -> "OpportunityProgramDefinition":
+        ids = [opportunity.id for opportunity in self.opportunities]
+        if len(ids) != len(set(ids)):
+            raise ValueError("opportunity IDs must be unique")
         return self
 
 

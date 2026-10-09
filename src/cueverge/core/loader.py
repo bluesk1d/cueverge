@@ -9,6 +9,7 @@ from cueverge.core.models import (
     EncounterDefinition,
     InstallationDefinition,
     LoadedScene,
+    OpportunityProgramDefinition,
     ResourceBinding,
     ResourceKind,
     SceneCatalog,
@@ -90,12 +91,33 @@ def load_show_package(package_root: Path) -> SceneCatalog:
         if audience_path.exists()
         else None
     )
+    opportunities_path = root / "opportunities.json"
+    opportunities = (
+        _validate_json(
+            opportunities_path,
+            OpportunityProgramDefinition,
+            "engagement opportunities",
+        )
+        if opportunities_path.exists()
+        else None
+    )
+    if opportunities is not None:
+        missing = {
+            opportunity.scene_id
+            for opportunity in opportunities.opportunities
+            if opportunity.scene_id not in scenes
+        }
+        if missing:
+            raise ShowPackageError(
+                f"engagement opportunities reference unknown scenes: {sorted(missing)}"
+            )
     return SceneCatalog(
         package_root=root,
         scenes=scenes,
         encounter=encounter,
         program=program,
         audience=audience,
+        opportunities=opportunities,
     )
 
 

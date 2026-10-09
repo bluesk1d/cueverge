@@ -113,3 +113,9 @@ The presence estimator emits:
 Semantic events can drive encounter transitions. Current audience state is also
 available to declarative show-program conditions, keeping raw camera and zone
 fields out of director policy.
+
+Engagement opportunities may combine a recent raw or semantic event with this
+audience context. They qualify and expire independently of encounter state and
+are consumed only at a scene completion boundary. This lets a recent porch
+observation make a reaction eligible without forcing an immediate
+interruption.

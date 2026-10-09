@@ -230,6 +230,11 @@ should use only zones that have a deliberate narrative purpose.
 - Automatic scene transition on media completion.
 - Branching based on prior variant history.
 
+Time-limited engagement opportunities can now combine exact event attributes
+with audience state, minimum continuous presence, prior absence, expiry, and
+acknowledgement cooldown. They are consumed once at eligible scene completion
+boundaries and do not interrupt protected scenes.
+
 If the creative design needs one of these, describe the desired rule plainly.
 Do not simulate it with fragile camera-zone naming.
 

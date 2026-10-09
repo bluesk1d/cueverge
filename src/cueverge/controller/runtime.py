@@ -14,6 +14,7 @@ from cueverge.core.encounter import EncounterEngine, EventOutcome
 from cueverge.core.events import ExternalEvent
 from cueverge.core.loader import load_show_package
 from cueverge.core.models import LoadedScene, SceneCatalog, SceneDefinition
+from cueverge.core.opportunities import OpportunityManager
 from cueverge.lighting.renderer import SegmentPulse, SyntheticSweep
 from cueverge.lighting.sink import FrameSink, MemoryFrameSink, RenderedFrame
 from cueverge.observation.presence import AudiencePresenceEstimator
@@ -108,8 +109,18 @@ class ControllerRuntime:
             if self.catalog.audience is not None
             else None
         )
+        self.opportunities = (
+            OpportunityManager(
+                self.catalog.opportunities,
+                self.audience.context if self.audience is not None else lambda: {},
+            )
+            if self.catalog.opportunities is not None
+            else None
+        )
         self.scene_selector = scene_selector or (
-            self._select_from_director if director is not None else None
+            self._select_next_scene
+            if director is not None or self.opportunities is not None
+            else None
         )
         self.arbiter = ResourceArbiter()
         self.encounter = (
@@ -300,6 +311,10 @@ class ControllerRuntime:
             raise RuntimeError("show package does not define an encounter")
         now_ms = self.event_clock()
         presence_update = self.audience.ingest(event, now_ms) if self.audience else None
+        if self.opportunities is not None:
+            self.opportunities.ingest(event, now_ms)
+            for semantic_event in presence_update.events if presence_update is not None else ():
+                self.opportunities.ingest(semantic_event, now_ms)
         if self.encounter is None:
             assert self.audience is not None
             return EventOutcome(
@@ -319,6 +334,10 @@ class ControllerRuntime:
     async def tick_encounter(self) -> None:
         now_ms = self.event_clock()
         semantic_events = self.audience.tick(now_ms) if self.audience else ()
+        if self.opportunities is not None:
+            self.opportunities.tick(now_ms)
+            for event in semantic_events:
+                self.opportunities.ingest(event, now_ms)
         if self.encounter is not None:
             await self.encounter.tick(now_ms)
             await self._ingest_semantic_events(semantic_events, now_ms)
@@ -641,10 +660,14 @@ class ControllerRuntime:
         else:
             await self.start_scene(selected)
 
-    async def _select_from_director(self, completed: ActiveScene) -> str | None:
-        if self.director is None:
-            return None
-        return self.director.select_next(completed.definition.id)
+    async def _select_next_scene(self, completed: ActiveScene) -> str | None:
+        if self.opportunities is not None:
+            opportunity = self.opportunities.consume_next(self.event_clock())
+            if opportunity is not None:
+                return opportunity.scene_id
+        if self.director is not None:
+            return self.director.select_next(completed.definition.id)
+        return None
 
     def _schedule_scene_start(self, scene_id: str, expected_active: ActiveScene) -> None:
         async def start_if_current() -> None:
@@ -790,6 +813,11 @@ class ControllerRuntime:
             "encounter": self.encounter.status() if self.encounter is not None else None,
             "director": self.director.status() if self.director is not None else None,
             "audience": self.audience.status() if self.audience is not None else None,
+            "opportunities": (
+                self.opportunities.status(self.event_clock())
+                if self.opportunities is not None
+                else None
+            ),
             "encounter_loop_running": self.encounter_loop_running,
             "queued_scenes": [scene.definition.id for scene in self.arbiter.queued],
         }

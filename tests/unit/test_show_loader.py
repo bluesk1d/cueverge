@@ -181,6 +181,48 @@ def test_loads_audience_presence_configuration(tmp_path: Path) -> None:
     assert loaded.audience.zones == ("Porch",)
 
 
+def test_loads_engagement_opportunities(tmp_path: Path) -> None:
+    root = _package(tmp_path)
+    opportunities = {
+        "schema_version": 1,
+        "opportunities": [
+            {
+                "id": "arrival",
+                "scene_id": "scene",
+                "trigger_event": "audience.arrived",
+                "required_context": {"audience": True},
+                "ttl_ms": 10000,
+                "min_absence_before_arrival_ms": 120000,
+            }
+        ],
+    }
+    (root / "opportunities.json").write_text(json.dumps(opportunities), encoding="utf-8")
+
+    loaded = load_show_package(root)
+
+    assert loaded.opportunities is not None
+    assert loaded.opportunities.opportunities[0].id == "arrival"
+
+
+def test_rejects_opportunity_with_unknown_scene(tmp_path: Path) -> None:
+    root = _package(tmp_path)
+    opportunities = {
+        "schema_version": 1,
+        "opportunities": [
+            {
+                "id": "arrival",
+                "scene_id": "missing",
+                "trigger_event": "audience.arrived",
+                "ttl_ms": 10000,
+            }
+        ],
+    }
+    (root / "opportunities.json").write_text(json.dumps(opportunities), encoding="utf-8")
+
+    with pytest.raises(ShowPackageError, match=r"unknown scenes.*missing"):
+        load_show_package(root)
+
+
 def test_loads_contiguous_pixel_segments(tmp_path: Path) -> None:
     root = _package(tmp_path)
     installation_path = root / "installation.json"
