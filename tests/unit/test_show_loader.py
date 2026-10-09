@@ -95,6 +95,32 @@ def test_rejects_non_contiguous_pixel_segments(tmp_path: Path) -> None:
         load_show_package(root)
 
 
+def test_binds_segment_pulse_to_declared_geometry(tmp_path: Path) -> None:
+    root = _package(tmp_path)
+    installation_path = root / "installation.json"
+    installation = json.loads(installation_path.read_text(encoding="utf-8"))
+    installation["resources"][1]["segments"] = [
+        {"id": "porch", "start": 0, "end": 8},
+    ]
+    installation_path.write_text(json.dumps(installation), encoding="utf-8")
+    scene_path = root / "scenes/scene.json"
+    scene = json.loads(scene_path.read_text(encoding="utf-8"))
+    scene["lighting"] = {
+        "resource": "roofline.demo",
+        "effect": "segment_pulse",
+        "segment": "porch",
+        "pulse_times_ms": [1000, 2000],
+        "pulse_duration_ms": 120,
+        "color": "#FFFFFF",
+    }
+    scene_path.write_text(json.dumps(scene), encoding="utf-8")
+
+    loaded = load_show_package(root).require("scene")
+
+    assert loaded.lighting_segment is not None
+    assert loaded.lighting_segment.id == "porch"
+
+
 def _package(tmp_path: Path) -> Path:
     root = tmp_path / "show"
     scenes = root / "scenes"

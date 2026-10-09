@@ -93,6 +93,17 @@ def _bind_scene(
     if lighting.kind is not ResourceKind.PIXEL_OUTPUT or lighting.pixel_count is None:
         raise ShowPackageError(f"scene {scene.id} lighting resource is not a pixel_output")
 
+    lighting_segment = None
+    if scene.lighting.segment is not None:
+        lighting_segment = next(
+            (segment for segment in lighting.segments if segment.id == scene.lighting.segment),
+            None,
+        )
+        if lighting_segment is None:
+            raise ShowPackageError(
+                f"scene {scene.id} uses unknown pixel segment: {scene.lighting.segment}"
+            )
+
     asset_id = _validate_asset_id(scene.media.asset) if scene.media.asset else None
     color = tuple(bytes.fromhex(scene.lighting.color.removeprefix("#")))
     return LoadedScene(
@@ -100,6 +111,7 @@ def _bind_scene(
         agent_id=media.target,
         pixel_count=lighting.pixel_count,
         pixel_segments=lighting.segments,
+        lighting_segment=lighting_segment,
         color=(color[0], color[1], color[2]),
         asset_id=asset_id,
     )

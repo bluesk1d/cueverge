@@ -18,3 +18,31 @@ class SyntheticSweep:
         return tuple(
             self.color if index == active else (0, 0, 0) for index in range(self.pixel_count)
         )
+
+
+@dataclass(frozen=True)
+class SegmentPulse:
+    pixel_count: int
+    segment_start: int
+    segment_end: int
+    pulse_times_ms: tuple[int, ...]
+    pulse_duration_ms: int = 120
+    color: Rgb = (255, 255, 255)
+
+    def __post_init__(self) -> None:
+        if self.pixel_count <= 0 or self.pulse_duration_ms <= 0:
+            raise ValueError("pixel_count and pulse_duration_ms must be positive")
+        if not 0 <= self.segment_start < self.segment_end <= self.pixel_count:
+            raise ValueError("segment range must be within pixel_count")
+        if not self.pulse_times_ms:
+            raise ValueError("pulse_times_ms must not be empty")
+
+    def render(self, position_ms: int) -> tuple[Rgb, ...]:
+        active = any(
+            pulse_time <= position_ms < pulse_time + self.pulse_duration_ms
+            for pulse_time in self.pulse_times_ms
+        )
+        return tuple(
+            self.color if active and self.segment_start <= index < self.segment_end else (0, 0, 0)
+            for index in range(self.pixel_count)
+        )

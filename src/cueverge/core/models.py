@@ -81,8 +81,24 @@ class MediaDefinition(FrozenModel):
 
 class LightingDefinition(FrozenModel):
     resource: str = Field(min_length=1)
-    effect: Literal["synthetic_sweep"]
+    effect: Literal["synthetic_sweep", "segment_pulse"]
     color: str = Field(default="#00FF60", pattern=r"^#[0-9A-Fa-f]{6}$")
+    segment: str | None = Field(default=None, min_length=1)
+    pulse_times_ms: tuple[int, ...] = ()
+    pulse_duration_ms: int = Field(default=120, gt=0)
+
+    @model_validator(mode="after")
+    def validate_effect_configuration(self) -> "LightingDefinition":
+        if self.effect == "segment_pulse":
+            if self.segment is None:
+                raise ValueError("segment_pulse effect requires a segment")
+            if not self.pulse_times_ms:
+                raise ValueError("segment_pulse effect requires pulse_times_ms")
+            if any(time_ms < 0 for time_ms in self.pulse_times_ms):
+                raise ValueError("pulse times must be non-negative")
+            if tuple(sorted(set(self.pulse_times_ms))) != self.pulse_times_ms:
+                raise ValueError("pulse times must be unique and strictly increasing")
+        return self
 
 
 class SceneDefinition(FrozenModel):
@@ -105,6 +121,11 @@ class SceneDefinition(FrozenModel):
         missing = required.difference(self.resources)
         if missing:
             raise ValueError(f"scene must claim referenced resources: {sorted(missing)}")
+        if self.lighting.effect == "segment_pulse" and any(
+            time_ms + self.lighting.pulse_duration_ms > self.duration_ms
+            for time_ms in self.lighting.pulse_times_ms
+        ):
+            raise ValueError("lighting pulse extends beyond scene duration")
         return self
 
 
@@ -113,6 +134,7 @@ class LoadedScene(FrozenModel):
     agent_id: str
     pixel_count: int
     pixel_segments: tuple[PixelSegment, ...] = ()
+    lighting_segment: PixelSegment | None = None
     color: tuple[int, int, int]
     asset_id: str | None = None
 

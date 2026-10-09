@@ -61,9 +61,17 @@ them beneath its configured local cache and rejects missing files during
 Path traversal, unsupported effects, duplicate IDs, invalid colors, and unknown
 schema fields prevent the package from loading.
 
-Version 1 intentionally supports only `media_synchronized` scenes and the
-`synthetic_sweep` effect. Expanding those literals requires an implemented
-runtime behavior, not only a schema change.
+Version 1 supports `media_synchronized` scenes with:
+
+- `synthetic_sweep`: one deterministic pixel traverses the full output over
+  the scene duration.
+- `segment_pulse`: a declared pixel segment illuminates at strictly increasing
+  media timestamps for a configured duration. The segment must exist in the
+  installation binding, and every pulse must fit within the scene duration.
+
+The pulse effect is useful for calibration and deterministic emphasis cues. It
+is driven by authoritative media time, so pause and seek behavior remains
+consistent with other lighting effects.
 
 ## Encounters
 

@@ -12,7 +12,7 @@ from cueverge.core.encounter import EncounterEngine, EventOutcome
 from cueverge.core.events import ExternalEvent
 from cueverge.core.loader import load_show_package
 from cueverge.core.models import LoadedScene, SceneCatalog, SceneDefinition
-from cueverge.lighting.renderer import SyntheticSweep
+from cueverge.lighting.renderer import SegmentPulse, SyntheticSweep
 from cueverge.lighting.sink import FrameSink, MemoryFrameSink, RenderedFrame
 from cueverge.protocol.models import (
     AgentCommand,
@@ -416,16 +416,30 @@ class ControllerRuntime:
             return False
 
         rendered_at = self.clock()
-        renderer = SyntheticSweep(
-            pixel_count=active.scene.pixel_count,
-            cycle_ms=active.definition.duration_ms,
-            color=active.scene.color,
-        )
+        lighting = active.definition.lighting
+        if lighting.effect == "segment_pulse":
+            segment = active.scene.lighting_segment
+            if segment is None:
+                raise RuntimeError("segment_pulse scene has no bound pixel segment")
+            pixels = SegmentPulse(
+                pixel_count=active.scene.pixel_count,
+                segment_start=segment.start,
+                segment_end=segment.end,
+                pulse_times_ms=lighting.pulse_times_ms,
+                pulse_duration_ms=lighting.pulse_duration_ms,
+                color=active.scene.color,
+            ).render(estimate.position_ms)
+        else:
+            pixels = SyntheticSweep(
+                pixel_count=active.scene.pixel_count,
+                cycle_ms=active.definition.duration_ms,
+                color=active.scene.color,
+            ).render(estimate.position_ms)
         self.sink.send(
             RenderedFrame(
                 scene_instance_id=active.scene_instance_id,
                 position_ms=estimate.position_ms,
-                pixels=renderer.render(estimate.position_ms),
+                pixels=pixels,
             )
         )
         self.rendered_frames += 1
