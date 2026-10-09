@@ -8,8 +8,11 @@ from cueverge.core.models import (
     AudiencePresenceDefinition,
     EncounterDefinition,
     InstallationDefinition,
+    LightingCue,
+    LightingLooksDefinition,
     LightingTargetDefinition,
     LoadedLightingCue,
+    LoadedLightingLooks,
     LoadedScene,
     OpportunityProgramDefinition,
     PixelSegment,
@@ -115,6 +118,38 @@ def load_show_package(package_root: Path) -> SceneCatalog:
             raise ShowPackageError(
                 f"engagement opportunities reference unknown scenes: {sorted(missing)}"
             )
+    looks_path = root / "looks.json"
+    looks_definition = (
+        _validate_json(looks_path, LightingLooksDefinition, "persistent lighting looks")
+        if looks_path.exists()
+        else None
+    )
+    lighting_looks = None
+    if looks_definition is not None:
+        binding = bindings.get(looks_definition.resource)
+        if (
+            binding is None
+            or binding.kind is not ResourceKind.PIXEL_OUTPUT
+            or binding.pixel_count is None
+        ):
+            raise ShowPackageError(
+                f"persistent lighting looks use invalid pixel resource: {looks_definition.resource}"
+            )
+        lighting_looks = LoadedLightingLooks(
+            definition=looks_definition,
+            pixel_count=binding.pixel_count,
+            baseline_cues=_load_cues(binding, looks_definition.baseline, "persistent baseline"),
+            safe_state_cues=_load_cues(binding, looks_definition.safe_state, "safe state"),
+        )
+        mismatched = sorted(
+            scene.definition.id
+            for scene in scenes.values()
+            if scene.definition.lighting.resource != looks_definition.resource
+        )
+        if mismatched:
+            raise ShowPackageError(
+                f"persistent lighting resource does not match scenes: {mismatched}"
+            )
     return SceneCatalog(
         package_root=root,
         scenes=scenes,
@@ -122,6 +157,7 @@ def load_show_package(package_root: Path) -> SceneCatalog:
         program=program,
         audience=audience,
         opportunities=opportunities,
+        lighting_looks=lighting_looks,
     )
 
 
@@ -185,22 +221,7 @@ def _bind_scene(
         ) = _resolve_target(lighting, target, scene.id)
         lighting_target_kind = target.kind
         lighting_target_id = target.id
-    loaded_cues = tuple(
-        LoadedLightingCue(
-            definition=cue,
-            target_indices=(
-                _resolve_target(lighting, cue.target, scene.id)[0]
-                if cue.target is not None
-                else tuple(range(lighting.pixel_count))
-            ),
-            target_precedence=(
-                _resolve_target(lighting, cue.target, scene.id)[1] + cue.precedence
-                if cue.target is not None
-                else cue.precedence
-            ),
-        )
-        for cue in scene.lighting.timeline
-    )
+    loaded_cues = _load_cues(lighting, scene.lighting.timeline, scene.id)
 
     asset_id = _validate_asset_id(scene.media.asset) if scene.media.asset else None
     color = tuple(bytes.fromhex(scene.lighting.color.removeprefix("#")))
@@ -259,6 +280,31 @@ def _resolve_target(
         )
     )
     return indices, precedence, lighting_segment
+
+
+def _load_cues(
+    binding: ResourceBinding,
+    cues: tuple[LightingCue, ...],
+    owner_id: str,
+) -> tuple[LoadedLightingCue, ...]:
+    loaded: list[LoadedLightingCue] = []
+    if binding.pixel_count is None:
+        raise ShowPackageError(f"lighting cue owner {owner_id} has no pixel count")
+    for cue in cues:
+        if cue.target is None:
+            indices = tuple(range(binding.pixel_count))
+            target_precedence = cue.precedence
+        else:
+            indices, fixture_precedence, _ = _resolve_target(binding, cue.target, owner_id)
+            target_precedence = fixture_precedence + cue.precedence
+        loaded.append(
+            LoadedLightingCue(
+                definition=cue,
+                target_indices=indices,
+                target_precedence=target_precedence,
+            )
+        )
+    return tuple(loaded)
 
 
 def _resolve_references(

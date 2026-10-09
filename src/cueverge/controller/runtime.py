@@ -159,6 +159,7 @@ class ControllerRuntime:
         self.stale_frames = 0
         self.skipped_render_deadlines = 0
         self._last_frame_at: float | None = None
+        self._lighting_started_at = self.clock()
         self._render_interval_total_ms = 0.0
         self._render_interval_count = 0
 
@@ -539,11 +540,20 @@ class ControllerRuntime:
         render_position_ms = max(0, estimate.position_ms - self.lighting_delay_ms)
         lighting = active.definition.lighting
         if lighting.timeline:
+            base_frame = self._render_persistent_baseline(rendered_at)
+            brightness_limit = (
+                min(
+                    lighting.brightness_limit,
+                    self.catalog.lighting_looks.definition.brightness_limit,
+                )
+                if self.catalog.lighting_looks is not None
+                else lighting.brightness_limit
+            )
             pixels = LightingTimeline(
                 pixel_count=active.scene.pixel_count,
                 cues=active.scene.lighting_cues,
-                brightness_limit=lighting.brightness_limit,
-            ).render(render_position_ms)
+                brightness_limit=brightness_limit,
+            ).render(render_position_ms, base_frame=base_frame)
         elif lighting.effect == "segment_pulse":
             segment = active.scene.lighting_segment
             if active.scene.lighting_target_indices:
@@ -598,10 +608,43 @@ class ControllerRuntime:
         self._degraded_reason = None
         self.active_scene = None
         self.follower.reset()
+        queued = None
         if continue_queue:
             queued = self.arbiter.pop_next(now_ms=round(self.clock() * 1000))
-            if queued is not None:
-                await self.start_scene(queued.definition.id)
+        if queued is not None:
+            await self.start_scene(queued.definition.id)
+        else:
+            self._emit_safe_lighting()
+
+    def _render_persistent_baseline(self, now: float) -> tuple[tuple[int, int, int], ...] | None:
+        looks = self.catalog.lighting_looks
+        if looks is None:
+            return None
+        elapsed_ms = round((now - self._lighting_started_at) * 1000)
+        position_ms = elapsed_ms % looks.definition.cycle_ms
+        return LightingTimeline(
+            pixel_count=looks.pixel_count,
+            cues=looks.baseline_cues,
+            brightness_limit=1.0,
+        ).render(position_ms)
+
+    def _emit_safe_lighting(self) -> None:
+        looks = self.catalog.lighting_looks
+        if looks is None:
+            return
+        pixels = LightingTimeline(
+            pixel_count=looks.pixel_count,
+            cues=looks.safe_state_cues,
+            brightness_limit=looks.definition.brightness_limit,
+        ).render(0)
+        self.sink.send(
+            RenderedFrame(
+                scene_instance_id="safe-state",
+                position_ms=0,
+                pixels=pixels,
+            )
+        )
+        self.rendered_frames += 1
 
     async def shutdown(self) -> None:
         await self._stop_render_loop()

@@ -7,6 +7,7 @@ installation.json
 program.json
 audience.json
 opportunities.json
+looks.json
 encounter.json
 scenes/
   scene-id.json
@@ -16,8 +17,8 @@ assets/
 
 All documents use `schema_version: 1` and reject unknown fields.
 
-`program.json`, `audience.json`, `opportunities.json`, and `encounter.json` are
-optional.
+`program.json`, `audience.json`, `opportunities.json`, `looks.json`, and
+`encounter.json` are optional.
 
 ## Installation bindings
 
@@ -163,6 +164,52 @@ All randomness is derived from cue seed, media-time bucket, and pixel index.
 Rendering the same media timestamp therefore returns the same frame after
 pause, seek, or reconnect. Cue ranges and fades must fit within the scene.
 Timeline form and legacy `effect` form are mutually exclusive.
+
+## Persistent lighting looks
+
+An optional `looks.json` defines show-level lighting independent of media scene
+time:
+
+```json
+{
+  "schema_version": 1,
+  "resource": "roofline",
+  "cycle_ms": 6000,
+  "brightness_limit": 1.0,
+  "baseline": [
+    {
+      "id": "fixture-breathing",
+      "primitive": "pulse",
+      "start_ms": 0,
+      "duration_ms": 6000,
+      "target": {"kind": "fixture", "id": "accent"},
+      "color": "#FF2060",
+      "brightness": 0.25,
+      "period_ms": 3000
+    }
+  ],
+  "safe_state": [
+    {
+      "id": "safe-blackout",
+      "primitive": "blackout",
+      "start_ms": 0,
+      "duration_ms": 1
+    }
+  ]
+}
+```
+
+Baseline cues use the same deterministic primitives and semantic targets as
+scene timelines, but their cycle follows controller monotonic time. Their phase
+therefore survives media completion and scene replacement. A timeline scene
+renders over the baseline, changing only pixels addressed by active scene cues.
+Fixture and cue precedence continue to determine overlap order.
+
+The look resource must match every scene's lighting resource because the
+current runtime owns one pixel sink. Explicit stop renders `safe_state`;
+queued scene continuation does not insert that frame between scenes. Legacy
+single-effect scenes retain their full-output behavior and do not composite
+with the baseline.
 
 ## Scenes
 

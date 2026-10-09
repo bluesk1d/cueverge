@@ -416,6 +416,41 @@ def test_binds_multi_cue_lighting_timeline_targets(tmp_path: Path) -> None:
     assert loaded.lighting_cues[1].target_precedence == 25
 
 
+def test_loads_persistent_baseline_and_safe_state(tmp_path: Path) -> None:
+    root = _package(tmp_path)
+    looks = {
+        "schema_version": 1,
+        "resource": "roofline.demo",
+        "cycle_ms": 4000,
+        "brightness_limit": 0.8,
+        "baseline": [
+            {
+                "id": "baseline",
+                "primitive": "pulse",
+                "start_ms": 0,
+                "duration_ms": 4000,
+                "period_ms": 2000,
+            }
+        ],
+        "safe_state": [
+            {
+                "id": "safe",
+                "primitive": "blackout",
+                "start_ms": 0,
+                "duration_ms": 1,
+            }
+        ],
+    }
+    (root / "looks.json").write_text(json.dumps(looks), encoding="utf-8")
+
+    loaded = load_show_package(root)
+
+    assert loaded.lighting_looks is not None
+    assert loaded.lighting_looks.pixel_count == 8
+    assert loaded.lighting_looks.definition.brightness_limit == 0.8
+    assert loaded.lighting_looks.baseline_cues[0].target_indices == tuple(range(8))
+
+
 def _package(tmp_path: Path) -> Path:
     root = tmp_path / "show"
     scenes = root / "scenes"

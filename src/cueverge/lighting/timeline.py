@@ -18,8 +18,15 @@ class LightingTimeline:
         if not 0 < self.brightness_limit <= 1:
             raise ValueError("brightness_limit must be within (0, 1]")
 
-    def render(self, position_ms: int) -> tuple[Rgb, ...]:
-        output: list[Rgb] = [(0, 0, 0)] * self.pixel_count
+    def render(
+        self,
+        position_ms: int,
+        *,
+        base_frame: tuple[Rgb, ...] | None = None,
+    ) -> tuple[Rgb, ...]:
+        if base_frame is not None and len(base_frame) != self.pixel_count:
+            raise ValueError("base_frame pixel count does not match timeline")
+        output = list(base_frame) if base_frame is not None else [(0, 0, 0)] * self.pixel_count
         ordered = sorted(
             enumerate(self.cues),
             key=lambda item: (item[1].target_precedence, item[0]),

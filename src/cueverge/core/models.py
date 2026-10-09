@@ -315,6 +315,7 @@ class SceneCatalog(FrozenModel):
     program: "ShowProgramDefinition | None" = None
     audience: "AudiencePresenceDefinition | None" = None
     opportunities: "OpportunityProgramDefinition | None" = None
+    lighting_looks: "LoadedLightingLooks | None" = None
 
     def require(self, scene_id: str) -> LoadedScene:
         try:
@@ -405,6 +406,32 @@ class OpportunityProgramDefinition(FrozenModel):
         if len(ids) != len(set(ids)):
             raise ValueError("opportunity IDs must be unique")
         return self
+
+
+class LightingLooksDefinition(FrozenModel):
+    schema_version: Literal[1]
+    resource: str = Field(min_length=1)
+    cycle_ms: int = Field(gt=0)
+    brightness_limit: float = Field(default=1.0, gt=0, le=1)
+    baseline: tuple[LightingCue, ...] = Field(min_length=1)
+    safe_state: tuple[LightingCue, ...] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_cues(self) -> "LightingLooksDefinition":
+        for cue in self.baseline:
+            if cue.start_ms + cue.duration_ms > self.cycle_ms:
+                raise ValueError("baseline lighting cue exceeds look cycle")
+        for cue in self.safe_state:
+            if cue.start_ms != 0:
+                raise ValueError("safe-state lighting cues must start at zero")
+        return self
+
+
+class LoadedLightingLooks(FrozenModel):
+    definition: LightingLooksDefinition
+    pixel_count: int
+    baseline_cues: tuple[LoadedLightingCue, ...]
+    safe_state_cues: tuple[LoadedLightingCue, ...]
 
 
 class EncounterTransition(FrozenModel):

@@ -24,8 +24,8 @@ the reusable engine.
 | CV-05 Engagement opportunities | Implemented |
 | CV-07 Semantic lighting geometry | Implemented |
 | CV-06 Multi-cue deterministic lighting | Implemented |
-| CV-08 Persistent lighting looks | Next |
-| CV-09 Operations, simulation, and observability | Planned |
+| CV-08 Persistent lighting looks | Implemented |
+| CV-09 Operations, simulation, and observability | Next |
 
 ## Milestone 1: continuous autonomous programming
 

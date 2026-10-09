@@ -158,6 +158,11 @@ and a scene-level brightness limit applies after composition.
 Every effect remains a pure function of media time and seed, so pause, seek,
 and reconnect reproduce the same frame.
 
+An optional show-level persistent look can run fixture baselines on a
+controller-monotonic cycle across media scene changes. Timeline scenes overlay
+only their targeted pixels and restore the baseline naturally afterward.
+Explicit stop renders a configured safe state.
+
 ### Lighting features that may still be requested
 
 The show definition should freely request effects such as:
