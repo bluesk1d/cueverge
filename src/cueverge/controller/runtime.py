@@ -68,6 +68,7 @@ class ControllerRuntime:
         heartbeat_interval_ms: int = 1000,
         heartbeat_timeout_ms: int = 3000,
         command_timeout_ms: int = 10000,
+        lighting_delay_ms: int = 0,
         controller_epoch: str | None = None,
         catalog: SceneCatalog | None = None,
         event_clock: EventClock | None = None,
@@ -78,6 +79,8 @@ class ControllerRuntime:
             raise ValueError("heartbeat timeout must be greater than the positive interval")
         if command_timeout_ms <= 0:
             raise ValueError("command_timeout_ms must be positive")
+        if lighting_delay_ms < 0:
+            raise ValueError("lighting_delay_ms must be non-negative")
         self.clock = clock
         self.sink = sink or MemoryFrameSink()
         self.follower = TimecodeFollower(stale_after_ms=stale_after_ms)
@@ -85,6 +88,7 @@ class ControllerRuntime:
         self.heartbeat_interval_ms = heartbeat_interval_ms
         self.heartbeat_timeout_ms = heartbeat_timeout_ms
         self.command_timeout_ms = command_timeout_ms
+        self.lighting_delay_ms = lighting_delay_ms
         self.controller_epoch = controller_epoch or str(uuid4())
         self.catalog = catalog or load_show_package(Path("shows/demo"))
         self.event_clock = event_clock or (lambda: round(time.time() * 1000))
@@ -416,6 +420,7 @@ class ControllerRuntime:
             return False
 
         rendered_at = self.clock()
+        render_position_ms = max(0, estimate.position_ms - self.lighting_delay_ms)
         lighting = active.definition.lighting
         if lighting.effect == "segment_pulse":
             segment = active.scene.lighting_segment
@@ -428,17 +433,17 @@ class ControllerRuntime:
                 pulse_times_ms=lighting.pulse_times_ms,
                 pulse_duration_ms=lighting.pulse_duration_ms,
                 color=active.scene.color,
-            ).render(estimate.position_ms)
+            ).render(render_position_ms)
         else:
             pixels = SyntheticSweep(
                 pixel_count=active.scene.pixel_count,
                 cycle_ms=active.definition.duration_ms,
                 color=active.scene.color,
-            ).render(estimate.position_ms)
+            ).render(render_position_ms)
         self.sink.send(
             RenderedFrame(
                 scene_instance_id=active.scene_instance_id,
-                position_ms=estimate.position_ms,
+                position_ms=render_position_ms,
                 pixels=pixels,
             )
         )

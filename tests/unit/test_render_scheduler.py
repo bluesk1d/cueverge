@@ -70,6 +70,28 @@ def test_pause_and_stale_telemetry_render_bounded_hold_frames() -> None:
     assert runtime.stale_frames == 1
 
 
+def test_lighting_delay_offsets_render_time_without_changing_media_status() -> None:
+    @dataclass
+    class ManualClock:
+        now: float = 10.0
+
+        def __call__(self) -> float:
+            return self.now
+
+    clock = ManualClock()
+    runtime = ControllerRuntime(clock=clock, lighting_delay_ms=90)
+    agent = FakeMediaAgent()
+    agent.accept_welcome(runtime.register_agent(agent.hello(), MemoryCommandChannel([])))
+    runtime.active_scene = active = _active_scene(runtime)
+    agent.attach(active.scene_instance_id, active.playback_session_id)
+
+    runtime.ingest(agent.position(1000, state=PlaybackState.PAUSED))
+
+    assert runtime.render_frame()
+    assert runtime.sink.frames[-1].position_ms == 910
+    assert runtime.status()["estimated_position_ms"] == 1000
+
+
 def _active_scene(runtime: ControllerRuntime):
     from cueverge.controller.runtime import ActiveScene
 

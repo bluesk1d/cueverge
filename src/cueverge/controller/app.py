@@ -264,6 +264,7 @@ def _configured_runtime() -> ControllerRuntime:
     return ControllerRuntime(
         sink=sink,
         catalog=load_show_package(config.show_package),
+        lighting_delay_ms=config.lighting_delay_ms,
     )
 
 

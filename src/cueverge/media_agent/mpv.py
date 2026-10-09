@@ -82,6 +82,7 @@ class MpvProcess:
     pipe_path: str
     fullscreen_screen: int | None = None
     audio_device: str | None = None
+    audio_delay_seconds: float = 0.0
     process: subprocess.Popen[bytes] | None = None
 
     def command(self) -> list[str]:
@@ -96,6 +97,8 @@ class MpvProcess:
             command.append(f"--fs-screen={self.fullscreen_screen}")
         if self.audio_device is not None:
             command.append(f"--audio-device={self.audio_device}")
+        if self.audio_delay_seconds:
+            command.append(f"--audio-delay={self.audio_delay_seconds:.3f}")
         return command
 
     def start(self) -> None:

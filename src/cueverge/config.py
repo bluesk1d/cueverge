@@ -18,6 +18,7 @@ class MediaAgentConfig(RuntimeConfig):
     reconnect_delay_ms: int = Field(default=1000, ge=100)
     fullscreen_screen: int | None = Field(default=None, ge=0)
     audio_device: str | None = None
+    audio_delay_ms: int = Field(default=0, ge=-5000, le=5000)
 
     @model_validator(mode="after")
     def validate_controller_url(self) -> "MediaAgentConfig":
@@ -39,6 +40,7 @@ class MediaAgentConfig(RuntimeConfig):
                 ),
                 "fullscreen_screen": _optional_int(os.environ.get("CUEVERGE_FULLSCREEN_SCREEN")),
                 "audio_device": os.environ.get("CUEVERGE_AUDIO_DEVICE"),
+                "audio_delay_ms": int(os.environ.get("CUEVERGE_AUDIO_DELAY_MS", "0")),
             }
         )
 
@@ -64,12 +66,14 @@ class DdpOutputConfig(RuntimeConfig):
 class ControllerConfig(RuntimeConfig):
     show_package: Path = Path("shows/demo")
     ddp: DdpOutputConfig = DdpOutputConfig()
+    lighting_delay_ms: int = Field(default=0, ge=0, le=5000)
 
     @classmethod
     def from_environment(cls) -> "ControllerConfig":
         enabled = os.environ.get("CUEVERGE_DDP_ENABLED", "").lower() in {"1", "true", "yes"}
         return cls(
             show_package=Path(os.environ.get("CUEVERGE_SHOW_PACKAGE", "shows/demo")),
+            lighting_delay_ms=int(os.environ.get("CUEVERGE_LIGHTING_DELAY_MS", "0")),
             ddp=DdpOutputConfig(
                 enabled=enabled,
                 host=os.environ.get("CUEVERGE_DDP_HOST"),

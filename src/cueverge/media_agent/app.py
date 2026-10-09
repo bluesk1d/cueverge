@@ -15,6 +15,7 @@ async def run() -> None:
         pipe_path=config.mpv_pipe,
         fullscreen_screen=config.fullscreen_screen,
         audio_device=config.audio_device,
+        audio_delay_seconds=config.audio_delay_ms / 1000,
     )
     transport = WindowsNamedPipeTransport(config.mpv_pipe)
     mpv = MpvClient(transport)

@@ -12,6 +12,7 @@ def test_hardware_output_is_disabled_by_default() -> None:
     assert not config.ddp.enabled
     assert config.ddp.host is None
     assert config.ddp.brightness_limit == 1.0
+    assert config.lighting_delay_ms == 0
     assert config.show_package == Path("shows/demo")
 
 

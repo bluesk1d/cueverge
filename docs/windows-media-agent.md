@@ -47,6 +47,10 @@ The target Windows 11 laptop was checked with portable mpv 0.41.0:
 The machine-specific WASAPI GUID is intentionally not committed. It belongs in
 the laptop's private environment configuration.
 
+`CUEVERGE_AUDIO_DELAY_MS` optionally shifts audio relative to video through
+mpv's audio-delay setting. Positive values delay audio; negative values advance
+it. This is an installation calibration value and defaults to zero.
+
 The agent is deployed as a Task Scheduler job configured for the logged-in
 user's interactive desktop. A process launched directly by OpenSSH runs in a
 non-interactive Windows session and cannot reliably create the projector GPU
@@ -57,6 +61,11 @@ Live validation covered prepare/play, authoritative position telemetry, pause,
 seek while paused, resume, explicit stop, and controller restart
 reconciliation. The integrated lighting loop maintained 25 FPS without missed
 local deadlines and returned to an idle state after stop.
+
+The controller's `CUEVERGE_LIGHTING_DELAY_MS` setting independently delays
+rendered lighting relative to authoritative media time without changing status
+timecode. It defaults to zero and must be based on measured installation
+latency rather than assumed frame accuracy.
 
 ## Important timing limitation
 

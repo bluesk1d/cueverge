@@ -100,6 +100,7 @@ def test_builds_windows_mpv_command_without_device_assumptions() -> None:
         pipe_path=r"\\.\pipe\cueverge-mpv",
         fullscreen_screen=1,
         audio_device="wasapi/example",
+        audio_delay_seconds=0.1,
     )
 
     assert process.command() == [
@@ -110,6 +111,7 @@ def test_builds_windows_mpv_command_without_device_assumptions() -> None:
         r"--input-ipc-server=\\.\pipe\cueverge-mpv",
         "--fs-screen=1",
         "--audio-device=wasapi/example",
+        "--audio-delay=0.100",
     ]
 
 
