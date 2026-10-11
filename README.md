@@ -7,7 +7,7 @@ playback position used to render synchronized lighting.
 This repository contains the software vertical slice, declarative autonomous
 show direction, aggregate audience presence, safe transition arbitration,
 deterministic semantic lighting, persistent looks, operational controls, and
-accelerated in-memory simulation. Windows mpv, RGB DDP, and Frigate MQTT
+accelerated in-memory simulation. Windows/Linux mpv, RGB DDP, and Frigate MQTT
 adapters are opt-in; no physical output or observation ingress is enabled by
 default.
 
@@ -41,6 +41,8 @@ diagnostics, and the hardware-free test harness.
 
 - `src/cueverge/` is the generic, reusable engine.
 - `shows/demo/` is a redistributable synthetic example.
+- `shows/multi-output-demo/` is a hardware-free schema-v2 example with two
+  media agents and two lighting outputs.
 - `shows/halloween/` is only a placeholder for a private reference
   implementation. No installation details or copyrighted media belong in the
   engine or public demo.
@@ -50,3 +52,5 @@ See [the architecture](docs/architecture.md), [the protocol](docs/protocol.md),
 [show creator guide](docs/show-creator-guide.md). Autonomous show capabilities
 are tracked in the
 [show readiness roadmap](docs/show-readiness-roadmap.md).
+Media-host setup is documented for
+[Windows](docs/windows-media-agent.md) and [Linux](docs/linux-media-agent.md).

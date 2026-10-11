@@ -12,7 +12,7 @@ from cueverge.core.events import ExternalEvent
 from cueverge.core.loader import load_show_package
 from cueverge.integrations.mqtt import FrigateMqttIngress
 from cueverge.lighting.ddp import DdpUdpSink
-from cueverge.lighting.sink import FrameSink, MemoryFrameSink
+from cueverge.lighting.sink import FrameSink, FrameSinkRouter, MemoryFrameSink
 from cueverge.observation.presence import AudiencePresenceEstimator
 from cueverge.protocol.models import (
     AgentHeartbeat,
@@ -32,6 +32,33 @@ class StartSceneResponse(BaseModel):
     playback_session_id: str
 
 
+class MediaOutputStatus(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    output_id: str
+    agent_id: str
+    playback_session_id: str
+    required: bool
+    start_delay_ms: int = Field(ge=0, le=5000)
+    clock_source: bool
+    connected: bool
+    prepare_failed: bool
+    last_position_ms: int | None = Field(default=None, ge=0)
+    drift_ms: int | None = None
+    pending_commands: int = Field(ge=0)
+
+
+class LightingOutputStatus(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    output_id: str
+    resource: str
+    required: bool
+    pixel_count: int = Field(gt=0)
+    timing_offset_ms: int = Field(ge=-5000, le=5000)
+    error: str | None
+
+
 class StatusResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -44,6 +71,8 @@ class StatusResponse(BaseModel):
     degraded: bool
     degraded_reason: str | None
     connected_agents: list[str]
+    media_outputs: list[MediaOutputStatus]
+    lighting_outputs: list[LightingOutputStatus]
     pending_commands: int = Field(ge=0)
     command_errors: int = Field(ge=0)
     command_timeouts: int = Field(ge=0)
@@ -55,6 +84,7 @@ class StatusResponse(BaseModel):
     scene_failovers: int = Field(ge=0)
     rejected_protocol_messages: int = Field(ge=0)
     rendered_frames: int = Field(ge=0)
+    lighting_output_error_count: int = Field(ge=0)
     rejected_telemetry: int = Field(ge=0)
     render_target_fps: float = Field(gt=0)
     render_loop_running: bool
@@ -325,8 +355,22 @@ def _configured_components() -> tuple[ControllerRuntime, EventIngress | None]:
     config = ControllerConfig.from_environment()
     catalog = load_show_package(config.show_package)
     audience = AudiencePresenceEstimator(catalog.audience) if catalog.audience is not None else None
-    sink: FrameSink = (
-        DdpUdpSink(
+    if config.output_deployment is not None:
+        sink: FrameSink = FrameSinkRouter(
+            {
+                output.resource: DdpUdpSink(
+                    host=output.host,
+                    port=output.port,
+                    destination_id=output.destination_id,
+                    max_payload_bytes=output.max_payload_bytes,
+                    expected_pixel_count=output.expected_pixel_count,
+                    brightness_limit=output.brightness_limit,
+                )
+                for output in config.output_deployment.lighting
+            }
+        )
+    elif config.ddp.enabled:
+        sink = DdpUdpSink(
             host=config.ddp.host or "",
             port=config.ddp.port,
             destination_id=config.ddp.destination_id,
@@ -334,9 +378,8 @@ def _configured_components() -> tuple[ControllerRuntime, EventIngress | None]:
             expected_pixel_count=config.ddp.expected_pixel_count,
             brightness_limit=config.ddp.brightness_limit,
         )
-        if config.ddp.enabled
-        else MemoryFrameSink()
-    )
+    else:
+        sink = MemoryFrameSink()
     runtime = ControllerRuntime(
         sink=sink,
         catalog=catalog,

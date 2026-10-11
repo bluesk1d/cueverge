@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "initial_scene_id": "dual-window-sweep",
+  "default_pool_id": "ambient",
+  "recent_history_size": 0,
+  "random_seed": 2026,
+  "pools": [
+    {
+      "id": "ambient",
+      "category": "ambient",
+      "scenes": [
+        {
+          "scene_id": "dual-window-sweep",
+          "weight": 1
+        }
+      ]
+    }
+  ]
+}

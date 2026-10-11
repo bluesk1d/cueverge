@@ -14,10 +14,16 @@ from cueverge.core.director import ShowDirector
 from cueverge.core.encounter import EncounterEngine, EventOutcome
 from cueverge.core.events import ExternalEvent
 from cueverge.core.loader import load_show_package
-from cueverge.core.models import LoadedScene, SceneCatalog, SceneDefinition
+from cueverge.core.models import (
+    LoadedLightingLooks,
+    LoadedLightingOutput,
+    LoadedScene,
+    SceneCatalog,
+    SceneDefinition,
+)
 from cueverge.core.opportunities import OpportunityManager
 from cueverge.lighting.renderer import SegmentPulse, SyntheticSweep, TargetPulse
-from cueverge.lighting.sink import FrameSink, MemoryFrameSink, RenderedFrame
+from cueverge.lighting.sink import FrameSink, FrameSinkRouter, MemoryFrameSink, RenderedFrame
 from cueverge.lighting.timeline import LightingTimeline
 from cueverge.observation.presence import AudiencePresenceEstimator
 from cueverge.protocol.models import (
@@ -48,14 +54,65 @@ class ShowMode(StrEnum):
 
 
 @dataclass(frozen=True)
+class ActiveMediaSession:
+    output_id: str
+    agent_id: str
+    playback_session_id: str
+    asset_id: str | None
+    required: bool
+    start_delay_ms: int
+
+
+@dataclass(frozen=True)
 class ActiveScene:
     scene: LoadedScene
     scene_instance_id: str
     playback_session_id: str
+    media_sessions: tuple[ActiveMediaSession, ...] = ()
 
     @property
     def definition(self) -> SceneDefinition:
         return self.scene.definition
+
+    @property
+    def resolved_media_sessions(self) -> tuple[ActiveMediaSession, ...]:
+        if self.media_sessions:
+            return self.media_sessions
+        output = self.scene.media_outputs[0]
+        return (
+            ActiveMediaSession(
+                output_id=output.definition.id,
+                agent_id=output.agent_id,
+                playback_session_id=self.playback_session_id,
+                asset_id=output.asset_id,
+                required=output.definition.required,
+                start_delay_ms=output.definition.start_delay_ms,
+            ),
+        )
+
+    @property
+    def clock_session(self) -> ActiveMediaSession:
+        return next(
+            session
+            for session in self.resolved_media_sessions
+            if session.output_id == self.scene.clock_source_id
+        )
+
+    def session_for_agent(self, agent_id: str) -> ActiveMediaSession | None:
+        return next(
+            (session for session in self.resolved_media_sessions if session.agent_id == agent_id),
+            None,
+        )
+
+    def session_for_playback(self, playback_session_id: str) -> ActiveMediaSession | None:
+        return next(
+            (
+                session
+                for session in self.resolved_media_sessions
+                if session.playback_session_id == playback_session_id
+            ),
+            None,
+        )
 
 
 @dataclass
@@ -100,7 +157,6 @@ class ControllerRuntime:
         if lighting_delay_ms < 0:
             raise ValueError("lighting_delay_ms must be non-negative")
         self.clock = clock
-        self.sink = sink or MemoryFrameSink()
         self.follower = TimecodeFollower(stale_after_ms=stale_after_ms)
         self.render_fps = render_fps
         self.heartbeat_interval_ms = heartbeat_interval_ms
@@ -109,6 +165,17 @@ class ControllerRuntime:
         self.lighting_delay_ms = lighting_delay_ms
         self.controller_epoch = controller_epoch or str(uuid4())
         self.catalog = catalog or load_show_package(Path("shows/demo"))
+        lighting_resources = {
+            output.definition.resource
+            for scene in self.catalog.scenes.values()
+            for output in scene.lighting_outputs
+        }
+        configured_sink = sink or MemoryFrameSink()
+        if isinstance(configured_sink, FrameSinkRouter):
+            configured_sink.require_resources(lighting_resources)
+        elif len(lighting_resources) > 1:
+            raise ValueError("multiple lighting resources require a FrameSinkRouter")
+        self.sink = configured_sink
         self.event_clock = event_clock or (lambda: round(time.time() * 1000))
         if scene_selector is not None and director is not None:
             raise ValueError("configure either scene_selector or director, not both")
@@ -144,12 +211,15 @@ class ControllerRuntime:
         self.active_scene: ActiveScene | None = None
         self._agents: dict[str, AgentConnection] = {}
         self._pending_commands: dict[str, PendingCommand] = {}
+        self._failed_prepare_sessions: set[str] = set()
         self._render_task: asyncio.Task[None] | None = None
         self._encounter_task: asyncio.Task[None] | None = None
         self._lifecycle_tasks: set[asyncio.Task[None]] = set()
         self._handled_completion_sessions: set[str] = set()
         self._completion_history: deque[str] = deque()
         self._last_media_positions: dict[str, int] = {}
+        self._media_sessions_with_telemetry: set[str] = set()
+        self._lighting_output_errors: dict[str, str] = {}
         self._degraded_reason: str | None = None
         self.show_mode = ShowMode.AUTOMATIC
         self.rejected_telemetry = 0
@@ -164,6 +234,7 @@ class ControllerRuntime:
         self.scene_failovers = 0
         self.render_ticks = 0
         self.rendered_frames = 0
+        self.lighting_output_error_count = 0
         self.render_ticks_without_timecode = 0
         self.stale_frames = 0
         self.skipped_render_deadlines = 0
@@ -206,28 +277,32 @@ class ControllerRuntime:
         reconciliation: Literal["idle", "continue", "stop"] = "idle"
         active = self.active_scene
         playback = hello.playback
-        if active is not None:
+        media_session = active.session_for_agent(hello.agent_id) if active is not None else None
+        if active is not None and media_session is not None:
             matches = (
                 playback is not None
                 and playback.controller_epoch == self.controller_epoch
                 and playback.scene_instance_id == active.scene_instance_id
-                and playback.playback_session_id == active.playback_session_id
+                and playback.playback_session_id == media_session.playback_session_id
             )
             if matches and playback is not None:
-                telemetry = MediaPosition(
-                    agent_id=hello.agent_id,
-                    agent_session_id=hello.agent_session_id,
-                    controller_epoch=self.controller_epoch,
-                    scene_instance_id=playback.scene_instance_id,
-                    playback_session_id=playback.playback_session_id,
-                    sequence=playback.sequence,
-                    position_ms=playback.position_ms,
-                    playback_rate=playback.playback_rate,
-                    state=playback.state,
-                    duration_ms=playback.duration_ms,
-                    agent_monotonic_ms=playback.agent_monotonic_ms,
-                )
-                decision = self.follower.reconcile(telemetry, self.clock())
+                if media_session == active.clock_session:
+                    telemetry = MediaPosition(
+                        agent_id=hello.agent_id,
+                        agent_session_id=hello.agent_session_id,
+                        controller_epoch=self.controller_epoch,
+                        scene_instance_id=playback.scene_instance_id,
+                        playback_session_id=playback.playback_session_id,
+                        sequence=playback.sequence,
+                        position_ms=playback.position_ms,
+                        playback_rate=playback.playback_rate,
+                        state=playback.state,
+                        duration_ms=playback.duration_ms,
+                        agent_monotonic_ms=playback.agent_monotonic_ms,
+                    )
+                    decision = self.follower.reconcile(telemetry, self.clock())
+                else:
+                    decision = TelemetryDecision(True)
                 if decision.accepted:
                     reconciliation = "continue"
                     self.reconciliations += 1
@@ -235,11 +310,22 @@ class ControllerRuntime:
                     self._ensure_render_loop(active.scene_instance_id)
                 else:
                     reconciliation = "stop"
-                    self._degraded_reason = "reconciliation_required"
+                    if media_session == active.clock_session:
+                        self._degraded_reason = "reconciliation_required"
+                        self._cancel_render_loop()
+                    else:
+                        self._degraded_reason = (
+                            f"media_output_reconciliation_required:{media_session.output_id}"
+                        )
             else:
                 reconciliation = "stop"
-                self._degraded_reason = "reconciliation_required"
-                self._cancel_render_loop()
+                if media_session == active.clock_session:
+                    self._degraded_reason = "reconciliation_required"
+                    self._cancel_render_loop()
+                else:
+                    self._degraded_reason = (
+                        f"media_output_reconciliation_required:{media_session.output_id}"
+                    )
         elif playback is not None:
             reconciliation = "stop"
 
@@ -255,29 +341,64 @@ class ControllerRuntime:
         if connection is not None and connection.channel is websocket:
             del self._agents[agent_id]
             self._abandon_commands(agent_id)
-            if self.active_scene is not None and self.active_scene.scene.agent_id == agent_id:
-                self.follower.disconnect()
-                self._degraded_reason = "agent_disconnected"
-                self._cancel_render_loop()
+            media_session = (
+                self.active_scene.session_for_agent(agent_id)
+                if self.active_scene is not None
+                else None
+            )
+            if self.active_scene is not None and media_session is not None:
+                if media_session == self.active_scene.clock_session:
+                    self.follower.disconnect()
+                    self._degraded_reason = "agent_disconnected"
+                    self._cancel_render_loop()
+                else:
+                    self._degraded_reason = f"media_output_disconnected:{media_session.output_id}"
 
     async def start_scene(self, scene_id: str) -> ActiveScene:
         scene = self.catalog.require(scene_id)
-        connection = self._agents.get(scene.agent_id)
-        if connection is None:
-            raise RuntimeError(f"required agent is not connected: {scene.agent_id}")
+        missing_required = [
+            output.agent_id
+            for output in scene.media_outputs
+            if output.definition.required and output.agent_id not in self._agents
+        ]
+        if missing_required:
+            raise RuntimeError(f"required agents are not connected: {sorted(missing_required)}")
 
         await self._stop_render_loop()
-        self._abandon_commands(scene.agent_id)
+        if self.active_scene is not None:
+            await self._stop_media_sessions(self.active_scene)
+        for output in scene.media_outputs:
+            self._abandon_commands(output.agent_id)
         self._degraded_reason = None
+        media_sessions = tuple(
+            ActiveMediaSession(
+                output_id=output.definition.id,
+                agent_id=output.agent_id,
+                playback_session_id=str(uuid4()),
+                asset_id=output.asset_id,
+                required=output.definition.required,
+                start_delay_ms=output.definition.start_delay_ms,
+            )
+            for output in scene.media_outputs
+            if output.agent_id in self._agents
+        )
+        clock_session = next(
+            session for session in media_sessions if session.output_id == scene.clock_source_id
+        )
         active = ActiveScene(
             scene=scene,
             scene_instance_id=str(uuid4()),
-            playback_session_id=str(uuid4()),
+            playback_session_id=clock_session.playback_session_id,
+            media_sessions=media_sessions,
         )
         self.active_scene = active
-        self._last_media_positions[active.playback_session_id] = 0
+        self._failed_prepare_sessions.clear()
+        for session in media_sessions:
+            self._last_media_positions[session.playback_session_id] = 0
         self.follower.begin(active.scene_instance_id, active.playback_session_id)
-        await self._send_command(active, "prepare", connection)
+        for session in media_sessions:
+            connection = self._agents[session.agent_id]
+            await self._send_command(active, session, "prepare", connection)
         self._ensure_render_loop(active.scene_instance_id)
         return active
 
@@ -318,21 +439,13 @@ class ControllerRuntime:
         return decision.value
 
     async def pause(self) -> None:
-        active, connection = self._active_media_connection()
-        await self._send_command(active, "pause", connection)
+        await self._send_to_active_media("pause")
 
     async def resume(self) -> None:
-        active, connection = self._active_media_connection()
-        await self._send_command(active, "resume", connection)
+        await self._send_to_active_media("resume")
 
     async def seek(self, position_ms: int) -> None:
-        active, connection = self._active_media_connection()
-        await self._send_command(
-            active,
-            "seek",
-            connection,
-            target_position_ms=position_ms,
-        )
+        await self._send_to_active_media("seek", target_position_ms=position_ms)
 
     async def ingest_event(self, event: ExternalEvent) -> EventOutcome:
         if self.show_mode is not ShowMode.AUTOMATIC:
@@ -411,7 +524,8 @@ class ControllerRuntime:
         if active is None:
             self.rejected_telemetry += 1
             return TelemetryDecision(False, "no_active_scene")
-        if telemetry.agent_id != active.scene.agent_id:
+        media_session = active.session_for_agent(telemetry.agent_id)
+        if media_session is None:
             self.rejected_telemetry += 1
             return TelemetryDecision(False, "wrong_agent")
         connection = self._agents.get(telemetry.agent_id)
@@ -422,11 +536,24 @@ class ControllerRuntime:
             self.rejected_telemetry += 1
             return TelemetryDecision(False, "controller_epoch_fence")
 
+        if media_session != active.clock_session:
+            if telemetry.scene_instance_id != active.scene_instance_id:
+                self.rejected_telemetry += 1
+                return TelemetryDecision(False, "scene_fence")
+            if telemetry.playback_session_id != media_session.playback_session_id:
+                self.rejected_telemetry += 1
+                return TelemetryDecision(False, "session_fence")
+            connection.last_seen_at = self.clock()
+            self._last_media_positions[media_session.playback_session_id] = telemetry.position_ms
+            self._media_sessions_with_telemetry.add(media_session.playback_session_id)
+            return TelemetryDecision(True)
+
         decision = self.follower.ingest(telemetry, self.clock())
         if not decision.accepted:
             self.rejected_telemetry += 1
         else:
             connection.last_seen_at = self.clock()
+            self._media_sessions_with_telemetry.add(media_session.playback_session_id)
             previous_position_ms = self._last_media_positions.get(
                 active.playback_session_id,
                 telemetry.position_ms,
@@ -460,26 +587,38 @@ class ControllerRuntime:
 
         del self._pending_commands[acknowledgment.request_id]
         connection.last_seen_at = self.clock()
+        media_session = (
+            self.active_scene.session_for_playback(pending.command.playback_session_id)
+            if self.active_scene is not None
+            else None
+        )
         if acknowledgment.status == "error":
             self.command_errors += 1
             self._degraded_reason = f"command_error:{acknowledgment.error_code or 'unknown'}"
-            self._cancel_render_loop()
+            if media_session is not None:
+                self._failed_prepare_sessions.add(media_session.playback_session_id)
+            if pending.command.command == "prepare" and (
+                media_session is None or media_session.required
+            ):
+                self._cancel_render_loop()
             if (
                 pending.command.command == "prepare"
                 and self.active_scene is not None
-                and self.active_scene.playback_session_id == pending.command.playback_session_id
+                and media_session is not None
+                and media_session.required
                 and self.active_scene.definition.failure_scene_id is not None
             ):
                 fallback = self.active_scene.definition.failure_scene_id
                 self.scene_failovers += 1
                 await self.start_scene(fallback)
-        elif pending.command.command == "prepare" and self.active_scene is not None:
-            await self._send_command(self.active_scene, "play", connection)
+        if pending.command.command == "prepare" and self.active_scene is not None:
+            await self._play_when_prepared(self.active_scene)
         return TelemetryDecision(True)
 
     async def _send_command(
         self,
         active: ActiveScene,
+        media_session: ActiveMediaSession,
         command_name: Literal[
             "prepare",
             "play",
@@ -496,26 +635,81 @@ class ControllerRuntime:
         command = AgentCommand(
             request_id=str(uuid4()),
             command=command_name,
-            agent_id=active.scene.agent_id,
+            agent_id=media_session.agent_id,
             agent_session_id=connection.session_id,
             controller_epoch=self.controller_epoch,
             scene_id=active.definition.id,
             scene_instance_id=active.scene_instance_id,
-            playback_session_id=active.playback_session_id,
-            asset_id=active.scene.asset_id,
+            playback_session_id=media_session.playback_session_id,
+            asset_id=media_session.asset_id,
             target_position_ms=target_position_ms,
         )
         self._pending_commands[command.request_id] = PendingCommand(command, self.clock())
         await connection.channel.send_json(command.model_dump(mode="json"))
 
-    def _active_media_connection(self) -> tuple[ActiveScene, AgentConnection]:
+    async def _play_when_prepared(self, active: ActiveScene) -> None:
+        if self.active_scene is not active:
+            return
+        has_pending_prepare = any(
+            pending.command.command == "prepare"
+            and pending.command.scene_instance_id == active.scene_instance_id
+            for pending in self._pending_commands.values()
+        )
+        required_failed = any(
+            session.required and session.playback_session_id in self._failed_prepare_sessions
+            for session in active.resolved_media_sessions
+        )
+        if has_pending_prepare or required_failed:
+            return
+        for session in active.resolved_media_sessions:
+            if session.playback_session_id in self._failed_prepare_sessions:
+                continue
+            connection = self._agents.get(session.agent_id)
+            if connection is not None:
+                if session.start_delay_ms == 0:
+                    await self._send_command(active, session, "play", connection)
+                else:
+                    task = asyncio.create_task(
+                        self._send_delayed_play(active, session),
+                        name=f"delayed-play-{session.output_id}",
+                    )
+                    self._lifecycle_tasks.add(task)
+                    task.add_done_callback(self._lifecycle_task_done)
+
+    async def _send_delayed_play(
+        self,
+        active: ActiveScene,
+        media_session: ActiveMediaSession,
+    ) -> None:
+        await asyncio.sleep(media_session.start_delay_ms / 1000)
+        if self.active_scene is not active:
+            return
+        connection = self._agents.get(media_session.agent_id)
+        if connection is not None:
+            await self._send_command(active, media_session, "play", connection)
+
+    async def _send_to_active_media(
+        self,
+        command_name: Literal["pause", "resume", "seek"],
+        *,
+        target_position_ms: int | None = None,
+    ) -> None:
         active = self.active_scene
         if active is None:
             raise RuntimeError("no active scene")
-        connection = self._agents.get(active.scene.agent_id)
-        if connection is None:
-            raise RuntimeError(f"required agent is not connected: {active.scene.agent_id}")
-        return active, connection
+        for session in active.resolved_media_sessions:
+            connection = self._agents.get(session.agent_id)
+            if connection is None:
+                if session.required:
+                    raise RuntimeError(f"required agent is not connected: {session.agent_id}")
+                continue
+            await self._send_command(
+                active,
+                session,
+                command_name,
+                connection,
+                target_position_ms=target_position_ms,
+            )
 
     def heartbeat(self, heartbeat: AgentHeartbeat) -> TelemetryDecision:
         if heartbeat.controller_epoch != self.controller_epoch:
@@ -544,23 +738,46 @@ class ControllerRuntime:
             del self._agents[agent_id]
             self._abandon_commands(agent_id)
             self.heartbeat_timeouts += 1
-            if self.active_scene is not None and self.active_scene.scene.agent_id == agent_id:
-                self.follower.disconnect()
-                self._degraded_reason = "heartbeat_timeout"
-                self._cancel_render_loop()
+            media_session = (
+                self.active_scene.session_for_agent(agent_id)
+                if self.active_scene is not None
+                else None
+            )
+            if self.active_scene is not None and media_session is not None:
+                if media_session == self.active_scene.clock_session:
+                    self.follower.disconnect()
+                    self._degraded_reason = "heartbeat_timeout"
+                    self._cancel_render_loop()
+                else:
+                    self._degraded_reason = (
+                        f"media_output_heartbeat_timeout:{media_session.output_id}"
+                    )
 
         command_limit = self.command_timeout_ms / 1000
-        expired_commands = [
-            request_id
+        expired_commands = {
+            request_id: pending
             for request_id, pending in self._pending_commands.items()
             if now - pending.sent_at > command_limit
-        ]
+        }
         if expired_commands:
             for request_id in expired_commands:
                 del self._pending_commands[request_id]
             self.command_timeouts += len(expired_commands)
             self._degraded_reason = "command_timeout"
-            self._cancel_render_loop()
+            required_prepare_timed_out = any(
+                pending.command.command == "prepare"
+                and self.active_scene is not None
+                and (
+                    session := self.active_scene.session_for_playback(
+                        pending.command.playback_session_id
+                    )
+                )
+                is not None
+                and session.required
+                for pending in expired_commands.values()
+            )
+            if required_prepare_timed_out:
+                self._cancel_render_loop()
 
     def render_frame(self) -> bool:
         self.check_timeouts()
@@ -573,57 +790,34 @@ class ControllerRuntime:
 
         rendered_at = self.clock()
         render_position_ms = max(0, estimate.position_ms - self.lighting_delay_ms)
-        lighting = active.definition.lighting
-        if lighting.timeline:
-            base_frame = self._render_persistent_baseline(rendered_at)
-            brightness_limit = (
-                min(
-                    lighting.brightness_limit,
-                    self.catalog.lighting_looks.definition.brightness_limit,
+        for output in active.scene.lighting_outputs:
+            output_position_ms = max(
+                0,
+                render_position_ms - output.definition.timing_offset_ms,
+            )
+            pixels = self._render_lighting_output(
+                output,
+                render_position_ms=output_position_ms,
+                rendered_at=rendered_at,
+                duration_ms=active.definition.duration_ms,
+            )
+            try:
+                self.sink.send(
+                    RenderedFrame(
+                        scene_instance_id=active.scene_instance_id,
+                        position_ms=output_position_ms,
+                        pixels=pixels,
+                        resource=output.definition.resource,
+                    )
                 )
-                if self.catalog.lighting_looks is not None
-                else lighting.brightness_limit
-            )
-            pixels = LightingTimeline(
-                pixel_count=active.scene.pixel_count,
-                cues=active.scene.lighting_cues,
-                brightness_limit=brightness_limit,
-            ).render(render_position_ms, base_frame=base_frame)
-        elif lighting.effect == "segment_pulse":
-            segment = active.scene.lighting_segment
-            if active.scene.lighting_target_indices:
-                pixels = TargetPulse(
-                    pixel_count=active.scene.pixel_count,
-                    target_indices=active.scene.lighting_target_indices,
-                    pulse_times_ms=lighting.pulse_times_ms,
-                    pulse_duration_ms=lighting.pulse_duration_ms,
-                    color=active.scene.color,
-                ).render(render_position_ms)
-            elif segment is not None:
-                pixels = SegmentPulse(
-                    pixel_count=active.scene.pixel_count,
-                    segment_start=segment.start,
-                    segment_end=segment.end,
-                    pulse_times_ms=lighting.pulse_times_ms,
-                    pulse_duration_ms=lighting.pulse_duration_ms,
-                    color=active.scene.color,
-                ).render(render_position_ms)
-            else:
-                raise RuntimeError("segment_pulse scene has no bound pixel target")
-        else:
-            pixels = SyntheticSweep(
-                pixel_count=active.scene.pixel_count,
-                cycle_ms=active.definition.duration_ms,
-                color=active.scene.color,
-            ).render(render_position_ms)
-        self.sink.send(
-            RenderedFrame(
-                scene_instance_id=active.scene_instance_id,
-                position_ms=render_position_ms,
-                pixels=pixels,
-            )
-        )
-        self.rendered_frames += 1
+            except (OSError, ValueError) as error:
+                self.lighting_output_error_count += 1
+                self._lighting_output_errors[output.definition.resource] = (
+                    f"{type(error).__name__}: {error}"
+                )
+                continue
+            self._lighting_output_errors.pop(output.definition.resource, None)
+            self.rendered_frames += 1
         if estimate.degraded:
             self.stale_frames += 1
         if self._last_frame_at is not None:
@@ -632,14 +826,62 @@ class ControllerRuntime:
         self._last_frame_at = rendered_at
         return True
 
+    def _render_lighting_output(
+        self,
+        output: LoadedLightingOutput,
+        *,
+        render_position_ms: int,
+        rendered_at: float,
+        duration_ms: int,
+    ) -> tuple[tuple[int, int, int], ...]:
+        lighting = output.definition
+        if lighting.timeline:
+            base_frame = self._render_persistent_baseline(rendered_at, output)
+            looks = self._lighting_looks_for(lighting.resource)
+            brightness_limit = (
+                min(
+                    lighting.brightness_limit,
+                    looks.definition.brightness_limit,
+                )
+                if looks is not None
+                else lighting.brightness_limit
+            )
+            return LightingTimeline(
+                pixel_count=output.pixel_count,
+                cues=output.lighting_cues,
+                brightness_limit=brightness_limit,
+            ).render(render_position_ms, base_frame=base_frame)
+        if lighting.effect == "segment_pulse":
+            segment = output.lighting_segment
+            if output.lighting_target_indices:
+                return TargetPulse(
+                    pixel_count=output.pixel_count,
+                    target_indices=output.lighting_target_indices,
+                    pulse_times_ms=lighting.pulse_times_ms,
+                    pulse_duration_ms=lighting.pulse_duration_ms,
+                    color=output.color,
+                ).render(render_position_ms)
+            if segment is not None:
+                return SegmentPulse(
+                    pixel_count=output.pixel_count,
+                    segment_start=segment.start,
+                    segment_end=segment.end,
+                    pulse_times_ms=lighting.pulse_times_ms,
+                    pulse_duration_ms=lighting.pulse_duration_ms,
+                    color=output.color,
+                ).render(render_position_ms)
+            raise RuntimeError("segment_pulse scene has no bound pixel target")
+        return SyntheticSweep(
+            pixel_count=output.pixel_count,
+            cycle_ms=duration_ms,
+            color=output.color,
+        ).render(render_position_ms)
+
     async def stop(self, *, continue_queue: bool = True) -> None:
         await self._stop_render_loop()
         active = self.active_scene
         if active is not None:
-            connection = self._agents.get(active.scene.agent_id)
-            self._abandon_commands(active.scene.agent_id)
-            if connection is not None:
-                await self._send_command(active, "stop", connection)
+            await self._stop_media_sessions(active)
         self._degraded_reason = None
         self.active_scene = None
         self.follower.reset()
@@ -651,8 +893,12 @@ class ControllerRuntime:
         else:
             self._emit_safe_lighting()
 
-    def _render_persistent_baseline(self, now: float) -> tuple[tuple[int, int, int], ...] | None:
-        looks = self.catalog.lighting_looks
+    def _render_persistent_baseline(
+        self,
+        now: float,
+        output: LoadedLightingOutput,
+    ) -> tuple[tuple[int, int, int], ...] | None:
+        looks = self._lighting_looks_for(output.definition.resource)
         if looks is None:
             return None
         elapsed_ms = round((now - self._lighting_started_at) * 1000)
@@ -664,40 +910,67 @@ class ControllerRuntime:
         ).render(position_ms)
 
     def _emit_safe_lighting(self) -> None:
-        looks = self.catalog.lighting_looks
-        if looks is None:
-            return
-        pixels = LightingTimeline(
-            pixel_count=looks.pixel_count,
-            cues=looks.safe_state_cues,
-            brightness_limit=looks.definition.brightness_limit,
-        ).render(0)
-        self.sink.send(
-            RenderedFrame(
-                scene_instance_id="safe-state",
-                position_ms=0,
-                pixels=pixels,
-            )
-        )
-        self.rendered_frames += 1
+        looks_by_resource = self.catalog.lighting_looks_by_resource
+        if not looks_by_resource and self.catalog.lighting_looks is not None:
+            looks = self.catalog.lighting_looks
+            looks_by_resource = {looks.definition.resource: looks}
+        for resource, looks in looks_by_resource.items():
+            pixels = LightingTimeline(
+                pixel_count=looks.pixel_count,
+                cues=looks.safe_state_cues,
+                brightness_limit=looks.definition.brightness_limit,
+            ).render(0)
+            try:
+                self.sink.send(
+                    RenderedFrame(
+                        scene_instance_id="safe-state",
+                        position_ms=0,
+                        pixels=pixels,
+                        resource=resource,
+                    )
+                )
+            except (OSError, ValueError) as error:
+                self.lighting_output_error_count += 1
+                self._lighting_output_errors[resource] = f"{type(error).__name__}: {error}"
+                continue
+            self._lighting_output_errors.pop(resource, None)
+            self.rendered_frames += 1
+
+    def _lighting_looks_for(self, resource: str) -> LoadedLightingLooks | None:
+        looks = self.catalog.lighting_looks_by_resource.get(resource)
+        if looks is not None:
+            return looks
+        legacy = self.catalog.lighting_looks
+        if legacy is not None and legacy.definition.resource == resource:
+            return legacy
+        return None
 
     def _emit_blackout(self) -> None:
-        pixel_count = (
-            self.catalog.lighting_looks.pixel_count
-            if self.catalog.lighting_looks is not None
-            else next(iter(self.catalog.scenes.values())).pixel_count
-        )
-        self.sink.send(
-            RenderedFrame(
-                scene_instance_id="blackout",
-                position_ms=0,
-                pixels=((0, 0, 0),) * pixel_count,
+        outputs = {
+            output.definition.resource: output.pixel_count
+            for scene in self.catalog.scenes.values()
+            for output in scene.lighting_outputs
+        }
+        for resource, pixel_count in outputs.items():
+            self.sink.send(
+                RenderedFrame(
+                    scene_instance_id="blackout",
+                    position_ms=0,
+                    pixels=((0, 0, 0),) * pixel_count,
+                    resource=resource,
+                )
             )
-        )
-        self.rendered_frames += 1
+            self.rendered_frames += 1
+
+    async def _stop_media_sessions(self, active: ActiveScene) -> None:
+        for session in active.resolved_media_sessions:
+            connection = self._agents.get(session.agent_id)
+            self._abandon_commands(session.agent_id)
+            if connection is not None:
+                await self._send_command(active, session, "stop", connection)
 
     async def shutdown(self) -> None:
-        await self._stop_render_loop()
+        await self.stop(continue_queue=False)
         await self._stop_encounter_loop()
         lifecycle_tasks = tuple(self._lifecycle_tasks)
         for task in lifecycle_tasks:
@@ -885,9 +1158,73 @@ class ControllerRuntime:
             else None
         )
         estimate_reason = estimate.reason if estimate else None
-        degraded_reason = self._degraded_reason or estimate_reason
+        lighting_error_reason = (
+            f"lighting_output_error:{sorted(self._lighting_output_errors)[0]}"
+            if self._lighting_output_errors
+            else None
+        )
+        degraded_reason = self._degraded_reason or lighting_error_reason or estimate_reason
         if degraded_reason is None and estimate is None and self.active_scene:
             degraded_reason = "awaiting_telemetry"
+        clock_session_id = (
+            self.active_scene.clock_session.playback_session_id
+            if self.active_scene is not None
+            else None
+        )
+        clock_position = (
+            self._last_media_positions.get(clock_session_id)
+            if clock_session_id in self._media_sessions_with_telemetry
+            else None
+        )
+        active_media = (
+            [
+                {
+                    "output_id": session.output_id,
+                    "agent_id": session.agent_id,
+                    "playback_session_id": session.playback_session_id,
+                    "required": session.required,
+                    "start_delay_ms": session.start_delay_ms,
+                    "clock_source": session == self.active_scene.clock_session,
+                    "connected": session.agent_id in self._agents,
+                    "prepare_failed": (
+                        session.playback_session_id in self._failed_prepare_sessions
+                    ),
+                    "last_position_ms": (
+                        self._last_media_positions.get(session.playback_session_id)
+                        if session.playback_session_id in self._media_sessions_with_telemetry
+                        else None
+                    ),
+                    "drift_ms": (
+                        self._last_media_positions[session.playback_session_id] - clock_position
+                        if clock_position is not None
+                        and session.playback_session_id in self._media_sessions_with_telemetry
+                        else None
+                    ),
+                    "pending_commands": sum(
+                        pending.command.playback_session_id == session.playback_session_id
+                        for pending in self._pending_commands.values()
+                    ),
+                }
+                for session in self.active_scene.resolved_media_sessions
+            ]
+            if self.active_scene is not None
+            else []
+        )
+        active_lighting = (
+            [
+                {
+                    "output_id": output.definition.id,
+                    "resource": output.definition.resource,
+                    "required": output.definition.required,
+                    "pixel_count": output.pixel_count,
+                    "timing_offset_ms": output.definition.timing_offset_ms,
+                    "error": self._lighting_output_errors.get(output.definition.resource),
+                }
+                for output in self.active_scene.scene.lighting_outputs
+            ]
+            if self.active_scene is not None
+            else []
+        )
         return {
             "controller_epoch": self.controller_epoch,
             "active_scene": self.active_scene.definition.id if self.active_scene else None,
@@ -900,6 +1237,8 @@ class ControllerRuntime:
             "degraded": degraded_reason is not None,
             "degraded_reason": degraded_reason,
             "connected_agents": sorted(self._agents),
+            "media_outputs": active_media,
+            "lighting_outputs": active_lighting,
             "pending_commands": len(self._pending_commands),
             "command_errors": self.command_errors,
             "command_timeouts": self.command_timeouts,
@@ -911,6 +1250,7 @@ class ControllerRuntime:
             "scene_failovers": self.scene_failovers,
             "rejected_protocol_messages": self.rejected_protocol_messages,
             "rendered_frames": self.rendered_frames,
+            "lighting_output_error_count": self.lighting_output_error_count,
             "rejected_telemetry": self.rejected_telemetry,
             "render_target_fps": self.render_fps,
             "render_loop_running": self.render_loop_running,

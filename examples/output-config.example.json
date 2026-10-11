@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "lighting": [
+    {
+      "resource": "roofline",
+      "kind": "ddp",
+      "host": "192.0.2.1",
+      "port": 4048,
+      "destination_id": 1,
+      "max_payload_bytes": 1440,
+      "expected_pixel_count": 605,
+      "brightness_limit": 1.0
+    },
+    {
+      "resource": "porch",
+      "kind": "ddp",
+      "host": "192.0.2.2",
+      "port": 4048,
+      "destination_id": 1,
+      "max_payload_bytes": 1440,
+      "expected_pixel_count": 150,
+      "brightness_limit": 1.0
+    }
+  ]
+}

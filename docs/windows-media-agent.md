@@ -1,6 +1,6 @@
 # Windows 11 media agent
 
-The media-agent adapter uses mpv JSON IPC through a Windows named pipe and
+On Windows, the media-agent adapter uses mpv JSON IPC through a named pipe and
 initiates an outbound WebSocket connection to the controller.
 
 ## Prerequisites

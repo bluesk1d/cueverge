@@ -1,0 +1,49 @@
+{
+  "schema_version": 2,
+  "outputs": [
+    {
+      "resource": "roofline.demo",
+      "cycle_ms": 4000,
+      "brightness_limit": 0.5,
+      "baseline": [
+        {
+          "id": "roofline-idle",
+          "primitive": "solid",
+          "start_ms": 0,
+          "duration_ms": 4000,
+          "color": "#080010"
+        }
+      ],
+      "safe_state": [
+        {
+          "id": "roofline-safe",
+          "primitive": "blackout",
+          "start_ms": 0,
+          "duration_ms": 1
+        }
+      ]
+    },
+    {
+      "resource": "porch.demo",
+      "cycle_ms": 4000,
+      "brightness_limit": 0.5,
+      "baseline": [
+        {
+          "id": "porch-idle",
+          "primitive": "solid",
+          "start_ms": 0,
+          "duration_ms": 4000,
+          "color": "#001008"
+        }
+      ],
+      "safe_state": [
+        {
+          "id": "porch-safe",
+          "primitive": "blackout",
+          "start_ms": 0,
+          "duration_ms": 1
+        }
+      ]
+    }
+  ]
+}

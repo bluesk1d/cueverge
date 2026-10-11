@@ -1,0 +1,42 @@
+{
+  "schema_version": 2,
+  "id": "dual-window-sweep",
+  "name": "Synthetic Dual Window Sweep",
+  "mode": "media_synchronized",
+  "priority": 10,
+  "resources": [
+    "projector.left",
+    "projector.right",
+    "roofline.demo",
+    "porch.demo"
+  ],
+  "duration_ms": 4000,
+  "clock_source": "left-window",
+  "media": [
+    {
+      "id": "left-window",
+      "resource": "projector.left"
+    },
+    {
+      "id": "right-window",
+      "resource": "projector.right"
+    }
+  ],
+  "lighting": [
+    {
+      "id": "roofline-sweep",
+      "resource": "roofline.demo",
+      "effect": "synthetic_sweep",
+      "color": "#FF2060"
+    },
+    {
+      "id": "porch-sweep",
+      "resource": "porch.demo",
+      "effect": "synthetic_sweep",
+      "color": "#20A0FF"
+    }
+  ],
+  "completion": {
+    "policy": "select_next"
+  }
+}

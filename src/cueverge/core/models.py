@@ -119,6 +119,12 @@ class MediaDefinition(FrozenModel):
     asset: str | None = None
 
 
+class MediaOutputDefinition(MediaDefinition):
+    id: str = Field(min_length=1)
+    required: bool = True
+    start_delay_ms: int = Field(default=0, ge=0, le=5000)
+
+
 class LightingTargetDefinition(FrozenModel):
     kind: Literal["segment", "fixture", "path"]
     id: str = Field(min_length=1)
@@ -198,6 +204,12 @@ class LightingDefinition(FrozenModel):
         return self
 
 
+class LightingOutputDefinition(LightingDefinition):
+    id: str = Field(min_length=1)
+    required: bool = True
+    timing_offset_ms: int = Field(default=0, ge=-5000, le=5000)
+
+
 class CompletionDefinition(FrozenModel):
     policy: Literal["loop", "select_next", "transition_to", "hold", "stop"] = "hold"
     target_scene_id: str | None = Field(default=None, min_length=1)
@@ -244,8 +256,7 @@ class SchedulingDefinition(FrozenModel):
         return self
 
 
-class SceneDefinition(FrozenModel):
-    schema_version: Literal[1]
+class SceneDefinitionBase(FrozenModel):
     id: str = Field(min_length=1)
     name: str = Field(min_length=1)
     mode: Literal["media_synchronized"]
@@ -253,27 +264,13 @@ class SceneDefinition(FrozenModel):
     interruption: Literal["replace_by_priority", "queue", "ignore"] = "replace_by_priority"
     resources: tuple[str, ...] = Field(min_length=1)
     duration_ms: int = Field(gt=0)
-    media: MediaDefinition
-    lighting: LightingDefinition
     completion: CompletionDefinition = CompletionDefinition()
     failure_scene_id: str | None = Field(default=None, min_length=1)
     scheduling: SchedulingDefinition = SchedulingDefinition()
 
-    @model_validator(mode="after")
-    def validate_claims(self) -> "SceneDefinition":
+    def _validate_common(self) -> None:
         if len(self.resources) != len(set(self.resources)):
             raise ValueError("scene resource claims must be unique")
-        required = {self.media.resource, self.lighting.resource}
-        missing = required.difference(self.resources)
-        if missing:
-            raise ValueError(f"scene must claim referenced resources: {sorted(missing)}")
-        if self.lighting.effect == "segment_pulse" and any(
-            time_ms + self.lighting.pulse_duration_ms > self.duration_ms
-            for time_ms in self.lighting.pulse_times_ms
-        ):
-            raise ValueError("lighting pulse extends beyond scene duration")
-        if any(cue.start_ms + cue.duration_ms > self.duration_ms for cue in self.lighting.timeline):
-            raise ValueError("lighting cue extends beyond scene duration")
         if self.failure_scene_id == self.id:
             raise ValueError("scene failure fallback cannot reference itself")
         if self.completion.target_scene_id == self.id:
@@ -284,11 +281,94 @@ class SceneDefinition(FrozenModel):
             interval.end_ms > self.duration_ms for interval in self.scheduling.protected_intervals
         ):
             raise ValueError("protected interval exceeds scene duration")
+
+    def _validate_lighting(self, lighting: LightingDefinition) -> None:
+        if lighting.effect == "segment_pulse" and any(
+            time_ms + lighting.pulse_duration_ms > self.duration_ms
+            for time_ms in lighting.pulse_times_ms
+        ):
+            raise ValueError("lighting pulse extends beyond scene duration")
+        if any(cue.start_ms + cue.duration_ms > self.duration_ms for cue in lighting.timeline):
+            raise ValueError("lighting cue extends beyond scene duration")
+
+
+class SceneDefinitionV1(SceneDefinitionBase):
+    schema_version: Literal[1]
+    media: MediaDefinition
+    lighting: LightingDefinition
+
+    @model_validator(mode="after")
+    def validate_claims(self) -> "SceneDefinitionV1":
+        self._validate_common()
+        required = {self.media.resource, self.lighting.resource}
+        missing = required.difference(self.resources)
+        if missing:
+            raise ValueError(f"scene must claim referenced resources: {sorted(missing)}")
+        self._validate_lighting(self.lighting)
         return self
+
+
+class SceneDefinitionV2(SceneDefinitionBase):
+    schema_version: Literal[2]
+    clock_source: str = Field(min_length=1)
+    media: tuple[MediaOutputDefinition, ...] = Field(min_length=1)
+    lighting: tuple[LightingOutputDefinition, ...] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_outputs(self) -> "SceneDefinitionV2":
+        self._validate_common()
+        output_ids = [output.id for output in self.media]
+        output_ids.extend(output.id for output in self.lighting)
+        if len(output_ids) != len(set(output_ids)):
+            raise ValueError("scene output IDs must be unique")
+        media_ids = {output.id for output in self.media}
+        if self.clock_source not in media_ids:
+            raise ValueError("scene clock_source must reference a media output")
+        if not next(output for output in self.media if output.id == self.clock_source).required:
+            raise ValueError("scene clock_source media output must be required")
+        output_resources = [output.resource for output in self.media]
+        output_resources.extend(output.resource for output in self.lighting)
+        referenced = set(output_resources)
+        missing = referenced.difference(self.resources)
+        if missing:
+            raise ValueError(f"scene must claim referenced resources: {sorted(missing)}")
+        duplicate_resources = sorted(
+            resource for resource in referenced if output_resources.count(resource) > 1
+        )
+        if duplicate_resources:
+            raise ValueError(f"scene outputs must use unique resources: {duplicate_resources}")
+        for lighting in self.lighting:
+            self._validate_lighting(lighting)
+        return self
+
+
+SceneDefinition = SceneDefinitionV1 | SceneDefinitionV2
+
+
+class LoadedMediaOutput(FrozenModel):
+    definition: MediaOutputDefinition
+    agent_id: str
+    asset_id: str | None = None
+
+
+class LoadedLightingOutput(FrozenModel):
+    definition: LightingOutputDefinition
+    pixel_count: int
+    pixel_segments: tuple[PixelSegment, ...] = ()
+    lighting_segment: PixelSegment | None = None
+    lighting_target_kind: Literal["segment", "fixture", "path"] | None = None
+    lighting_target_id: str | None = None
+    lighting_target_indices: tuple[int, ...] = ()
+    lighting_target_precedence: int = 0
+    lighting_cues: tuple["LoadedLightingCue", ...] = ()
+    color: tuple[int, int, int]
 
 
 class LoadedScene(FrozenModel):
     definition: SceneDefinition
+    media_outputs: tuple[LoadedMediaOutput, ...] = Field(min_length=1)
+    lighting_outputs: tuple[LoadedLightingOutput, ...] = Field(min_length=1)
+    clock_source_id: str
     agent_id: str
     pixel_count: int
     pixel_segments: tuple[PixelSegment, ...] = ()
@@ -316,6 +396,7 @@ class SceneCatalog(FrozenModel):
     audience: "AudiencePresenceDefinition | None" = None
     opportunities: "OpportunityProgramDefinition | None" = None
     lighting_looks: "LoadedLightingLooks | None" = None
+    lighting_looks_by_resource: dict[str, "LoadedLightingLooks"] = Field(default_factory=dict)
 
     def require(self, scene_id: str) -> LoadedScene:
         try:
@@ -408,8 +489,7 @@ class OpportunityProgramDefinition(FrozenModel):
         return self
 
 
-class LightingLooksDefinition(FrozenModel):
-    schema_version: Literal[1]
+class LightingLookDefinition(FrozenModel):
     resource: str = Field(min_length=1)
     cycle_ms: int = Field(gt=0)
     brightness_limit: float = Field(default=1.0, gt=0, le=1)
@@ -417,7 +497,7 @@ class LightingLooksDefinition(FrozenModel):
     safe_state: tuple[LightingCue, ...] = Field(min_length=1)
 
     @model_validator(mode="after")
-    def validate_cues(self) -> "LightingLooksDefinition":
+    def validate_cues(self) -> "LightingLookDefinition":
         for cue in self.baseline:
             if cue.start_ms + cue.duration_ms > self.cycle_ms:
                 raise ValueError("baseline lighting cue exceeds look cycle")
@@ -427,8 +507,24 @@ class LightingLooksDefinition(FrozenModel):
         return self
 
 
+class LightingLooksDefinition(LightingLookDefinition):
+    schema_version: Literal[1]
+
+
+class MultiLightingLooksDefinition(FrozenModel):
+    schema_version: Literal[2]
+    outputs: tuple[LightingLookDefinition, ...] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_unique_resources(self) -> "MultiLightingLooksDefinition":
+        resources = [output.resource for output in self.outputs]
+        if len(resources) != len(set(resources)):
+            raise ValueError("persistent lighting resources must be unique")
+        return self
+
+
 class LoadedLightingLooks(FrozenModel):
-    definition: LightingLooksDefinition
+    definition: LightingLookDefinition
     pixel_count: int
     baseline_cues: tuple[LoadedLightingCue, ...]
     safe_state_cues: tuple[LoadedLightingCue, ...]

@@ -4,7 +4,7 @@ from contextlib import suppress
 
 from cueverge.config import MediaAgentConfig
 from cueverge.media_agent.client import MediaAgentClient
-from cueverge.media_agent.mpv import MpvClient, MpvProcess, WindowsNamedPipeTransport
+from cueverge.media_agent.mpv import MpvClient, MpvProcess, create_mpv_transport
 from cueverge.media_agent.mpv_player import MpvPlayer
 
 
@@ -17,7 +17,7 @@ async def run() -> None:
         audio_device=config.audio_device,
         audio_delay_seconds=config.audio_delay_ms / 1000,
     )
-    transport = WindowsNamedPipeTransport(config.mpv_pipe)
+    transport = create_mpv_transport(config.mpv_pipe)
     mpv = MpvClient(transport)
     process.start()
     try:

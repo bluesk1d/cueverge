@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Cueverge Media Agent
+Comment=Start the projector playback agent in the graphical user session
+Exec=systemctl --user start cueverge-media-agent.service
+Terminal=false
+X-GNOME-Autostart-enabled=true

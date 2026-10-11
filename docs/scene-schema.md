@@ -15,7 +15,9 @@ assets/
   optional-local-assets
 ```
 
-All documents use `schema_version: 1` and reject unknown fields.
+All documents reject unknown fields. Installation and most auxiliary documents
+use `schema_version: 1`. Scene and lighting-look documents support
+multi-output version 2 forms.
 
 `program.json`, `audience.json`, `opportunities.json`, `looks.json`, and
 `encounter.json` are optional.
@@ -99,6 +101,83 @@ repeat a segment, and every referenced segment must exist on the same output.
 
 The legacy `segment` field remains supported, but a pulse must specify exactly
 one legacy segment or semantic target.
+
+## Multi-output scenes
+
+Scene schema version 2 allows one scene to address multiple media agents and
+pixel outputs. Every output has a scene-local ID and references one claimed
+installation resource. Output IDs and referenced resources must be unique
+within the scene.
+
+```json
+{
+  "schema_version": 2,
+  "id": "two-window-scene",
+  "name": "Two Window Scene",
+  "mode": "media_synchronized",
+  "resources": [
+    "projector.left",
+    "projector.right",
+    "roofline",
+    "porch"
+  ],
+  "duration_ms": 12000,
+  "clock_source": "left-video",
+  "media": [
+    {
+      "id": "left-video",
+      "resource": "projector.left",
+      "asset": "left.mp4"
+    },
+    {
+      "id": "right-video",
+      "resource": "projector.right",
+      "asset": "right.mp4"
+    }
+  ],
+  "lighting": [
+    {
+      "id": "roofline",
+      "resource": "roofline",
+      "effect": "synthetic_sweep"
+    },
+    {
+      "id": "porch",
+      "resource": "porch",
+      "effect": "synthetic_sweep"
+    }
+  ]
+}
+```
+
+`clock_source` must identify a required media output. Its accepted telemetry is
+the authoritative scene clock. Telemetry from other media outputs is fenced
+and recorded but does not move scene time.
+
+Media and lighting outputs default to `required: true`. A disconnected optional
+media output is omitted when the scene starts. All required media agents must
+be connected, and all participating agents must acknowledge `prepare`, before
+the controller sends any `play` command.
+
+Media outputs may set `start_delay_ms` from 0 through 5000. The delay starts
+after the prepare barrier opens and is intended for measured, static startup
+calibration. It does not change clock authority or apply ongoing drift
+correction.
+
+Lighting outputs may set `timing_offset_ms` from -5000 through 5000. Positive
+values delay that output by rendering an earlier scene position; negative
+values advance it. The existing controller-wide lighting delay is applied
+first, followed by the per-output offset. Both values are installation
+calibration inputs and should remain zero until measured.
+
+Each lighting output is rendered independently with its own pixel geometry and
+brightness limit, then routed by logical resource to its configured sink.
+Multiple lighting resources therefore require a resource-keyed sink router.
+An output send failure is recorded against that resource and does not prevent
+healthy lighting outputs from receiving their frames; failed sends are retried
+on later render ticks.
+Scene schema version 1 retains its singular `media` and `lighting` objects and
+is normalized to the same loaded representation.
 
 ## Multi-cue lighting timelines
 
@@ -205,11 +284,63 @@ therefore survives media completion and scene replacement. A timeline scene
 renders over the baseline, changing only pixels addressed by active scene cues.
 Fixture and cue precedence continue to determine overlap order.
 
-The look resource must match every scene's lighting resource because the
-current runtime owns one pixel sink. Explicit stop renders `safe_state`;
-queued scene continuation does not insert that frame between scenes. Legacy
-single-effect scenes retain their full-output behavior and do not composite
-with the baseline.
+Version 1 defines one look resource and requires it to appear in every scene.
+Version 2 wraps the same per-resource definition in an `outputs` array:
+
+```json
+{
+  "schema_version": 2,
+  "outputs": [
+    {
+      "resource": "roofline",
+      "cycle_ms": 6000,
+      "baseline": [
+        {
+          "id": "roofline-idle",
+          "primitive": "blackout",
+          "start_ms": 0,
+          "duration_ms": 6000
+        }
+      ],
+      "safe_state": [
+        {
+          "id": "roofline-safe",
+          "primitive": "blackout",
+          "start_ms": 0,
+          "duration_ms": 1
+        }
+      ]
+    },
+    {
+      "resource": "porch",
+      "cycle_ms": 4000,
+      "baseline": [
+        {
+          "id": "porch-idle",
+          "primitive": "blackout",
+          "start_ms": 0,
+          "duration_ms": 4000
+        }
+      ],
+      "safe_state": [
+        {
+          "id": "porch-safe",
+          "primitive": "blackout",
+          "start_ms": 0,
+          "duration_ms": 1
+        }
+      ]
+    }
+  ]
+}
+```
+
+The `baseline` and `safe_state` arrays must each contain at least one cue.
+Resources must be unique and bound to pixel outputs. Baselines are
+composited only into the matching scene lighting output. Explicit stop renders
+every configured resource's `safe_state`; queued scene continuation does not
+insert safe-state frames between scenes. Legacy single-effect scenes retain
+their full-output behavior and do not composite with the baseline.
 
 ## Scenes
 

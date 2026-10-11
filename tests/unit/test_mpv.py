@@ -1,5 +1,6 @@
 import asyncio
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -9,6 +10,8 @@ from cueverge.media_agent.mpv import (
     MpvClient,
     MpvError,
     MpvProcess,
+    UnixSocketTransport,
+    create_mpv_transport,
     resolve_local_asset,
 )
 from cueverge.media_agent.mpv_player import MpvPlayer
@@ -92,6 +95,50 @@ def test_mpv_client_bounds_command_wait() -> None:
         await client.close()
 
     asyncio.run(scenario())
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Unix sockets are not available on Windows")
+def test_unix_socket_transport_exchanges_mpv_json(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        socket_path = tmp_path / "mpv.sock"
+
+        async def handle(
+            reader: asyncio.StreamReader,
+            writer: asyncio.StreamWriter,
+        ) -> None:
+            request = json.loads(await reader.readline())
+            writer.write(
+                json.dumps(
+                    {
+                        "request_id": request["request_id"],
+                        "error": "success",
+                        "data": False,
+                    }
+                ).encode()
+                + b"\n"
+            )
+            await writer.drain()
+            writer.close()
+            await writer.wait_closed()
+
+        server = await asyncio.start_unix_server(handle, path=socket_path)
+        transport = UnixSocketTransport(str(socket_path))
+        await transport.connect()
+        client = MpvClient(transport)
+        client.start_reader()
+
+        assert await client.command("get_property", "pause") is False
+
+        await client.close()
+        server.close()
+        await server.wait_closed()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="running on Windows")
+def test_selects_unix_transport_on_non_windows_host() -> None:
+    assert isinstance(create_mpv_transport("/tmp/mpv.sock"), UnixSocketTransport)
 
 
 def test_builds_windows_mpv_command_without_device_assumptions() -> None:

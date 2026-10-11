@@ -163,7 +163,8 @@ into the operator-facing simulation surface.
 
 ## Deliberately deferred
 
-- Multiple simultaneous media players or real-time video compositing.
+- Real-time video compositing and frame-locked playback without hardware
+  synchronization.
 - Facial, gesture, or individual visitor recognition.
 - Accurate crowd counting.
 - Mid-clip video branching.

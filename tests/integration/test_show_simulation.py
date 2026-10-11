@@ -82,6 +82,33 @@ def test_accelerated_thirty_minute_show_scenario_is_deterministic_and_safe() -> 
     asyncio.run(scenario())
 
 
+def test_simulates_multiple_media_and_lighting_outputs() -> None:
+    async def scenario() -> None:
+        simulation = ShowSimulation(load_show_package(Path("shows/multi-output-demo")))
+
+        await simulation.start()
+        simulation.report_position()
+        assert simulation.runtime.render_frame()
+
+        assert set(simulation.agents) == {"fake-media-left", "fake-media-right"}
+        assert set(simulation.sinks) == {"porch.demo", "roofline.demo"}
+        assert simulation.frames_for("roofline.demo")[-1].resource == "roofline.demo"
+        assert len(simulation.frames_for("roofline.demo")[-1].pixels) == 8
+        assert simulation.frames_for("porch.demo")[-1].resource == "porch.demo"
+        assert len(simulation.frames_for("porch.demo")[-1].pixels) == 4
+
+        simulation.disconnect_agent("fake-media-right")
+        status = simulation.runtime.status()
+        assert status["degraded_reason"] == "media_output_disconnected:right-window"
+        assert status["render_loop_running"]
+
+        simulation.reconnect_agent("fake-media-right")
+        assert simulation.runtime.status()["media_outputs"][1]["connected"] is True
+        await simulation.shutdown()
+
+    asyncio.run(scenario())
+
+
 def _simulation_catalog() -> SceneCatalog:
     catalog = load_show_package(Path("shows/demo"))
     scenes = {}

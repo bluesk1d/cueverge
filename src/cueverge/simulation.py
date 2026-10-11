@@ -5,7 +5,7 @@ from cueverge.controller.runtime import ControllerRuntime
 from cueverge.core.director import ShowDirector
 from cueverge.core.events import ExternalEvent
 from cueverge.core.models import SceneCatalog
-from cueverge.lighting.sink import MemoryFrameSink
+from cueverge.lighting.sink import FrameSink, FrameSinkRouter, MemoryFrameSink, RenderedFrame
 from cueverge.media_agent.fake import FakeMediaAgent
 from cueverge.observation.presence import AudiencePresenceEstimator
 from cueverge.protocol.models import PlaybackState
@@ -35,9 +35,27 @@ class SimulationCommandChannel:
 class ShowSimulation:
     def __init__(self, catalog: SceneCatalog) -> None:
         self.clock = SimulationClock()
-        self.sink = MemoryFrameSink()
-        self.agent = FakeMediaAgent()
-        self.channel = SimulationCommandChannel()
+        lighting_resources = sorted(
+            {
+                output.definition.resource
+                for scene in catalog.scenes.values()
+                for output in scene.lighting_outputs
+            }
+        )
+        self.sinks = {resource: MemoryFrameSink() for resource in lighting_resources}
+        if len(self.sinks) == 1:
+            self.sink = next(iter(self.sinks.values()))
+            runtime_sink: FrameSink = self.sink
+        else:
+            runtime_sink = FrameSinkRouter(self.sinks)
+            self.sink = next(iter(self.sinks.values()))
+        agent_ids = sorted(
+            {output.agent_id for scene in catalog.scenes.values() for output in scene.media_outputs}
+        )
+        self.agents = {agent_id: FakeMediaAgent(agent_id=agent_id) for agent_id in agent_ids}
+        self.channels = {agent_id: SimulationCommandChannel() for agent_id in agent_ids}
+        self.agent = next(iter(self.agents.values()))
+        self.channel = self.channels[self.agent.agent_id]
         audience = (
             AudiencePresenceEstimator(catalog.audience) if catalog.audience is not None else None
         )
@@ -52,7 +70,7 @@ class ShowSimulation:
         )
         self.runtime = ControllerRuntime(
             catalog=catalog,
-            sink=self.sink,
+            sink=runtime_sink,
             clock=self.clock.monotonic,
             event_clock=self.clock.epoch_ms,
             heartbeat_timeout_ms=86_400_000,
@@ -60,10 +78,13 @@ class ShowSimulation:
             director=director,
             audience=audience,
         )
-        self.agent.accept_welcome(self.runtime.register_agent(self.agent.hello(), self.channel))
+        for agent_id, agent in self.agents.items():
+            channel = self.channels[agent_id]
+            agent.accept_welcome(self.runtime.register_agent(agent.hello(), channel))
         self.scene_history: list[str] = []
         self._active_started_at_ms = 0
         self._attached_playback_session_id: str | None = None
+        self._attached_playback_sessions: dict[str, str] = {}
         self._event_sequence = 0
 
     async def start(self) -> None:
@@ -89,7 +110,8 @@ class ShowSimulation:
                 break
             if active.playback_session_id != completing_session_id:
                 continue
-            telemetry = self.agent.position(
+            clock_session = active.clock_session
+            telemetry = self.agents[clock_session.agent_id].position(
                 duration_ms,
                 state=PlaybackState.COMPLETED,
                 duration_ms=duration_ms,
@@ -136,32 +158,61 @@ class ShowSimulation:
         active = self.runtime.active_scene
         if active is None:
             raise RuntimeError("simulation has no active scene")
-        self.runtime.ingest(
-            self.agent.position(
-                self.clock.now_ms - self._active_started_at_ms,
-                duration_ms=active.definition.duration_ms,
+        for session in active.resolved_media_sessions:
+            self.runtime.ingest(
+                self.agents[session.agent_id].position(
+                    self.clock.now_ms - self._active_started_at_ms,
+                    duration_ms=active.definition.duration_ms,
+                )
             )
-        )
 
-    def disconnect_agent(self) -> None:
-        self.runtime.disconnect_agent(self.agent.agent_id, self.channel)
+    def disconnect_agent(self, agent_id: str | None = None) -> None:
+        selected_id = agent_id or self._active_clock_agent_id()
+        self.runtime.disconnect_agent(selected_id, self.channels[selected_id])
 
-    def reconnect_agent(self) -> None:
-        self.agent.reconnect()
+    def reconnect_agent(self, agent_id: str | None = None) -> None:
+        selected_id = agent_id or self._active_clock_agent_id()
+        agent = self.agents[selected_id]
+        agent.reconnect()
         welcome = self.runtime.register_agent(
-            self.agent.hello(self.agent.snapshot(0)),
-            self.channel,
+            agent.hello(agent.snapshot(0)),
+            self.channels[selected_id],
         )
-        self.agent.accept_welcome(welcome)
+        agent.accept_welcome(welcome)
+
+    def frames_for(self, resource: str) -> tuple[RenderedFrame, ...]:
+        try:
+            sink = self.sinks[resource]
+        except KeyError as error:
+            raise LookupError(f"unknown simulated lighting resource: {resource}") from error
+        return tuple(sink.frames)
+
+    def _active_clock_agent_id(self) -> str:
+        active = self.runtime.active_scene
+        if active is None:
+            return self.agent.agent_id
+        return active.clock_session.agent_id
 
     async def shutdown(self) -> None:
         await self.runtime.shutdown()
 
     def _sync_active(self) -> None:
         active = self.runtime.active_scene
-        if active is None or active.playback_session_id == self._attached_playback_session_id:
+        if active is None:
             return
-        self.agent.attach(active.scene_instance_id, active.playback_session_id)
+        for session in active.resolved_media_sessions:
+            if (
+                self._attached_playback_sessions.get(session.agent_id)
+                == session.playback_session_id
+            ):
+                continue
+            self.agents[session.agent_id].attach(
+                active.scene_instance_id,
+                session.playback_session_id,
+            )
+            self._attached_playback_sessions[session.agent_id] = session.playback_session_id
+        if active.playback_session_id == self._attached_playback_session_id:
+            return
         self._active_started_at_ms = self.clock.now_ms
         self._attached_playback_session_id = active.playback_session_id
         self.scene_history.append(active.definition.id)

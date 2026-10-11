@@ -20,6 +20,10 @@ class MpvTransport(Protocol):
     async def close(self) -> None: ...
 
 
+class ConnectableMpvTransport(MpvTransport, Protocol):
+    async def connect(self, attempts: int = 50, delay_seconds: float = 0.1) -> None: ...
+
+
 @dataclass
 class JsonLineCodec:
     @staticmethod
@@ -77,6 +81,49 @@ class WindowsNamedPipeTransport:
 
 
 @dataclass
+class UnixSocketTransport:
+    socket_path: str
+    _reader: asyncio.StreamReader | None = None
+    _writer: asyncio.StreamWriter | None = None
+
+    async def connect(self, attempts: int = 50, delay_seconds: float = 0.1) -> None:
+        if sys.platform == "win32":
+            raise MpvError("Unix-socket transport is not available on Windows")
+        for attempt in range(attempts):
+            try:
+                self._reader, self._writer = await asyncio.open_unix_connection(self.socket_path)
+                return
+            except (FileNotFoundError, ConnectionRefusedError):
+                if attempt == attempts - 1:
+                    raise MpvError(f"mpv IPC socket was not created: {self.socket_path}") from None
+                await asyncio.sleep(delay_seconds)
+
+    async def write(self, payload: bytes) -> None:
+        if self._writer is None:
+            raise MpvError("mpv IPC socket is not connected")
+        self._writer.write(payload)
+        await self._writer.drain()
+
+    async def readline(self) -> bytes:
+        if self._reader is None:
+            raise MpvError("mpv IPC socket is not connected")
+        return await self._reader.readline()
+
+    async def close(self) -> None:
+        if self._writer is not None:
+            self._writer.close()
+            await self._writer.wait_closed()
+        self._reader = None
+        self._writer = None
+
+
+def create_mpv_transport(pipe_path: str) -> ConnectableMpvTransport:
+    if sys.platform == "win32":
+        return WindowsNamedPipeTransport(pipe_path)
+    return UnixSocketTransport(pipe_path)
+
+
+@dataclass
 class MpvProcess:
     executable: Path
     pipe_path: str
@@ -102,8 +149,6 @@ class MpvProcess:
         return command
 
     def start(self) -> None:
-        if sys.platform != "win32":
-            raise MpvError("the configured mpv process adapter requires Windows")
         if not self.executable.is_file():
             raise MpvError(f"mpv executable does not exist: {self.executable}")
         if self.process is not None and self.process.poll() is None:

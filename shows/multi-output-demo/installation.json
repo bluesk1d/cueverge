@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "resources": [
+    {
+      "resource": "projector.left",
+      "kind": "media_agent",
+      "target": "fake-media-left"
+    },
+    {
+      "resource": "projector.right",
+      "kind": "media_agent",
+      "target": "fake-media-right"
+    },
+    {
+      "resource": "roofline.demo",
+      "kind": "pixel_output",
+      "target": "memory-roofline",
+      "pixel_count": 8
+    },
+    {
+      "resource": "porch.demo",
+      "kind": "pixel_output",
+      "target": "memory-porch",
+      "pixel_count": 4
+    }
+  ]
+}

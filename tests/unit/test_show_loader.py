@@ -56,6 +56,136 @@ def test_normalizes_safe_asset_id_without_requiring_controller_copy(tmp_path: Pa
     assert loaded.asset_id == "assets/demo.bin"
 
 
+def test_loads_v2_scene_with_multiple_resolved_outputs(tmp_path: Path) -> None:
+    root = _package(tmp_path)
+    installation_path = root / "installation.json"
+    installation = json.loads(installation_path.read_text(encoding="utf-8"))
+    installation["resources"].extend(
+        [
+            {
+                "resource": "projector.second",
+                "kind": "media_agent",
+                "target": "fake-media-2",
+            },
+            {
+                "resource": "porch.demo",
+                "kind": "pixel_output",
+                "target": "memory-porch",
+                "pixel_count": 4,
+            },
+        ]
+    )
+    installation_path.write_text(json.dumps(installation), encoding="utf-8")
+    scene_path = root / "scenes/scene.json"
+    scene = json.loads(scene_path.read_text(encoding="utf-8"))
+    scene.update(
+        {
+            "schema_version": 2,
+            "resources": [
+                "projector.demo",
+                "projector.second",
+                "roofline.demo",
+                "porch.demo",
+            ],
+            "clock_source": "projector-primary",
+            "media": [
+                {
+                    "id": "projector-primary",
+                    "resource": "projector.demo",
+                    "asset": "primary.mp4",
+                },
+                {
+                    "id": "projector-secondary",
+                    "resource": "projector.second",
+                    "asset": "secondary.mp4",
+                    "required": False,
+                    "start_delay_ms": 25,
+                },
+            ],
+            "lighting": [
+                {
+                    "id": "roofline",
+                    "resource": "roofline.demo",
+                    "effect": "synthetic_sweep",
+                },
+                {
+                    "id": "porch",
+                    "resource": "porch.demo",
+                    "effect": "synthetic_sweep",
+                    "brightness_limit": 0.5,
+                    "timing_offset_ms": -30,
+                },
+            ],
+        }
+    )
+    scene_path.write_text(json.dumps(scene), encoding="utf-8")
+
+    loaded = load_show_package(root).require("scene")
+
+    assert loaded.clock_source_id == "projector-primary"
+    assert [output.agent_id for output in loaded.media_outputs] == [
+        "fake-media-1",
+        "fake-media-2",
+    ]
+    assert loaded.media_outputs[1].definition.required is False
+    assert loaded.media_outputs[1].definition.start_delay_ms == 25
+    assert [output.pixel_count for output in loaded.lighting_outputs] == [8, 4]
+    assert loaded.lighting_outputs[1].definition.brightness_limit == 0.5
+    assert loaded.lighting_outputs[1].definition.timing_offset_ms == -30
+    assert loaded.agent_id == "fake-media-1"
+    assert loaded.pixel_count == 8
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        ({"clock_source": "missing"}, "clock_source"),
+        (
+            {
+                "media": [
+                    {"id": "duplicate", "resource": "projector.demo"},
+                ],
+                "lighting": [
+                    {
+                        "id": "duplicate",
+                        "resource": "roofline.demo",
+                        "effect": "synthetic_sweep",
+                    }
+                ],
+            },
+            "output IDs must be unique",
+        ),
+    ],
+)
+def test_rejects_invalid_v2_output_topology(
+    tmp_path: Path,
+    mutation: dict[str, Any],
+    message: str,
+) -> None:
+    root = _package(tmp_path)
+    scene_path = root / "scenes/scene.json"
+    scene = json.loads(scene_path.read_text(encoding="utf-8"))
+    scene.update(
+        {
+            "schema_version": 2,
+            "clock_source": "projector",
+            "media": [{"id": "projector", "resource": "projector.demo"}],
+            "lighting": [
+                {
+                    "id": "roofline",
+                    "resource": "roofline.demo",
+                    "effect": "synthetic_sweep",
+                }
+            ],
+        }
+    )
+    scene.update(mutation)
+    scene_path.write_text(json.dumps(scene), encoding="utf-8")
+
+    with pytest.raises(ShowPackageError, match=message):
+        load_show_package(root)
+
+
 def test_rejects_duplicate_scene_ids(tmp_path: Path) -> None:
     root = _package(tmp_path)
     original = root / "scenes/scene.json"

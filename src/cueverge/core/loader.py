@@ -9,17 +9,25 @@ from cueverge.core.models import (
     EncounterDefinition,
     InstallationDefinition,
     LightingCue,
+    LightingLookDefinition,
     LightingLooksDefinition,
+    LightingOutputDefinition,
     LightingTargetDefinition,
     LoadedLightingCue,
     LoadedLightingLooks,
+    LoadedLightingOutput,
+    LoadedMediaOutput,
     LoadedScene,
+    MediaOutputDefinition,
+    MultiLightingLooksDefinition,
     OpportunityProgramDefinition,
     PixelSegment,
     ResourceBinding,
     ResourceKind,
     SceneCatalog,
     SceneDefinition,
+    SceneDefinitionV1,
+    SceneDefinitionV2,
     SegmentReference,
     ShowProgramDefinition,
 )
@@ -46,10 +54,10 @@ def load_show_package(package_root: Path) -> SceneCatalog:
 
     scenes: dict[str, LoadedScene] = {}
     for scene_file in scene_files:
-        scene = _validate_json(scene_file, SceneDefinition, "scene")
+        scene = _validate_scene(scene_file)
         if scene.id in scenes:
             raise ShowPackageError(f"duplicate scene id: {scene.id}")
-        scenes[scene.id] = _bind_scene(root, scene, bindings)
+        scenes[scene.id] = _bind_scene(scene, bindings)
     for loaded_scene in scenes.values():
         lifecycle_references = {
             loaded_scene.definition.completion.target_scene_id,
@@ -119,32 +127,38 @@ def load_show_package(package_root: Path) -> SceneCatalog:
                 f"engagement opportunities reference unknown scenes: {sorted(missing)}"
             )
     looks_path = root / "looks.json"
-    looks_definition = (
-        _validate_json(looks_path, LightingLooksDefinition, "persistent lighting looks")
-        if looks_path.exists()
-        else None
-    )
-    lighting_looks = None
-    if looks_definition is not None:
-        binding = bindings.get(looks_definition.resource)
+    looks_definition = _validate_lighting_looks(looks_path) if looks_path.exists() else None
+    look_definitions: tuple[LightingLookDefinition, ...]
+    if isinstance(looks_definition, LightingLooksDefinition):
+        look_definitions = (looks_definition,)
+    elif looks_definition is not None:
+        look_definitions = looks_definition.outputs
+    else:
+        look_definitions = ()
+    lighting_looks_by_resource: dict[str, LoadedLightingLooks] = {}
+    for look_definition in look_definitions:
+        binding = bindings.get(look_definition.resource)
         if (
             binding is None
             or binding.kind is not ResourceKind.PIXEL_OUTPUT
             or binding.pixel_count is None
         ):
             raise ShowPackageError(
-                f"persistent lighting looks use invalid pixel resource: {looks_definition.resource}"
+                f"persistent lighting looks use invalid pixel resource: {look_definition.resource}"
             )
-        lighting_looks = LoadedLightingLooks(
-            definition=looks_definition,
+        lighting_looks_by_resource[look_definition.resource] = LoadedLightingLooks(
+            definition=look_definition,
             pixel_count=binding.pixel_count,
-            baseline_cues=_load_cues(binding, looks_definition.baseline, "persistent baseline"),
-            safe_state_cues=_load_cues(binding, looks_definition.safe_state, "safe state"),
+            baseline_cues=_load_cues(binding, look_definition.baseline, "persistent baseline"),
+            safe_state_cues=_load_cues(binding, look_definition.safe_state, "safe state"),
         )
+    lighting_looks = next(iter(lighting_looks_by_resource.values()), None)
+    if isinstance(looks_definition, LightingLooksDefinition):
         mismatched = sorted(
             scene.definition.id
             for scene in scenes.values()
-            if scene.definition.lighting.resource != looks_definition.resource
+            if looks_definition.resource
+            not in {output.definition.resource for output in scene.lighting_outputs}
         )
         if mismatched:
             raise ShowPackageError(
@@ -158,6 +172,7 @@ def load_show_package(package_root: Path) -> SceneCatalog:
         audience=audience,
         opportunities=opportunities,
         lighting_looks=lighting_looks,
+        lighting_looks_by_resource=lighting_looks_by_resource,
     )
 
 
@@ -178,8 +193,59 @@ def _validate_json[ModelT: BaseModel](
         raise ShowPackageError(f"invalid {description} in {path}: {error}") from error
 
 
+def _validate_scene(path: Path) -> SceneDefinition:
+    try:
+        payload: Any = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError as error:
+        raise ShowPackageError(f"missing scene file: {path}") from error
+    except json.JSONDecodeError as error:
+        raise ShowPackageError(f"invalid scene in {path}: {error}") from error
+    if not isinstance(payload, dict):
+        raise ShowPackageError(f"invalid scene in {path}: scene must be an object")
+    version = payload.get("schema_version")
+    model_type: type[SceneDefinitionV1] | type[SceneDefinitionV2]
+    if version == 1:
+        model_type = SceneDefinitionV1
+    elif version == 2:
+        model_type = SceneDefinitionV2
+    else:
+        raise ShowPackageError(f"invalid scene in {path}: unsupported schema_version {version!r}")
+    try:
+        return model_type.model_validate(payload)
+    except ValidationError as error:
+        raise ShowPackageError(f"invalid scene in {path}: {error}") from error
+
+
+def _validate_lighting_looks(
+    path: Path,
+) -> LightingLooksDefinition | MultiLightingLooksDefinition:
+    try:
+        payload: Any = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError as error:
+        raise ShowPackageError(f"missing persistent lighting looks file: {path}") from error
+    except json.JSONDecodeError as error:
+        raise ShowPackageError(f"invalid persistent lighting looks in {path}: {error}") from error
+    if not isinstance(payload, dict):
+        raise ShowPackageError(
+            f"invalid persistent lighting looks in {path}: document must be an object"
+        )
+    version = payload.get("schema_version")
+    model_type: type[LightingLooksDefinition] | type[MultiLightingLooksDefinition]
+    if version == 1:
+        model_type = LightingLooksDefinition
+    elif version == 2:
+        model_type = MultiLightingLooksDefinition
+    else:
+        raise ShowPackageError(
+            f"invalid persistent lighting looks in {path}: unsupported schema_version {version!r}"
+        )
+    try:
+        return model_type.model_validate(payload)
+    except ValidationError as error:
+        raise ShowPackageError(f"invalid persistent lighting looks in {path}: {error}") from error
+
+
 def _bind_scene(
-    root: Path,
     scene: SceneDefinition,
     bindings: dict[str, ResourceBinding],
 ) -> LoadedScene:
@@ -188,48 +254,118 @@ def _bind_scene(
     if undefined:
         raise ShowPackageError(f"scene {scene.id} uses unbound resources: {sorted(undefined)}")
 
-    media = bindings[scene.media.resource]
-    if media.kind is not ResourceKind.MEDIA_AGENT:
-        raise ShowPackageError(f"scene {scene.id} media resource is not a media_agent")
-    lighting = bindings[scene.lighting.resource]
-    if lighting.kind is not ResourceKind.PIXEL_OUTPUT or lighting.pixel_count is None:
-        raise ShowPackageError(f"scene {scene.id} lighting resource is not a pixel_output")
+    media_definitions: tuple[MediaOutputDefinition, ...]
+    lighting_definitions: tuple[LightingOutputDefinition, ...]
+    if isinstance(scene, SceneDefinitionV1):
+        media_definitions = (
+            MediaOutputDefinition(
+                id="media",
+                resource=scene.media.resource,
+                asset=scene.media.asset,
+            ),
+        )
+        lighting_definitions = (
+            LightingOutputDefinition(
+                id="lighting",
+                **scene.lighting.model_dump(),
+            ),
+        )
+        clock_source_id = "media"
+    else:
+        media_definitions = scene.media
+        lighting_definitions = scene.lighting
+        clock_source_id = scene.clock_source
 
+    media_outputs = tuple(
+        _bind_media_output(scene.id, definition, bindings) for definition in media_definitions
+    )
+    agent_ids = [output.agent_id for output in media_outputs]
+    if len(agent_ids) != len(set(agent_ids)):
+        raise ShowPackageError(f"scene {scene.id} media outputs must use unique agents")
+    lighting_outputs = tuple(
+        _bind_lighting_output(scene.id, definition, bindings) for definition in lighting_definitions
+    )
+    primary_media = media_outputs[0]
+    primary_lighting = lighting_outputs[0]
+    return LoadedScene(
+        definition=scene,
+        media_outputs=media_outputs,
+        lighting_outputs=lighting_outputs,
+        clock_source_id=clock_source_id,
+        agent_id=primary_media.agent_id,
+        pixel_count=primary_lighting.pixel_count,
+        pixel_segments=primary_lighting.pixel_segments,
+        lighting_segment=primary_lighting.lighting_segment,
+        lighting_target_kind=primary_lighting.lighting_target_kind,
+        lighting_target_id=primary_lighting.lighting_target_id,
+        lighting_target_indices=primary_lighting.lighting_target_indices,
+        lighting_target_precedence=primary_lighting.lighting_target_precedence,
+        lighting_cues=primary_lighting.lighting_cues,
+        color=primary_lighting.color,
+        asset_id=primary_media.asset_id,
+    )
+
+
+def _bind_media_output(
+    scene_id: str,
+    definition: MediaOutputDefinition,
+    bindings: dict[str, ResourceBinding],
+) -> LoadedMediaOutput:
+    binding = bindings[definition.resource]
+    if binding.kind is not ResourceKind.MEDIA_AGENT:
+        raise ShowPackageError(
+            f"scene {scene_id} media output {definition.id} resource is not a media_agent"
+        )
+    asset_id = _validate_asset_id(definition.asset) if definition.asset else None
+    return LoadedMediaOutput(
+        definition=definition,
+        agent_id=binding.target,
+        asset_id=asset_id,
+    )
+
+
+def _bind_lighting_output(
+    scene_id: str,
+    definition: LightingOutputDefinition,
+    bindings: dict[str, ResourceBinding],
+) -> LoadedLightingOutput:
+    binding = bindings[definition.resource]
+    if binding.kind is not ResourceKind.PIXEL_OUTPUT or binding.pixel_count is None:
+        raise ShowPackageError(
+            f"scene {scene_id} lighting output {definition.id} resource is not a pixel_output"
+        )
     lighting_segment = None
     lighting_target_kind: Literal["segment", "fixture", "path"] | None = None
     lighting_target_id = None
     lighting_target_indices: tuple[int, ...] = ()
     lighting_target_precedence = 0
-    if scene.lighting.segment is not None:
+    if definition.segment is not None:
         lighting_segment = next(
-            (segment for segment in lighting.segments if segment.id == scene.lighting.segment),
+            (segment for segment in binding.segments if segment.id == definition.segment),
             None,
         )
         if lighting_segment is None:
             raise ShowPackageError(
-                f"scene {scene.id} uses unknown pixel segment: {scene.lighting.segment}"
+                f"scene {scene_id} uses unknown pixel segment: {definition.segment}"
             )
         lighting_target_kind = "segment"
         lighting_target_id = lighting_segment.id
         lighting_target_indices = tuple(range(lighting_segment.start, lighting_segment.end))
-    elif scene.lighting.target is not None:
-        target = scene.lighting.target
+    elif definition.target is not None:
+        target = definition.target
         (
             lighting_target_indices,
             lighting_target_precedence,
             lighting_segment,
-        ) = _resolve_target(lighting, target, scene.id)
+        ) = _resolve_target(binding, target, scene_id)
         lighting_target_kind = target.kind
         lighting_target_id = target.id
-    loaded_cues = _load_cues(lighting, scene.lighting.timeline, scene.id)
-
-    asset_id = _validate_asset_id(scene.media.asset) if scene.media.asset else None
-    color = tuple(bytes.fromhex(scene.lighting.color.removeprefix("#")))
-    return LoadedScene(
-        definition=scene,
-        agent_id=media.target,
-        pixel_count=lighting.pixel_count,
-        pixel_segments=lighting.segments,
+    loaded_cues = _load_cues(binding, definition.timeline, scene_id)
+    color = tuple(bytes.fromhex(definition.color.removeprefix("#")))
+    return LoadedLightingOutput(
+        definition=definition,
+        pixel_count=binding.pixel_count,
+        pixel_segments=binding.segments,
         lighting_segment=lighting_segment,
         lighting_target_kind=lighting_target_kind,
         lighting_target_id=lighting_target_id,
@@ -237,7 +373,6 @@ def _bind_scene(
         lighting_target_precedence=lighting_target_precedence,
         lighting_cues=loaded_cues,
         color=(color[0], color[1], color[2]),
-        asset_id=asset_id,
     )
 
 

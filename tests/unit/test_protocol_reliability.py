@@ -59,7 +59,7 @@ def test_command_acknowledgments_are_fenced_and_time_out() -> None:
         assert status["pending_commands"] == 0
         assert status["command_timeouts"] == 1
         assert status["degraded_reason"] == "command_timeout"
-        assert not status["render_loop_running"]
+        assert status["render_loop_running"]
 
         await runtime.start_scene("synthetic-sweep")
         error_command = channel.sent[-1]

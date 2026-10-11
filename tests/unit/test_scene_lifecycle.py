@@ -52,7 +52,11 @@ def test_completed_scene_loops_or_transitions_once(
         assert runtime.active_scene.definition.id == expected_scene
         assert runtime.active_scene.playback_session_id != active.playback_session_id
         assert runtime.scene_completions == 1
-        assert [command["command"] for command in channel.sent] == ["prepare", "prepare"]
+        assert [command["command"] for command in channel.sent] == [
+            "prepare",
+            "stop",
+            "prepare",
+        ]
         await runtime.shutdown()
 
     asyncio.run(scenario())
@@ -133,7 +137,11 @@ def test_prepare_failure_starts_declared_fallback() -> None:
         assert runtime.active_scene is not None
         assert runtime.active_scene.definition.id == "ambient"
         assert runtime.scene_failovers == 1
-        assert [command["command"] for command in channel.sent] == ["prepare", "prepare"]
+        assert [command["command"] for command in channel.sent] == [
+            "prepare",
+            "stop",
+            "prepare",
+        ]
         await runtime.shutdown()
 
     asyncio.run(scenario())

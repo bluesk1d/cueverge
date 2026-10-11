@@ -87,15 +87,25 @@ def _catalog_with_looks():
     for scene_id in ("synthetic-sweep", "ambient"):
         scene = catalog.require(scene_id)
         definition = scene.definition.model_copy(update={"lighting": lighting})
+        loaded_cue = LoadedLightingCue(
+            definition=scene_cue,
+            target_indices=(0,),
+        )
+        lighting_output = scene.lighting_outputs[0]
         scenes[scene_id] = scene.model_copy(
             update={
                 "definition": definition,
-                "lighting_cues": (
-                    LoadedLightingCue(
-                        definition=scene_cue,
-                        target_indices=(0,),
+                "lighting_outputs": (
+                    lighting_output.model_copy(
+                        update={
+                            "definition": lighting_output.definition.model_copy(
+                                update={"timeline": (scene_cue,), "effect": None}
+                            ),
+                            "lighting_cues": (loaded_cue,),
+                        }
                     ),
                 ),
+                "lighting_cues": (loaded_cue,),
             }
         )
     scenes.update(

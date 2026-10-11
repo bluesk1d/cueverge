@@ -1,5 +1,7 @@
 import os
+import sys
 from pathlib import Path
+from typing import Literal
 
 from pydantic import AnyUrl, BaseModel, ConfigDict, Field, SecretStr, model_validator
 
@@ -13,7 +15,7 @@ class MediaAgentConfig(RuntimeConfig):
     controller_url: AnyUrl
     asset_root: Path
     mpv_executable: Path
-    mpv_pipe: str = r"\\.\pipe\cueverge-mpv"
+    mpv_pipe: str = Field(default_factory=lambda: _default_mpv_pipe())
     telemetry_hz: float = Field(default=15.0, ge=1.0, le=60.0)
     reconnect_delay_ms: int = Field(default=1000, ge=100)
     fullscreen_screen: int | None = Field(default=None, ge=0)
@@ -36,7 +38,7 @@ class MediaAgentConfig(RuntimeConfig):
                 "mpv_executable": _required_env("CUEVERGE_MPV_EXECUTABLE"),
                 "mpv_pipe": os.environ.get(
                     "CUEVERGE_MPV_PIPE",
-                    r"\\.\pipe\cueverge-mpv",
+                    _default_mpv_pipe(),
                 ),
                 "fullscreen_screen": _optional_int(os.environ.get("CUEVERGE_FULLSCREEN_SCREEN")),
                 "audio_device": os.environ.get("CUEVERGE_AUDIO_DEVICE"),
@@ -60,6 +62,29 @@ class DdpOutputConfig(RuntimeConfig):
             raise ValueError("enabled DDP output requires a host")
         if self.enabled and self.expected_pixel_count is None:
             raise ValueError("enabled DDP output requires expected_pixel_count")
+        return self
+
+
+class DdpResourceConfig(RuntimeConfig):
+    resource: str = Field(min_length=1)
+    kind: Literal["ddp"] = "ddp"
+    host: str = Field(min_length=1)
+    port: int = Field(default=4048, ge=1, le=65535)
+    destination_id: int = Field(default=1, ge=1, le=255)
+    max_payload_bytes: int = Field(default=1440, ge=3, le=65535)
+    expected_pixel_count: int = Field(gt=0)
+    brightness_limit: float = Field(default=1.0, gt=0, le=1)
+
+
+class OutputDeploymentConfig(RuntimeConfig):
+    schema_version: Literal[1]
+    lighting: tuple[DdpResourceConfig, ...] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_unique_resources(self) -> "OutputDeploymentConfig":
+        resources = [output.resource for output in self.lighting]
+        if len(resources) != len(set(resources)):
+            raise ValueError("output deployment lighting resources must be unique")
         return self
 
 
@@ -87,16 +112,37 @@ class FrigateMqttConfig(RuntimeConfig):
 class ControllerConfig(RuntimeConfig):
     show_package: Path = Path("shows/demo")
     ddp: DdpOutputConfig = DdpOutputConfig()
+    output_deployment: OutputDeploymentConfig | None = None
+    output_config_file: Path | None = None
     frigate_mqtt: FrigateMqttConfig = FrigateMqttConfig()
     lighting_delay_ms: int = Field(default=0, ge=0, le=5000)
+
+    @model_validator(mode="after")
+    def validate_output_configuration(self) -> "ControllerConfig":
+        if self.ddp.enabled and self.output_deployment is not None:
+            raise ValueError(
+                "configure either legacy CUEVERGE_DDP_* settings or CUEVERGE_OUTPUT_CONFIG"
+            )
+        return self
 
     @classmethod
     def from_environment(cls) -> "ControllerConfig":
         ddp_enabled = _env_enabled("CUEVERGE_DDP_ENABLED")
         frigate_enabled = _env_enabled("CUEVERGE_FRIGATE_MQTT_ENABLED")
+        output_config_value = os.environ.get("CUEVERGE_OUTPUT_CONFIG")
+        output_config_file = Path(output_config_value) if output_config_value else None
+        output_deployment = (
+            OutputDeploymentConfig.model_validate_json(
+                output_config_file.read_text(encoding="utf-8")
+            )
+            if output_config_file is not None
+            else None
+        )
         return cls(
             show_package=Path(os.environ.get("CUEVERGE_SHOW_PACKAGE", "shows/demo")),
             lighting_delay_ms=int(os.environ.get("CUEVERGE_LIGHTING_DELAY_MS", "0")),
+            output_deployment=output_deployment,
+            output_config_file=output_config_file,
             ddp=DdpOutputConfig(
                 enabled=ddp_enabled,
                 host=os.environ.get("CUEVERGE_DDP_HOST"),
@@ -123,6 +169,10 @@ class ControllerConfig(RuntimeConfig):
 
 def _optional_int(value: str | None) -> int | None:
     return int(value) if value is not None else None
+
+
+def _default_mpv_pipe() -> str:
+    return r"\\.\pipe\cueverge-mpv" if sys.platform == "win32" else "/tmp/cueverge-mpv.sock"
 
 
 def _required_env(name: str) -> str:

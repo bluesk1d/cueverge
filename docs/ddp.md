@@ -14,6 +14,37 @@ and expected pixel count. RGB channel values are sent unscaled by default.
 installation-specific reasons; Cueverge does not treat it as an electrical
 safety control.
 
+The legacy environment settings configure one DDP sink. Deployments with
+multiple logical pixel resources set `CUEVERGE_OUTPUT_CONFIG` to a private JSON
+file instead:
+
+```json
+{
+  "schema_version": 1,
+  "lighting": [
+    {
+      "resource": "roofline",
+      "kind": "ddp",
+      "host": "roofline-wled.local",
+      "expected_pixel_count": 605
+    },
+    {
+      "resource": "porch",
+      "kind": "ddp",
+      "host": "porch-wled.local",
+      "expected_pixel_count": 150,
+      "brightness_limit": 0.6
+    }
+  ]
+}
+```
+
+Resource names must be unique and must cover every lighting resource used by
+the loaded show. The controller rejects simultaneous use of
+`CUEVERGE_OUTPUT_CONFIG` and the legacy `CUEVERGE_DDP_*` settings. See
+`examples/output-config.example.json` for every available field. Keep real
+addresses and installation limits outside the repository.
+
 Before enabling output, validate:
 
 - WLED version, configured LED count, RGB/RGBW layout, and color order.
