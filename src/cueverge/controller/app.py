@@ -10,6 +10,9 @@ from cueverge.controller.runtime import ControllerRuntime, ShowMode
 from cueverge.core.director import ShowDirector
 from cueverge.core.events import ExternalEvent
 from cueverge.core.loader import load_show_package
+from cueverge.gui.config import GuiConfig
+from cueverge.gui.router import create_gui_router
+from cueverge.gui.service import GuiServices
 from cueverge.integrations.mqtt import FrigateMqttIngress
 from cueverge.lighting.ddp import DdpUdpSink
 from cueverge.lighting.sink import FrameSink, FrameSinkRouter, MemoryFrameSink
@@ -133,6 +136,7 @@ class EventIngress(Protocol):
 def create_app(
     runtime: ControllerRuntime | None = None,
     event_ingress: EventIngress | None = None,
+    gui_services: GuiServices | None = None,
 ) -> FastAPI:
     controller, configured_ingress = (
         (runtime, event_ingress) if runtime is not None else _configured_components()
@@ -153,6 +157,13 @@ def create_app(
 
     app = FastAPI(title="Cueverge Controller", version="0.1.0", lifespan=lifespan)
     app.state.runtime = controller
+    configured_gui = gui_services
+    if configured_gui is None and runtime is None:
+        gui_config = GuiConfig.from_environment()
+        if gui_config is not None:
+            configured_gui = GuiServices.create(gui_config, controller)
+    if configured_gui is not None:
+        app.include_router(create_gui_router(configured_gui))
 
     @app.get("/health/live")
     async def live() -> dict[str, str]:

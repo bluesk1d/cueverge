@@ -56,3 +56,32 @@ The future browser-based operator and authoring experience is tracked in the
 [web controller and show designer roadmap](docs/gui-roadmap.md).
 Media-host setup is documented for
 [Windows](docs/windows-media-agent.md) and [Linux](docs/linux-media-agent.md).
+
+## Browser GUI foundation
+
+GUI-00 adds an opt-in authenticated authoring API and a separate React/Vite
+workspace. The GUI is disabled by default and does not add browser live-control
+actions. See [the GUI foundation analysis](docs/gui-foundation.md) for the
+accepted technology stack and the security, persistence, compilation, and
+compatibility boundaries.
+
+Generate a private administrator password hash:
+
+```bash
+uv run cueverge-gui-hash-password
+```
+
+Configure the `CUEVERGE_GUI_*` settings shown in
+`examples/controller.env.example`, start the controller, and run the frontend
+development server separately:
+
+```bash
+cd web
+npm ci
+npm run dev
+```
+
+Use TLS and secure cookies for every non-localhost browser deployment. GUI-00
+does not authenticate the legacy agent protocol or convert discovery into
+trust; do not expose the existing local controller surface as an enrolled
+device-management API.

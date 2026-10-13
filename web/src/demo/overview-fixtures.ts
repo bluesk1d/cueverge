@@ -1,0 +1,104 @@
+import { InstallationStatus, RuntimeStatus, Session } from "../api";
+
+export const demoSession: Session = {
+  username: "visual-review",
+  role: "administrator",
+};
+
+export const demoInstallation: InstallationStatus = {
+  installation_id: "active",
+  name: "Visual Demo Installation",
+  package_schema: "runtime-v1-v2",
+  resources: [
+    {
+      resource: "projector.left",
+      kind: "media_agent",
+      target: "media-client-left",
+      pixel_count: null,
+    },
+    {
+      resource: "projector.right",
+      kind: "media_agent",
+      target: "media-client-right",
+      pixel_count: null,
+    },
+    {
+      resource: "roofline.demo",
+      kind: "pixel_output",
+      target: null,
+      pixel_count: 800,
+    },
+    {
+      resource: "porch.demo",
+      kind: "pixel_output",
+      target: null,
+      pixel_count: 480,
+    },
+  ],
+};
+
+export const demoRuntime: RuntimeStatus = {
+  observed_at: "2026-10-13T06:30:00.000Z",
+  source: "controller_runtime",
+  status: {
+    active_scene: "dual-window-sweep",
+    estimated_position_ms: 24350,
+    playback_state: "playing",
+    degraded: true,
+    degraded_reason: "optional_agent_disconnected",
+    connected_agents: ["media-client-left"],
+    media_outputs: [
+      {
+        output_id: "left-window",
+        agent_id: "media-client-left",
+        playback_session_id: "fixture-left",
+        required: true,
+        start_delay_ms: 0,
+        clock_source: true,
+        connected: true,
+        prepare_failed: false,
+        last_position_ms: 24350,
+        drift_ms: 0,
+        pending_commands: 0,
+      },
+      {
+        output_id: "right-window",
+        agent_id: "media-client-right",
+        playback_session_id: "fixture-right",
+        required: false,
+        start_delay_ms: 0,
+        clock_source: false,
+        connected: false,
+        prepare_failed: false,
+        last_position_ms: null,
+        drift_ms: null,
+        pending_commands: 0,
+      },
+    ],
+    lighting_outputs: [
+      {
+        output_id: "roofline",
+        resource: "roofline.demo",
+        required: true,
+        pixel_count: 800,
+        timing_offset_ms: 0,
+        error: null,
+      },
+    ],
+    pending_commands: 0,
+    command_errors: 0,
+    command_timeouts: 0,
+    render_loop_running: true,
+    operations: {
+      mode: "automatic",
+      show_enabled: true,
+    },
+    health: {
+      media_agent: "connected",
+      lighting_output: "MemoryFrameSink",
+      projector: "not_independently_detectable",
+      audio: "not_independently_detectable",
+    },
+  },
+};
+

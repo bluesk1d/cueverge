@@ -18,6 +18,7 @@ dependencies = [
 
 [project.scripts]
 cueverge-media-agent = "cueverge.media_agent.app:main"
+cueverge-gui-hash-password = "cueverge.gui.passwords:main"
 
 [dependency-groups]
 dev = [
