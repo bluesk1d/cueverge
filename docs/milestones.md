@@ -2,6 +2,8 @@
 
 The current autonomous-show buildout is tracked in the
 [show readiness roadmap](show-readiness-roadmap.md).
+The planned browser-based operator console and show authoring application is
+tracked in the [web controller and show designer roadmap](gui-roadmap.md).
 
 ## M0/M1: implemented in this bootstrap
 

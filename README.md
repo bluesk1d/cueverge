@@ -52,5 +52,7 @@ See [the architecture](docs/architecture.md), [the protocol](docs/protocol.md),
 [show creator guide](docs/show-creator-guide.md). Autonomous show capabilities
 are tracked in the
 [show readiness roadmap](docs/show-readiness-roadmap.md).
+The future browser-based operator and authoring experience is tracked in the
+[web controller and show designer roadmap](docs/gui-roadmap.md).
 Media-host setup is documented for
 [Windows](docs/windows-media-agent.md) and [Linux](docs/linux-media-agent.md).
