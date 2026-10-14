@@ -22,6 +22,7 @@ from cueverge.core.models import (
     SceneDefinition,
 )
 from cueverge.core.opportunities import OpportunityManager
+from cueverge.lighting.ddp import DdpUdpSink
 from cueverge.lighting.renderer import SegmentPulse, SyntheticSweep, TargetPulse
 from cueverge.lighting.sink import FrameSink, FrameSinkRouter, MemoryFrameSink, RenderedFrame
 from cueverge.lighting.timeline import LightingTimeline
@@ -120,7 +121,24 @@ class AgentConnection:
     channel: CommandChannel
     session_id: str
     last_seen_at: float
+    protocol_version: int
+    capabilities: tuple[str, ...]
     last_heartbeat_sequence: int = -1
+
+
+@dataclass(frozen=True)
+class RuntimeAgentStatus:
+    agent_id: str
+    protocol_version: int
+    capabilities: tuple[str, ...]
+    last_seen_age_ms: int
+
+
+@dataclass(frozen=True)
+class RuntimeLightingTarget:
+    resource: str
+    host: str
+    expected_pixel_count: int | None
 
 
 @dataclass(frozen=True)
@@ -272,6 +290,8 @@ class ControllerRuntime:
             channel=websocket,
             session_id=hello.agent_session_id,
             last_seen_at=self.clock(),
+            protocol_version=hello.protocol_version,
+            capabilities=hello.capabilities,
         )
 
         reconciliation: Literal["idle", "continue", "stop"] = "idle"
@@ -778,6 +798,32 @@ class ControllerRuntime:
             )
             if required_prepare_timed_out:
                 self._cancel_render_loop()
+
+    def agent_status(self) -> tuple[RuntimeAgentStatus, ...]:
+        self.check_timeouts()
+        now = self.clock()
+        return tuple(
+            RuntimeAgentStatus(
+                agent_id=agent_id,
+                protocol_version=connection.protocol_version,
+                capabilities=connection.capabilities,
+                last_seen_age_ms=max(0, round((now - connection.last_seen_at) * 1000)),
+            )
+            for agent_id, connection in sorted(self._agents.items())
+        )
+
+    def lighting_targets(self) -> tuple[RuntimeLightingTarget, ...]:
+        if not isinstance(self.sink, FrameSinkRouter):
+            return ()
+        return tuple(
+            RuntimeLightingTarget(
+                resource=resource,
+                host=sink.host,
+                expected_pixel_count=sink.expected_pixel_count,
+            )
+            for resource, sink in sorted(self.sink.sinks.items())
+            if isinstance(sink, DdpUdpSink)
+        )
 
     def render_frame(self) -> bool:
         self.check_timeouts()

@@ -14,9 +14,19 @@ class GuiConfig(BaseModel):
     admin_password_hash: SecretStr
     admin_role: Role = Role.ADMINISTRATOR
     allowed_origins: tuple[str, ...] = Field(min_length=1)
+    web_root: Path | None = None
     secure_cookies: bool = True
     session_ttl_seconds: int = Field(default=8 * 60 * 60, ge=300, le=7 * 24 * 60 * 60)
     login_attempts_per_minute: int = Field(default=5, ge=1, le=100)
+    device_enrollment_enabled: bool = False
+    device_enrollment_tls_terminated: bool = False
+    device_ca_key_password: SecretStr | None = None
+    device_pairing_ttl_seconds: int = Field(default=300, ge=60, le=300)
+    device_enrollment_attempts_per_minute: int = Field(default=10, ge=1, le=100)
+    device_listener_enabled: bool = False
+    device_listener_host: str = "0.0.0.0"
+    device_listener_port: int = Field(default=8443, ge=1, le=65535)
+    device_listener_identities: tuple[str, ...] = ()
 
     @model_validator(mode="after")
     def validate_origins(self) -> "GuiConfig":
@@ -27,6 +37,21 @@ class GuiConfig(BaseModel):
             for origin in self.allowed_origins
         ):
             raise ValueError("secure GUI cookies require HTTPS for non-localhost origins")
+        if self.device_enrollment_enabled:
+            if not self.device_enrollment_tls_terminated:
+                raise ValueError("device enrollment requires explicit TLS termination confirmation")
+            if (
+                self.device_ca_key_password is None
+                or not self.device_ca_key_password.get_secret_value()
+            ):
+                raise ValueError("device enrollment requires a device CA key password")
+        if self.device_listener_enabled:
+            if not self.device_enrollment_enabled:
+                raise ValueError("device listener requires device enrollment")
+            if not self.device_listener_identities:
+                raise ValueError("device listener requires at least one DNS name or IP address")
+        if self.web_root is not None and not (self.web_root / "index.html").is_file():
+            raise ValueError("GUI web root must contain index.html")
         return self
 
     @classmethod
@@ -54,9 +79,34 @@ class GuiConfig(BaseModel):
             admin_username=os.environ.get("CUEVERGE_GUI_ADMIN_USERNAME", "admin"),
             admin_password_hash=SecretStr(password_hash),
             allowed_origins=origins,
+            web_root=(Path(value) if (value := os.environ.get("CUEVERGE_GUI_WEB_ROOT")) else None),
             secure_cookies=os.environ.get("CUEVERGE_GUI_SECURE_COOKIES", "true").lower()
             in {"1", "true", "yes"},
             session_ttl_seconds=int(
                 os.environ.get("CUEVERGE_GUI_SESSION_TTL_SECONDS", str(8 * 60 * 60))
+            ),
+            device_enrollment_enabled=os.environ.get(
+                "CUEVERGE_DEVICE_ENROLLMENT_ENABLED", "false"
+            ).lower()
+            in {"1", "true", "yes"},
+            device_enrollment_tls_terminated=os.environ.get(
+                "CUEVERGE_DEVICE_ENROLLMENT_TLS_TERMINATED", "false"
+            ).lower()
+            in {"1", "true", "yes"},
+            device_ca_key_password=(
+                SecretStr(value)
+                if (value := os.environ.get("CUEVERGE_DEVICE_CA_KEY_PASSWORD"))
+                else None
+            ),
+            device_listener_enabled=os.environ.get(
+                "CUEVERGE_DEVICE_LISTENER_ENABLED", "false"
+            ).lower()
+            in {"1", "true", "yes"},
+            device_listener_host=os.environ.get("CUEVERGE_DEVICE_LISTENER_HOST", "0.0.0.0"),
+            device_listener_port=int(os.environ.get("CUEVERGE_DEVICE_LISTENER_PORT", "8443")),
+            device_listener_identities=tuple(
+                value.strip()
+                for value in os.environ.get("CUEVERGE_DEVICE_LISTENER_IDENTITIES", "").split(",")
+                if value.strip()
             ),
         )

@@ -4,6 +4,7 @@ from contextlib import suppress
 
 from cueverge.config import MediaAgentConfig
 from cueverge.media_agent.client import MediaAgentClient
+from cueverge.media_agent.device_presence import DevicePresenceClient
 from cueverge.media_agent.mpv import MpvClient, MpvProcess, create_mpv_transport
 from cueverge.media_agent.mpv_player import MpvPlayer
 
@@ -24,7 +25,15 @@ async def run() -> None:
         await transport.connect()
         mpv.start_reader()
         player = MpvPlayer(mpv, config.asset_root)
-        await MediaAgentClient(config, player).run_forever()
+        if config.device_transport_url is None or config.device_credential_root is None:
+            raise RuntimeError("media agent requires protocol-v2 device credentials")
+        media_client = MediaAgentClient(config, player)
+        await DevicePresenceClient(
+            config.device_transport_url,
+            config.device_credential_root,
+            reconnect_delay_ms=config.reconnect_delay_ms,
+            media_client=media_client,
+        ).run_forever()
     finally:
         await mpv.close()
         process.stop()

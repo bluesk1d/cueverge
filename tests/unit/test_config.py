@@ -60,14 +60,29 @@ def test_controller_reads_frigate_mqtt_environment(monkeypatch: pytest.MonkeyPat
     assert "private" not in repr(config)
 
 
-def test_media_agent_requires_websocket_controller_url() -> None:
-    with pytest.raises(ValidationError, match="ws or wss"):
+def test_media_agent_device_presence_requires_complete_secure_configuration() -> None:
+    values = {
+        "asset_root": Path("assets"),
+        "mpv_executable": Path("mpv.exe"),
+    }
+    with pytest.raises(ValidationError, match="configured together"):
         MediaAgentConfig(
-            agent_id="agent",
-            controller_url="http://controller/api/v1/agent/ws",
-            asset_root=Path("assets"),
-            mpv_executable=Path("mpv.exe"),
+            **values,
+            device_transport_url="wss://controller:8443/api/device/v2/agent/ws",
         )
+    with pytest.raises(ValidationError, match="must use wss"):
+        MediaAgentConfig(
+            **values,
+            device_transport_url="ws://controller:8443/api/device/v2/agent/ws",
+            device_credential_root=Path("credentials"),
+        )
+
+    config = MediaAgentConfig(
+        **values,
+        device_transport_url="wss://controller:8443/api/device/v2/agent/ws",
+        device_credential_root=Path("credentials"),
+    )
+    assert config.device_credential_root == Path("credentials")
 
 
 def test_controller_reads_private_multi_output_configuration(

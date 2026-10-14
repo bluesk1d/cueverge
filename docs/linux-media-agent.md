@@ -224,7 +224,38 @@ journalctl -k --since today
 
 ### 4. Agent configuration and startup
 
-- [ ] Create a unique `CUEVERGE_AGENT_ID` for this projector.
+- [ ] Verify the codecs, containers, and output count actually supported by
+      this host; copy and edit
+      `examples/direct-media-agent-capabilities.json` rather than declaring
+      untested capabilities.
+- [ ] When the controller administrator has created a single-use pairing
+      token, enroll through the trusted HTTPS GUI endpoint:
+
+      ```bash
+      cueverge-device-enroll \
+        --enrollment-url https://cueverge.example/api/device/v2/enroll \
+        --display-name CuevergeClient01 \
+        --capabilities ./direct-media-agent-capabilities.json
+      ```
+
+      Enter the pairing token at the hidden prompt. The command creates the
+      private key locally, verifies the issued certificate identity and
+      returned CA chain, and atomically writes credentials under
+      `~/.config/cueverge/device-v2/` with restrictive permissions. It refuses
+      to       overwrite an existing credential directory.
+- [ ] Configure `CUEVERGE_DEVICE_TRANSPORT_URL` and
+      `CUEVERGE_DEVICE_CREDENTIAL_ROOT` together to maintain authenticated
+      protocol-v2 media session. The transport URL must use `wss://`; this
+      authenticated socket carries heartbeat, commands, acknowledgements, and
+      playback telemetry.
+- [ ] Rotate credentials before expiry, then restart the agent to reload its
+      TLS context:
+
+      ```bash
+      cueverge-device-rotate \
+        --transport-url wss://controller-host:8443/api/device/v2/agent/ws
+      systemctl --user restart cueverge-media-agent.service
+      ```
 - [ ] Copy all media into the local asset root.
 - [ ] Verify every v2 scene asset referenced by this agent exists locally.
 - [ ] Set the validated fullscreen screen index.
@@ -233,6 +264,8 @@ journalctl -k --since today
 - [ ] Verify prepare, play, pause, seek, resume, stop, and completion.
 - [ ] Install the user service and XDG autostart templates.
 - [ ] Reboot and confirm exactly one media-agent process starts.
+- [ ] Confirm repeated agent restarts retain exactly one mpv process; startup
+      adopts a responsive player already serving the configured IPC socket.
 - [ ] Confirm logs contain no reconnect loop, missing asset, IPC socket, or
       display errors.
 

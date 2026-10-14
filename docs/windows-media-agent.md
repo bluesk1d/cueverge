@@ -57,6 +57,31 @@ non-interactive Windows session and cannot reliably create the projector GPU
 swapchain. Remote administration therefore starts and stops the scheduled task
 rather than hosting the media process in the SSH session.
 
+On a multi-purpose laptop, register this task without boot or logon triggers.
+Start it only while preparing for a show and stop it after the show:
+
+```powershell
+C:\Cueverge\start-agent.ps1
+C:\Cueverge\stop-agent.ps1
+```
+
+A dedicated appliance may use an automatic interactive-logon trigger, but that
+is an installation-specific choice and must not be assumed by the generic
+agent.
+
+Agent startup probes the configured Cueverge IPC pipe before launching mpv and
+adopts an existing responsive player rather than spawning another instance.
+The on-demand stop script terminates only mpv processes whose command line
+uses Cueverge's named pipe.
+
+Rotate the laptop credential while its agent task is stopped, then use
+`C:\Cueverge\start-agent.ps1` to activate the replacement certificate:
+
+```powershell
+cueverge-device-rotate `
+  --transport-url wss://controller-host:8443/api/device/v2/agent/ws
+```
+
 Live validation covered prepare/play, authoritative position telemetry, pause,
 seek while paused, resume, explicit stop, and controller restart
 reconciliation. The integrated lighting loop maintained 25 FPS without missed

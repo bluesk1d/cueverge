@@ -47,6 +47,7 @@ def test_commands_are_fenced_acknowledged_and_emit_telemetry() -> None:
     async def scenario() -> None:
         player = FakePlayer()
         client = MediaAgentClient(_config(), player)
+        client.agent_session_id = "device-session-1"
         client.controller_epoch = "controller-1"
 
         prepare = _command(client, "prepare", asset_id="media/demo.mp4")
@@ -78,28 +79,8 @@ def test_commands_are_fenced_acknowledged_and_emit_telemetry() -> None:
     asyncio.run(scenario())
 
 
-def test_reconnect_hello_reports_actual_player_snapshot() -> None:
-    async def scenario() -> None:
-        player = FakePlayer(playing=True, position_ms=2300)
-        client = MediaAgentClient(_config(), player)
-        client.controller_epoch = "controller-1"
-        client.scene_instance_id = "scene-1"
-        client.playback_session_id = "playback-1"
-        client.sequence = 9
-
-        hello = await client.hello()
-        assert hello.playback is not None
-        assert hello.playback.position_ms == 2300
-        assert hello.playback.state is PlaybackState.PLAYING
-        assert hello.playback.sequence == 9
-
-    asyncio.run(scenario())
-
-
 def _config() -> MediaAgentConfig:
     return MediaAgentConfig(
-        agent_id="fake-media-1",
-        controller_url="ws://127.0.0.1:8000/api/v1/agent/ws",
         asset_root=Path("C:/cueverge/assets"),
         mpv_executable=Path("C:/tools/mpv/mpv.exe"),
     )
@@ -114,7 +95,7 @@ def _command(
     return AgentCommand(
         request_id=f"request-{command}",
         command=command,
-        agent_id=client.config.agent_id,
+        agent_id=client.runtime_identity,
         agent_session_id=client.agent_session_id,
         controller_epoch="controller-1",
         scene_id="scene",

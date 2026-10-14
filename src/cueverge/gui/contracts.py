@@ -8,6 +8,7 @@ from cueverge.core.models import (
     SceneDefinitionV1,
     SceneDefinitionV2,
 )
+from cueverge.protocol.device_v2 import DeviceKind
 
 
 class GuiModel(BaseModel):
@@ -106,6 +107,135 @@ class RuntimeStatusResponse(GuiModel):
     observed_at: str
     source: Literal["controller_runtime"] = "controller_runtime"
     status: dict[str, object]
+
+
+class OperateActionRequest(GuiModel):
+    action: Literal[
+        "start",
+        "pause",
+        "resume",
+        "seek",
+        "stop",
+        "reset",
+        "automatic",
+        "maintenance",
+        "blackout",
+    ]
+    position_ms: int | None = Field(default=None, ge=0)
+
+    @model_validator(mode="after")
+    def validate_position(self) -> "OperateActionRequest":
+        if self.action == "seek" and self.position_ms is None:
+            raise ValueError("seek action requires position_ms")
+        if self.action != "seek" and self.position_ms is not None:
+            raise ValueError("position_ms is valid only for seek")
+        return self
+
+
+class OperateActionResponse(GuiModel):
+    action: str
+    mode: str
+    active_scene: str | None
+
+
+class TopologyNodeResponse(GuiModel):
+    id: str
+    label: str
+    kind: Literal[
+        "controller",
+        "direct_media_agent",
+        "downstream_controller",
+        "controller_output",
+    ]
+    parent_id: str | None = None
+    configured: bool
+    connection: Literal["connected", "disconnected", "not_independently_detectable"]
+    enrollment: Literal[
+        "local_controller",
+        "enrolled",
+        "suspended",
+        "revoked",
+        "not_applicable",
+    ]
+    compatibility: Literal["compatible", "conflict", "unknown", "not_applicable"]
+    protocol_version: int | None = Field(default=None, ge=1)
+    capabilities: tuple[str, ...] = ()
+    assigned_resources: tuple[str, ...] = ()
+    last_seen_age_ms: int | None = Field(default=None, ge=0)
+    software_version: str | None = None
+    latency_ms: float | None = Field(default=None, ge=0)
+    clock_drift_ms: float | None = None
+    connection_policy: Literal["continuous", "on_demand", "not_applicable"] = "not_applicable"
+    reported_pixel_count: int | None = Field(default=None, gt=0)
+    signal_percent: int | None = Field(default=None, ge=0, le=100)
+    output_on: bool | None = None
+    diagnostic: str | None = None
+
+
+class TopologyResponse(GuiModel):
+    observed_at: str
+    source: Literal["controller_runtime"] = "controller_runtime"
+    enrollment_supported: bool
+    nodes: tuple[TopologyNodeResponse, ...]
+
+
+class CreatePairingTokenRequest(GuiModel):
+    device_kind: DeviceKind
+
+
+class PairingTokenResponse(GuiModel):
+    id: str
+    pairing_token: str
+    device_kind: DeviceKind
+    expires_at: str
+
+
+class SetDeviceConnectionPolicyRequest(GuiModel):
+    policy: Literal["continuous", "on_demand"]
+
+
+class DeviceConnectionPolicyResponse(GuiModel):
+    device_id: str
+    policy: Literal["continuous", "on_demand"]
+    updated_at: str
+
+
+class SetDeviceEnrollmentStateRequest(GuiModel):
+    state: Literal["enrolled", "suspended", "revoked"]
+
+
+class DeviceEnrollmentStateResponse(GuiModel):
+    device_id: str
+    state: Literal["enrolled", "suspended", "revoked"]
+    updated_at: str
+
+
+class SetResourceAssignmentRequest(GuiModel):
+    device_id: str = Field(min_length=1)
+    capability_kind: Literal[
+        "media_playback",
+        "pixel_output",
+        "downstream_control",
+    ]
+    device_output: str | None = Field(default=None, min_length=1, max_length=128)
+    expected_revision: int | None = Field(default=None, ge=1)
+
+
+class ResourceAssignmentResponse(GuiModel):
+    resource: str
+    device_id: str
+    capability_kind: str
+    device_output: str | None
+    revision: int = Field(ge=1)
+    actor: str
+    created_at: str
+    updated_at: str
+
+
+class ResourceAssignmentConflictResponse(GuiModel):
+    code: Literal["resource_assignment_conflict"] = "resource_assignment_conflict"
+    requested_revision: int | None
+    current_revision: int | None
 
 
 class AuditEventResponse(GuiModel):

@@ -2,7 +2,8 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
 
 import { App } from "./App";
-import { demoInstallation, demoRuntime } from "./demo/overview-fixtures";
+import { demoInstallation, demoRuntime, demoTopology } from "./demo/overview-fixtures";
+import { InstallationPage } from "./pages/InstallationPage";
 import { OverviewPage } from "./pages/OverviewPage";
 
 afterEach(() => {
@@ -20,6 +21,12 @@ test("shows the authenticated shell and truthful overview", async () => {
     }
     if (path.endsWith("/runtime/status")) {
       return jsonResponse(demoRuntime);
+    }
+    if (path.endsWith("/topology")) {
+      return jsonResponse(demoTopology);
+    }
+    if (path.endsWith("/resource-assignments")) {
+      return jsonResponse([]);
     }
     throw new Error(`unexpected request: ${path}`);
   });
@@ -52,6 +59,23 @@ test("navigates across the exact top-level workspaces", async () => {
     if (path.endsWith("/runtime/status")) {
       return jsonResponse(demoRuntime);
     }
+    if (path.endsWith("/topology")) {
+      return jsonResponse(demoTopology);
+    }
+    if (path.endsWith("/resource-assignments")) {
+      return jsonResponse([
+        {
+          resource: "projector.left",
+          device_id: "demo-left",
+          capability_kind: "media_playback",
+          device_output: null,
+          revision: 1,
+          actor: "admin",
+          created_at: "2026-10-13T06:00:00Z",
+          updated_at: "2026-10-13T06:00:00Z",
+        },
+      ]);
+    }
     if (path.endsWith("/projects")) {
       return jsonResponse([]);
     }
@@ -64,9 +88,32 @@ test("navigates across the exact top-level workspaces", async () => {
   fireEvent.click(screen.getByRole("button", { name: "Settings" }));
   expect(screen.getByRole("heading", { name: "Settings" })).toBeInTheDocument();
 
+  fireEvent.click(screen.getByRole("button", { name: "Installation" }));
+  expect(screen.getByRole("heading", { name: "Network Topology" })).toBeInTheDocument();
+  expect(screen.getByRole("heading", { name: "Device Management" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Create one-time token" })).toBeInTheDocument();
+  expect(
+    screen.getByRole("combobox", { name: "Connection policy for media-client-right" }),
+  ).toHaveValue("on_demand");
+  expect(
+    screen.getByRole("combobox", { name: "Assigned device for projector.left" }),
+  ).toBeDisabled();
+  expect(
+    screen.getByRole("combobox", { name: "Assigned device for projector.right" }),
+  ).toHaveValue("");
+  expect(screen.getAllByRole("button", { name: "Suspend" })).toHaveLength(2);
+  expect(screen.getAllByRole("button", { name: "Revoke" })).toHaveLength(2);
+
   fireEvent.click(screen.getByRole("button", { name: "Shows" }));
   expect(await screen.findByRole("heading", { name: "Shows" })).toBeInTheDocument();
   expect(screen.getByText("No draft projects")).toBeInTheDocument();
+
+  fireEvent.click(screen.getByRole("button", { name: "Operate" }));
+  expect(screen.getByRole("heading", { name: "Show controls" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Start show" })).toBeDisabled();
+  expect(
+    screen.getByText(/Start is unavailable until all assigned media clients are connected/),
+  ).toBeInTheDocument();
 });
 
 test("requires authentication before showing private workspaces", async () => {
@@ -126,6 +173,62 @@ test("does not infer status when the runtime request fails", () => {
   expect(screen.getByText("Current scene state could not be observed.")).toBeInTheDocument();
   expect(screen.getAllByText("Unknown")).toHaveLength(4);
   expect(screen.queryByText("Running")).not.toBeInTheDocument();
+});
+
+test("separates topology connectivity, assignment, and unavailable diagnostics", () => {
+  render(
+    <InstallationPage
+      installation={demoInstallation}
+      topology={demoTopology}
+      installationError={false}
+      topologyError={false}
+      loading={false}
+    />,
+  );
+
+  expect(screen.getByRole("heading", { name: "Network Topology" })).toBeInTheDocument();
+  expect(screen.getByRole("heading", { name: "media-client-left" })).toBeInTheDocument();
+  expect(screen.getByRole("heading", { name: "media-client-right" })).toBeInTheDocument();
+  expect(screen.getByText("Standby")).toBeInTheDocument();
+  expect(screen.getAllByText("Enrolled")).toHaveLength(2);
+  expect(screen.getAllByText("Not reported").length).toBeGreaterThanOrEqual(4);
+  expect(screen.getAllByText("projector.left")).not.toHaveLength(0);
+});
+
+test("shows enrolled device identity and durable assignments separately from connectivity", () => {
+  render(
+    <InstallationPage
+      installation={demoInstallation}
+      topology={{
+        ...demoTopology,
+        enrollment_supported: true,
+        nodes: [
+          demoTopology.nodes[0],
+          {
+            ...demoTopology.nodes[1],
+            id: "device:7ea9567c-28fb-4e74-b4fc-c876e7277966",
+            label: "CuevergeClient01",
+            connection: "disconnected",
+            enrollment: "enrolled",
+            compatibility: "compatible",
+            protocol_version: 2,
+            capabilities: ["media_playback", "artifact_cache"],
+            assigned_resources: ["projector.left"],
+            last_seen_age_ms: null,
+            software_version: "0.1.0",
+          },
+        ],
+      }}
+      installationError={false}
+      topologyError={false}
+      loading={false}
+    />,
+  );
+
+  expect(screen.getByRole("heading", { name: "CuevergeClient01" })).toBeInTheDocument();
+  expect(screen.getByText("Enrolled")).toBeInTheDocument();
+  expect(screen.getByText("media_playback, artifact_cache")).toBeInTheDocument();
+  expect(screen.getByText("0.1.0")).toBeInTheDocument();
 });
 
 function jsonResponse(value: unknown): Promise<Response> {

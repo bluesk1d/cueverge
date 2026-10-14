@@ -23,6 +23,10 @@ for (const viewport of viewports) {
     );
     await expect(page.getByRole("button", { name: "Settings", exact: true })).toBeVisible();
 
+    await page.getByRole("button", { name: "Installation", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "Network Topology" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "media-client-left" })).toBeVisible();
+
     const horizontalOverflow = await page.evaluate(
       () => document.documentElement.scrollWidth > document.documentElement.clientWidth,
     );

@@ -162,6 +162,24 @@ def test_builds_windows_mpv_command_without_device_assumptions() -> None:
     ]
 
 
+def test_process_adopts_existing_cueverge_ipc_server(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    executable = tmp_path / "mpv"
+    executable.write_bytes(b"")
+    monkeypatch.setattr(
+        "cueverge.media_agent.mpv._ipc_server_available",
+        lambda _path: True,
+    )
+
+    process = MpvProcess(executable=executable, pipe_path=str(tmp_path / "mpv.sock"))
+    process.start()
+
+    assert process.process is None
+    assert not process.owns_process
+
+
 def test_asset_resolution_is_confined_to_cache_root(tmp_path: Path) -> None:
     asset = tmp_path / "clip.mp4"
     asset.write_bytes(b"demo")

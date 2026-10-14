@@ -11,8 +11,6 @@ class RuntimeConfig(BaseModel):
 
 
 class MediaAgentConfig(RuntimeConfig):
-    agent_id: str = Field(min_length=1)
-    controller_url: AnyUrl
     asset_root: Path
     mpv_executable: Path
     mpv_pipe: str = Field(default_factory=lambda: _default_mpv_pipe())
@@ -21,19 +19,24 @@ class MediaAgentConfig(RuntimeConfig):
     fullscreen_screen: int | None = Field(default=None, ge=0)
     audio_device: str | None = None
     audio_delay_ms: int = Field(default=0, ge=-5000, le=5000)
+    device_transport_url: AnyUrl | None = None
+    device_credential_root: Path | None = None
 
     @model_validator(mode="after")
-    def validate_controller_url(self) -> "MediaAgentConfig":
-        if self.controller_url.scheme not in {"ws", "wss"}:
-            raise ValueError("controller_url must use ws or wss")
+    def validate_device_transport(self) -> "MediaAgentConfig":
+        presence_values = (self.device_transport_url, self.device_credential_root)
+        if sum(value is not None for value in presence_values) == 1:
+            raise ValueError(
+                "device_transport_url and device_credential_root must be configured together"
+            )
+        if self.device_transport_url is not None and self.device_transport_url.scheme != "wss":
+            raise ValueError("device_transport_url must use wss")
         return self
 
     @classmethod
     def from_environment(cls) -> "MediaAgentConfig":
         return cls.model_validate(
             {
-                "agent_id": _required_env("CUEVERGE_AGENT_ID"),
-                "controller_url": _required_env("CUEVERGE_CONTROLLER_URL"),
                 "asset_root": _required_env("CUEVERGE_ASSET_ROOT"),
                 "mpv_executable": _required_env("CUEVERGE_MPV_EXECUTABLE"),
                 "mpv_pipe": os.environ.get(
@@ -43,6 +46,8 @@ class MediaAgentConfig(RuntimeConfig):
                 "fullscreen_screen": _optional_int(os.environ.get("CUEVERGE_FULLSCREEN_SCREEN")),
                 "audio_device": os.environ.get("CUEVERGE_AUDIO_DEVICE"),
                 "audio_delay_ms": int(os.environ.get("CUEVERGE_AUDIO_DELAY_MS", "0")),
+                "device_transport_url": os.environ.get("CUEVERGE_DEVICE_TRANSPORT_URL"),
+                "device_credential_root": os.environ.get("CUEVERGE_DEVICE_CREDENTIAL_ROOT"),
             }
         )
 

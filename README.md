@@ -32,8 +32,15 @@ Run the controller:
 uv run uvicorn cueverge.controller.app:app --host 127.0.0.1 --port 8000
 ```
 
-Control endpoints bind wherever Uvicorn is configured; authentication and
-deployment configuration are planned before any non-loopback deployment.
+The browser GUI and certificate-enrollment API remain disabled unless
+explicitly configured. When enabled, the controller process also hosts the
+separately secured mTLS-only protocol-v2 listener on its configured port. The
+listener requires device enrollment, verified TLS termination for the
+enrollment API, a private CA-key password, and explicit listener DNS/IP
+identities. See `examples/controller.env.example`.
+
+Control endpoints bind wherever Uvicorn is configured. Media agents connect
+only through the certificate-authenticated protocol-v2 listener.
 See [operations and simulation](docs/operations.md) for mode semantics,
 diagnostics, and the hardware-free test harness.
 

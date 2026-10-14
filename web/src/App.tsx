@@ -4,18 +4,25 @@ import {
   ApiError,
   getInstallation,
   getProjects,
+  getResourceAssignments,
   getRuntimeStatus,
   getSession,
+  getTopology,
   InstallationStatus,
   login,
   logout,
+  operate,
+  OperateAction,
   ProjectSummary,
+  ResourceAssignment,
   RuntimeStatus,
   Session,
+  Topology,
 } from "./api";
 import { AppShell, Workspace } from "./components/AppShell";
 import { EmptyState, ErrorState, Panel, Skeleton, WorkspaceHeader } from "./components/ui";
 import { OverviewPage } from "./pages/OverviewPage";
+import { InstallationPage } from "./pages/InstallationPage";
 
 export function App() {
   const [session, setSession] = useState<Session | null>(null);
@@ -59,8 +66,11 @@ function AuthenticatedApp({
   const [workspace, setWorkspace] = useState<Workspace>("overview");
   const [installation, setInstallation] = useState<InstallationStatus | null>(null);
   const [runtime, setRuntime] = useState<RuntimeStatus | null>(null);
+  const [topology, setTopology] = useState<Topology | null>(null);
+  const [assignments, setAssignments] = useState<ResourceAssignment[]>([]);
   const [installationError, setInstallationError] = useState(false);
   const [runtimeError, setRuntimeError] = useState(false);
+  const [topologyError, setTopologyError] = useState(false);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
@@ -68,9 +78,12 @@ function AuthenticatedApp({
     if (refresh) {
       setRefreshing(true);
     }
-    const [installationResult, runtimeResult] = await Promise.allSettled([
+    const [installationResult, runtimeResult, topologyResult, assignmentResult] =
+      await Promise.allSettled([
       getInstallation(),
       getRuntimeStatus(),
+      getTopology(),
+      getResourceAssignments(),
     ]);
     if (installationResult.status === "fulfilled") {
       setInstallation(installationResult.value);
@@ -83,6 +96,15 @@ function AuthenticatedApp({
       setRuntimeError(false);
     } else {
       setRuntimeError(true);
+    }
+    if (topologyResult.status === "fulfilled") {
+      setTopology(topologyResult.value);
+      setTopologyError(false);
+    } else {
+      setTopologyError(true);
+    }
+    if (assignmentResult.status === "fulfilled") {
+      setAssignments(assignmentResult.value);
     }
     setLoading(false);
     setRefreshing(false);
@@ -117,14 +139,26 @@ function AuthenticatedApp({
       )}
       {workspace === "installation" && (
         <InstallationPage
+          session={session}
           installation={installation}
+          topology={topology}
+          assignments={assignments}
           installationError={installationError}
+          topologyError={topologyError}
           loading={loading}
+          onRefresh={() => loadStatus(true)}
         />
       )}
       {workspace === "shows" && <ShowsPage />}
       {workspace === "operate" && (
-        <OperatePage runtime={runtime} runtimeError={runtimeError} loading={loading} />
+        <OperatePage
+          session={session}
+          runtime={runtime}
+          topology={topology}
+          runtimeError={runtimeError}
+          loading={loading}
+          onRefresh={() => loadStatus(true)}
+        />
       )}
       {workspace === "settings" && <SettingsPage />}
     </AppShell>
@@ -190,52 +224,6 @@ function Login({ onAuthenticated }: { onAuthenticated: (session: Session) => voi
   );
 }
 
-function InstallationPage({
-  installation,
-  installationError,
-  loading,
-}: {
-  installation: InstallationStatus | null;
-  installationError: boolean;
-  loading: boolean;
-}) {
-  return (
-    <>
-      <WorkspaceHeader
-        eyebrow="Installation"
-        title="Installation"
-        description="Configured logical resources in the active runtime package."
-      />
-      <Panel title="Resources" description="Runtime bindings exposed by the current package">
-        {installationError ? (
-          <ErrorState />
-        ) : loading && !installation ? (
-          <Skeleton lines={4} />
-        ) : installation?.resources.length ? (
-          <ul className="resource-list">
-            {installation.resources.map((resource) => (
-              <li key={resource.resource}>
-                <div>
-                  <strong>{resource.resource}</strong>
-                  <small>{resource.kind.replaceAll("_", " ")}</small>
-                </div>
-                <span>
-                  {resource.target ?? `${resource.pixel_count ?? "Unknown"} configured pixels`}
-                </span>
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <EmptyState
-            title="No configured resources"
-            description="The active installation package contains no logical resources."
-          />
-        )}
-      </Panel>
-    </>
-  );
-}
-
 function ShowsPage() {
   const [projects, setProjects] = useState<ProjectSummary[] | null>(null);
   const [error, setError] = useState(false);
@@ -278,20 +266,55 @@ function ShowsPage() {
 }
 
 function OperatePage({
+  session,
   runtime,
+  topology,
   runtimeError,
   loading,
+  onRefresh,
 }: {
+  session: Session;
   runtime: RuntimeStatus | null;
+  topology: Topology | null;
   runtimeError: boolean;
   loading: boolean;
+  onRefresh: () => Promise<void>;
 }) {
+  const [positionMs, setPositionMs] = useState(0);
+  const [pending, setPending] = useState<OperateAction | null>(null);
+  const [operationError, setOperationError] = useState<string | null>(null);
+  const canOperate = session.role === "operator" || session.role === "administrator";
+  const unavailableRequiredDevice =
+    topology?.nodes.some(
+      (node) =>
+        node.kind === "direct_media_agent" &&
+        node.configured &&
+        node.connection !== "connected",
+    ) ?? true;
+  const active = runtime?.status.active_scene != null;
+
+  async function runAction(action: OperateAction, confirmMessage?: string) {
+    if (confirmMessage && !window.confirm(confirmMessage)) {
+      return;
+    }
+    setPending(action);
+    setOperationError(null);
+    try {
+      await operate(action, action === "seek" ? positionMs : undefined);
+      await onRefresh();
+    } catch {
+      setOperationError("The controller rejected the operation. Refresh status and try again.");
+    } finally {
+      setPending(null);
+    }
+  }
+
   return (
     <>
       <WorkspaceHeader
-        eyebrow="Read-only"
+        eyebrow="Operations"
         title="Operate"
-        description="Observed controller state. GUI-00 exposes no live control actions."
+        description="Authenticated controller actions with explicit state and impact checks."
       />
       <Panel title="Controller status">
         {runtimeError ? (
@@ -320,6 +343,122 @@ function OperatePage({
         ) : (
           <EmptyState title="No status" description="No controller response is available." />
         )}
+      </Panel>
+      <Panel
+        title="Show controls"
+        description={
+          canOperate
+            ? "Commands affect the active installation."
+            : "Your role can observe status but cannot operate the show."
+        }
+        className="operate-controls"
+      >
+        <div className="operate-controls__groups">
+          <section>
+            <h3>Playback</h3>
+            <div className="operate-controls__buttons">
+              <button
+                className="primary-button"
+                disabled={!canOperate || unavailableRequiredDevice || active || pending !== null}
+                onClick={() =>
+                  void runAction(
+                    "start",
+                    "Start the configured show on all required connected outputs?",
+                  )
+                }
+              >
+                Start show
+              </button>
+              <button
+                disabled={!canOperate || !active || pending !== null}
+                onClick={() => void runAction("pause")}
+              >
+                Pause
+              </button>
+              <button
+                disabled={!canOperate || !active || pending !== null}
+                onClick={() => void runAction("resume")}
+              >
+                Resume
+              </button>
+              <button
+                disabled={!canOperate || !active || pending !== null}
+                onClick={() => void runAction("stop", "Stop the active show and return outputs safe?")}
+              >
+                Stop
+              </button>
+            </div>
+            {unavailableRequiredDevice && (
+              <p className="control-note">
+                Start is unavailable until all assigned media clients are connected.
+              </p>
+            )}
+          </section>
+          <section>
+            <h3>Position</h3>
+            <div className="seek-control">
+              <label>
+                Position (ms)
+                <input
+                  min="0"
+                  type="number"
+                  value={positionMs}
+                  onChange={(event) => setPositionMs(Math.max(0, Number(event.target.value)))}
+                />
+              </label>
+              <button
+                disabled={!canOperate || !active || pending !== null}
+                onClick={() => void runAction("seek")}
+              >
+                Seek
+              </button>
+            </div>
+          </section>
+          <section>
+            <h3>Mode and recovery</h3>
+            <div className="operate-controls__buttons">
+              <button
+                disabled={!canOperate || pending !== null}
+                onClick={() => void runAction("automatic")}
+              >
+                Automatic
+              </button>
+              <button
+                disabled={!canOperate || pending !== null}
+                onClick={() =>
+                  void runAction(
+                    "maintenance",
+                    "Enter maintenance mode and stop active playback?",
+                  )
+                }
+              >
+                Maintenance
+              </button>
+              <button
+                disabled={!canOperate || unavailableRequiredDevice || pending !== null}
+                onClick={() =>
+                  void runAction("reset", "Reset to the configured ambient scene?")
+                }
+              >
+                Reset ambient
+              </button>
+              <button
+                className="danger-button"
+                disabled={!canOperate || pending !== null}
+                onClick={() =>
+                  void runAction(
+                    "blackout",
+                    "Blackout stops playback and emits the configured safe lighting state. Continue?",
+                  )
+                }
+              >
+                Blackout
+              </button>
+            </div>
+          </section>
+        </div>
+        {pending && <p role="status">Sending {pending}…</p>}
+        {operationError && <p role="alert">{operationError}</p>}
       </Panel>
     </>
   );

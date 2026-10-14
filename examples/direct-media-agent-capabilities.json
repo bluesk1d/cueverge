@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "protocol": {
+    "minimum": 2,
+    "maximum": 2
+  },
+  "device_kind": "direct_media_agent",
+  "software_version": "0.1.0",
+  "capabilities": [
+    {
+      "kind": "media_playback",
+      "codecs": [
+        "h264"
+      ],
+      "containers": [
+        "mp4"
+      ],
+      "max_outputs": 1,
+      "supports_pause": true,
+      "supports_seek": true
+    }
+  ]
+}

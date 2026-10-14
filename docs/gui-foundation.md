@@ -69,8 +69,8 @@ matching CSRF header. Roles are enforced by dependencies in the server, not by
 navigation visibility. Login attempts are rate limited and authentication and
 authoring mutations are audited.
 
-This is a browser foundation, not client enrollment. Agent protocol v1 remains
-unauthenticated and must not be exposed as a trusted enrollment channel.
+The original unauthenticated agent protocol was a proof of concept and has
+been removed.
 
 ### Durable projects and revisions
 
@@ -143,17 +143,116 @@ artifacts are pinned against cleanup.
 | Testing | Vitest, React Testing Library, Playwright, axe-core, and MSW |
 | Production edge | TLS reverse proxy where appropriate |
 
-## Initial navigation
+## Initial navigation and read-only topology
 
 The first shell contains:
 
-- **Installation**: authenticated summary of the active package and logical
-  output resources;
+- **Overview**: truthful active-package and controller-status summary;
+- **Installation**: authenticated read-only topology plus active-package
+  logical output resources;
 - **Shows**: durable authoring-project summaries and head revisions;
-- **Operate**: authenticated, read-only controller status with observation
-  timestamp and source.
+- **Operate**: authenticated controller status and role-gated show controls;
+- **Settings**: explicit unavailable state until editable controller settings
+  have versioned contracts.
 
-There are no browser live-control actions in this slice.
+Operator and administrator roles may invoke typed start, pause, resume, seek,
+stop, reset, automatic, maintenance, and blackout actions. Mutations require
+CSRF and allowed-origin validation, record success or failure audit events,
+and use confirmations appropriate to impact. Start and reset remain disabled
+while required assigned media clients are unavailable. Blackout is described
+as the configured playback stop and lighting safe-state action, not as a
+latched hardware guarantee.
+
+The unauthenticated proof-of-concept `/api/v1` HTTP surface has been removed;
+runtime status and operations are available only through authenticated GUI
+routes.
+
+The GUI-01 read-only topology snapshot combines current runtime observations
+with the durable protocol-v2 identity registry: the local controller,
+controller-owned pixel outputs, configured legacy media-agent targets, live
+legacy connections, enrolled devices, declared capabilities, enrollment state,
+and logical-resource assignments. Connection, assignment, compatibility, and
+enrollment remain separate dimensions.
+
+Protocol v1 has no authenticated device identity or enrollment flow. Connected
+agents are therefore labeled as legacy unauthenticated observations rather
+than enrolled or trusted devices. Software version, latency, clock drift,
+storage, discovery, and readiness remain explicitly unavailable for those
+legacy connections. The topology API is read-only and sends no agent or
+hardware commands.
+
+ADR 0015 selects installation-scoped mTLS device certificates bootstrapped by
+administrator-created, single-use pairing tokens with a maximum five-minute
+expiry. Stable controller-assigned UUIDs—not IP addresses, hostnames, or
+caller-supplied agent IDs—identify devices. Protocol-v2 capability documents
+separate declared ability from controller authorization and distinguish direct
+media agents from downstream controllers.
+
+The implemented enrollment foundation remains disabled by default and requires
+explicit confirmation that server-authenticated TLS termination is deployed.
+When enabled, an administrator may create a digest-only, single-use pairing
+token through the authenticated GUI API. A device generates its private key
+locally and submits a CSR and typed capability document to
+`/api/device/v2/enroll`. The controller provisions an encrypted,
+installation-scoped CA, returns one client certificate, and atomically persists
+the enrolled identity, certificate metadata, consumed token, and audit event.
+Invalid tokens receive a generic error and enrollment attempts are rate
+limited.
+
+The mTLS network listener authenticates enrolled certificates and supports
+fenced protocol-v2 hello, heartbeat, media commands, acknowledgements, and
+playback telemetry. It runs inside the controller process on its own TLS port
+and shares the authoritative runtime directly. Its server certificate is
+issued by the installation CA for explicitly configured DNS/IP SANs, and a
+real loopback integration test verifies the TLS and WebSocket handshake.
+
+Administrators can create, replace, and remove revisioned logical-resource
+assignments through CSRF-protected GUI API mutations. Assignment creation
+requires an enrolled device and a capability compatible with the active
+installation resource; suspended or revoked devices cannot receive new
+assignments. Records may include an optional device-local output identifier
+and are audited. They are future protocol-v2 binding inputs only: changing an
+assignment does not modify the active show package or send a runtime command.
+The Installation workspace presents these durable assignments read-only.
+Administrators can also create single-use pairing tokens and change whether an
+enrolled device is expected to remain continuously connected or operates
+on-demand. These mutations use the existing CSRF, role, audit, and explicit
+refresh boundaries; token plaintext is shown only in the creation response.
+Logical media resources can be assigned, reassigned, or unassigned through the
+same workspace with optimistic revision checks. Assignment mutations require
+idle playback and disconnected current and target devices so an existing v2
+session can never retain authority under a newly displayed binding.
+Administrators can suspend, resume, or permanently revoke enrolled devices.
+Suspension preserves identity and assignment while rejecting subsequent v2
+messages; resume restores the active certificate. Revocation invalidates all
+device certificates, is irreversible, and requires a new enrollment.
+
+Configured DDP/WLED outputs are observed directly through WLED's read-only
+HTTP API when topology is requested. Cueverge reports HTTP reachability,
+firmware, configured pixel count, Wi-Fi signal, current on/off state, and
+pixel-count compatibility. The probe has a bounded timeout and never changes
+WLED state; probe failures are returned as explicit diagnostics.
+
+The `cueverge-device-enroll` client command performs the matching native
+enrollment flow. It reads a reviewed capability document, prompts without echo
+for the single-use token, generates the private key locally, verifies the
+issued certificate identity and returned CA chain, and atomically persists the
+credential set with restrictive permissions.
+
+An enrolled media agent maintains one native mTLS protocol-v2 media session.
+The certificate identifies the device, its durable assignment resolves the
+logical output, and the socket carries fenced heartbeat, commands,
+acknowledgements, and playback telemetry. The listener durably records
+session-scoped connect, heartbeat, and disconnect observations for GUI status.
+Stale sessions expire by the controller heartbeat timeout, and old sessions
+cannot update or disconnect a replacement session.
+
+`cueverge-device-rotate` performs two-phase credential rotation. The
+controller first issues a pending certificate while the current credential
+remains active. The client verifies and atomically persists the new keypair,
+and the controller activates it only when the device reconnects successfully
+with that certificate. Activation supersedes the previous serial and records
+separate staged and activated audit events.
 
 ## Test strategy and sequence
 
@@ -169,5 +268,6 @@ There are no browser live-control actions in this slice.
    production-build checks.
 6. Full pytest, Ruff, and mypy regression validation.
 
-Recommended next increment: harden the user/account lifecycle and build the
-GUI-01 authenticated operator status topology before adding any live command.
+Recommended next increment: commission real two-projector media assets against
+the protocol-v2 command path and add scheduled rotation before certificate
+expiry.

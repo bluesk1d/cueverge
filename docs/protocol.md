@@ -1,53 +1,50 @@
-# Agent protocol v1
+# Device protocol v2
 
-An agent opens `/api/v1/agent/ws` and first sends `agent.hello` with a unique
-agent session ID and its optional current playback snapshot. The controller
-returns `agent.welcome` with its unique process epoch, heartbeat timing, and a
-reconciliation action:
+Cueverge devices connect only to the controller's dedicated mTLS listener,
+normally on port 8443. The installation CA authenticates a per-device
+certificate whose URI subject alternative name contains the controller-issued
+device UUID. IP addresses, hostnames, and caller-selected agent IDs do not
+establish identity.
 
-- `idle`: neither side has playback to reconcile.
-- `continue`: the reported epoch, scene, playback session, and sequence match.
-- `stop`: playback is unknown or stale and must not be adopted.
+The device sends `device.hello` with its certificate identity, a new device
+session UUID, and the exact capability document persisted during enrollment.
+The controller authorizes the active certificate, verifies the capability
+document, resolves the device's durable logical-resource assignment, and
+returns `device.welcome` with the controller epoch, heartbeat timing, and a
+reconciliation action.
 
-The controller may then send `prepare` and `play` commands. Each command
-includes a request ID, controller epoch, agent session ID, scene instance ID,
-and playback session ID. The agent returns `command.ack` with `completed` or
-`error`. Pending commands expire and degrade the scene rather than being
-silently treated as successful.
+The same authenticated socket carries:
 
-A multi-output scene assigns a distinct playback session ID to each media
-agent. The controller sends `prepare` to every participating agent and uses a
-barrier: no `play` command is sent until every prepare command has completed.
-An output's optional static start delay is measured from that barrier.
-Pause, resume, seek, stop, and scene replacement commands are fanned out to all
-participating agents. One required media output is the declared clock source;
-other agents' telemetry cannot change authoritative scene time.
-Status reports each participating agent's latest position and its drift from
-the declared clock source. Drift is diagnostic only; the controller does not
-yet apply unmeasured automatic seek or playback-rate corrections.
+- `device.heartbeat` and `device.heartbeat.ack`;
+- `device.media.command`;
+- `device.command.ack`;
+- `device.media.position`;
+- two-phase credential rotation requests and responses.
 
-Media telemetry uses `media.position` and includes:
+Every operational message is fenced by the device session UUID and controller
+epoch. Media commands also include request, scene-instance, and
+playback-session UUIDs. Telemetry uses a strictly increasing sequence and
+includes position, rate, player state, optional duration, monotonic device
+time, and optional seek/loop discontinuity.
 
-- protocol version, controller epoch, agent ID, and agent session ID
-- scene instance and playback session fencing IDs
-- a strictly increasing sequence number
-- position, playback rate, player state, and optional duration
-- the agent monotonic timestamp for diagnostics only
-- an optional `seek` or `loop` discontinuity marker
+A multi-output scene assigns a distinct playback session to each logical media
+resource. The controller sends `prepare` to all participating devices and does
+not send `play` until every required prepare has completed. Pause, resume,
+seek, stop, and replacement commands fan out to all participating resources.
+One required output is the declared clock source; other telemetry is
+diagnostic and cannot advance authoritative scene time.
 
-The controller anchors accepted samples to its own monotonic receipt time.
-Messages with the wrong protocol version or invalid values fail schema
-validation. Messages for another controller epoch, agent session, scene, or
-playback session, repeated sequences, and older sequences are acknowledged as
-rejected and do not affect rendering.
+Valid heartbeats refresh both certificate-session presence and runtime
+liveness. A stale session is disconnected and cannot update or disconnect a
+replacement session. Losing the active clock source freezes time-following and
+cancels lighting rendering; losing another required output marks the scene
+degraded.
 
-Agents send sequenced `agent.heartbeat` messages. Valid heartbeats,
-acknowledgements, and telemetry refresh liveness. Timeout removes the logical
-connection. Losing a required active media agent freezes the timecode follower
-and cancels rendering when that agent is the declared clock source. Losing a
-non-clock media output leaves the remaining outputs running and reports the
-scene as degraded.
+Credential rotation is two phase. The current certificate authenticates a CSR
+for a pending replacement. The current credential remains valid until the
+device verifies and persists the replacement and reconnects with it. That
+successful connection atomically activates the new serial and supersedes the
+old one.
 
-The v1 test transport does not yet implement authentication, authorization,
-capability negotiation, durable controller state, or command retry. Those
-remain requirements before deployment.
+The original unauthenticated protocol-v1 WebSocket and HTTP control surface
+have been removed.

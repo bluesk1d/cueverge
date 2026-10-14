@@ -51,6 +51,76 @@ export interface RuntimeStatus {
   };
 }
 
+export type TopologyNodeKind =
+  | "controller"
+  | "direct_media_agent"
+  | "downstream_controller"
+  | "controller_output";
+
+export interface TopologyNode {
+  id: string;
+  label: string;
+  kind: TopologyNodeKind;
+  parent_id: string | null;
+  configured: boolean;
+  connection: "connected" | "disconnected" | "not_independently_detectable";
+  enrollment:
+    | "local_controller"
+    | "enrolled"
+    | "suspended"
+    | "revoked"
+    | "not_applicable";
+  compatibility: "compatible" | "conflict" | "unknown" | "not_applicable";
+  protocol_version: number | null;
+  capabilities: string[];
+  assigned_resources: string[];
+  last_seen_age_ms: number | null;
+  software_version: string | null;
+  latency_ms: number | null;
+  clock_drift_ms: number | null;
+  connection_policy?: "continuous" | "on_demand" | "not_applicable";
+  reported_pixel_count?: number | null;
+  signal_percent?: number | null;
+  output_on?: boolean | null;
+  diagnostic?: string | null;
+}
+
+export interface Topology {
+  observed_at: string;
+  source: "controller_runtime";
+  enrollment_supported: boolean;
+  nodes: TopologyNode[];
+}
+
+export interface PairingToken {
+  id: string;
+  pairing_token: string;
+  device_kind: "direct_media_agent" | "downstream_controller";
+  expires_at: string;
+}
+
+export type OperateAction =
+  | "start"
+  | "pause"
+  | "resume"
+  | "seek"
+  | "stop"
+  | "reset"
+  | "automatic"
+  | "maintenance"
+  | "blackout";
+
+export interface ResourceAssignment {
+  resource: string;
+  device_id: string;
+  capability_kind: string;
+  device_output: string | null;
+  revision: number;
+  actor: string;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface MediaOutputStatus {
   output_id: string;
   agent_id: string;
@@ -114,6 +184,90 @@ export async function getRuntimeStatus(): Promise<RuntimeStatus> {
   return request<RuntimeStatus>("/api/gui/v1/runtime/status");
 }
 
+export async function getTopology(): Promise<Topology> {
+  return request<Topology>("/api/gui/v1/topology");
+}
+
+export async function getResourceAssignments(): Promise<ResourceAssignment[]> {
+  return request<ResourceAssignment[]>("/api/gui/v1/resource-assignments");
+}
+
+export async function setResourceAssignment(
+  resource: string,
+  deviceId: string,
+  capabilityKind: "media_playback" | "pixel_output" | "downstream_control",
+  expectedRevision: number | null,
+): Promise<ResourceAssignment> {
+  return request<ResourceAssignment>(
+    `/api/gui/v1/resource-assignments/${encodeURIComponent(resource)}`,
+    {
+      method: "PUT",
+      headers: mutationHeaders(),
+      body: JSON.stringify({
+        device_id: deviceId,
+        capability_kind: capabilityKind,
+        expected_revision: expectedRevision,
+      }),
+    },
+  );
+}
+
+export async function removeResourceAssignment(
+  resource: string,
+  revision: number,
+): Promise<void> {
+  await request(`/api/gui/v1/resource-assignments/${encodeURIComponent(resource)}`, {
+    method: "DELETE",
+    headers: { ...mutationHeaders(), "If-Match": `"${revision}"` },
+  });
+}
+
+export async function createPairingToken(
+  deviceKind: PairingToken["device_kind"],
+): Promise<PairingToken> {
+  return request<PairingToken>("/api/gui/v1/devices/pairing-tokens", {
+    method: "POST",
+    headers: mutationHeaders(),
+    body: JSON.stringify({ device_kind: deviceKind }),
+  });
+}
+
+export async function setDeviceConnectionPolicy(
+  deviceId: string,
+  policy: "continuous" | "on_demand",
+): Promise<void> {
+  await request(`/api/gui/v1/devices/${encodeURIComponent(deviceId)}/connection-policy`, {
+    method: "PUT",
+    headers: mutationHeaders(),
+    body: JSON.stringify({ policy }),
+  });
+}
+
+export async function setDeviceEnrollmentState(
+  deviceId: string,
+  state: "enrolled" | "suspended" | "revoked",
+): Promise<void> {
+  await request(`/api/gui/v1/devices/${encodeURIComponent(deviceId)}/enrollment-state`, {
+    method: "PUT",
+    headers: mutationHeaders(),
+    body: JSON.stringify({ state }),
+  });
+}
+
+export async function operate(
+  action: OperateAction,
+  positionMs?: number,
+): Promise<void> {
+  await request("/api/gui/v1/operate/actions", {
+    method: "POST",
+    headers: mutationHeaders(),
+    body: JSON.stringify({
+      action,
+      ...(positionMs === undefined ? {} : { position_ms: positionMs }),
+    }),
+  });
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
     ...init,
@@ -139,4 +293,11 @@ function readCookie(name: string): string | null {
     .map((value) => value.trim())
     .find((value) => value.startsWith(prefix));
   return cookie ? decodeURIComponent(cookie.slice(prefix.length)) : null;
+}
+
+function mutationHeaders(): Record<string, string> {
+  return {
+    "Content-Type": "application/json",
+    "X-CSRF-Token": readCookie("cueverge_csrf") ?? "",
+  };
 }

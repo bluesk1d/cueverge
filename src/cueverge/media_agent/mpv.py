@@ -1,5 +1,6 @@
 import asyncio
 import json
+import socket
 import subprocess
 import sys
 from collections.abc import Mapping
@@ -131,6 +132,7 @@ class MpvProcess:
     audio_device: str | None = None
     audio_delay_seconds: float = 0.0
     process: subprocess.Popen[bytes] | None = None
+    owns_process: bool = False
 
     def command(self) -> list[str]:
         command = [
@@ -153,11 +155,44 @@ class MpvProcess:
             raise MpvError(f"mpv executable does not exist: {self.executable}")
         if self.process is not None and self.process.poll() is None:
             raise MpvError("mpv process is already running")
+        if _ipc_server_available(self.pipe_path):
+            self.process = None
+            self.owns_process = False
+            return
+        if sys.platform != "win32":
+            socket_path = Path(self.pipe_path)
+            if socket_path.exists():
+                socket_path.unlink()
         self.process = subprocess.Popen(self.command(), stdin=subprocess.DEVNULL)
+        self.owns_process = True
 
     def stop(self) -> None:
-        if self.process is not None and self.process.poll() is None:
-            self.process.terminate()
+        process = self.process
+        if self.owns_process and process is not None and process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=5)
+        self.process = None
+        self.owns_process = False
+
+
+def _ipc_server_available(pipe_path: str) -> bool:
+    if sys.platform == "win32":
+        import ctypes
+
+        return bool(ctypes.windll.kernel32.WaitNamedPipeW(pipe_path, 0))
+    client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        client.settimeout(0.2)
+        client.connect(pipe_path)
+        return True
+    except (FileNotFoundError, ConnectionRefusedError, TimeoutError):
+        return False
+    finally:
+        client.close()
 
 
 @dataclass
