@@ -166,6 +166,7 @@ def load_show_package(package_root: Path) -> SceneCatalog:
             )
     return SceneCatalog(
         package_root=root,
+        installation=installation,
         scenes=scenes,
         encounter=encounter,
         program=program,

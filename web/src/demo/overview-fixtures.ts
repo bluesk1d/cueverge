@@ -1,13 +1,43 @@
-import { InstallationStatus, RuntimeStatus, Session, Topology } from "../api";
+import {
+  ActivityEvent,
+  InstallationStatus,
+  InstallationSummary,
+  RuntimeStatus,
+  Session,
+  Topology,
+} from "../api";
 
 export const demoSession: Session = {
   username: "visual-review",
   role: "administrator",
 };
 
+export const demoActivity: ActivityEvent[] = [
+  {
+    id: 2,
+    occurred_at: "2026-10-13T06:29:58.000Z",
+    category: "device",
+    action: "device.connected",
+    actor: "media-client-left",
+    target: "media-client-left",
+    result: "success",
+  },
+  {
+    id: 1,
+    occurred_at: "2026-10-13T06:29:30.000Z",
+    category: "operation",
+    action: "operate.start",
+    actor: "operator",
+    target: "controller",
+    result: "success",
+  },
+];
+
 export const demoInstallation: InstallationStatus = {
-  installation_id: "active",
+  installation_id: "demo-installation",
   name: "Visual Demo Installation",
+  revision: 1,
+  runtime_active: true,
   package_schema: "runtime-v1-v2",
   resources: [
     {
@@ -37,11 +67,25 @@ export const demoInstallation: InstallationStatus = {
   ],
 };
 
+export const demoInstallations: InstallationSummary[] = [
+  {
+    id: demoInstallation.installation_id,
+    name: demoInstallation.name,
+    revision: demoInstallation.revision,
+    runtime_active: true,
+    created_at: "2026-10-13T06:00:00.000Z",
+    updated_at: "2026-10-13T06:00:00.000Z",
+  },
+];
+
 export const demoRuntime: RuntimeStatus = {
   observed_at: "2026-10-13T06:30:00.000Z",
   source: "controller_runtime",
   status: {
+    controller_epoch: "fixture-controller",
     active_scene: "dual-window-sweep",
+    scene_instance_id: "fixture-scene",
+    playback_session_id: "fixture-left",
     estimated_position_ms: 24350,
     playback_state: "playing",
     degraded: true,
@@ -88,7 +132,42 @@ export const demoRuntime: RuntimeStatus = {
     pending_commands: 0,
     command_errors: 0,
     command_timeouts: 0,
+    abandoned_commands: 0,
+    recent_command_failures: [
+      {
+        agent_id: "media-client-right",
+        command: "prepare",
+        error_code: "connection_lost",
+        detail: "The command was abandoned when the device disconnected",
+        age_ms: 3200,
+      },
+    ],
+    heartbeat_timeouts: 0,
+    reconciliations: 1,
+    scene_completions: 0,
+    scene_completion_errors: 0,
+    scene_failovers: 0,
+    rejected_protocol_messages: 0,
+    rendered_frames: 608,
+    lighting_output_error_count: 0,
+    rejected_telemetry: 0,
+    render_target_fps: 25,
     render_loop_running: true,
+    render_ticks: 608,
+    render_ticks_without_timecode: 0,
+    stale_frames: 0,
+    skipped_render_deadlines: 0,
+    mean_render_interval_ms: 40,
+    encounter: null,
+    director: {
+      active_pool_id: "ambient",
+      active_category: "ambient",
+      eligible_scene_ids: ["dual-window-sweep"],
+    },
+    audience: null,
+    opportunities: null,
+    encounter_loop_running: false,
+    queued_scenes: [],
     operations: {
       mode: "automatic",
       show_enabled: true,
@@ -133,8 +212,37 @@ export const demoTopology: Topology = {
       connection: "connected",
       enrollment: "enrolled",
       compatibility: "compatible",
+      compatibility_detail:
+        "Protocol v2 and assigned resource capabilities are compatible",
       protocol_version: 2,
       capabilities: ["media_playback"],
+      capability_document: {
+        schema_version: 1,
+        protocol: { minimum: 2, maximum: 2 },
+        device_kind: "direct_media_agent",
+        software_version: "0.1.0",
+        capabilities: [
+          {
+            kind: "media_playback",
+            codecs: ["h264"],
+            containers: ["mp4"],
+            max_outputs: 1,
+            supports_pause: true,
+            supports_seek: true,
+          },
+        ],
+      },
+      certificate_expires_at: "2026-11-12T17:00:00Z",
+      storage_total_bytes: 500_000_000_000,
+      storage_free_bytes: 400_000_000_000,
+      artifact_count: 12,
+      artifact_bytes: 8_400_000_000,
+      pinned_artifact_count: 4,
+      supports_pinning: true,
+      supports_resumable_transfer: true,
+      active_transfers: 1,
+      failed_transfers: 0,
+      artifact_faults: [],
       assigned_resources: ["projector.left"],
       last_seen_age_ms: 84,
       software_version: null,
@@ -150,8 +258,36 @@ export const demoTopology: Topology = {
       connection: "disconnected",
       enrollment: "enrolled",
       compatibility: "unknown",
+      compatibility_detail: "No fresh authenticated heartbeat",
       protocol_version: 2,
       capabilities: ["media_playback"],
+      capability_document: {
+        schema_version: 1,
+        protocol: { minimum: 2, maximum: 2 },
+        device_kind: "direct_media_agent",
+        software_version: "0.1.0",
+        capabilities: [
+          {
+            kind: "media_playback",
+            codecs: ["h264"],
+            containers: ["mp4"],
+            max_outputs: 1,
+            supports_pause: true,
+            supports_seek: true,
+          },
+        ],
+      },
+      certificate_expires_at: "2026-11-12T17:00:00Z",
+      storage_total_bytes: 500_000_000_000,
+      storage_free_bytes: 320_000_000_000,
+      artifact_count: 10,
+      artifact_bytes: 7_900_000_000,
+      pinned_artifact_count: 2,
+      supports_pinning: true,
+      supports_resumable_transfer: true,
+      active_transfers: 0,
+      failed_transfers: 1,
+      artifact_faults: [],
       assigned_resources: ["projector.right"],
       last_seen_age_ms: null,
       software_version: null,

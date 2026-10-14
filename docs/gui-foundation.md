@@ -29,11 +29,19 @@ models or implement lighting, director, or media-clock evaluation. Vite serves
 the development application and proxies `/api`; a later deployment slice may
 serve immutable build output from the controller or a separate static server.
 
-The initial shell supports current evergreen Chrome, Edge, Firefox, and Safari,
-uses semantic HTML, visible keyboard focus, reduced-motion preferences, and a
-responsive navigation layout. Localization infrastructure is deferred until
-the first editable product vocabulary stabilizes; user-facing strings remain
-centralized in components rather than engine code.
+The browser support target is the current and previous major releases of
+Chrome, Edge, Firefox, and desktop Safari, plus current iOS Safari. Required
+layout checks are 2560×1440, 1440×900, 820×1180, and 390×844 with no horizontal
+overflow. The accessibility target is WCAG 2.2 AA for contrast, semantics,
+labels, focus visibility, keyboard reachability, status text that does not
+depend on color, and reduced-motion behavior.
+
+The source locale is English (`en`). User-visible dates, times, numbers, byte
+counts, and durations must use `Intl`/locale-aware formatting rather than
+locale-specific parsing or concatenation. Future translation catalogs use
+BCP-47 locale identifiers and English fallback. Full translation extraction is
+deferred until editable product vocabulary stabilizes, but new APIs and stored
+documents must not persist localized display strings as authoritative values.
 
 The accepted complete browser stack is:
 
@@ -56,9 +64,9 @@ authoritative lighting, director, media-clock, or hardware-output semantics.
 
 ### Backend API and security
 
-Add an opt-in `/api/gui/v1` router, isolated under `cueverge.gui`. Existing
-runtime routes remain unchanged and are not treated as the secured browser
-management API.
+Add an opt-in `/api/gui/v1` router, isolated under `cueverge.gui`. The
+unauthenticated proof-of-concept runtime routes have been removed; browser
+status and operations use only the secured management API.
 
 The first identity is a configured bootstrap administrator. Passwords use
 scrypt hashes supplied through private configuration. Successful login creates
@@ -82,8 +90,18 @@ top-level paths. No last-write-wins update is permitted.
 
 The schema deliberately stores the small editor draft independently from live
 show files. Editor metadata is allowed in the draft but is never emitted into
-runtime documents. Later autosave, undo, and redo operations will append
-explicit revisions using the same transaction contract.
+runtime documents.
+
+Autosave uses the ordinary `PUT` draft transaction after a bounded client
+debounce and only when content changed. It sends the last observed head in
+`If-Match`; a conflict pauses autosave and requires resolution. Undo and redo
+never move or delete the head: restoring any historical revision through the
+restore endpoint copies that content into a new immutable head revision with
+transaction kind `restore`, source revision in audit context, and the same
+optimistic concurrency check. Redo restores the revision that contained the
+pre-undo content. Crash recovery reloads the durable head and revision list;
+the browser may retain unsent local text separately, but it cannot claim that
+text was saved until the server returns the new revision and ETag.
 
 GUI-00 intentionally starts with the standard-library SQLite API. Before
 GUI-02 expands the schema, migrate the repository implementation to SQLAlchemy
@@ -166,6 +184,98 @@ latched hardware guarantee.
 The unauthenticated proof-of-concept `/api/v1` HTTP surface has been removed;
 runtime status and operations are available only through authenticated GUI
 routes.
+
+The Operate workspace also renders the complete authoritative runtime
+diagnostic snapshot: queued scenes, playback state and time, per-media-output
+connection/position/drift/pending commands, active lighting routes and errors,
+command/heartbeat/render counters, director eligibility, encounter state,
+audience state, and opportunity availability. Null or inactive runtime fields
+remain visibly unavailable or not configured rather than being inferred.
+
+The Overview recent-activity panel reads a bounded, authenticated projection of
+the durable audit log. It includes device connection changes, operations,
+enrollment, lifecycle, assignment, rotation, configuration, and project
+events, but omits authorization context and routine successful-login noise.
+The full administrator audit endpoint remains separate.
+
+Pairing-token creation returns the explicitly configured public mTLS transport
+URL. The browser shows a live expiry countdown, reviewed-capability reminder,
+copyable enrollment command, transport setting, and private-key boundary. The
+device still generates its key and submits the token at a hidden local prompt;
+the browser never receives device private-key material.
+
+Maintenance simulation provides bounded 5–30 second alignment-grid and
+pixel-index-chase previews for configured resources. The backend requires
+maintenance mode and idle playback, audits the session, and returns a typed
+simulation-only contract. The browser labels the preview as simulation and no
+projector command or DDP frame is emitted.
+
+Controller status retains the 50 most recent command errors, timeouts, and
+disconnect-abandoned requests in memory. Operate displays agent, command,
+error code, detail, age, and error-specific remediation. Topology supplies a
+human-readable compatibility explanation covering enrollment state, protocol
+range, missing resources, capability mismatch, and compatible assignments.
+
+Installation metadata is now durable and revisioned. The current Home record
+is runtime-backed and seeded from the configured private package. Administrator
+CRUD supports creating inactive design records, renaming with optimistic
+revision checks, and deleting inactive records. The runtime-backed record
+cannot be deleted, and inactive records are labeled not provisioned rather
+than being presented as runnable packages. Package attachment and activation
+remain a later installation-binding workflow.
+
+Topology exposes each enrolled device's complete typed capability document and
+active certificate expiry without exposing certificate contents. The UI shows
+protocol range, media codecs/containers, simultaneous-output limits,
+pause/seek support, declared artifact-cache capacity, software version, and
+days until certificate expiry. Missing capabilities remain explicitly not
+declared.
+
+Protocol-v2 heartbeats use an NTP-style four-timestamp exchange. Clients report
+network round-trip latency with controller processing time removed and their
+estimated controller clock offset. Reports are accepted only from the current
+certificate-authenticated device session, persisted with presence, and shown
+in topology for connected or last-observed on-demand devices.
+
+Operator and administrator users can run a non-controlling connection test for
+an enrolled device. The test evaluates enrollment state, fresh authenticated
+heartbeat, timing availability, and logical assignment from current controller
+evidence, records the result in audit, and sends no media or hardware command.
+
+Media clients asynchronously scan their configured asset root once per
+authenticated connection. They report filesystem capacity, deduplicated
+SHA-256 digest/size records, aggregate artifact bytes, and bounded scan faults
+without exposing filenames. Reports are session-fenced, replace the prior
+snapshot atomically, and remain observable while an on-demand device is
+offline. Transfer, pinning, and eviction workflows are not implemented yet.
+
+The same inventory report negotiates whether the client supports pinning and
+resumable transfer, identifies pinned digests, and reports active or failed
+transfer byte progress and faults from local cache-state metadata. This
+completes GUI-01 readiness reporting; creating uploads, scheduling transfers,
+pin/eviction mutations, and artifact retention policy remain GUI-02 work.
+
+Controllers publish a minimal unauthenticated discovery document containing
+only product identity, software version, protocol range, device kind, and
+capability kinds. Administrator explicit-address discovery accepts only HTTPS
+origins resolving exclusively to private, loopback, or link-local addresses,
+rejects credentials/paths/query/fragment/redirects and oversized responses,
+and persists compatible or incompatible candidates as untrusted. Discovery
+never creates credentials, assignments, or command authority; candidates may
+be explicitly rejected.
+
+A compatible discovery record can prepare a candidate-bound pairing token.
+The token stores the discovery ID, rejection revokes an unconsumed linked
+token, and successful token consumption atomically links the resulting
+enrolled device UUID back to the discovery record. Discovery still contributes
+no trust by itself; the device must complete the ordinary CSR/mTLS enrollment.
+
+Installation schema now retains a distinct `downstream_controller` resource
+kind. Downstream devices enroll and maintain authenticated presence without
+registering as direct media agents, and assignment validation accepts only
+their `downstream_control` capability. Simulated tests cover enrollment,
+presence, topology distinction, compatible binding, and rejection of media
+authority conflation.
 
 The GUI-01 read-only topology snapshot combines current runtime observations
 with the durable protocol-v2 identity registry: the local controller,

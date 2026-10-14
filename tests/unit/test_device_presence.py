@@ -1,10 +1,16 @@
 import asyncio
+import hashlib
 import json
+from pathlib import Path
 from types import SimpleNamespace
 from uuid import UUID, uuid4
 
 from cueverge.media_agent.device_enrollment import StoredDeviceIdentity
-from cueverge.media_agent.device_presence import DevicePresenceClient
+from cueverge.media_agent.device_presence import (
+    DevicePresenceClient,
+    calculate_timing_metrics,
+    scan_artifact_inventory,
+)
 from cueverge.protocol.device_v2 import (
     DeviceCapabilityDocument,
     DeviceHello,
@@ -21,15 +27,6 @@ class FakeWebSocket:
     def __init__(self, welcome: DeviceWelcome) -> None:
         self.messages = [
             welcome.model_dump_json(),
-            json.dumps(
-                {
-                    "type": "device.heartbeat.ack",
-                    "protocol_version": 2,
-                    "sequence": 0,
-                    "accepted": True,
-                    "reason": None,
-                }
-            ),
         ]
         self.sent: list[str] = []
 
@@ -54,6 +51,60 @@ def test_presence_client_uses_enrolled_identity_and_fenced_heartbeats() -> None:
     asyncio.run(_presence_scenario())
 
 
+def test_calculates_round_trip_and_clock_offset() -> None:
+    round_trip_ms, clock_offset_ms = calculate_timing_metrics(
+        sent_monotonic_ms=1_000,
+        sent_unix_ms=100_000,
+        received_monotonic_ms=1_042,
+        received_unix_ms=100_042,
+        controller_receive_unix_ms=100_030,
+        controller_send_unix_ms=100_032,
+    )
+
+    assert round_trip_ms == 40
+    assert clock_offset_ms == 10
+
+
+def test_scans_content_addressed_inventory_without_paths(tmp_path: Path) -> None:
+    asset_root = tmp_path / "assets"
+    asset_root.mkdir()
+    (asset_root / "first.mp4").write_bytes(b"same-content")
+    (asset_root / "duplicate.mp4").write_bytes(b"same-content")
+    digest = hashlib.sha256(b"same-content").hexdigest()
+    (asset_root / ".cueverge-cache-state.json").write_text(
+        json.dumps(
+            {
+                "supports_pinning": True,
+                "supports_resumable_transfer": True,
+                "pinned_digests": [digest],
+                "transfers": [
+                    {
+                        "digest_sha256": "e" * 64,
+                        "received_bytes": 500,
+                        "total_bytes": 1000,
+                        "state": "active",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    total, free, supports_pinning, supports_resume, artifacts, transfers, faults = (
+        scan_artifact_inventory(asset_root)
+    )
+
+    assert total > 0
+    assert free >= 0
+    assert supports_pinning
+    assert supports_resume
+    assert len(artifacts) == 1
+    assert artifacts[0].size_bytes == len(b"same-content")
+    assert artifacts[0].pinned
+    assert transfers[0].received_bytes == 500
+    assert faults == ()
+
+
 async def _presence_scenario() -> None:
     client = object.__new__(DevicePresenceClient)
     client.identity = StoredDeviceIdentity(
@@ -65,6 +116,7 @@ async def _presence_scenario() -> None:
         agent_session_id="",
         controller_epoch=None,
     )
+    client._heartbeat_sent = {}
     welcome = DeviceWelcome(
         device_id=DEVICE_ID,
         controller_epoch=uuid4(),

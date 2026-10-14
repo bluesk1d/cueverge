@@ -12,7 +12,12 @@ import {
 } from "lucide-react";
 import { ReactNode } from "react";
 
-import { InstallationStatus, RuntimeStatus, Session } from "../api";
+import {
+  InstallationStatus,
+  InstallationSummary,
+  RuntimeStatus,
+  Session,
+} from "../api";
 import { StatusText } from "./ui";
 
 export type Workspace = "overview" | "installation" | "shows" | "operate" | "settings";
@@ -33,6 +38,7 @@ export function AppShell({
   session,
   workspace,
   installation,
+  installations,
   runtime,
   runtimeError,
   refreshing,
@@ -44,6 +50,7 @@ export function AppShell({
   session: Session;
   workspace: Workspace;
   installation: InstallationStatus | null;
+  installations: InstallationSummary[];
   runtime: RuntimeStatus | null;
   runtimeError: boolean;
   refreshing: boolean;
@@ -113,8 +120,22 @@ export function AppShell({
           <div className="installation-switcher">
             <label htmlFor="installation-select">Installation</label>
             <div className="installation-switcher__control">
-              <select id="installation-select" value="active" onChange={() => undefined}>
-                <option value="active">{installation?.name ?? "Loading installation…"}</option>
+              <select
+                id="installation-select"
+                value={installation?.installation_id ?? ""}
+                onChange={() => undefined}
+              >
+                {!installation && <option value="">Loading installation…</option>}
+                {installations.map((item) => (
+                  <option
+                    disabled={!item.runtime_active}
+                    key={item.id}
+                    value={item.id}
+                  >
+                    {item.name}
+                    {item.runtime_active ? "" : " (not provisioned)"}
+                  </option>
+                ))}
               </select>
               <ChevronDown aria-hidden="true" size={15} />
             </div>
@@ -175,4 +196,3 @@ export function AppShell({
 function humanize(value: string): string {
   return value.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
-

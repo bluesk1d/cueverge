@@ -94,38 +94,68 @@ away from the current screen.
 - **Publish:** validation, package diff, deployment, rollback, and audit.
 - **Assist:** permissioned MCP tools for analysis and proposed edits.
 
+## Completion tracking
+
+- `[x]` means the complete roadmap bullet is implemented and validated.
+- `[ ]` means work remains. Bullets with meaningful implemented foundations
+  include a **Partial** note but remain unchecked until the full statement is
+  satisfied.
+- Every implementation change must update the applicable milestone Scope and
+  Acceptance checkboxes and the milestone summary in this file in the same
+  change.
+- Last backfilled against the repository and live GUI-01 deployment:
+  **2026-10-13**.
+
+| Milestone | Complete | Status |
+| --- | ---: | --- |
+| GUI-00 | 11 / 12 | In progress |
+| GUI-01 | 13 / 13 | Complete |
+| GUI-02 | 0 / 11 | Not started |
+| GUI-03 | 0 / 39 | Not started |
+| GUI-04 | 0 / 28 | Not started |
+| GUI-05 | 0 / 27 | Not started |
+| GUI-06 | 0 / 14 | Not started |
+| GUI-07 | 0 / 19 | Not started |
+| GUI-08 | 0 / 10 | Not started |
+| GUI-09 | 0 / 16 | Not started |
+| GUI-10 | 0 / 10 | Not started |
+| GUI-11 | 0 / 13 | Not started |
+
 ## Milestone GUI-00: product contracts and secure foundation
 
 Define the boundaries that every later editor feature relies on.
 
 ### Scope
 
-- Select a supported web architecture and deployment model. The controller may
+- [x] Select a supported web architecture and deployment model. The controller may
   serve the built application, but frontend build concerns should remain
   separate from the Python engine package.
-- Define stable, versioned APIs for projects, drafts, validation, runtime
+- [ ] Define stable, versioned APIs for projects, drafts, validation, runtime
   status, topology, assets, simulation, and publication.
-- Add authenticated browser sessions, role-based authorization, CSRF and
+  **Partial:** versioned project, draft, compilation/validation, runtime,
+  topology, installation, device, activity, and operation APIs exist; asset,
+  simulation, and publication APIs remain.
+- [x] Add authenticated browser sessions, role-based authorization, CSRF and
   origin protection, rate limits, and an audit event model before allowing
   non-loopback access.
-- Define enrollment credentials and identity rotation for clients and
+- [x] Define enrollment credentials and identity rotation for clients and
   downstream controllers.
-- Define capability documents for media, lighting, observation, simulation,
+- [x] Define capability documents for media, lighting, observation, simulation,
   and downstream control.
-- Define the editor project schema, runtime compilation boundary, migrations,
+- [x] Define the editor project schema, runtime compilation boundary, migrations,
   and forward/backward compatibility policy.
-- Add revision IDs, optimistic concurrency, autosave, undo/redo transaction
+- [x] Add revision IDs, optimistic concurrency, autosave, undo/redo transaction
   semantics, and crash recovery.
-- Establish browser support, accessibility, keyboard interaction, localization,
+- [x] Establish browser support, accessibility, keyboard interaction, localization,
   and responsive-layout targets.
 
 ### Acceptance
 
-- Two browser sessions cannot silently overwrite the same draft revision.
-- An unauthenticated user cannot read private assets, inspect topology, change
+- [x] Two browser sessions cannot silently overwrite the same draft revision.
+- [x] An unauthenticated user cannot read private assets, inspect topology, change
   a draft, activate hardware, or invoke MCP tools.
-- Every change and control command records actor, target, result, and time.
-- A minimal draft can be compiled into a package accepted by the existing show
+- [x] Every change and control command records actor, target, result, and time.
+- [x] A minimal draft can be compiled into a package accepted by the existing show
   loader without editor-only data leaking into runtime documents.
 
 ## Milestone GUI-01: operator console and client management MVP
@@ -134,32 +164,32 @@ Deliver immediate operational value before building the full design suite.
 
 ### Scope
 
-- Display current mode, active and queued scenes, media time, audience state,
+- [x] Display current mode, active and queued scenes, media time, audience state,
   opportunities, director diagnostics, connection state, and output health.
-- Provide start, pause, resume, seek, stop, reset, maintenance, and blackout
+- [x] Provide start, pause, resume, seek, stop, reset, maintenance, and blackout
   controls with role checks and confirmation appropriate to impact.
-- Discover Cueverge endpoints through configured mechanisms such as explicit
+- [x] Discover Cueverge endpoints through configured mechanisms such as explicit
   address entry and local service discovery.
-- Enroll or reject discovered endpoints; show identity, software/protocol
+- [x] Enroll or reject discovered endpoints; show identity, software/protocol
   version, capabilities, last seen time, latency, and clock/drift diagnostics.
-- For media clients, negotiate supported codecs and cache behavior and report
+- [x] For media clients, negotiate supported codecs and cache behavior and report
   total/free storage, content-addressed artifact inventory, pinned artifacts,
   active transfers, and checksum or storage faults.
-- Model direct clients and downstream controllers in a topology view.
-- Assign logical installation resources to enrolled capabilities.
-- Provide connection tests and simulated test patterns that require deliberate
+- [x] Model direct clients and downstream controllers in a topology view.
+- [x] Assign logical installation resources to enrolled capabilities.
+- [x] Provide connection tests and simulated test patterns that require deliberate
   maintenance-mode activation.
-- Make unsupported, disconnected, degraded, and not-independently-detectable
+- [x] Make unsupported, disconnected, degraded, and not-independently-detectable
   states visually distinct.
 
 ### Acceptance
 
-- An operator can enroll a direct media client and a downstream controller,
+- [x] An operator can enroll a direct media client and a downstream controller,
   distinguish them in the topology, and bind compatible logical resources.
-- Unenrolled or incompatible endpoints cannot receive show commands.
-- Disconnect, stale heartbeat, version mismatch, and failed command states are
+- [x] Unenrolled or incompatible endpoints cannot receive show commands.
+- [x] Disconnect, stale heartbeat, version mismatch, and failed command states are
   visible and actionable.
-- The existing controller operations can be performed from the GUI without
+- [x] The existing controller operations can be performed from the GUI without
   changing their runtime semantics.
 
 ## Milestone GUI-02: project and asset workspace
@@ -168,29 +198,29 @@ Create the durable authoring model and an After Effects-style project panel.
 
 ### Scope
 
-- Create, duplicate, rename, archive, import, and export show projects.
-- Add folders, tags, search, favorites, and usage references for assets,
+- [ ] Create, duplicate, rename, archive, import, and export show projects.
+- [ ] Add folders, tags, search, favorites, and usage references for assets,
   scenes, installations, and reusable presets.
-- Upload assets in chunks with resumable transfer, size/type limits, checksum
+- [ ] Upload assets in chunks with resumable transfer, size/type limits, checksum
   deduplication, malware scanning where deployed, and storage quotas.
-- Extract duration, dimensions, frame rate, codecs, channels, sample rate, and
+- [ ] Extract duration, dimensions, frame rate, codecs, channels, sample rate, and
   loudness metadata.
-- Generate thumbnails, low-resolution review proxies, and audio waveforms
+- [ ] Generate thumbnails, low-resolution review proxies, and audio waveforms
   asynchronously without replacing the original asset.
-- Track processing status, errors, missing files, unused assets, and every
+- [ ] Track processing status, errors, missing files, unused assets, and every
   scene that references an asset.
-- Record ownership, license/provenance notes, review status, and expiration
+- [ ] Record ownership, license/provenance notes, review status, and expiration
   where applicable.
-- Define relink, replace, version, retention, backup, and garbage-collection
+- [ ] Define relink, replace, version, retention, backup, and garbage-collection
   behavior.
 
 ### Acceptance
 
-- A user can import visual and audio assets, inspect metadata and waveforms,
+- [ ] A user can import visual and audio assets, inspect metadata and waveforms,
   organize them, and place references without knowing server file paths.
-- Publishing rejects missing, failed, quarantined, or incompatible required
+- [ ] Publishing rejects missing, failed, quarantined, or incompatible required
   assets with precise diagnostics.
-- Export followed by import preserves the project and asset references without
+- [ ] Export followed by import preserves the project and asset references without
   exposing credentials or host-specific absolute paths.
 
 ## Milestone GUI-03: visual installation mapper
@@ -199,140 +229,140 @@ Map logical show geometry onto multiple location photographs.
 
 ### Scope
 
-- Add multiple photos per installation for wide views, close-ups, and
+- [ ] Add multiple photos per installation for wide views, close-ups, and
   alternate angles.
-- Store photo metadata, orientation, crop, scale hints, and named viewpoints.
-- Draw and edit outputs, pixel segments, fixtures, ordered paths, projector
+- [ ] Store photo metadata, orientation, crop, scale hints, and named viewpoints.
+- [ ] Draw and edit outputs, pixel segments, fixtures, ordered paths, projector
   surfaces, masks, audience zones, and safety/no-output regions.
-- Model each projector's native content canvas, physical projection surface,
+- [ ] Model each projector's native content canvas, physical projection surface,
   output crop/mask, and mapping into every relevant photo viewpoint. Keep the
   transform from content to physical surface distinct from the transform that
   places that surface into a particular photo.
-- Define a shared stage coordinate system spanning all mapped projection
+- [ ] Define a shared stage coordinate system spanning all mapped projection
   surfaces. Each surface records its extent and transform in stage space;
   projector-native pixels and photo-view coordinates remain derived views.
   This gives animated elements one continuous logical space in which to move
   across projector boundaries.
-- Provide an easy projector-mapping mode in which the user drags the four
+- [ ] Provide an easy projector-mapping mode in which the user drags the four
   corners of a selected still or asset frame onto the projected area in a
   location photo. Compute and store a projective transform so simulation can
   corner-pin any asset into that quadrilateral. Do not assume the projector is
   level or perpendicular to the surface: arbitrary roll, pitch, yaw,
   trapezoidal perspective, and mirrored mounting must be representable.
-- Allow additional control points, masks, and subdivided surfaces when one
+- [ ] Allow additional control points, masks, and subdivided surfaces when one
   four-corner plane is insufficient. Clearly diagnose that a single homography
   cannot accurately model a curved, folded, or heavily occluded surface
   rather than silently presenting an incorrect simulation.
-- Provide an advanced live alignment mode in maintenance mode. Send a
+- [ ] Provide an advanced live alignment mode in maintenance mode. Send a
   generated grid with labeled corners, center marks, aspect-ratio guides, and
   safe-area markers to the selected projector, then let the operator adjust
   corner pin, rotation/orientation, crop, and mask from the UI while observing
   the real surface. Changes remain temporary until explicitly accepted.
-- Update the selected photo-view overlay as live alignment controls move. If
+- [ ] Update the selected photo-view overlay as live alignment controls move. If
   the operator supplies a fresh calibration photo, allow the final physical
   grid corners to be marked so the saved output warp and photo simulation
   transform describe the same projection.
-- Support multi-projector surfaces with explicit overlap regions. Add
+- [ ] Support multi-projector surfaces with explicit overlap regions. Add
   calibration patterns and controls for edge-blend ramps, overlap gamma,
   per-projector brightness and white balance, color correction, and black-level
   compensation so adjacent projectors can present one visually continuous
   surface.
-- Preview seams, double-bright overlap, blend falloff, black-level mismatch,
+- [ ] Preview seams, double-bright overlap, blend falloff, black-level mismatch,
   and color mismatch in native and mapped views. Store blend/color calibration
   per projector and surface with the same provenance and stale-calibration
   rules as geometry.
-- Preserve native asset aspect ratio by default, show stretch and
+- [ ] Preserve native asset aspect ratio by default, show stretch and
   out-of-bounds warnings, and support overscan and intentionally masked
   content only through explicit settings.
-- Link the same semantic fixture across views using stable IDs and shared
+- [ ] Link the same semantic fixture across views using stable IDs and shared
   landmarks.
-- Provide layer visibility, colors, labels, snapping, ordering, lock/hide,
+- [ ] Provide layer visibility, colors, labels, snapping, ordering, lock/hide,
   zoom, pan, and measurement tools.
-- Add wiring-direction and pixel-index visualization, segment continuity
+- [ ] Add wiring-direction and pixel-index visualization, segment continuity
   checks, overlap/precedence diagnostics, and path traversal previews.
-- Define logical lighting surfaces with local coordinates and a transform into
+- [ ] Define logical lighting surfaces with local coordinates and a transform into
   shared stage space. Each addressable pixel maps its physical output/index to
   a point or footprint on a lighting surface while retaining fixture, group,
   ordered-path, strand, direction, and calibration membership.
-- Let installers draw strips and shapes, distribute a declared pixel count
+- [ ] Let installers draw strips and shapes, distribute a declared pixel count
   along a polyline or grid, place individual pixels, generate rows/rings/
   outlines, and import coordinates. Provide live identify and index-chase
   workflows for correcting positions and verifying physical order.
-- Convert photo-assisted pixel placement into surface-local coordinates rather
+- [ ] Convert photo-assisted pixel placement into surface-local coordinates rather
   than making one photo's raster coordinates authoritative. Support multiple
   planar surfaces now and leave arbitrary 3D geometry as a future extension.
-- Add calibration workflows for pixel identification, projector alignment,
+- [ ] Add calibration workflows for pixel identification, projector alignment,
   output brightness limits, media start delay, and lighting timing offsets.
-- Define a generic timing-calibration capability for any enrolled output or
+- [ ] Define a generic timing-calibration capability for any enrolled output or
   actuator that reports support for it, including media, audio, pixels,
   network-controlled lights, smart switches, relays, and future physical
   effects such as fog. A device profile declares which onset and release
   delays can be adjusted, valid ranges and resolution, whether adjustment can
   occur while active, and its safe test procedure.
-- Add a live timing-calibration workflow in maintenance mode. Play a
+- [ ] Add a live timing-calibration workflow in maintenance mode. Play a
   purpose-built reference with an unambiguous on-screen flash and audio click,
   and trigger the selected device for the same authored timestamp. Let the
   operator adjust that device's command lead/lag while the test continues, or
   between explicitly armed trials when the device cannot be adjusted safely
   while active, so alignment can be judged immediately by eye and ear.
-- Provide coarse and fine delay controls, keyboard nudging, clear positive and
+- [ ] Provide coarse and fine delay controls, keyboard nudging, clear positive and
   negative direction labels, reset, and A/B comparison. Apply adjustments as
   temporary calibration overrides until the operator explicitly accepts them;
   canceling must restore the prior values.
-- Measure activation and deactivation separately where a device behaves
+- [ ] Measure activation and deactivation separately where a device behaves
   asymmetrically. Device profiles may require warm-up, cooldown, minimum
   on/off time, a maximum trial count, manual reset, ventilation, consumable
   confirmation, or an observer pressing a marker when the physical effect is
   first visible.
-- Require explicit arming, a bounded test pattern, visible device identity,
+- [ ] Require explicit arming, a bounded test pattern, visible device identity,
   and an always-available device-appropriate stop before exercising physical
   outputs. Blackout is not assumed to make every actuator safe.
-- Store accepted calibration per resource with the test asset/version,
+- [ ] Store accepted calibration per resource with the test asset/version,
   device/firmware identity, timestamp, operator, observed variability, and
   optional notes. Warn when hardware, routing, display mode, media settings,
   or environmental conditions differ from those under which calibration was
   recorded.
-- Preserve manual mapping as authoritative; optional computer-vision-assisted
+- [ ] Preserve manual mapping as authoritative; optional computer-vision-assisted
   alignment may make reviewable suggestions only.
 
 ### Acceptance
 
-- A user can define one installation from a wide photo and two close-ups, edit
+- [ ] A user can define one installation from a wide photo and two close-ups, edit
   a fixture in any view, and see the same logical object update in all views.
-- In easy mode, a user can corner-pin an asset onto a photographed projection
+- [ ] In easy mode, a user can corner-pin an asset onto a photographed projection
   surface and preview other assets through the same mapping, including a
   projector installed at a non-level compound angle.
-- In advanced mode, an operator can project the labeled grid, adjust the live
+- [ ] In advanced mode, an operator can project the labeled grid, adjust the live
   output warp by eye, compare it with the photo overlay, and explicitly save
   or discard the alignment without restarting the media client.
-- For an overlapping two-projector surface, an operator can align geometry,
+- [ ] For an overlapping two-projector surface, an operator can align geometry,
   tune edge blending and color/brightness matching, and preview the combined
   result without destructively changing either projector's source artwork.
-- The saved projector model records native canvas, orientation, output warp,
+- [ ] The saved projector model records native canvas, orientation, output warp,
   photo-view transforms, crop, and mask independently enough that simulation
   can place content accurately without baking the photographed perspective
   into authored media.
-- Two calibrated projector surfaces occupy one shared stage space with
+- [ ] Two calibrated projector surfaces occupy one shared stage space with
   explicit covered, overlapping, occluded, and uncovered regions suitable for
   cross-projector animation.
-- The mapper exports valid installation resources, segments, fixtures, and
+- [ ] The mapper exports valid installation resources, segments, fixtures, and
   paths without embedding photo coordinates in runtime geometry.
-- A mapped LED installation preserves verified physical output order while
+- [ ] A mapped LED installation preserves verified physical output order while
   exposing stable surface-local/stage positions, fixtures, and paths to show
   creators; switching photo viewpoints does not move the logical pixels.
-- A user can preview pixel order and path direction before any live output is
+- [ ] A user can preview pixel order and path direction before any live output is
   enabled.
-- In maintenance mode, an operator can select any calibration-capable enrolled
+- [ ] In maintenance mode, an operator can select any calibration-capable enrolled
   device, run its declared safe test against the flash/click reference, change
   supported delays with immediate feedback when safe, and explicitly save or
   discard the calibrated values.
-- A smart-switch-controlled light can be calibrated for both turn-on and
+- [ ] A smart-switch-controlled light can be calibrated for both turn-on and
   turn-off latency. A non-repeatable or potentially hazardous device such as a
   fog machine cannot loop continuously and must obey its arming, cooldown,
   trial-limit, and emergency-stop requirements.
-- Saved offsets are included in validation and deployment; leaving or
+- [ ] Saved offsets are included in validation and deployment; leaving or
   canceling calibration cannot leave transient offsets active.
-- Ambiguous, disconnected, out-of-range, or multiply assigned geometry blocks
+- [ ] Ambiguous, disconnected, out-of-range, or multiply assigned geometry blocks
   publication with a direct link to the offending object.
 
 ## Milestone GUI-04: layered scene timeline MVP
@@ -342,98 +372,98 @@ Cueverge scene semantics.
 
 ### Scope
 
-- Add a scalable playhead, ruler, zoom, scroll, snapping, markers, regions,
+- [ ] Add a scalable playhead, ruler, zoom, scroll, snapping, markers, regions,
   selection, copy/paste, duplicate, trim, split where semantically valid, and
   keyboard editing.
-- Organize tracks by media output, audio reference, lighting output, fixture,
+- [ ] Organize tracks by media output, audio reference, lighting output, fixture,
   path, marker, and annotation.
-- Add a composition hierarchy rather than requiring every edit in the full
+- [ ] Add a composition hierarchy rather than requiring every edit in the full
   installation/photo view. The root scene composition coordinates all
   resources; a creator can open a projector, media output, lighting output,
   fixture, path, or reusable subcomposition and edit only its relevant layers
   and properties.
-- Give each composition a logical editing space appropriate to its target. A
+- [ ] Give each composition a logical editing space appropriate to its target. A
   projector composition uses its native pixel canvas and safe areas; a pixel
   output uses ordered pixels and semantic geometry; a device composition uses
   its declared channels and states. Photo perspective and physical output
   warp are preview transforms, not the coordinates in which source content
   must be authored.
-- Add a stage composition for elements that span projection surfaces. A layer
+- [ ] Add a stage composition for elements that span projection surfaces. A layer
   can be authored in stage space, surface-local space, or projector-native
   space, with the active coordinate system always visible. Converting or
   parenting between spaces must preserve the evaluated transform at the
   current time.
-- Keep the global playhead synchronized while moving between composition
+- [ ] Keep the global playhead synchronized while moving between composition
   levels. Provide breadcrumbs, open-in-context and isolated views, a clear
   indication of inherited scene time, and a one-action return to the parent or
   full installation preview.
-- Allow reusable compositions to be instantiated in scenes with explicit
+- [ ] Allow reusable compositions to be instantiated in scenes with explicit
   start, duration, target binding, and supported parameter overrides. Define
   how local time maps to parent scene time, reject recursive composition
   references, and do not offer time stretching or remapping unless the runtime
   can represent it deterministically.
-- Add composition dependency management: show where each composition is used,
+- [ ] Add composition dependency management: show where each composition is used,
   distinguish a linked instance from a duplicated independent copy, display
   instance overrides and stale bakes, preview the impact of an edit, and block
   deletion while referenced unless the user deliberately replaces or removes
   those references.
-- Make named timeline markers shared synchronization anchors. Visual, audio,
+- [ ] Make named timeline markers shared synchronization anchors. Visual, audio,
   lighting, switch, and physical-effect cues may link to a marker with an
   explicit offset. Moving a marker moves linked cues atomically; creators can
   detach a cue without changing unrelated timing. Markers map predictably
   through nested composition time into explicit compiled timestamps.
-- Compile the composition graph into explicit runtime scene outputs and cues,
+- [ ] Compile the composition graph into explicit runtime scene outputs and cues,
   or fail with a precise unsupported-composition diagnostic. Published
   packages must not require the runtime to interpret opaque editor state.
-- Represent each lighting cue as a movable and resizable layer with editable
+- [ ] Represent each lighting cue as a movable and resizable layer with editable
   primitive, target, timing, color, brightness, blend mode, precedence, seed,
   and primitive-specific properties.
-- Show media thumbnails and audio waveforms for timing reference.
-- Add transform keyframes for 2D image, video, and nested-composition layers:
+- [ ] Show media thumbnails and audio waveforms for timing reference.
+- [ ] Add transform keyframes for 2D image, video, and nested-composition layers:
   position, independent X/Y scale, rotation, anchor point, opacity, and
   supported crop/reveal bounds. Support hold, linear, ease-in/ease-out, and
   temporal and spatial Bezier interpolation.
-- Display editable motion paths, handles, previous/next position ghosts, and
+- [ ] Display editable motion paths, handles, previous/next position ghosts, and
   snapping to landmarks, surfaces, seams, and named markers. Warn when a path
   enters an uncovered, occluded, or insufficiently calibrated region.
-- Keyframes are authored once in their declared coordinate space. Do not
+- [ ] Keyframes are authored once in their declared coordinate space. Do not
   require users to duplicate a moving layer or create manual handoff fades for
   each projector. Static installation calibration warps remain separate from
   scene animation and are not ordinary transform keyframes.
-- Add property keyframes only where the runtime or GUI-05 baking pipeline can
+- [ ] Add property keyframes only where the runtime or GUI-05 baking pipeline can
   represent them deterministically; otherwise expose explicit boundaries
   rather than inventing preview-only behavior.
-- Add safe points, protected intervals, completion policy, request policy,
+- [ ] Add safe points, protected intervals, completion policy, request policy,
   scene priority, resource claims, required/optional outputs, clock source,
   and calibration offsets.
-- Provide reusable cue presets and compound selection without making presets a
+- [ ] Provide reusable cue presets and compound selection without making presets a
   hidden runtime dependency.
-- Validate continuously and explain errors in the timeline and property panel.
+- [ ] Validate continuously and explain errors in the timeline and property panel.
 
 ### Acceptance
 
-- A creator can build a multi-output scene containing media, waveform
+- [ ] A creator can build a multi-output scene containing media, waveform
   reference, baseline lighting, overlapping fixture cues, a path sweep,
   markers, and safe transition points without hand-editing JSON.
-- A creator can open one projector composition, edit against its native canvas
+- [ ] A creator can open one projector composition, edit against its native canvas
   and focused timeline without displaying the location photo, then return to
   the root scene and see that output mapped onto every calibrated photo view.
-- Editing a reusable subcomposition updates its instances predictably;
+- [ ] Editing a reusable subcomposition updates its instances predictably;
   instance overrides remain visible, composition cycles are rejected, and the
   compiled package contains explicit supported runtime data.
-- Usage inspection identifies every parent and scene affected by a
+- [ ] Usage inspection identifies every parent and scene affected by a
   subcomposition edit, and a referenced composition cannot be silently
   deleted or converted from linked to independent.
-- A creator can align projection, audio, lighting, and device actions to one
+- [ ] A creator can align projection, audio, lighting, and device actions to one
   named marker, move that marker once, and verify all linked compiled
   timestamps and intentional per-cue offsets.
-- A creator can animate one semi-transparent 2D layer along a curved stage-space
+- [ ] A creator can animate one semi-transparent 2D layer along a curved stage-space
   path from one projector surface, through their calibrated overlap, and onto
   a second surface without duplicating the layer or editing projector-native
   handoff keyframes.
-- Scrubbing to the same timestamp repeatedly produces the same cue state.
-- Save, reload, undo, redo, and compile preserve exact cue timing and ordering.
-- Unsupported operations are disabled or produce explicit schema-gap
+- [ ] Scrubbing to the same timestamp repeatedly produces the same cue state.
+- [ ] Save, reload, undo, redo, and compile preserve exact cue timing and ordering.
+- [ ] Unsupported operations are disabled or produce explicit schema-gap
   diagnostics rather than lossy output.
 
 ## Milestone GUI-05: advanced projector imaging and media baking
@@ -444,33 +474,33 @@ clients.
 
 ### Scope
 
-- Support image, video, and audio layers in projector compositions. Layers have
+- [ ] Support image, video, and audio layers in projector compositions. Layers have
   explicit in/out points, ordering, position, scale, rotation, opacity, crop,
   and supported fades; audio layers have gain, mute/solo, fades, and an
   explicit mix order.
-- Preserve alpha channels from supported image and video sources throughout
+- [ ] Preserve alpha channels from supported image and video sources throughout
   controller-side composition. Define premultiplied versus straight alpha,
   color space, frame rate, resolution, and scaling behavior so preview and
   final rendering agree.
-- Perform all layer and timeline editing through GUI-04 on the controller.
+- [ ] Perform all layer and timeline editing through GUI-04 on the controller.
   Playback clients receive compiled assets and timing metadata, not editable
   composition graphs or a requirement to composite layers in real time.
-- Extend GUI-03 projector calibration with projection-object metadata.
+- [ ] Extend GUI-03 projector calibration with projection-object metadata.
   Surfaces may provide homography, mesh/UV warp, masks, occlusion regions,
   overlap regions, orientation, and calibration revision. Projector layers can
   target those surfaces without baking photo-view coordinates into source
   artwork.
-- Show the calibrated warp in native-canvas and installation previews. Make it
+- [ ] Show the calibrated warp in native-canvas and installation previews. Make it
   clear whether a transform comes from a measured live grid, easy-mode corner
   pinning, or an unverified estimate.
-- Add controller-side render jobs that flatten the layer graph, alpha
+- [ ] Add controller-side render jobs that flatten the layer graph, alpha
   composition, masks, projection warps, color/output transforms, and audio mix
   into a muxed MP4 targeted to a specific projector profile.
-- For a stage-space layer visible to multiple projectors, evaluate one
+- [ ] For a stage-space layer visible to multiple projectors, evaluate one
   authoritative transform per frame, intersect it with each projector's
   calibrated coverage, and render the correct clipped and edge-blended
   contribution into each projector-specific bake.
-- Define one normative render pipeline used by preview and baking:
+- [ ] Define one normative render pipeline used by preview and baking:
   1. Decode and conform source layers into the composition's declared frame
      rate, resolution, alpha interpretation, and working color space.
   2. Evaluate layer transforms, opacity, masks, and alpha composition in
@@ -481,76 +511,76 @@ clients.
   6. Apply projector-specific brightness, black-level, and color correction.
   7. Mix and conform audio, then encode and mux the target artifact.
   Changing this order requires an explicit versioned render-pipeline revision.
-- Make output codec, profile, level, pixel format, resolution, frame rate,
+- [ ] Make output codec, profile, level, pixel format, resolution, frame rate,
   audio codec, sample rate, channel layout, loudness target, keyframe policy,
   and hardware-decoder compatibility explicit. Provide conservative presets
   for enrolled low-power clients.
-- Treat bakes for one multi-projector composition as an output set with a
+- [ ] Treat bakes for one multi-projector composition as an output set with a
   common duration, frame rate, frame/time origin, render-pipeline revision,
   and activation identity. Prepare the complete set before allowing any member
   to activate.
-- Define a measured cross-projector synchronization tolerance. Use a shared
+- [ ] Define a measured cross-projector synchronization tolerance. Use a shared
   prepare/play barrier and calibrated start offsets, record drift during
   rehearsal, and reject or warn on cross-projector motion when the selected
   clients cannot maintain the declared tolerance. Pre-baking removes live
   compositing load but does not by itself prevent independent clients from
   drifting.
-- Produce a render manifest containing source revision, asset checksums,
+- [ ] Produce a render manifest containing source revision, asset checksums,
   composition settings, calibration revision, encoder identity/settings,
   duration, stream metadata, and output checksum. Invalidate or mark the bake
   stale whenever one of those inputs changes.
-- Cache identical renders, report progress and actionable failures, support
+- [ ] Cache identical renders, report progress and actionable failures, support
   cancellation, bound CPU/storage concurrency, and retain the last valid bake
   until a replacement completes.
-- Support explicit media end behavior including `stop`, `hold_last_frame`, and
+- [ ] Support explicit media end behavior including `stop`, `hold_last_frame`, and
   `loop`. A held final frame must remain visible without a black flash until
   the controller replaces or stops it. Loop validation inspects the first and
   last frames, audio boundary, encoder delay/padding, and keyframe placement;
   optional authored handles or a crossfade may be used when a truly gapless
   boundary is required.
-- Make renders reproducible and verifiable: pin the render-pipeline and encoder
+- [ ] Make renders reproducible and verifiable: pin the render-pipeline and encoder
   versions and settings, require every external dependency, seed variation,
   capture reference frame and audio checks, and compare selected timestamps
   within documented pixel, color, and audio tolerances. Never silently
   substitute a missing asset, font, calibration, or effect.
-- Use one pre-baked audio/video file when possible so the client performs
+- [ ] Use one pre-baked audio/video file when possible so the client performs
   simple prepare/play/seek operations and preserves a stable internal A/V
   relationship. Continue to apply measured per-device timing offsets for
   projector, audio path, lighting, and other outputs; baking does not pretend
   to remove physical hardware latency.
-- Treat alpha-bearing intermediate renders as authoring artifacts. The final
+- [ ] Treat alpha-bearing intermediate renders as authoring artifacts. The final
   projector MP4 is normally composited to the target output background because
   broadly compatible MP4 playback profiles do not provide a portable alpha
   channel.
 
 ### Acceptance
 
-- A creator can layer still images, alpha images, alpha video, opaque video,
+- [ ] A creator can layer still images, alpha images, alpha video, opaque video,
   and multiple audio clips in a projector composition and edit them entirely
   through GUI-04.
-- The same composition produces matching controller preview and baked frames
+- [ ] The same composition produces matching controller preview and baked frames
   at defined test timestamps within documented color and pixel tolerances.
-- A layer mapped to a calibrated physical object uses the selected surface's
+- [ ] A layer mapped to a calibrated physical object uses the selected surface's
   warp and mask, including a non-level projector and a mesh that cannot be
   represented by one four-corner homography.
-- One stage-space animation produces a lockstep set of projector-native bakes;
+- [ ] One stage-space animation produces a lockstep set of projector-native bakes;
   at every tested frame their clipped overlap contributions reconstruct the
   authoritative stage element after warp, blend, and color correction.
-- The controller creates a single compatible MP4 with mixed audio that a
+- [ ] The controller creates a single compatible MP4 with mixed audio that a
   declared low-power client can play without live layer compositing.
-- Preview and bake execute the same versioned pipeline order, including
+- [ ] Preview and bake execute the same versioned pipeline order, including
   edge-blend and per-projector color correction, and reference-frame tests
   detect changes outside documented tolerances.
-- A projector client can hold the decoded last frame without flashing black.
+- [ ] A projector client can hold the decoded last frame without flashing black.
   A file declared gapless passes first/last frame and audio-boundary checks
   and loops on the target client without an unintended visible or audible gap.
-- An on-hardware rehearsal measures cross-projector start error and drift and
+- [ ] An on-hardware rehearsal measures cross-projector start error and drift and
   blocks a seam-sensitive animation when the selected client group exceeds
   its declared synchronization tolerance.
-- Repeating a bake with identical inputs is reproducible and cacheable. A
+- [ ] Repeating a bake with identical inputs is reproducible and cacheable. A
   source, timeline, encoder-profile, or calibration change marks the old bake
   stale and produces a separately checksummed artifact.
-- A failed or canceled bake cannot replace the last valid artifact, exhaust
+- [ ] A failed or canceled bake cannot replace the last valid artifact, exhaust
   unbounded controller resources, or leave publication appearing ready.
 
 ## Milestone GUI-06: spatial addressable-light authoring
@@ -560,11 +590,11 @@ physical LED order, while retaining precise path and fixture effects.
 
 ### Scope
 
-- Add lighting-surface compositions to GUI-04. Creators can edit a focused
+- [ ] Add lighting-surface compositions to GUI-04. Creators can edit a focused
   surface, fixture, path, output, or the full shared stage using the same
   playhead, markers, nested compositions, transform keyframes, masks, and
   blend modes as projector content.
-- Support three complementary authoring modes:
+- [ ] Support three complementary authoring modes:
   - **Spatial canvas:** composite solid shapes, gradients, images, video or
     image sequences, animated masks, nested compositions, and deterministic
     procedural textures in surface-local or stage space.
@@ -572,15 +602,15 @@ physical LED order, while retaining precise path and fixture effects.
     chase, pulse, and sweep behavior along verified semantic paths.
   - **Fixture/group:** apply reusable semantic looks and cues without exposing
     indices or geometry details.
-- Keep a direct physical-index view for installation diagnostics only; normal
+- [ ] Keep a direct physical-index view for installation diagnostics only; normal
   authored cues target spatial layers, paths, fixtures, or groups.
-- Allow raster layers and existing deterministic lighting primitives to
+- [ ] Allow raster layers and existing deterministic lighting primitives to
   coexist with explicit precedence and `replace`, `add`, `max`, and `multiply`
   blending.
-- Sample the final lighting canvas at each pixel's calibrated point or
+- [ ] Sample the final lighting canvas at each pixel's calibrated point or
   footprint. Support nearest, bilinear, and bounded area/footprint sampling so
   sparse pixels respond predictably when animated edges move between them.
-- Define one deterministic lighting pipeline:
+- [ ] Define one deterministic lighting pipeline:
   1. Evaluate stage- and surface-space layers at authoritative scene time.
   2. Transform shared stage content into each lighting surface.
   3. Composite raster, procedural, path, fixture, and persistent-look layers.
@@ -589,29 +619,29 @@ physical LED order, while retaining precise path and fixture effects.
      limits.
   6. Reorder the frame into verified physical output/index order and send it
      through the configured adapter.
-- Show estimated current and peak power, clipping/scaling caused by limits,
+- [ ] Show estimated current and peak power, clipping/scaling caused by limits,
   unmapped or duplicate pixels, sampling footprints, output boundaries, and
   stale geometry calibration.
-- Keep evaluation deterministic and seekable under pause, seek, reconnect, and
+- [ ] Keep evaluation deterministic and seekable under pause, seek, reconnect, and
   simulation. Establish frame-rate and pixel-count performance budgets before
   considering optional pre-baked lighting frame sequences.
-- Let one stage-space layer contribute to both projector and lighting
+- [ ] Let one stage-space layer contribute to both projector and lighting
   compositions. Each output samples or renders that shared layer through its
   own calibrated geometry while retaining its own color and safety limits.
 
 ### Acceptance
 
-- An installer maps a multi-strand LED shape, verifies it with an index chase,
+- [ ] An installer maps a multi-strand LED shape, verifies it with an index chase,
   and corrects one misplaced pixel without changing authored cues.
-- A creator paints an animated 2D gradient and moving shape over a facade,
+- [ ] A creator paints an animated 2D gradient and moving shape over a facade,
   previews the sampled LED colors, and produces the same frame after repeated
   evaluation of the same timestamp without referring to physical indices.
-- The same show combines a spatial raster wash, a topology-aware path chase,
+- [ ] The same show combines a spatial raster wash, a topology-aware path chase,
   a semantic fixture pulse, and a persistent look with deterministic blending.
-- One animated stage-space object moves from projected content into an
+- [ ] One animated stage-space object moves from projected content into an
   addressable-light surface; projector pixels and LED samples remain aligned
   to the calibrated physical path in simulation.
-- Gamma, brightness, and power limiting occur after composition but before
+- [ ] Gamma, brightness, and power limiting occur after composition but before
   physical output ordering, are visible in preview, and cannot be bypassed by
   a raster layer.
 
@@ -621,56 +651,56 @@ Make the photo mapper and timeline a trustworthy rehearsal environment.
 
 ### Scope
 
-- Overlay simulated pixel colors, fixtures, paths, projector surfaces, masks,
+- [ ] Overlay simulated pixel colors, fixtures, paths, projector surfaces, masks,
   and labels on any installation photo.
-- Provide preview modes for the current logical composition, its parent
+- [ ] Provide preview modes for the current logical composition, its parent
   context, a selected native projector canvas, a selected device/output, and
   the full mapped installation. Switching preview modes must not change
   authored coordinates or timing.
-- Support instant switching and synchronized side-by-side playback of multiple
+- [ ] Support instant switching and synchronized side-by-side playback of multiple
   viewpoints.
-- Show stage-space motion paths and the per-projector contributions together,
+- [ ] Show stage-space motion paths and the per-projector contributions together,
   including coverage, overlap, occlusion, and uncovered-region warnings.
-- Composite review proxies into mapped projector surfaces using GUI-03's
+- [ ] Composite review proxies into mapped projector surfaces using GUI-03's
   content-to-surface and surface-to-photo transforms. Label the result as an
   approximation unless the photo viewpoint and physical grid were calibrated;
   expose stale or missing projector calibration instead of silently falling
   back to an apparently precise overlay.
-- Play proxy audio and display meters and waveform position. Browser audio is
+- [ ] Play proxy audio and display meters and waveform position. Browser audio is
   for editorial preview, not a claim of hardware synchronization.
-- Preview either the editable controller composition or its selected GUI-05
+- [ ] Preview either the editable controller composition or its selected GUI-05
   baked artifact, with optional side-by-side/frame-difference inspection. The
   editable preview and bake must share composition, alpha, warp, mask, and
   audio-mix semantics rather than maintaining unrelated renderers.
-- Preview GUI-06 lighting canvases, sampled LED points/footprints, paths,
+- [ ] Preview GUI-06 lighting canvases, sampled LED points/footprints, paths,
   fixtures, power limiting, and physical output order together with projector
   content in the same calibrated stage and photo views.
-- Drive the preview from backend deterministic scene evaluation and expose
+- [ ] Drive the preview from backend deterministic scene evaluation and expose
   frame rate, degraded resources, and timing diagnostics.
-- Support play, pause, seek, loop region, speed, frame/step controls, and
+- [ ] Support play, pause, seek, loop region, speed, frame/step controls, and
   before/after comparison.
-- Integrate synthetic observations, accelerated time, client disconnects,
+- [ ] Integrate synthetic observations, accelerated time, client disconnects,
   output failures, and operator overrides from the existing simulation
   harness.
-- Save repeatable simulation scenarios and expected outcomes.
+- [ ] Save repeatable simulation scenarios and expected outcomes.
 
 ### Acceptance
 
-- Timeline, waveform, photo overlay, and controller-evaluated scene time remain
+- [ ] Timeline, waveform, photo overlay, and controller-evaluated scene time remain
   aligned during play, pause, seek, and loop.
-- A semi-transparent element can cross two projectors and their edge-blended
+- [ ] A semi-transparent element can cross two projectors and their edge-blended
   overlap in simulation as one continuous stage-space motion, while focused
   projector previews show the corresponding clipped contributions.
-- A shared stage-space element can continue from a projector onto an LED
+- [ ] A shared stage-space element can continue from a projector onto an LED
   surface, with the photo view, logical lighting canvas, sampled LEDs, and
   deterministic output frame agreeing at selected timestamps.
-- The UI identifies whether it is previewing source layers or a particular
+- [ ] The UI identifies whether it is previewing source layers or a particular
   checksummed bake and warns when that bake is stale.
-- A saved scenario can reproduce the same scene history and simulated lighting
+- [ ] A saved scenario can reproduce the same scene history and simulated lighting
   frames.
-- Simulation never opens hardware adapters or sends commands to enrolled
+- [ ] Simulation never opens hardware adapters or sends commands to enrolled
   clients.
-- The UI clearly distinguishes approximate visual compositing from measured
+- [ ] The UI clearly distinguishes approximate visual compositing from measured
   output behavior.
 
 ## Milestone GUI-08: autonomous show logic designer
@@ -679,28 +709,28 @@ Extend creation from individual scenes to complete unattended shows.
 
 ### Scope
 
-- Edit program pools, weights, categories, cooldowns, history exclusions,
+- [ ] Edit program pools, weights, categories, cooldowns, history exclusions,
   availability, and eligibility conditions.
-- Edit audience filters, presence timing, opportunities, cooldowns, and
+- [ ] Edit audience filters, presence timing, opportunities, cooldowns, and
   consumption rules using semantic fields rather than raw detector payloads.
-- Build encounter states and transitions in a node/flow view with an
+- [ ] Build encounter states and transitions in a node/flow view with an
   equivalent accessible tabular editor.
-- Visualize completion transitions, fallbacks, safe-point arbitration,
+- [ ] Visualize completion transitions, fallbacks, safe-point arbitration,
   priorities, resource conflicts, and unreachable or cyclic logic.
-- Add scheduling and quiet-hours design once the runtime gains an authoritative
+- [ ] Add scheduling and quiet-hours design once the runtime gains an authoritative
   scheduling model.
-- Provide templates for ambient loops, visitor-triggered interactions, manual
+- [ ] Provide templates for ambient loops, visitor-triggered interactions, manual
   operator scenes, and scheduled main shows.
-- Run deterministic long-duration simulation and summarize repetition,
+- [ ] Run deterministic long-duration simulation and summarize repetition,
   cooldown, dead-end, starvation, and unavailable-resource behavior.
 
 ### Acceptance
 
-- A creator can build the complete autonomous show package described in the
+- [ ] A creator can build the complete autonomous show package described in the
   show creator guide without editing JSON.
-- The editor identifies missing fallbacks, invalid references, unreachable
+- [ ] The editor identifies missing fallbacks, invalid references, unreachable
   states, resource conflicts, and empty eligible pools before publication.
-- A repeatable accelerated scenario demonstrates ambient operation, visitor
+- [ ] A repeatable accelerated scenario demonstrates ambient operation, visitor
   interaction, protected scenes, return to idle, and client interruption.
 
 ## Milestone GUI-09: rehearsal, publication, and rollback
@@ -709,50 +739,50 @@ Turn an edited project into a controlled deployed artifact.
 
 ### Scope
 
-- Add named revisions, change summaries, schema migrations, package diff, and
+- [ ] Add named revisions, change summaries, schema migrations, package diff, and
   approval state.
-- Compile a draft into an immutable package with a manifest, asset checksums,
+- [ ] Compile a draft into an immutable package with a manifest, asset checksums,
   schema versions, creator, timestamp, and required capabilities.
-- Run structural, semantic, asset, capability, and safety validation before
+- [ ] Run structural, semantic, asset, capability, and safety validation before
   publication.
-- Require current successful bakes for projector compositions and verify that
+- [ ] Require current successful bakes for projector compositions and verify that
   each target client's declared decoder capabilities match its baked media
   profile.
-- Separate publish, stage to clients, activate, deactivate, and roll back.
-- Define a content-addressed client cache contract. The controller sends a
+- [ ] Separate publish, stage to clients, activate, deactivate, and roll back.
+- [ ] Define a content-addressed client cache contract. The controller sends a
   required-artifact manifest; the client reports inventory and capacity,
   downloads missing artifacts to temporary storage with resumable ranges,
   verifies size and checksum, and atomically promotes them into its cache.
-- Pin every artifact used by the active package, the configured rollback
+- [ ] Pin every artifact used by the active package, the configured rollback
   package, active playback, and an in-progress activation. A client may evict
   only unpinned artifacts, using a documented policy such as least recently
   used, and must never delete a playing or rollback-critical file to make room.
-- Reconcile inventory after reconnect, distinguish absent, partial, corrupt,
+- [ ] Reconcile inventory after reconnect, distinguish absent, partial, corrupt,
   verified, pinned, and in-use states, and expose transfer progress and
   actionable insufficient-space or integrity errors. Support explicit
   operator cleanup without allowing arbitrary filesystem access.
-- Stage only required artifacts, deduplicate identical checksums across
+- [ ] Stage only required artifacts, deduplicate identical checksums across
   packages, estimate transfer size/time, and require every necessary client to
   report verified readiness before activation. Retain the previously active
   package until the replacement has activated successfully.
-- Add rehearsal mode with explicit target selection, preflight checklist,
+- [ ] Add rehearsal mode with explicit target selection, preflight checklist,
   countdown, stop, blackout, and post-run diagnostics.
-- Add backup/restore and disaster-recovery documentation for projects, assets,
+- [ ] Add backup/restore and disaster-recovery documentation for projects, assets,
   enrollment identities, and published packages.
 
 ### Acceptance
 
-- A failed validation, transfer, or activation cannot partially replace the
+- [ ] A failed validation, transfer, or activation cannot partially replace the
   active show.
-- Given a nearly full low-power client, staging a new package evicts only
+- [ ] Given a nearly full low-power client, staging a new package evicts only
   unpinned artifacts, resumes an interrupted transfer, redownloads a corrupt
   artifact, verifies its checksum, and preserves the active and rollback
   packages throughout. Insufficient safe space blocks activation explicitly.
-- An operator can compare a candidate with the active revision, rehearse it,
+- [ ] An operator can compare a candidate with the active revision, rehearse it,
   publish it, verify client readiness, activate it, and roll back.
-- Every deployment action is attributable and its package can be reproduced
+- [ ] Every deployment action is attributable and its package can be reproduced
   from stored revision and asset checksums.
-- Live activation is impossible from an unapproved draft or from simulation
+- [ ] Live activation is impossible from an unapproved draft or from simulation
   mode.
 
 ## Milestone GUI-10: collaboration and production hardening
@@ -761,27 +791,27 @@ Harden the application for real creative and operational teams.
 
 ### Scope
 
-- Add project roles such as viewer, operator, designer, publisher, and
+- [ ] Add project roles such as viewer, operator, designer, publisher, and
   administrator, with separate permission for live output.
-- Add comments, review links, change requests, revision comparison, and
+- [ ] Add comments, review links, change requests, revision comparison, and
   presence indicators before considering real-time co-editing.
-- Add accessibility testing, complete keyboard workflows, reduced-motion and
+- [ ] Add accessibility testing, complete keyboard workflows, reduced-motion and
   high-contrast support, and screen-reader alternatives to spatial and flow
   editors.
-- Add observability for API latency, background asset jobs, WebSocket health,
+- [ ] Add observability for API latency, background asset jobs, WebSocket health,
   browser errors, storage use, simulation performance, and publication.
-- Define project and asset scale targets, then test long timelines, many
+- [ ] Define project and asset scale targets, then test long timelines, many
   assets, many clients, and multiple photo views against measurable budgets.
-- Add import/export compatibility tests and migration rehearsals for every
+- [ ] Add import/export compatibility tests and migration rehearsals for every
   supported project and package version.
 
 ### Acceptance
 
-- Roles are enforced on the server, not only hidden in the UI.
-- A keyboard-only user can complete core operator and timeline workflows.
-- Supported maximum-size projects meet documented interaction, save,
+- [ ] Roles are enforced on the server, not only hidden in the UI.
+- [ ] A keyboard-only user can complete core operator and timeline workflows.
+- [ ] Supported maximum-size projects meet documented interaction, save,
   simulation, and publication budgets.
-- Backup restoration and schema migration are tested against representative
+- [ ] Backup restoration and schema migration are tested against representative
   production projects.
 
 ## Milestone GUI-11: MCP-assisted show creation
@@ -791,26 +821,26 @@ underlying GUI APIs and transaction model are stable.
 
 ### Scope
 
-- Run an authenticated MCP server next to the controller's authoring service;
+- [ ] Run an authenticated MCP server next to the controller's authoring service;
   do not expose browser internals or unrestricted filesystem/network tools.
-- Provide read tools for project structure, capabilities, schemas, asset
+- [ ] Provide read tools for project structure, capabilities, schemas, asset
   metadata, scene summaries, timeline ranges, validation results, simulation
   results, and published revision status.
-- Provide proposal tools for creating or changing scenes, cues, mappings,
+- [ ] Provide proposal tools for creating or changing scenes, cues, mappings,
   show logic, metadata, and simulation scenarios.
-- Apply proposals to a new draft transaction with a structured diff. Require
+- [ ] Apply proposals to a new draft transaction with a structured diff. Require
   validation and explicit human approval before merging into the working
   revision.
-- Separate scopes for read, draft edit, simulation, publish preparation, and
+- [ ] Separate scopes for read, draft edit, simulation, publish preparation, and
   live operation. Do not grant publish or live-output permission by default.
-- Treat asset metadata, filenames, comments, imported package text, and model
+- [ ] Treat asset metadata, filenames, comments, imported package text, and model
   output as untrusted content. They cannot alter tool permissions or bypass
   validation and approval.
-- Add limits for tool-call count, payload size, asset access, timeline range,
+- [ ] Add limits for tool-call count, payload size, asset access, timeline range,
   simulation duration, and concurrent work.
-- Record model/client identity, user identity, requested tools, resulting
+- [ ] Record model/client identity, user identity, requested tools, resulting
   diffs, validation, approvals, and final disposition.
-- Provide high-level task tools such as:
+- [ ] Provide high-level task tools such as:
   - create a scene outline from an approved brief
   - align cues to supplied markers or waveform events
   - suggest fixture/path mappings for operator review
@@ -820,14 +850,14 @@ underlying GUI APIs and transaction model are stable.
 
 ### Acceptance
 
-- An MCP client can create a useful proposed scene in an isolated draft, run
+- [ ] An MCP client can create a useful proposed scene in an isolated draft, run
   validation and simulation, and present a human-readable diff.
-- The same client cannot read assets outside its project, enroll devices,
+- [ ] The same client cannot read assets outside its project, enroll devices,
   publish, activate hardware, or bypass approval without separately granted
   scopes.
-- Rejected or failed proposals leave the working revision and live show
+- [ ] Rejected or failed proposals leave the working revision and live show
   unchanged.
-- Every accepted change can be traced to its user, MCP client, proposal, and
+- [ ] Every accepted change can be traced to its user, MCP client, proposal, and
   approval.
 
 ## Dependency order

@@ -12,6 +12,7 @@ for (const viewport of viewports) {
     await page.setViewportSize({ width: viewport.width, height: viewport.height });
     await page.goto("/demo.html");
 
+    await expect(page.locator("html")).toHaveAttribute("lang", "en");
     await expect(
       page.getByRole("heading", { name: "Installation Overview" }),
     ).toBeVisible();
@@ -22,10 +23,21 @@ for (const viewport of viewports) {
       "page",
     );
     await expect(page.getByRole("button", { name: "Settings", exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "Overview", exact: true }).focus();
+    await expect(page.getByRole("button", { name: "Overview", exact: true })).toBeFocused();
 
     await page.getByRole("button", { name: "Installation", exact: true }).click();
     await expect(page.getByRole("heading", { name: "Network Topology" })).toBeVisible();
     await expect(page.getByRole("heading", { name: "media-client-left" })).toBeVisible();
+
+    await page.getByRole("button", { name: "Operate", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "Show controls" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Runtime counters" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Automation state" })).toBeVisible();
+
+    await page.getByRole("button", { name: "Settings", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "Installations" })).toBeVisible();
+    await expect(page.getByText("Runtime backed")).toBeVisible();
 
     const horizontalOverflow = await page.evaluate(
       () => document.documentElement.scrollWidth > document.documentElement.clientWidth,

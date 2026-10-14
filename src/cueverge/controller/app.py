@@ -18,6 +18,10 @@ from cueverge.integrations.mqtt import FrigateMqttIngress
 from cueverge.lighting.ddp import DdpUdpSink
 from cueverge.lighting.sink import FrameSink, FrameSinkRouter, MemoryFrameSink
 from cueverge.observation.presence import AudiencePresenceEstimator
+from cueverge.protocol.device_v2 import (
+    ControllerDiscoveryDocument,
+    DiscoveryProtocolRange,
+)
 
 
 class EventIngress(Protocol):
@@ -83,6 +87,16 @@ def create_app(
         controller: ControllerRuntime = request.app.state.runtime
         controller.check_timeouts()
         return {"status": "ready", "connected_agents": controller.connected_agent_count}
+
+    @app.get(
+        "/api/device/v2/discovery",
+        response_model=ControllerDiscoveryDocument,
+    )
+    async def device_discovery() -> ControllerDiscoveryDocument:
+        return ControllerDiscoveryDocument(
+            software_version="0.1.0",
+            protocol=DiscoveryProtocolRange(minimum=2, maximum=2),
+        )
 
     if configured_gui is not None and configured_gui.config.web_root is not None:
         app.mount(

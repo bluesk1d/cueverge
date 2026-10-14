@@ -27,6 +27,16 @@ class StoredProject:
 
 
 @dataclass(frozen=True)
+class StoredInstallation:
+    id: str
+    name: str
+    revision: int
+    runtime_active: bool
+    created_at: str
+    updated_at: str
+
+
+@dataclass(frozen=True)
 class StoredRevision:
     project: StoredProject
     revision: int
@@ -65,6 +75,7 @@ class StoredPairingToken:
     expires_at: int
     consumed_at: str | None
     revoked_at: str | None
+    discovered_endpoint_id: str | None
 
 
 @dataclass(frozen=True)
@@ -101,9 +112,67 @@ class StoredDevicePresence:
     connected_at_ms: int
     last_seen_at_ms: int
     disconnected_at_ms: int | None
+    latency_ms: float | None
+    clock_offset_ms: float | None
+
+
+@dataclass(frozen=True)
+class StoredDeviceArtifactStatus:
+    device_id: str
+    observed_at_ms: int
+    total_bytes: int
+    free_bytes: int
+    artifact_count: int
+    artifact_bytes: int
+    pinned_count: int
+    supports_pinning: bool
+    supports_resumable_transfer: bool
+    transfers: tuple[dict[str, JsonValue], ...]
+    faults: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class StoredDeviceArtifact:
+    digest_sha256: str
+    size_bytes: int
+    pinned: bool
+
+
+@dataclass(frozen=True)
+class StoredDiscoveredEndpoint:
+    id: str
+    base_url: str
+    device_kind: DeviceKind
+    software_version: str
+    protocol_minimum: int
+    protocol_maximum: int
+    capability_kinds: tuple[str, ...]
+    compatible: bool
+    state: Literal["discovered", "pairing", "enrolled", "rejected"]
+    enrolled_device_id: str | None
+    observed_at: str
+    updated_at: str
 
 
 class ProjectNotFoundError(LookupError):
+    pass
+
+
+class InstallationNotFoundError(LookupError):
+    pass
+
+
+class InstallationConflictError(RuntimeError):
+    def __init__(self, current_revision: int | None) -> None:
+        super().__init__("installation revision conflict")
+        self.current_revision = current_revision
+
+
+class ActiveInstallationDeleteError(RuntimeError):
+    pass
+
+
+class InstallationNameConflictError(RuntimeError):
     pass
 
 
@@ -112,6 +181,10 @@ class DeviceNotFoundError(LookupError):
 
 
 class PairingTokenNotUsableError(RuntimeError):
+    pass
+
+
+class DiscoveredEndpointNotUsableError(RuntimeError):
     pass
 
 
@@ -167,6 +240,18 @@ class GuiRepository:
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS installations (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+                    revision INTEGER NOT NULL CHECK (revision >= 1),
+                    runtime_active INTEGER NOT NULL
+                        CHECK (runtime_active IN (0, 1)),
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE UNIQUE INDEX IF NOT EXISTS one_runtime_active_installation
+                ON installations(runtime_active)
+                WHERE runtime_active = 1;
                 CREATE TABLE IF NOT EXISTS revisions (
                     project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
                     revision INTEGER NOT NULL CHECK (revision >= 1),
@@ -202,7 +287,8 @@ class GuiRepository:
                     created_at TEXT NOT NULL,
                     expires_at INTEGER NOT NULL,
                     consumed_at TEXT,
-                    revoked_at TEXT
+                    revoked_at TEXT,
+                    discovered_endpoint_id TEXT
                 );
                 CREATE TABLE IF NOT EXISTS devices (
                     id TEXT PRIMARY KEY,
@@ -243,13 +329,52 @@ class GuiRepository:
                     connected_at_ms INTEGER NOT NULL CHECK (connected_at_ms >= 0),
                     last_seen_at_ms INTEGER NOT NULL CHECK (last_seen_at_ms >= 0),
                     disconnected_at_ms INTEGER
-                        CHECK (disconnected_at_ms IS NULL OR disconnected_at_ms >= 0)
+                        CHECK (disconnected_at_ms IS NULL OR disconnected_at_ms >= 0),
+                    latency_ms REAL,
+                    clock_offset_ms REAL
                 );
                 CREATE TABLE IF NOT EXISTS device_connection_policies (
                     device_id TEXT PRIMARY KEY
                         REFERENCES devices(id) ON DELETE CASCADE,
                     policy TEXT NOT NULL
                         CHECK (policy IN ('continuous', 'on_demand')),
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS device_artifact_status (
+                    device_id TEXT PRIMARY KEY
+                        REFERENCES devices(id) ON DELETE CASCADE,
+                    session_id TEXT NOT NULL,
+                    observed_at_ms INTEGER NOT NULL CHECK (observed_at_ms >= 0),
+                    total_bytes INTEGER NOT NULL CHECK (total_bytes > 0),
+                    free_bytes INTEGER NOT NULL CHECK (free_bytes >= 0),
+                    supports_pinning INTEGER NOT NULL DEFAULT 0
+                        CHECK (supports_pinning IN (0, 1)),
+                    supports_resumable_transfer INTEGER NOT NULL DEFAULT 0
+                        CHECK (supports_resumable_transfer IN (0, 1)),
+                    transfers_json TEXT NOT NULL DEFAULT '[]',
+                    faults_json TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS device_artifacts (
+                    device_id TEXT NOT NULL
+                        REFERENCES devices(id) ON DELETE CASCADE,
+                    digest_sha256 TEXT NOT NULL,
+                    size_bytes INTEGER NOT NULL CHECK (size_bytes >= 0),
+                    pinned INTEGER NOT NULL DEFAULT 0 CHECK (pinned IN (0, 1)),
+                    PRIMARY KEY(device_id, digest_sha256)
+                );
+                CREATE TABLE IF NOT EXISTS discovered_endpoints (
+                    id TEXT PRIMARY KEY,
+                    base_url TEXT NOT NULL UNIQUE,
+                    device_kind TEXT NOT NULL,
+                    software_version TEXT NOT NULL,
+                    protocol_minimum INTEGER NOT NULL,
+                    protocol_maximum INTEGER NOT NULL,
+                    capability_kinds_json TEXT NOT NULL,
+                    compatible INTEGER NOT NULL CHECK (compatible IN (0, 1)),
+                    state TEXT NOT NULL CHECK (state IN ('discovered', 'rejected')),
+                    pairing_token_id TEXT,
+                    enrolled_device_id TEXT,
+                    observed_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
                 INSERT OR IGNORE INTO schema_migrations(version, applied_at)
@@ -262,8 +387,454 @@ class GuiRepository:
                 VALUES (4, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
                 INSERT OR IGNORE INTO schema_migrations(version, applied_at)
                 VALUES (5, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+                INSERT OR IGNORE INTO schema_migrations(version, applied_at)
+                VALUES (6, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
                 """
             )
+            presence_columns = {
+                str(row["name"])
+                for row in connection.execute("PRAGMA table_info(device_presence)").fetchall()
+            }
+            if "latency_ms" not in presence_columns:
+                connection.execute("ALTER TABLE device_presence ADD COLUMN latency_ms REAL")
+            if "clock_offset_ms" not in presence_columns:
+                connection.execute("ALTER TABLE device_presence ADD COLUMN clock_offset_ms REAL")
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO schema_migrations(version, applied_at)
+                VALUES (7, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+                """
+            )
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO schema_migrations(version, applied_at)
+                VALUES (8, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+                """
+            )
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO schema_migrations(version, applied_at)
+                VALUES (9, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+                """
+            )
+            pairing_columns = {
+                str(row["name"])
+                for row in connection.execute("PRAGMA table_info(device_pairing_tokens)").fetchall()
+            }
+            if "discovered_endpoint_id" not in pairing_columns:
+                connection.execute(
+                    "ALTER TABLE device_pairing_tokens ADD COLUMN discovered_endpoint_id TEXT"
+                )
+            discovery_columns = {
+                str(row["name"])
+                for row in connection.execute("PRAGMA table_info(discovered_endpoints)").fetchall()
+            }
+            if "pairing_token_id" not in discovery_columns:
+                connection.execute(
+                    "ALTER TABLE discovered_endpoints ADD COLUMN pairing_token_id TEXT"
+                )
+            if "enrolled_device_id" not in discovery_columns:
+                connection.execute(
+                    "ALTER TABLE discovered_endpoints ADD COLUMN enrolled_device_id TEXT"
+                )
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO schema_migrations(version, applied_at)
+                VALUES (10, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+                """
+            )
+            artifact_status_columns = {
+                str(row["name"])
+                for row in connection.execute(
+                    "PRAGMA table_info(device_artifact_status)"
+                ).fetchall()
+            }
+            if "supports_pinning" not in artifact_status_columns:
+                connection.execute(
+                    "ALTER TABLE device_artifact_status "
+                    "ADD COLUMN supports_pinning INTEGER NOT NULL DEFAULT 0"
+                )
+            if "supports_resumable_transfer" not in artifact_status_columns:
+                connection.execute(
+                    "ALTER TABLE device_artifact_status "
+                    "ADD COLUMN supports_resumable_transfer INTEGER NOT NULL DEFAULT 0"
+                )
+            if "transfers_json" not in artifact_status_columns:
+                connection.execute(
+                    "ALTER TABLE device_artifact_status "
+                    "ADD COLUMN transfers_json TEXT NOT NULL DEFAULT '[]'"
+                )
+            artifact_columns = {
+                str(row["name"])
+                for row in connection.execute("PRAGMA table_info(device_artifacts)").fetchall()
+            }
+            if "pinned" not in artifact_columns:
+                connection.execute(
+                    "ALTER TABLE device_artifacts ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0"
+                )
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO schema_migrations(version, applied_at)
+                VALUES (11, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+                """
+            )
+
+    def upsert_discovered_endpoint(
+        self,
+        *,
+        base_url: str,
+        device_kind: DeviceKind,
+        software_version: str,
+        protocol_minimum: int,
+        protocol_maximum: int,
+        capability_kinds: tuple[str, ...],
+        compatible: bool,
+        actor: str,
+        role: Role,
+        occurred_at: str,
+    ) -> StoredDiscoveredEndpoint:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT id FROM discovered_endpoints WHERE base_url = ?",
+                (base_url,),
+            ).fetchone()
+            endpoint_id = str(row["id"]) if row is not None else str(uuid4())
+            connection.execute(
+                """
+                INSERT INTO discovered_endpoints(
+                    id, base_url, device_kind, software_version,
+                    protocol_minimum, protocol_maximum, capability_kinds_json,
+                    compatible, state, observed_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'discovered', ?, ?)
+                ON CONFLICT(base_url) DO UPDATE SET
+                    device_kind = excluded.device_kind,
+                    software_version = excluded.software_version,
+                    protocol_minimum = excluded.protocol_minimum,
+                    protocol_maximum = excluded.protocol_maximum,
+                    capability_kinds_json = excluded.capability_kinds_json,
+                    compatible = excluded.compatible,
+                    state = 'discovered',
+                    observed_at = excluded.observed_at,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    endpoint_id,
+                    base_url,
+                    device_kind.value,
+                    software_version,
+                    protocol_minimum,
+                    protocol_maximum,
+                    json.dumps(capability_kinds, separators=(",", ":")),
+                    int(compatible),
+                    occurred_at,
+                    occurred_at,
+                ),
+            )
+            self._insert_audit(
+                connection,
+                actor=actor,
+                action="device.discovery.probe",
+                target=endpoint_id,
+                result="compatible" if compatible else "incompatible",
+                occurred_at=occurred_at,
+                authorization_context={
+                    "role": role.value,
+                    "base_url": base_url,
+                    "protocol_minimum": protocol_minimum,
+                    "protocol_maximum": protocol_maximum,
+                    "capability_kinds": list(capability_kinds),
+                },
+            )
+        return self.get_discovered_endpoint(endpoint_id)
+
+    def get_discovered_endpoint(self, endpoint_id: str) -> StoredDiscoveredEndpoint:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT id, base_url, device_kind, software_version,
+                       protocol_minimum, protocol_maximum, capability_kinds_json,
+                       compatible, state, pairing_token_id, enrolled_device_id,
+                       observed_at, updated_at
+                FROM discovered_endpoints
+                WHERE id = ?
+                """,
+                (endpoint_id,),
+            ).fetchone()
+        if row is None:
+            raise DeviceNotFoundError(endpoint_id)
+        return _stored_discovered_endpoint(row)
+
+    def list_discovered_endpoints(self) -> tuple[StoredDiscoveredEndpoint, ...]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT id, base_url, device_kind, software_version,
+                       protocol_minimum, protocol_maximum, capability_kinds_json,
+                       compatible, state, pairing_token_id, enrolled_device_id,
+                       observed_at, updated_at
+                FROM discovered_endpoints
+                ORDER BY updated_at DESC, id
+                """
+            ).fetchall()
+        return tuple(_stored_discovered_endpoint(row) for row in rows)
+
+    def reject_discovered_endpoint(
+        self,
+        *,
+        endpoint_id: str,
+        actor: str,
+        role: Role,
+        occurred_at: str,
+    ) -> StoredDiscoveredEndpoint:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT pairing_token_id FROM discovered_endpoints WHERE id = ?",
+                (endpoint_id,),
+            ).fetchone()
+            if row is None:
+                raise DeviceNotFoundError(endpoint_id)
+            if row["pairing_token_id"] is not None:
+                connection.execute(
+                    """
+                    UPDATE device_pairing_tokens
+                    SET revoked_at = ?
+                    WHERE id = ? AND consumed_at IS NULL AND revoked_at IS NULL
+                    """,
+                    (occurred_at, str(row["pairing_token_id"])),
+                )
+            connection.execute(
+                """
+                UPDATE discovered_endpoints
+                SET state = 'rejected', pairing_token_id = NULL, updated_at = ?
+                WHERE id = ?
+                """,
+                (occurred_at, endpoint_id),
+            )
+            self._insert_audit(
+                connection,
+                actor=actor,
+                action="device.discovery.reject",
+                target=endpoint_id,
+                result="success",
+                occurred_at=occurred_at,
+                authorization_context={"role": role.value},
+            )
+        return self.get_discovered_endpoint(endpoint_id)
+
+    def ensure_runtime_installation(
+        self,
+        *,
+        name: str,
+        occurred_at: str,
+    ) -> StoredInstallation:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT id, name, revision, runtime_active, created_at, updated_at
+                FROM installations
+                WHERE runtime_active = 1
+                """
+            ).fetchone()
+            if row is not None:
+                return _stored_installation(row)
+            installation_id = str(uuid4())
+            connection.execute(
+                """
+                INSERT INTO installations(
+                    id, name, revision, runtime_active, created_at, updated_at
+                ) VALUES (?, ?, 1, 1, ?, ?)
+                """,
+                (installation_id, name, occurred_at, occurred_at),
+            )
+        return StoredInstallation(
+            id=installation_id,
+            name=name,
+            revision=1,
+            runtime_active=True,
+            created_at=occurred_at,
+            updated_at=occurred_at,
+        )
+
+    def create_installation(
+        self,
+        *,
+        name: str,
+        actor: str,
+        role: Role,
+        occurred_at: str,
+    ) -> StoredInstallation:
+        installation = StoredInstallation(
+            id=str(uuid4()),
+            name=name,
+            revision=1,
+            runtime_active=False,
+            created_at=occurred_at,
+            updated_at=occurred_at,
+        )
+        with self._connect() as connection:
+            try:
+                connection.execute(
+                    """
+                    INSERT INTO installations(
+                        id, name, revision, runtime_active, created_at, updated_at
+                    ) VALUES (?, ?, ?, 0, ?, ?)
+                    """,
+                    (
+                        installation.id,
+                        installation.name,
+                        installation.revision,
+                        installation.created_at,
+                        installation.updated_at,
+                    ),
+                )
+            except sqlite3.IntegrityError as error:
+                raise InstallationNameConflictError(name) from error
+            self._insert_audit(
+                connection,
+                actor=actor,
+                action="installation.create",
+                target=installation.id,
+                result="success",
+                occurred_at=occurred_at,
+                authorization_context={"role": role.value, "name": name},
+            )
+        return installation
+
+    def list_installations(self) -> tuple[StoredInstallation, ...]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT id, name, revision, runtime_active, created_at, updated_at
+                FROM installations
+                ORDER BY runtime_active DESC, name, id
+                """
+            ).fetchall()
+        return tuple(_stored_installation(row) for row in rows)
+
+    def get_runtime_installation(self) -> StoredInstallation:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT id, name, revision, runtime_active, created_at, updated_at
+                FROM installations
+                WHERE runtime_active = 1
+                """
+            ).fetchone()
+        if row is None:
+            raise InstallationNotFoundError("runtime")
+        return _stored_installation(row)
+
+    def get_installation(self, installation_id: str) -> StoredInstallation:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT id, name, revision, runtime_active, created_at, updated_at
+                FROM installations
+                WHERE id = ?
+                """,
+                (installation_id,),
+            ).fetchone()
+        if row is None:
+            raise InstallationNotFoundError(installation_id)
+        return _stored_installation(row)
+
+    def update_installation(
+        self,
+        *,
+        installation_id: str,
+        expected_revision: int,
+        name: str,
+        actor: str,
+        role: Role,
+        occurred_at: str,
+    ) -> StoredInstallation:
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT revision FROM installations WHERE id = ?",
+                (installation_id,),
+            ).fetchone()
+            if row is None:
+                connection.rollback()
+                raise InstallationNotFoundError(installation_id)
+            current_revision = int(row["revision"])
+            if current_revision != expected_revision:
+                connection.rollback()
+                raise InstallationConflictError(current_revision)
+            next_revision = current_revision + 1
+            try:
+                connection.execute(
+                    """
+                    UPDATE installations
+                    SET name = ?, revision = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (name, next_revision, occurred_at, installation_id),
+                )
+            except sqlite3.IntegrityError as error:
+                connection.rollback()
+                raise InstallationNameConflictError(name) from error
+            self._insert_audit(
+                connection,
+                actor=actor,
+                action="installation.update",
+                target=installation_id,
+                result="success",
+                occurred_at=occurred_at,
+                authorization_context={
+                    "role": role.value,
+                    "previous_revision": current_revision,
+                    "created_revision": next_revision,
+                },
+            )
+            connection.commit()
+        return next(
+            installation
+            for installation in self.list_installations()
+            if installation.id == installation_id
+        )
+
+    def delete_installation(
+        self,
+        *,
+        installation_id: str,
+        expected_revision: int,
+        actor: str,
+        role: Role,
+        occurred_at: str,
+    ) -> None:
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT revision, runtime_active FROM installations WHERE id = ?",
+                (installation_id,),
+            ).fetchone()
+            if row is None:
+                connection.rollback()
+                raise InstallationNotFoundError(installation_id)
+            current_revision = int(row["revision"])
+            if current_revision != expected_revision:
+                connection.rollback()
+                raise InstallationConflictError(current_revision)
+            if bool(row["runtime_active"]):
+                connection.rollback()
+                raise ActiveInstallationDeleteError(
+                    "the runtime-active installation cannot be deleted"
+                )
+            connection.execute("DELETE FROM installations WHERE id = ?", (installation_id,))
+            self._insert_audit(
+                connection,
+                actor=actor,
+                action="installation.delete",
+                target=installation_id,
+                result="success",
+                occurred_at=occurred_at,
+                authorization_context={
+                    "role": role.value,
+                    "deleted_revision": current_revision,
+                },
+            )
+            connection.commit()
 
     def create_session(
         self,
@@ -326,16 +897,37 @@ class GuiRepository:
         created_at: str,
         expires_at: int,
         role: Role,
+        discovered_endpoint_id: str | None = None,
     ) -> StoredPairingToken:
         token_id = str(uuid4())
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             try:
+                if discovered_endpoint_id is not None:
+                    endpoint = connection.execute(
+                        """
+                        SELECT device_kind, compatible, state, enrolled_device_id
+                        FROM discovered_endpoints
+                        WHERE id = ?
+                        """,
+                        (discovered_endpoint_id,),
+                    ).fetchone()
+                    if (
+                        endpoint is None
+                        or str(endpoint["device_kind"]) != device_kind.value
+                        or not bool(endpoint["compatible"])
+                        or str(endpoint["state"]) == "rejected"
+                        or endpoint["enrolled_device_id"] is not None
+                    ):
+                        raise DiscoveredEndpointNotUsableError(
+                            "discovered endpoint is not compatible and enrollable"
+                        )
                 connection.execute(
                     """
                     INSERT INTO device_pairing_tokens(
-                        id, token_hash, device_kind, created_by, created_at, expires_at
-                    ) VALUES (?, ?, ?, ?, ?, ?)
+                        id, token_hash, device_kind, created_by, created_at,
+                        expires_at, discovered_endpoint_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         token_id,
@@ -344,8 +936,18 @@ class GuiRepository:
                         created_by,
                         created_at,
                         expires_at,
+                        discovered_endpoint_id,
                     ),
                 )
+                if discovered_endpoint_id is not None:
+                    connection.execute(
+                        """
+                        UPDATE discovered_endpoints
+                        SET pairing_token_id = ?, updated_at = ?
+                        WHERE id = ?
+                        """,
+                        (token_id, created_at, discovered_endpoint_id),
+                    )
                 self._insert_audit(
                     connection,
                     actor=created_by,
@@ -357,6 +959,7 @@ class GuiRepository:
                         "role": role.value,
                         "device_kind": device_kind.value,
                         "expires_at": expires_at,
+                        "discovered_endpoint_id": discovered_endpoint_id,
                     },
                 )
                 connection.commit()
@@ -371,6 +974,7 @@ class GuiRepository:
             expires_at=expires_at,
             consumed_at=None,
             revoked_at=None,
+            discovered_endpoint_id=discovered_endpoint_id,
         )
 
     def consume_pairing_token_and_create_device(
@@ -395,7 +999,7 @@ class GuiRepository:
             try:
                 token_row = connection.execute(
                     """
-                    SELECT id, device_kind
+                    SELECT id, device_kind, discovered_endpoint_id
                     FROM device_pairing_tokens
                     WHERE token_hash = ?
                       AND consumed_at IS NULL
@@ -437,6 +1041,21 @@ class GuiRepository:
                         occurred_at,
                     ),
                 )
+                if token_row["discovered_endpoint_id"] is not None:
+                    connection.execute(
+                        """
+                        UPDATE discovered_endpoints
+                        SET pairing_token_id = NULL,
+                            enrolled_device_id = ?,
+                            updated_at = ?
+                        WHERE id = ?
+                        """,
+                        (
+                            device_id,
+                            occurred_at,
+                            str(token_row["discovered_endpoint_id"]),
+                        ),
+                    )
                 connection.execute(
                     """
                     INSERT INTO device_certificates(
@@ -881,15 +1500,27 @@ class GuiRepository:
                 """
                 INSERT INTO device_presence(
                     device_id, session_id, connected_at_ms,
-                    last_seen_at_ms, disconnected_at_ms
-                ) VALUES (?, ?, ?, ?, NULL)
+                    last_seen_at_ms, disconnected_at_ms,
+                    latency_ms, clock_offset_ms
+                ) VALUES (?, ?, ?, ?, NULL, NULL, NULL)
                 ON CONFLICT(device_id) DO UPDATE SET
                     session_id = excluded.session_id,
                     connected_at_ms = excluded.connected_at_ms,
                     last_seen_at_ms = excluded.last_seen_at_ms,
-                    disconnected_at_ms = NULL
+                    disconnected_at_ms = NULL,
+                    latency_ms = NULL,
+                    clock_offset_ms = NULL
                 """,
                 (device_id, session_id, observed_at_ms, observed_at_ms),
+            )
+            self._insert_audit(
+                connection,
+                actor=device_id,
+                action="device.connected",
+                target=device_id,
+                result="success",
+                occurred_at=_iso_from_ms(observed_at_ms),
+                authorization_context={"session_id": session_id},
             )
 
     def mark_device_seen(
@@ -919,7 +1550,7 @@ class GuiRepository:
         observed_at_ms: int,
     ) -> None:
         with self._connect() as connection:
-            connection.execute(
+            cursor = connection.execute(
                 """
                 UPDATE device_presence
                 SET disconnected_at_ms = ?
@@ -929,13 +1560,46 @@ class GuiRepository:
                 """,
                 (observed_at_ms, device_id, session_id),
             )
+            if cursor.rowcount:
+                self._insert_audit(
+                    connection,
+                    actor=device_id,
+                    action="device.disconnected",
+                    target=device_id,
+                    result="success",
+                    occurred_at=_iso_from_ms(observed_at_ms),
+                    authorization_context={"session_id": session_id},
+                )
+
+    def mark_device_timing(
+        self,
+        *,
+        device_id: str,
+        session_id: str,
+        latency_ms: float,
+        clock_offset_ms: float,
+    ) -> None:
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE device_presence
+                SET latency_ms = ?, clock_offset_ms = ?
+                WHERE device_id = ?
+                  AND session_id = ?
+                  AND disconnected_at_ms IS NULL
+                """,
+                (latency_ms, clock_offset_ms, device_id, session_id),
+            )
+        if cursor.rowcount == 0:
+            raise DeviceCertificateAuthorizationError("timing report session is not active")
 
     def list_device_presence(self) -> tuple[StoredDevicePresence, ...]:
         with self._connect() as connection:
             rows = connection.execute(
                 """
                 SELECT device_id, session_id, connected_at_ms,
-                       last_seen_at_ms, disconnected_at_ms
+                       last_seen_at_ms, disconnected_at_ms,
+                       latency_ms, clock_offset_ms
                 FROM device_presence
                 ORDER BY device_id
                 """
@@ -951,6 +1615,144 @@ class GuiRepository:
                     if row["disconnected_at_ms"] is not None
                     else None
                 ),
+                latency_ms=(float(row["latency_ms"]) if row["latency_ms"] is not None else None),
+                clock_offset_ms=(
+                    float(row["clock_offset_ms"]) if row["clock_offset_ms"] is not None else None
+                ),
+            )
+            for row in rows
+        )
+
+    def replace_device_artifact_inventory(
+        self,
+        *,
+        device_id: str,
+        session_id: str,
+        observed_at_ms: int,
+        total_bytes: int,
+        free_bytes: int,
+        supports_pinning: bool,
+        supports_resumable_transfer: bool,
+        artifacts: tuple[tuple[str, int, bool], ...],
+        transfers: tuple[dict[str, JsonValue], ...],
+        faults: tuple[str, ...],
+    ) -> None:
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            active = connection.execute(
+                """
+                SELECT 1
+                FROM device_presence
+                WHERE device_id = ?
+                  AND session_id = ?
+                  AND disconnected_at_ms IS NULL
+                """,
+                (device_id, session_id),
+            ).fetchone()
+            if active is None:
+                connection.rollback()
+                raise DeviceCertificateAuthorizationError(
+                    "artifact inventory session is not active"
+                )
+            connection.execute(
+                """
+                INSERT INTO device_artifact_status(
+                    device_id, session_id, observed_at_ms,
+                    total_bytes, free_bytes, supports_pinning,
+                    supports_resumable_transfer, transfers_json, faults_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(device_id) DO UPDATE SET
+                    session_id = excluded.session_id,
+                    observed_at_ms = excluded.observed_at_ms,
+                    total_bytes = excluded.total_bytes,
+                    free_bytes = excluded.free_bytes,
+                    supports_pinning = excluded.supports_pinning,
+                    supports_resumable_transfer = excluded.supports_resumable_transfer,
+                    transfers_json = excluded.transfers_json,
+                    faults_json = excluded.faults_json
+                """,
+                (
+                    device_id,
+                    session_id,
+                    observed_at_ms,
+                    total_bytes,
+                    free_bytes,
+                    int(supports_pinning),
+                    int(supports_resumable_transfer),
+                    json.dumps(transfers, separators=(",", ":")),
+                    json.dumps(faults, separators=(",", ":")),
+                ),
+            )
+            connection.execute(
+                "DELETE FROM device_artifacts WHERE device_id = ?",
+                (device_id,),
+            )
+            connection.executemany(
+                """
+                INSERT INTO device_artifacts(
+                    device_id, digest_sha256, size_bytes, pinned
+                ) VALUES (?, ?, ?, ?)
+                """,
+                (
+                    (device_id, digest_sha256, size_bytes, int(pinned))
+                    for digest_sha256, size_bytes, pinned in artifacts
+                ),
+            )
+            connection.commit()
+
+    def list_device_artifact_statuses(self) -> tuple[StoredDeviceArtifactStatus, ...]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT s.device_id, s.observed_at_ms, s.total_bytes, s.free_bytes,
+                       s.supports_pinning, s.supports_resumable_transfer,
+                       s.transfers_json, s.faults_json,
+                       COUNT(a.digest_sha256) AS artifact_count,
+                       COALESCE(SUM(a.size_bytes), 0) AS artifact_bytes,
+                       COALESCE(SUM(a.pinned), 0) AS pinned_count
+                FROM device_artifact_status AS s
+                LEFT JOIN device_artifacts AS a ON a.device_id = s.device_id
+                GROUP BY s.device_id
+                ORDER BY s.device_id
+                """
+            ).fetchall()
+        return tuple(
+            StoredDeviceArtifactStatus(
+                device_id=str(row["device_id"]),
+                observed_at_ms=int(row["observed_at_ms"]),
+                total_bytes=int(row["total_bytes"]),
+                free_bytes=int(row["free_bytes"]),
+                artifact_count=int(row["artifact_count"]),
+                artifact_bytes=int(row["artifact_bytes"]),
+                pinned_count=int(row["pinned_count"]),
+                supports_pinning=bool(row["supports_pinning"]),
+                supports_resumable_transfer=bool(row["supports_resumable_transfer"]),
+                transfers=tuple(json.loads(str(row["transfers_json"]))),
+                faults=tuple(json.loads(str(row["faults_json"]))),
+            )
+            for row in rows
+        )
+
+    def list_device_artifacts(
+        self,
+        device_id: str,
+    ) -> tuple[StoredDeviceArtifact, ...]:
+        self.get_device(device_id)
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT digest_sha256, size_bytes, pinned
+                FROM device_artifacts
+                WHERE device_id = ?
+                ORDER BY digest_sha256
+                """,
+                (device_id,),
+            ).fetchall()
+        return tuple(
+            StoredDeviceArtifact(
+                digest_sha256=str(row["digest_sha256"]),
+                size_bytes=int(row["size_bytes"]),
+                pinned=bool(row["pinned"]),
             )
             for row in rows
         )
@@ -1363,6 +2165,138 @@ class GuiRepository:
             draft,
         )
 
+    def restore_revision(
+        self,
+        *,
+        project_id: str,
+        source_revision: int,
+        expected_revision: int,
+        actor: str,
+        role: Role,
+        occurred_at: str,
+    ) -> StoredRevision:
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                project_row = connection.execute(
+                    """
+                    SELECT id, name, head_revision, created_at, updated_at
+                    FROM projects WHERE id = ?
+                    """,
+                    (project_id,),
+                ).fetchone()
+                if project_row is None:
+                    raise ProjectNotFoundError(project_id)
+                project = _stored_project(project_row)
+                source_row = connection.execute(
+                    """
+                    SELECT content_json
+                    FROM revisions
+                    WHERE project_id = ? AND revision = ?
+                    """,
+                    (project_id, source_revision),
+                ).fetchone()
+                if source_row is None:
+                    raise ProjectNotFoundError(f"{project_id}@{source_revision}")
+                current_row = connection.execute(
+                    """
+                    SELECT content_json
+                    FROM revisions
+                    WHERE project_id = ? AND revision = ?
+                    """,
+                    (project_id, project.head_revision),
+                ).fetchone()
+                if current_row is None:
+                    raise RuntimeError("project head revision is missing")
+                source_json = str(source_row["content_json"])
+                if expected_revision != project.head_revision:
+                    conflicting_paths = _changed_top_level_paths(
+                        str(current_row["content_json"]),
+                        source_json,
+                    )
+                    self._insert_audit(
+                        connection,
+                        actor=actor,
+                        action="draft.restore",
+                        target=project_id,
+                        result="revision_conflict",
+                        occurred_at=occurred_at,
+                        authorization_context={
+                            "role": role.value,
+                            "requested_revision": expected_revision,
+                            "current_revision": project.head_revision,
+                            "source_revision": source_revision,
+                        },
+                    )
+                    connection.commit()
+                    raise RevisionConflictError(
+                        requested_revision=expected_revision,
+                        current_revision=project.head_revision,
+                        conflicting_paths=conflicting_paths,
+                    )
+                next_revision = project.head_revision + 1
+                connection.execute(
+                    """
+                    INSERT INTO revisions(
+                        project_id, revision, parent_revision, content_json,
+                        actor, transaction_kind, created_at
+                    ) VALUES (?, ?, ?, ?, ?, 'restore', ?)
+                    """,
+                    (
+                        project_id,
+                        next_revision,
+                        project.head_revision,
+                        source_json,
+                        actor,
+                        occurred_at,
+                    ),
+                )
+                connection.execute(
+                    """
+                    UPDATE projects
+                    SET head_revision = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (next_revision, occurred_at, project_id),
+                )
+                self._insert_audit(
+                    connection,
+                    actor=actor,
+                    action="draft.restore",
+                    target=project_id,
+                    result="success",
+                    occurred_at=occurred_at,
+                    authorization_context={
+                        "role": role.value,
+                        "requested_revision": expected_revision,
+                        "source_revision": source_revision,
+                        "created_revision": next_revision,
+                    },
+                )
+                connection.commit()
+            except RevisionConflictError:
+                raise
+            except BaseException:
+                connection.rollback()
+                raise
+        restored_draft = DraftProject.model_validate_json(source_json)
+        updated_project = StoredProject(
+            project.id,
+            project.name,
+            next_revision,
+            project.created_at,
+            occurred_at,
+        )
+        return StoredRevision(
+            updated_project,
+            next_revision,
+            expected_revision,
+            actor,
+            "restore",
+            occurred_at,
+            restored_draft,
+        )
+
     def append_audit(
         self,
         *,
@@ -1485,6 +2419,48 @@ def _stored_device(row: sqlite3.Row) -> StoredDevice:
     )
 
 
+def _stored_installation(row: sqlite3.Row) -> StoredInstallation:
+    return StoredInstallation(
+        id=str(row["id"]),
+        name=str(row["name"]),
+        revision=int(row["revision"]),
+        runtime_active=bool(row["runtime_active"]),
+        created_at=str(row["created_at"]),
+        updated_at=str(row["updated_at"]),
+    )
+
+
+def _stored_discovered_endpoint(row: sqlite3.Row) -> StoredDiscoveredEndpoint:
+    state_value = str(row["state"])
+    enrolled_device_id = (
+        str(row["enrolled_device_id"]) if row["enrolled_device_id"] is not None else None
+    )
+    if state_value == "rejected":
+        state: Literal["discovered", "pairing", "enrolled", "rejected"] = "rejected"
+    elif enrolled_device_id is not None:
+        state = "enrolled"
+    elif row["pairing_token_id"] is not None:
+        state = "pairing"
+    elif state_value == "discovered":
+        state = "discovered"
+    else:
+        raise RuntimeError(f"invalid discovered endpoint state: {state_value}")
+    return StoredDiscoveredEndpoint(
+        id=str(row["id"]),
+        base_url=str(row["base_url"]),
+        device_kind=DeviceKind(str(row["device_kind"])),
+        software_version=str(row["software_version"]),
+        protocol_minimum=int(row["protocol_minimum"]),
+        protocol_maximum=int(row["protocol_maximum"]),
+        capability_kinds=tuple(json.loads(str(row["capability_kinds_json"]))),
+        compatible=bool(row["compatible"]),
+        state=state,
+        enrolled_device_id=enrolled_device_id,
+        observed_at=str(row["observed_at"]),
+        updated_at=str(row["updated_at"]),
+    )
+
+
 def _draft_json(draft: DraftProject) -> str:
     return json.dumps(draft.model_dump(mode="json"), sort_keys=True, separators=(",", ":"))
 
@@ -1498,6 +2474,10 @@ def _changed_top_level_paths(current_json: str, proposed_json: str) -> tuple[str
 
 def _digest(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _iso_from_ms(value: int) -> str:
+    return datetime.fromtimestamp(value / 1000, UTC).isoformat()
 
 
 def _has_connected_presence(

@@ -1,4 +1,5 @@
 import json
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -10,8 +11,16 @@ from cueverge.controller.runtime import ControllerRuntime
 from cueverge.core.loader import load_show_package
 from cueverge.gui.config import GuiConfig
 from cueverge.gui.contracts import Role
+from cueverge.gui.endpoint_discovery import (
+    DiscoveredController,
+    EndpointDiscoveryService,
+)
 from cueverge.gui.passwords import hash_password
 from cueverge.gui.service import GuiServices
+from cueverge.protocol.device_v2 import (
+    ControllerDiscoveryDocument,
+    DiscoveryProtocolRange,
+)
 
 ORIGIN = "http://localhost:5173"
 PASSWORD = "correct horse battery staple"
@@ -24,12 +33,18 @@ def test_gui_resources_require_authentication(tmp_path: Path) -> None:
 
     assert client.get("/api/gui/v1/projects").status_code == 401
     assert client.get("/api/gui/v1/installation").status_code == 401
+    assert client.get("/api/gui/v1/installations").status_code == 401
     assert client.get("/api/gui/v1/runtime/status").status_code == 401
     assert client.get("/api/gui/v1/topology").status_code == 401
+    assert client.get("/api/gui/v1/activity").status_code == 401
+    assert client.get("/api/gui/v1/discovery/endpoints").status_code == 401
     assert client.get("/api/gui/v1/audit").status_code == 401
     assert client.post("/api/gui/v1/projects", json={}).status_code == 401
 
     assert client.get("/api/v1/status").status_code == 404
+    discovery = client.get("/api/device/v2/discovery")
+    assert discovery.status_code == 200
+    assert discovery.json()["capabilities"] == ["downstream_control"]
 
 
 def test_configured_web_build_is_served_without_shadowing_protected_api(
@@ -130,6 +145,12 @@ def test_viewer_role_cannot_mutate_drafts(tmp_path: Path) -> None:
     )
     assert lifecycle.status_code == 403
     assert lifecycle.json()["detail"]["code"] == "insufficient_role"
+    connection_test = client.post(
+        "/api/gui/v1/devices/unknown/connection-test",
+        headers=_mutation_headers(client),
+    )
+    assert connection_test.status_code == 403
+    assert connection_test.json()["detail"]["code"] == "insufficient_role"
 
 
 def test_draft_revisions_are_durable_and_reject_stale_writes(tmp_path: Path) -> None:
@@ -175,8 +196,25 @@ def test_draft_revisions_are_durable_and_reject_stale_writes(tmp_path: Path) -> 
     assert reloaded.revision == 2
     assert reloaded.draft.editor_metadata == {"selected_scene": "ambient"}
 
+    restored = client.post(
+        f"/api/gui/v1/projects/{project_id}/revisions/1/restore",
+        headers=_mutation_headers(client, if_match='"2"'),
+    )
+    assert restored.status_code == 200
+    assert restored.headers["etag"] == '"3"'
+    assert restored.json()["revision"] == 3
+    assert restored.json()["draft"]["editor_metadata"] == {}
+
+    stale_restore = client.post(
+        f"/api/gui/v1/projects/{project_id}/revisions/2/restore",
+        headers=_mutation_headers(client, if_match='"2"'),
+    )
+    assert stale_restore.status_code == 409
+    assert stale_restore.json()["current_revision"] == 3
+
     revisions = client.get(f"/api/gui/v1/projects/{project_id}/revisions")
-    assert [revision["revision"] for revision in revisions.json()] == [2, 1]
+    assert [revision["revision"] for revision in revisions.json()] == [3, 2, 1]
+    assert revisions.json()[0]["transaction_kind"] == "restore"
     audit = client.get("/api/gui/v1/audit")
     assert audit.status_code == 200
     assert {
@@ -187,7 +225,87 @@ def test_draft_revisions_are_durable_and_reject_stale_writes(tmp_path: Path) -> 
         ("project.create", "success"),
         ("draft.update", "success"),
         ("draft.update", "revision_conflict"),
+        ("draft.restore", "success"),
+        ("draft.restore", "revision_conflict"),
     }
+
+
+def test_installation_crud_preserves_runtime_active_record(tmp_path: Path) -> None:
+    runtime = ControllerRuntime()
+    client = TestClient(create_app(runtime, gui_services=_services(tmp_path, runtime)))
+    _login(client)
+
+    listed = client.get("/api/gui/v1/installations")
+    assert listed.status_code == 200
+    assert len(listed.json()) == 1
+    active = listed.json()[0]
+    assert active["runtime_active"] is True
+
+    created = client.post(
+        "/api/gui/v1/installations",
+        json={"name": "Garage"},
+        headers=_mutation_headers(client),
+    )
+    assert created.status_code == 201
+    assert created.headers["etag"] == '"1"'
+    installation_id = created.json()["id"]
+
+    updated = client.put(
+        f"/api/gui/v1/installations/{installation_id}",
+        json={"name": "Garage Test"},
+        headers=_mutation_headers(client, if_match='"1"'),
+    )
+    assert updated.status_code == 200
+    assert updated.json()["revision"] == 2
+
+    stale = client.put(
+        f"/api/gui/v1/installations/{installation_id}",
+        json={"name": "Stale"},
+        headers=_mutation_headers(client, if_match='"1"'),
+    )
+    assert stale.status_code == 409
+    assert stale.json()["code"] == "installation_conflict"
+
+    active_delete = client.delete(
+        f"/api/gui/v1/installations/{active['id']}",
+        headers=_mutation_headers(client, if_match='"1"'),
+    )
+    assert active_delete.status_code == 409
+
+    deleted = client.delete(
+        f"/api/gui/v1/installations/{installation_id}",
+        headers=_mutation_headers(client, if_match='"2"'),
+    )
+    assert deleted.status_code == 204
+
+
+def test_explicit_discovery_is_untrusted_and_rejectable(tmp_path: Path) -> None:
+    runtime = ControllerRuntime()
+    services = replace(
+        _services(tmp_path, runtime),
+        endpoint_discovery=_FixtureEndpointDiscovery(),
+    )
+    client = TestClient(create_app(runtime, gui_services=services))
+    _login(client)
+
+    discovered = client.post(
+        "/api/gui/v1/discovery/probe",
+        json={"address": "https://controller.local"},
+        headers=_mutation_headers(client),
+    )
+    assert discovered.status_code == 200
+    assert discovered.json()["compatible"] is True
+    assert discovered.json()["state"] == "discovered"
+    endpoint_id = discovered.json()["id"]
+
+    listed = client.get("/api/gui/v1/discovery/endpoints")
+    assert [endpoint["id"] for endpoint in listed.json()] == [endpoint_id]
+    rejected = client.post(
+        f"/api/gui/v1/discovery/endpoints/{endpoint_id}/reject",
+        headers=_mutation_headers(client),
+    )
+    assert rejected.status_code == 200
+    assert rejected.json()["state"] == "rejected"
 
 
 def test_compilation_round_trips_through_loader_without_runtime_side_effects(
@@ -253,6 +371,29 @@ def test_operate_actions_require_role_csrf_and_are_audited(tmp_path: Path) -> No
     assert maintenance.status_code == 200
     assert maintenance.json()["mode"] == "maintenance"
 
+    preview = client.post(
+        "/api/gui/v1/maintenance/test-pattern-preview",
+        json={"resource": "projector.demo", "duration_seconds": 5},
+        headers=_mutation_headers(client),
+    )
+    assert preview.status_code == 200
+    assert preview.json()["pattern"] == "alignment_grid"
+    assert preview.json()["simulation_only"] is True
+
+    automatic = client.post(
+        "/api/gui/v1/operate/actions",
+        json={"action": "automatic"},
+        headers=_mutation_headers(client),
+    )
+    assert automatic.status_code == 200
+    rejected_preview = client.post(
+        "/api/gui/v1/maintenance/test-pattern-preview",
+        json={"resource": "roofline.demo", "duration_seconds": 5},
+        headers=_mutation_headers(client),
+    )
+    assert rejected_preview.status_code == 409
+    assert rejected_preview.json()["detail"]["code"] == "maintenance_mode_required"
+
     rejected = client.post(
         "/api/gui/v1/operate/actions",
         json={"action": "start"},
@@ -263,12 +404,26 @@ def test_operate_actions_require_role_csrf_and_are_audited(tmp_path: Path) -> No
     results = {
         (event.action, event.result)
         for event in services.repository.list_audit_events()
-        if event.action.startswith("operate.")
+        if event.action.startswith(("operate.", "maintenance."))
     }
     assert results == {
+        ("maintenance.preview", "success"),
+        ("operate.automatic", "success"),
         ("operate.maintenance", "success"),
         ("operate.start", "error"),
     }
+    activity = client.get("/api/gui/v1/activity")
+    assert activity.status_code == 200
+    assert activity.json()[0] == {
+        "id": activity.json()[0]["id"],
+        "occurred_at": activity.json()[0]["occurred_at"],
+        "category": "operation",
+        "action": "operate.start",
+        "actor": "admin",
+        "target": "controller",
+        "result": "error",
+    }
+    assert "authorization_context" not in activity.json()[0]
 
 
 def test_topology_does_not_expose_internal_runtime_channels_as_devices(
@@ -288,6 +443,17 @@ def test_topology_does_not_expose_internal_runtime_channels_as_devices(
     assert nodes["controller"]["enrollment"] == "local_controller"
     assert not any(node_id.startswith("agent:") for node_id in nodes)
     assert any(node["kind"] == "controller_output" for node in body["nodes"])
+
+
+class _FixtureEndpointDiscovery(EndpointDiscoveryService):
+    def probe(self, value: str) -> DiscoveredController:
+        return DiscoveredController(
+            base_url=value,
+            document=ControllerDiscoveryDocument(
+                software_version="0.1.0",
+                protocol=DiscoveryProtocolRange(minimum=2, maximum=2),
+            ),
+        )
 
 
 def _services(

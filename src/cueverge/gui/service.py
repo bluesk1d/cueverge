@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Protocol
 
 from cueverge.controller.runtime import (
@@ -14,6 +15,7 @@ from cueverge.gui.config import GuiConfig
 from cueverge.gui.device_ca import DeviceCertificateAuthority
 from cueverge.gui.device_enrollment import DeviceEnrollmentService
 from cueverge.gui.device_session import DeviceSessionRegistry
+from cueverge.gui.endpoint_discovery import EndpointDiscoveryService
 from cueverge.gui.repository import GuiRepository
 from cueverge.gui.wled_status import WledStatusObserver
 
@@ -52,11 +54,16 @@ class GuiServices:
     device_enrollment: DeviceEnrollmentService | None
     device_sessions: DeviceSessionRegistry
     wled_status: WledStatusObserver
+    endpoint_discovery: EndpointDiscoveryService
 
     @classmethod
     def create(cls, config: GuiConfig, runtime: RuntimeStatusSource) -> "GuiServices":
         repository = GuiRepository(config.data_root / "gui.sqlite3")
         repository.migrate()
+        repository.ensure_runtime_installation(
+            name=runtime.catalog.package_root.name,
+            occurred_at=datetime.now(UTC).isoformat(),
+        )
         device_enrollment: DeviceEnrollmentService | None = None
         if config.device_enrollment_enabled:
             password = config.device_ca_key_password
@@ -74,4 +81,5 @@ class GuiServices:
             device_enrollment=device_enrollment,
             device_sessions=DeviceSessionRegistry(),
             wled_status=WledStatusObserver(),
+            endpoint_discovery=EndpointDiscoveryService(),
         )

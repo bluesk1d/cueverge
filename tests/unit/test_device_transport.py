@@ -12,6 +12,7 @@ from pydantic import SecretStr
 from starlette.testclient import WebSocketDisconnect
 from starlette.types import ASGIApp, Receive, Scope, Send
 
+from cueverge.controller.runtime import ControllerRuntime
 from cueverge.gui.contracts import Role
 from cueverge.gui.device_app import create_device_app
 from cueverge.gui.device_ca import DeviceCertificateAuthority
@@ -24,6 +25,7 @@ from cueverge.gui.repository import GuiRepository
 from cueverge.protocol.device_v2 import (
     DeviceCapabilityDocument,
     DeviceKind,
+    DownstreamControlCapability,
     EnrollmentState,
     MediaPlaybackCapability,
     ProtocolRange,
@@ -62,7 +64,12 @@ def test_authenticated_device_session_is_fenced_and_heartbeat_acknowledged(
                 "device_monotonic_ms": 100,
             }
         )
-        assert websocket.receive_json() == {
+        acknowledgment = websocket.receive_json()
+        controller_receive_unix_ms = acknowledgment.pop("controller_receive_unix_ms")
+        controller_send_unix_ms = acknowledgment.pop("controller_send_unix_ms")
+        assert controller_receive_unix_ms > 0
+        assert controller_send_unix_ms >= controller_receive_unix_ms
+        assert acknowledgment == {
             "type": "device.heartbeat.ack",
             "protocol_version": 2,
             "sequence": 1,
@@ -113,6 +120,24 @@ def test_unknown_suspended_and_mismatched_devices_are_denied(tmp_path: Path) -> 
         TestClient(unknown_app).websocket_connect("/api/device/v2/agent/ws"),
     ):
         pass
+
+
+def test_downstream_session_does_not_register_as_media_agent(tmp_path: Path) -> None:
+    repository, certificate_der, capabilities = _enrolled_device(
+        tmp_path,
+        device_kind=DeviceKind.DOWNSTREAM_CONTROLLER,
+    )
+    runtime = ControllerRuntime()
+    app = _with_peer_certificate(
+        create_device_app(repository, DeviceSessionRegistry(), runtime),
+        certificate_der,
+    )
+
+    with TestClient(app).websocket_connect("/api/device/v2/agent/ws") as websocket:
+        websocket.send_json(_hello(uuid4(), capabilities))
+        welcome = websocket.receive_json()
+        assert welcome["type"] == "device.welcome"
+        assert runtime.connected_agent_count == 0
 
 
 def test_suspension_terminates_an_existing_session_on_next_message(
@@ -166,6 +191,8 @@ def test_peer_certificate_requires_exactly_one_device_uri(tmp_path: Path) -> Non
 
 def _enrolled_device(
     tmp_path: Path,
+    *,
+    device_kind: DeviceKind = DeviceKind.DIRECT_MEDIA_AGENT,
 ) -> tuple[GuiRepository, bytes, DeviceCapabilityDocument]:
     authority = DeviceCertificateAuthority(tmp_path / "device-ca", SecretStr("ca-password"))
     authority.provision(now=NOW)
@@ -182,12 +209,12 @@ def _enrolled_device(
         ),
         now=NOW,
     )
-    capabilities = _capabilities()
+    capabilities = _capabilities(device_kind)
     repository = GuiRepository(tmp_path / "gui.sqlite3")
     repository.migrate()
     repository.create_pairing_token(
         token=TOKEN,
-        device_kind=DeviceKind.DIRECT_MEDIA_AGENT,
+        device_kind=device_kind,
         created_by="admin",
         created_at=NOW.isoformat(),
         expires_at=int(NOW.timestamp()) + 300,
@@ -199,7 +226,7 @@ def _enrolled_device(
         occurred_at=NOW.isoformat(),
         device_id=str(DEVICE_ID),
         display_name="CuevergeClient01",
-        device_kind=DeviceKind.DIRECT_MEDIA_AGENT,
+        device_kind=device_kind,
         capabilities=capabilities,
         certificate_serial=credential.certificate_serial,
         certificate_fingerprint_sha256=credential.fingerprint_sha256,
@@ -214,12 +241,19 @@ def _enrolled_device(
     )
 
 
-def _capabilities() -> DeviceCapabilityDocument:
+def _capabilities(
+    device_kind: DeviceKind = DeviceKind.DIRECT_MEDIA_AGENT,
+) -> DeviceCapabilityDocument:
+    capabilities = (
+        (MediaPlaybackCapability(codecs=("h264",), containers=("mp4",)),)
+        if device_kind is DeviceKind.DIRECT_MEDIA_AGENT
+        else (DownstreamControlCapability(operations=("query_status",)),)
+    )
     return DeviceCapabilityDocument(
         protocol=ProtocolRange(minimum=2, maximum=2),
-        device_kind=DeviceKind.DIRECT_MEDIA_AGENT,
+        device_kind=device_kind,
         software_version="0.1.0",
-        capabilities=(MediaPlaybackCapability(codecs=("h264",), containers=("mp4",)),),
+        capabilities=capabilities,
     )
 
 

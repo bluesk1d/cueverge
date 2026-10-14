@@ -156,6 +156,26 @@ class DeviceCapabilityDocument(DeviceProtocolModel):
         return self
 
 
+class DiscoveryProtocolRange(DeviceProtocolModel):
+    minimum: int = Field(ge=1)
+    maximum: int = Field(ge=1)
+
+    @model_validator(mode="after")
+    def validate_range(self) -> "DiscoveryProtocolRange":
+        if self.maximum < self.minimum:
+            raise ValueError("protocol maximum must be greater than or equal to minimum")
+        return self
+
+
+class ControllerDiscoveryDocument(DeviceProtocolModel):
+    service: Literal["cueverge"] = "cueverge"
+    schema_version: Literal[1] = 1
+    device_kind: Literal[DeviceKind.DOWNSTREAM_CONTROLLER] = DeviceKind.DOWNSTREAM_CONTROLLER
+    software_version: str = Field(min_length=1, max_length=128)
+    protocol: DiscoveryProtocolRange
+    capabilities: tuple[Literal["downstream_control"], ...] = ("downstream_control",)
+
+
 class DeviceEnrollmentRequest(DeviceProtocolModel):
     protocol_version: Literal[2] = DEVICE_PROTOCOL_VERSION
     pairing_token: SecretStr
@@ -242,6 +262,7 @@ class DeviceHeartbeat(DeviceProtocolModel):
     controller_epoch: UUID
     sequence: int = Field(ge=0)
     device_monotonic_ms: int = Field(ge=0)
+    device_unix_ms: int = Field(default=0, ge=0)
 
 
 class DeviceHeartbeatAck(DeviceProtocolModel):
@@ -249,6 +270,8 @@ class DeviceHeartbeatAck(DeviceProtocolModel):
     protocol_version: Literal[2] = DEVICE_PROTOCOL_VERSION
     sequence: int = Field(ge=0)
     accepted: bool
+    controller_receive_unix_ms: int = Field(default=0, ge=0)
+    controller_send_unix_ms: int = Field(default=0, ge=0)
     reason: (
         Literal[
             "device_identity_fence",
@@ -258,6 +281,68 @@ class DeviceHeartbeatAck(DeviceProtocolModel):
         ]
         | None
     ) = None
+
+
+class DeviceTimingReport(DeviceProtocolModel):
+    type: Literal["device.timing.report"] = "device.timing.report"
+    protocol_version: Literal[2] = DEVICE_PROTOCOL_VERSION
+    device_id: UUID
+    device_session_id: UUID
+    controller_epoch: UUID
+    heartbeat_sequence: int = Field(ge=0)
+    round_trip_ms: float = Field(ge=0)
+    clock_offset_ms: float
+
+
+class DeviceArtifactRecord(DeviceProtocolModel):
+    digest_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    size_bytes: int = Field(ge=0)
+    pinned: bool = False
+
+
+class DeviceArtifactTransferStatus(DeviceProtocolModel):
+    digest_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    received_bytes: int = Field(ge=0)
+    total_bytes: int = Field(gt=0)
+    state: Literal["active", "failed"]
+    fault: str | None = None
+
+    @model_validator(mode="after")
+    def validate_progress(self) -> "DeviceArtifactTransferStatus":
+        if self.received_bytes > self.total_bytes:
+            raise ValueError("received_bytes cannot exceed total_bytes")
+        if self.state == "failed" and not self.fault:
+            raise ValueError("failed transfer requires a fault")
+        if self.state == "active" and self.fault is not None:
+            raise ValueError("active transfer cannot include a fault")
+        return self
+
+
+class DeviceArtifactInventory(DeviceProtocolModel):
+    type: Literal["device.artifact.inventory"] = "device.artifact.inventory"
+    protocol_version: Literal[2] = DEVICE_PROTOCOL_VERSION
+    device_id: UUID
+    device_session_id: UUID
+    controller_epoch: UUID
+    total_bytes: int = Field(gt=0)
+    free_bytes: int = Field(ge=0)
+    supports_pinning: bool
+    supports_resumable_transfer: bool
+    artifacts: tuple[DeviceArtifactRecord, ...]
+    transfers: tuple[DeviceArtifactTransferStatus, ...] = ()
+    faults: tuple[str, ...] = ()
+
+    @model_validator(mode="after")
+    def validate_storage(self) -> "DeviceArtifactInventory":
+        if self.free_bytes > self.total_bytes:
+            raise ValueError("free_bytes cannot exceed total_bytes")
+        digests = [artifact.digest_sha256 for artifact in self.artifacts]
+        if len(digests) != len(set(digests)):
+            raise ValueError("artifact inventory digests must be unique")
+        transfer_digests = [transfer.digest_sha256 for transfer in self.transfers]
+        if len(transfer_digests) != len(set(transfer_digests)):
+            raise ValueError("artifact transfer digests must be unique")
+        return self
 
 
 class DeviceMediaCommand(DeviceProtocolModel):

@@ -147,6 +147,15 @@ class PendingCommand:
     sent_at: float
 
 
+@dataclass(frozen=True)
+class RuntimeCommandFailure:
+    agent_id: str
+    command: str
+    error_code: str
+    detail: str | None
+    occurred_at: float
+
+
 class ControllerRuntime:
     def __init__(
         self,
@@ -229,6 +238,7 @@ class ControllerRuntime:
         self.active_scene: ActiveScene | None = None
         self._agents: dict[str, AgentConnection] = {}
         self._pending_commands: dict[str, PendingCommand] = {}
+        self._recent_command_failures: deque[RuntimeCommandFailure] = deque(maxlen=50)
         self._failed_prepare_sessions: set[str] = set()
         self._render_task: asyncio.Task[None] | None = None
         self._encounter_task: asyncio.Task[None] | None = None
@@ -615,6 +625,15 @@ class ControllerRuntime:
         if acknowledgment.status == "error":
             self.command_errors += 1
             self._degraded_reason = f"command_error:{acknowledgment.error_code or 'unknown'}"
+            self._recent_command_failures.appendleft(
+                RuntimeCommandFailure(
+                    agent_id=acknowledgment.agent_id,
+                    command=pending.command.command,
+                    error_code=acknowledgment.error_code or "unknown",
+                    detail=acknowledgment.detail,
+                    occurred_at=self.clock(),
+                )
+            )
             if media_session is not None:
                 self._failed_prepare_sessions.add(media_session.playback_session_id)
             if pending.command.command == "prepare" and (
@@ -780,6 +799,16 @@ class ControllerRuntime:
             if now - pending.sent_at > command_limit
         }
         if expired_commands:
+            for pending in expired_commands.values():
+                self._recent_command_failures.appendleft(
+                    RuntimeCommandFailure(
+                        agent_id=pending.command.agent_id,
+                        command=pending.command.command,
+                        error_code="command_timeout",
+                        detail="The device did not acknowledge the command before its deadline",
+                        occurred_at=now,
+                    )
+                )
             for request_id in expired_commands:
                 del self._pending_commands[request_id]
             self.command_timeouts += len(expired_commands)
@@ -1166,12 +1195,21 @@ class ControllerRuntime:
 
     def _abandon_commands(self, agent_id: str) -> None:
         abandoned = [
-            request_id
+            (request_id, pending)
             for request_id, pending in self._pending_commands.items()
             if pending.command.agent_id == agent_id
         ]
-        for request_id in abandoned:
+        for request_id, pending in abandoned:
             del self._pending_commands[request_id]
+            self._recent_command_failures.appendleft(
+                RuntimeCommandFailure(
+                    agent_id=agent_id,
+                    command=pending.command.command,
+                    error_code="connection_lost",
+                    detail="The command was abandoned when the device disconnected",
+                    occurred_at=self.clock(),
+                )
+            )
         self.abandoned_commands += len(abandoned)
 
     def _cancel_render_loop(self) -> None:
@@ -1289,6 +1327,16 @@ class ControllerRuntime:
             "command_errors": self.command_errors,
             "command_timeouts": self.command_timeouts,
             "abandoned_commands": self.abandoned_commands,
+            "recent_command_failures": [
+                {
+                    "agent_id": failure.agent_id,
+                    "command": failure.command,
+                    "error_code": failure.error_code,
+                    "detail": failure.detail,
+                    "age_ms": max(0, round((self.clock() - failure.occurred_at) * 1000)),
+                }
+                for failure in self._recent_command_failures
+            ],
             "heartbeat_timeouts": self.heartbeat_timeouts,
             "reconciliations": self.reconciliations,
             "scene_completions": self.scene_completions,

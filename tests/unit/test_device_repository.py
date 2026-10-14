@@ -72,6 +72,42 @@ def test_expired_token_cannot_create_device(tmp_path: Path) -> None:
     assert repository.list_devices() == ()
 
 
+def test_discovery_link_follows_pairing_token_to_enrolled_device(tmp_path: Path) -> None:
+    repository = _repository(tmp_path)
+    discovered = repository.upsert_discovered_endpoint(
+        base_url="https://controller.local",
+        device_kind=DeviceKind.DOWNSTREAM_CONTROLLER,
+        software_version="0.1.0",
+        protocol_minimum=2,
+        protocol_maximum=2,
+        capability_kinds=("downstream_control",),
+        compatible=True,
+        actor="admin",
+        role=Role.ADMINISTRATOR,
+        occurred_at="2026-10-13T17:00:00Z",
+    )
+    repository.create_pairing_token(
+        token=TOKEN,
+        device_kind=DeviceKind.DOWNSTREAM_CONTROLLER,
+        created_by="admin",
+        created_at="2026-10-13T17:00:00Z",
+        expires_at=1000,
+        role=Role.ADMINISTRATOR,
+        discovered_endpoint_id=discovered.id,
+    )
+
+    enrolled = _enroll(
+        repository,
+        token=TOKEN,
+        now=900,
+        device_kind=DeviceKind.DOWNSTREAM_CONTROLLER,
+    )
+
+    linked = repository.get_discovered_endpoint(discovered.id)
+    assert linked.state == "enrolled"
+    assert linked.enrolled_device_id == enrolled.id
+
+
 def test_device_lifecycle_is_durable_audited_and_irreversibly_revoked(
     tmp_path: Path,
 ) -> None:
@@ -281,6 +317,32 @@ def test_device_presence_is_durable_and_fenced_by_session(tmp_path: Path) -> Non
         session_id="stale",
         observed_at_ms=2000,
     )
+    repository.mark_device_timing(
+        device_id="device-1",
+        session_id="current",
+        latency_ms=12.5,
+        clock_offset_ms=-3.0,
+    )
+    repository.replace_device_artifact_inventory(
+        device_id="device-1",
+        session_id="current",
+        observed_at_ms=2100,
+        total_bytes=1_000_000,
+        free_bytes=750_000,
+        supports_pinning=True,
+        supports_resumable_transfer=True,
+        artifacts=(("d" * 64, 1234, True),),
+        transfers=(
+            {
+                "digest_sha256": "e" * 64,
+                "received_bytes": 500,
+                "total_bytes": 1000,
+                "state": "active",
+                "fault": None,
+            },
+        ),
+        faults=(),
+    )
     assert repository.list_device_presence()[0].last_seen_at_ms == 1000
     repository.mark_device_seen(
         device_id="device-1",
@@ -305,6 +367,17 @@ def test_device_presence_is_durable_and_fenced_by_session(tmp_path: Path) -> Non
     assert len(presence) == 1
     assert presence[0].last_seen_at_ms == 2000
     assert presence[0].disconnected_at_ms == 3000
+    assert presence[0].latency_ms == 12.5
+    assert presence[0].clock_offset_ms == -3.0
+    artifact_status = reloaded.list_device_artifact_statuses()[0]
+    assert artifact_status.artifact_count == 1
+    assert artifact_status.artifact_bytes == 1234
+    assert artifact_status.pinned_count == 1
+    assert artifact_status.supports_pinning
+    assert artifact_status.supports_resumable_transfer
+    assert artifact_status.transfers[0]["state"] == "active"
+    assert reloaded.list_device_artifacts("device-1")[0].digest_sha256 == "d" * 64
+    assert reloaded.list_device_artifacts("device-1")[0].pinned
 
 
 def test_certificate_rotation_activates_only_after_replacement_connects(

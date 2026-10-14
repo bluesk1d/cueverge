@@ -13,6 +13,7 @@ class FrozenModel(BaseModel):
 class ResourceKind(StrEnum):
     MEDIA_AGENT = "media_agent"
     PIXEL_OUTPUT = "pixel_output"
+    DOWNSTREAM_CONTROLLER = "downstream_controller"
 
 
 class PixelSegment(FrozenModel):
@@ -61,13 +62,16 @@ class ResourceBinding(FrozenModel):
     def validate_pixel_count(self) -> "ResourceBinding":
         if self.kind is ResourceKind.PIXEL_OUTPUT and self.pixel_count is None:
             raise ValueError("pixel_output binding requires pixel_count")
-        if self.kind is ResourceKind.MEDIA_AGENT:
+        if self.kind in {
+            ResourceKind.MEDIA_AGENT,
+            ResourceKind.DOWNSTREAM_CONTROLLER,
+        }:
             if self.pixel_count is not None:
-                raise ValueError("media_agent binding cannot define pixel_count")
+                raise ValueError(f"{self.kind.value} binding cannot define pixel_count")
             if self.segments:
-                raise ValueError("media_agent binding cannot define pixel segments")
+                raise ValueError(f"{self.kind.value} binding cannot define pixel segments")
             if self.fixtures or self.paths:
-                raise ValueError("media_agent binding cannot define pixel fixtures or paths")
+                raise ValueError(f"{self.kind.value} binding cannot define pixel fixtures or paths")
             return self
 
         segment_ids = [segment.id for segment in self.segments]
@@ -390,6 +394,7 @@ class LoadedLightingCue(FrozenModel):
 
 class SceneCatalog(FrozenModel):
     package_root: Path
+    installation: InstallationDefinition
     scenes: dict[str, LoadedScene]
     encounter: "EncounterDefinition | None" = None
     program: "ShowProgramDefinition | None" = None

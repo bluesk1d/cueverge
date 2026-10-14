@@ -99,6 +99,20 @@ class DeviceSessionRegistry:
         with self._lock:
             return tuple(sorted(self._sessions, key=str))
 
+    def session_is_current(
+        self,
+        device_id: UUID,
+        session_id: UUID,
+        controller_epoch: UUID,
+    ) -> bool:
+        with self._lock:
+            session = self._sessions.get(device_id)
+            return (
+                session is not None
+                and session.session_id == session_id
+                and controller_epoch == self.controller_epoch
+            )
+
     def expire_stale(self) -> None:
         now = time.monotonic()
         timeout = self.heartbeat_timeout_ms / 1000

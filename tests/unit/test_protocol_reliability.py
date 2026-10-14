@@ -60,6 +60,8 @@ def test_command_acknowledgments_are_fenced_and_time_out() -> None:
         assert status["command_timeouts"] == 1
         assert status["degraded_reason"] == "command_timeout"
         assert status["render_loop_running"]
+        assert status["recent_command_failures"][0]["error_code"] == "command_timeout"
+        assert status["recent_command_failures"][0]["command"] == "play"
 
         await runtime.start_scene("synthetic-sweep")
         error_command = channel.sent[-1]
@@ -72,6 +74,9 @@ def test_command_acknowledgments_are_fenced_and_time_out() -> None:
         assert (await runtime.acknowledge_command(failed)).accepted
         assert runtime.status()["degraded_reason"] == "command_error:prepare_failed"
         assert runtime.status()["command_errors"] == 1
+        failure = runtime.status()["recent_command_failures"][0]
+        assert failure["error_code"] == "prepare_failed"
+        assert failure["detail"] == "synthetic failure"
         await runtime.shutdown()
 
     asyncio.run(scenario())

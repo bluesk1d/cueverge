@@ -1,7 +1,7 @@
 import os
 from pathlib import Path
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
+from pydantic import AnyUrl, BaseModel, ConfigDict, Field, SecretStr, model_validator
 
 from cueverge.gui.contracts import Role
 
@@ -27,6 +27,7 @@ class GuiConfig(BaseModel):
     device_listener_host: str = "0.0.0.0"
     device_listener_port: int = Field(default=8443, ge=1, le=65535)
     device_listener_identities: tuple[str, ...] = ()
+    device_listener_public_url: AnyUrl | None = None
 
     @model_validator(mode="after")
     def validate_origins(self) -> "GuiConfig":
@@ -45,6 +46,10 @@ class GuiConfig(BaseModel):
                 or not self.device_ca_key_password.get_secret_value()
             ):
                 raise ValueError("device enrollment requires a device CA key password")
+            if self.device_listener_public_url is None:
+                raise ValueError("device enrollment requires the public device transport URL")
+            if self.device_listener_public_url.scheme != "wss":
+                raise ValueError("device listener public URL must use wss")
         if self.device_listener_enabled:
             if not self.device_enrollment_enabled:
                 raise ValueError("device listener requires device enrollment")
@@ -108,5 +113,10 @@ class GuiConfig(BaseModel):
                 value.strip()
                 for value in os.environ.get("CUEVERGE_DEVICE_LISTENER_IDENTITIES", "").split(",")
                 if value.strip()
+            ),
+            device_listener_public_url=(
+                AnyUrl(value)
+                if (value := os.environ.get("CUEVERGE_DEVICE_LISTENER_PUBLIC_URL"))
+                else None
             ),
         )

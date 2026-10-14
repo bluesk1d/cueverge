@@ -9,6 +9,7 @@ import {
 } from "lucide-react";
 
 import {
+  ActivityEvent,
   InstallationResource,
   InstallationStatus,
   LightingOutputStatus,
@@ -27,14 +28,18 @@ import {
 export function OverviewPage({
   installation,
   runtime,
+  activity = [],
   installationError,
   runtimeError,
+  activityError = false,
   loading,
 }: {
   installation: InstallationStatus | null;
   runtime: RuntimeStatus | null;
+  activity?: ActivityEvent[];
   installationError: boolean;
   runtimeError: boolean;
+  activityError?: boolean;
   loading: boolean;
 }) {
   const mediaResources =
@@ -227,11 +232,39 @@ export function OverviewPage({
           description="Authoritative controller and deployment events"
           className="overview-grid__activity"
         >
-          <EmptyState
-            compact
-            title="Activity stream unavailable"
-            description="GUI-00 does not yet expose a bounded authoritative activity endpoint."
-          />
+          {activityError ? (
+            <ErrorState description="Recent activity could not be loaded." />
+          ) : activity.length ? (
+            <ol className="activity-list">
+              {activity.slice(0, 8).map((event) => (
+                <li key={event.id}>
+                  <span className={`activity-list__icon activity-list__icon--${event.category}`}>
+                    <Activity aria-hidden="true" size={15} />
+                  </span>
+                  <div>
+                    <strong>{humanize(event.action)}</strong>
+                    <small>
+                      {event.target} · {event.actor}
+                    </small>
+                  </div>
+                  <div className="activity-list__meta">
+                    <StatusText tone={event.result === "success" ? "success" : "danger"}>
+                      {humanize(event.result)}
+                    </StatusText>
+                    <time dateTime={event.occurred_at}>
+                      {new Date(event.occurred_at).toLocaleTimeString()}
+                    </time>
+                  </div>
+                </li>
+              ))}
+            </ol>
+          ) : (
+            <EmptyState
+              compact
+              title="No recent activity"
+              description="Audited controller and device events will appear here."
+            />
+          )}
         </Panel>
 
         <Panel
@@ -343,6 +376,5 @@ function formatDuration(milliseconds: number): string {
 }
 
 function humanize(value: string): string {
-  return value.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+  return value.replace(/[._]/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
-

@@ -8,7 +8,7 @@ from cueverge.core.models import (
     SceneDefinitionV1,
     SceneDefinitionV2,
 )
-from cueverge.protocol.device_v2 import DeviceKind
+from cueverge.protocol.device_v2 import DeviceCapabilityDocument, DeviceKind
 
 
 class GuiModel(BaseModel):
@@ -91,16 +91,41 @@ class CompilationResponse(GuiModel):
 
 class InstallationResourceResponse(GuiModel):
     resource: str
-    kind: Literal["media_agent", "pixel_output"]
+    kind: Literal["media_agent", "pixel_output", "downstream_controller"]
     target: str | None = None
     pixel_count: int | None = Field(default=None, gt=0)
 
 
 class InstallationStatusResponse(GuiModel):
-    installation_id: Literal["active"] = "active"
+    installation_id: str
     name: str
+    revision: int = Field(ge=1)
+    runtime_active: bool
     package_schema: Literal["runtime-v1-v2"] = "runtime-v1-v2"
     resources: tuple[InstallationResourceResponse, ...]
+
+
+class InstallationSummaryResponse(GuiModel):
+    id: str
+    name: str
+    revision: int = Field(ge=1)
+    runtime_active: bool
+    created_at: str
+    updated_at: str
+
+
+class CreateInstallationRequest(GuiModel):
+    name: str = Field(min_length=1, max_length=200)
+
+
+class UpdateInstallationRequest(GuiModel):
+    name: str = Field(min_length=1, max_length=200)
+
+
+class InstallationConflictResponse(GuiModel):
+    code: Literal["installation_conflict"] = "installation_conflict"
+    requested_revision: int
+    current_revision: int | None
 
 
 class RuntimeStatusResponse(GuiModel):
@@ -138,6 +163,20 @@ class OperateActionResponse(GuiModel):
     active_scene: str | None
 
 
+class MaintenancePreviewRequest(GuiModel):
+    resource: str = Field(min_length=1)
+    duration_seconds: int = Field(default=15, ge=5, le=30)
+
+
+class MaintenancePreviewResponse(GuiModel):
+    resource: str
+    resource_kind: Literal["media_agent", "pixel_output"]
+    pattern: Literal["alignment_grid", "pixel_index_chase"]
+    simulation_only: Literal[True] = True
+    started_at: str
+    expires_at: str
+
+
 class TopologyNodeResponse(GuiModel):
     id: str
     label: str
@@ -158,6 +197,7 @@ class TopologyNodeResponse(GuiModel):
         "not_applicable",
     ]
     compatibility: Literal["compatible", "conflict", "unknown", "not_applicable"]
+    compatibility_detail: str | None = None
     protocol_version: int | None = Field(default=None, ge=1)
     capabilities: tuple[str, ...] = ()
     assigned_resources: tuple[str, ...] = ()
@@ -170,6 +210,32 @@ class TopologyNodeResponse(GuiModel):
     signal_percent: int | None = Field(default=None, ge=0, le=100)
     output_on: bool | None = None
     diagnostic: str | None = None
+    capability_document: DeviceCapabilityDocument | None = None
+    certificate_expires_at: str | None = None
+    storage_total_bytes: int | None = Field(default=None, gt=0)
+    storage_free_bytes: int | None = Field(default=None, ge=0)
+    artifact_count: int | None = Field(default=None, ge=0)
+    artifact_bytes: int | None = Field(default=None, ge=0)
+    pinned_artifact_count: int | None = Field(default=None, ge=0)
+    supports_pinning: bool | None = None
+    supports_resumable_transfer: bool | None = None
+    active_transfers: int | None = Field(default=None, ge=0)
+    failed_transfers: int | None = Field(default=None, ge=0)
+    artifact_faults: tuple[str, ...] = ()
+
+
+class DeviceArtifactResponse(GuiModel):
+    digest_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    size_bytes: int = Field(ge=0)
+    pinned: bool
+
+
+class DeviceTransferStatusResponse(GuiModel):
+    digest_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    received_bytes: int = Field(ge=0)
+    total_bytes: int = Field(gt=0)
+    state: Literal["active", "failed"]
+    fault: str | None = None
 
 
 class TopologyResponse(GuiModel):
@@ -181,6 +247,7 @@ class TopologyResponse(GuiModel):
 
 class CreatePairingTokenRequest(GuiModel):
     device_kind: DeviceKind
+    discovered_endpoint_id: str | None = None
 
 
 class PairingTokenResponse(GuiModel):
@@ -188,6 +255,65 @@ class PairingTokenResponse(GuiModel):
     pairing_token: str
     device_kind: DeviceKind
     expires_at: str
+    device_transport_url: str
+    discovered_endpoint_id: str | None = None
+
+
+class ObservedProtocolRange(GuiModel):
+    minimum: int = Field(ge=1)
+    maximum: int = Field(ge=1)
+
+    @model_validator(mode="after")
+    def validate_range(self) -> "ObservedProtocolRange":
+        if self.maximum < self.minimum:
+            raise ValueError("protocol maximum must be greater than or equal to minimum")
+        return self
+
+
+class CapabilityReviewRequest(GuiModel):
+    schema_version: int = Field(ge=1)
+    protocol: ObservedProtocolRange
+    device_kind: DeviceKind
+    software_version: str = Field(min_length=1, max_length=128)
+    capabilities: tuple[dict[str, JsonValue], ...] = Field(min_length=1)
+
+
+class CapabilityReviewIssue(GuiModel):
+    code: Literal[
+        "unsupported_schema",
+        "protocol_mismatch",
+        "duplicate_capability",
+        "missing_media_playback",
+        "missing_downstream_control",
+        "direct_agent_claims_downstream_control",
+    ]
+    message: str
+
+
+class CapabilityReviewResponse(GuiModel):
+    compatible: bool
+    controller_protocol_version: int
+    capability_kinds: tuple[str, ...]
+    issues: tuple[CapabilityReviewIssue, ...]
+
+
+class ProbeEndpointRequest(GuiModel):
+    address: str = Field(min_length=1, max_length=2048)
+
+
+class DiscoveredEndpointResponse(GuiModel):
+    id: str
+    base_url: str
+    device_kind: DeviceKind
+    software_version: str
+    protocol_minimum: int = Field(ge=1)
+    protocol_maximum: int = Field(ge=1)
+    capability_kinds: tuple[str, ...]
+    compatible: bool
+    state: Literal["discovered", "pairing", "enrolled", "rejected"]
+    enrolled_device_id: str | None
+    observed_at: str
+    updated_at: str
 
 
 class SetDeviceConnectionPolicyRequest(GuiModel):
@@ -208,6 +334,21 @@ class DeviceEnrollmentStateResponse(GuiModel):
     device_id: str
     state: Literal["enrolled", "suspended", "revoked"]
     updated_at: str
+
+
+class ConnectionTestCheck(GuiModel):
+    name: Literal["enrollment", "heartbeat", "timing", "assignment"]
+    passed: bool
+    detail: str
+
+
+class DeviceConnectionTestResponse(GuiModel):
+    device_id: str
+    observed_at: str
+    result: Literal["passed", "failed"]
+    checks: tuple[ConnectionTestCheck, ...]
+    latency_ms: float | None = Field(default=None, ge=0)
+    clock_offset_ms: float | None = None
 
 
 class SetResourceAssignmentRequest(GuiModel):
@@ -246,3 +387,13 @@ class AuditEventResponse(GuiModel):
     result: str
     occurred_at: str
     authorization_context: dict[str, JsonValue]
+
+
+class ActivityEventResponse(GuiModel):
+    id: int = Field(ge=1)
+    occurred_at: str
+    category: Literal["device", "operation", "configuration", "project", "security"]
+    action: str
+    actor: str
+    target: str
+    result: str

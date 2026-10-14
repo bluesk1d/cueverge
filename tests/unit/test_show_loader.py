@@ -10,6 +10,10 @@ from cueverge.core.loader import ShowPackageError, load_show_package
 def test_loads_demo_package_with_bound_resources() -> None:
     catalog = load_show_package(Path("shows/demo"))
 
+    assert {binding.resource for binding in catalog.installation.resources} == {
+        "projector.demo",
+        "roofline.demo",
+    }
     scene = catalog.require("synthetic-sweep")
     assert scene.agent_id == "fake-media-1"
     assert scene.pixel_count == 8

@@ -39,6 +39,7 @@ class DeviceEnrollmentService:
         device_kind: DeviceKind,
         actor: str,
         role: Role,
+        discovered_endpoint_id: str | None = None,
     ) -> PairingTokenResponse:
         token = secrets.token_urlsafe(32)
         now = datetime.now(UTC)
@@ -50,12 +51,18 @@ class DeviceEnrollmentService:
             created_at=now.isoformat(),
             expires_at=int(expires_at.timestamp()),
             role=role,
+            discovered_endpoint_id=discovered_endpoint_id,
         )
+        transport_url = self.config.device_listener_public_url
+        if transport_url is None:
+            raise RuntimeError("validated device listener public URL is missing")
         return PairingTokenResponse(
             id=stored.id,
             pairing_token=token,
             device_kind=device_kind,
             expires_at=expires_at.isoformat(),
+            device_transport_url=str(transport_url),
+            discovered_endpoint_id=stored.discovered_endpoint_id,
         )
 
     def enroll(

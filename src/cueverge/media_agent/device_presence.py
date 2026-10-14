@@ -1,6 +1,8 @@
 import asyncio
+import hashlib
 import json
 import logging
+import shutil
 import ssl
 import time
 from pathlib import Path
@@ -13,17 +15,31 @@ from websockets.exceptions import WebSocketException
 from cueverge.media_agent.client import MediaAgentClient
 from cueverge.media_agent.device_enrollment import StoredDeviceIdentity
 from cueverge.protocol.device_v2 import (
+    DeviceArtifactInventory,
+    DeviceArtifactRecord,
+    DeviceArtifactTransferStatus,
     DeviceCommandAck,
     DeviceHeartbeat,
     DeviceHeartbeatAck,
     DeviceHello,
     DeviceMediaCommand,
     DeviceMediaPosition,
+    DeviceTimingReport,
     DeviceWelcome,
 )
 from cueverge.protocol.models import AgentCommand
 
 LOGGER = logging.getLogger(__name__)
+
+ArtifactInventorySnapshot = tuple[
+    int,
+    int,
+    bool,
+    bool,
+    tuple[DeviceArtifactRecord, ...],
+    tuple[DeviceArtifactTransferStatus, ...],
+    tuple[str, ...],
+]
 
 
 class DevicePresenceError(RuntimeError):
@@ -53,6 +69,7 @@ class DevicePresenceClient:
             credential_root / "certificate.pem",
             credential_root / "private-key.pem",
         )
+        self._heartbeat_sent: dict[int, tuple[float, int]] = {}
 
     async def run_forever(self) -> None:
         while True:
@@ -78,6 +95,7 @@ class DevicePresenceClient:
                 await asyncio.sleep(self.reconnect_delay_ms / 1000)
 
     async def _run_connection(self, websocket: ClientConnection) -> None:
+        self._heartbeat_sent.clear()
         session_id = uuid4()
         hello = DeviceHello(
             device_id=self.identity.device_id,
@@ -97,6 +115,7 @@ class DevicePresenceClient:
         tasks = (
             asyncio.create_task(self._heartbeat_loop(websocket, send_lock, welcome, session_id)),
             asyncio.create_task(self._telemetry_loop(websocket, send_lock)),
+            asyncio.create_task(self._inventory_once(websocket, send_lock, session_id, welcome)),
         )
         try:
             await self._receive(websocket, send_lock, session_id, welcome)
@@ -123,6 +142,29 @@ class DevicePresenceClient:
                     raise DevicePresenceError(
                         f"controller fenced device presence: {acknowledgment.reason}"
                     )
+                sent = self._heartbeat_sent.pop(acknowledgment.sequence, None)
+                if sent is None:
+                    raise DevicePresenceError("controller acknowledged an unknown heartbeat")
+                received_monotonic_ms = time.monotonic() * 1000
+                received_unix_ms = time.time_ns() // 1_000_000
+                round_trip_ms, clock_offset_ms = calculate_timing_metrics(
+                    sent_monotonic_ms=sent[0],
+                    sent_unix_ms=sent[1],
+                    received_monotonic_ms=received_monotonic_ms,
+                    received_unix_ms=received_unix_ms,
+                    controller_receive_unix_ms=acknowledgment.controller_receive_unix_ms,
+                    controller_send_unix_ms=acknowledgment.controller_send_unix_ms,
+                )
+                report = DeviceTimingReport(
+                    device_id=self.identity.device_id,
+                    device_session_id=session_id,
+                    controller_epoch=welcome.controller_epoch,
+                    heartbeat_sequence=acknowledgment.sequence,
+                    round_trip_ms=round(round_trip_ms, 1),
+                    clock_offset_ms=round(clock_offset_ms, 1),
+                )
+                async with send_lock:
+                    await websocket.send(report.model_dump_json())
             elif message_type == "device.media.command":
                 command = DeviceMediaCommand.model_validate(message)
                 internal = AgentCommand(
@@ -161,13 +203,17 @@ class DevicePresenceClient:
         sequence = 0
         while True:
             await asyncio.sleep(welcome.heartbeat_interval_ms / 1000)
+            sent_monotonic_ms = time.monotonic() * 1000
+            sent_unix_ms = time.time_ns() // 1_000_000
             message = DeviceHeartbeat(
                 device_id=self.identity.device_id,
                 device_session_id=session_id,
                 controller_epoch=welcome.controller_epoch,
                 sequence=sequence,
-                device_monotonic_ms=round(time.monotonic() * 1000),
+                device_monotonic_ms=round(sent_monotonic_ms),
+                device_unix_ms=sent_unix_ms,
             )
+            self._heartbeat_sent[sequence] = (sent_monotonic_ms, sent_unix_ms)
             async with send_lock:
                 await websocket.send(message.model_dump_json())
             sequence += 1
@@ -196,3 +242,158 @@ class DevicePresenceClient:
                 async with send_lock:
                     await websocket.send(message.model_dump_json())
             await asyncio.sleep(1 / self.media_client.config.telemetry_hz)
+
+    async def _inventory_once(
+        self,
+        websocket: ClientConnection,
+        send_lock: asyncio.Lock,
+        session_id: UUID,
+        welcome: DeviceWelcome,
+    ) -> None:
+        (
+            total_bytes,
+            free_bytes,
+            supports_pinning,
+            supports_resumable_transfer,
+            artifacts,
+            transfers,
+            faults,
+        ) = await asyncio.to_thread(
+            scan_artifact_inventory,
+            self.media_client.config.asset_root,
+        )
+        inventory = DeviceArtifactInventory(
+            device_id=self.identity.device_id,
+            device_session_id=session_id,
+            controller_epoch=welcome.controller_epoch,
+            total_bytes=total_bytes,
+            free_bytes=free_bytes,
+            supports_pinning=supports_pinning,
+            supports_resumable_transfer=supports_resumable_transfer,
+            artifacts=artifacts,
+            transfers=transfers,
+            faults=faults,
+        )
+        async with send_lock:
+            await websocket.send(inventory.model_dump_json())
+
+
+def calculate_timing_metrics(
+    *,
+    sent_monotonic_ms: float,
+    sent_unix_ms: int,
+    received_monotonic_ms: float,
+    received_unix_ms: int,
+    controller_receive_unix_ms: int,
+    controller_send_unix_ms: int,
+) -> tuple[float, float]:
+    server_processing_ms = controller_send_unix_ms - controller_receive_unix_ms
+    round_trip_ms = max(
+        0.0,
+        received_monotonic_ms - sent_monotonic_ms - server_processing_ms,
+    )
+    clock_offset_ms = (
+        (controller_receive_unix_ms - sent_unix_ms) + (controller_send_unix_ms - received_unix_ms)
+    ) / 2
+    return round(round_trip_ms, 1), round(clock_offset_ms, 1)
+
+
+def scan_artifact_inventory(
+    asset_root: Path,
+    *,
+    maximum_files: int = 10_000,
+) -> ArtifactInventorySnapshot:
+    storage_path = asset_root if asset_root.exists() else asset_root.parent
+    usage = shutil.disk_usage(storage_path)
+    if not asset_root.exists():
+        return usage.total, usage.free, False, False, (), (), ("Asset root does not exist",)
+    (
+        supports_pinning,
+        supports_resumable_transfer,
+        pinned_digests,
+        transfers,
+        cache_faults,
+    ) = _load_cache_state(asset_root)
+    artifacts: dict[str, int] = {}
+    unreadable = 0
+    discovered = 0
+    truncated = False
+    for path in asset_root.rglob("*"):
+        if path.name == ".cueverge-cache-state.json" or path.is_symlink() or not path.is_file():
+            continue
+        discovered += 1
+        if discovered > maximum_files:
+            truncated = True
+            break
+        try:
+            digest = hashlib.sha256()
+            size_bytes = 0
+            with path.open("rb") as source:
+                while chunk := source.read(1024 * 1024):
+                    digest.update(chunk)
+                    size_bytes += len(chunk)
+            artifacts.setdefault(digest.hexdigest(), size_bytes)
+        except OSError:
+            unreadable += 1
+    faults = list(cache_faults)
+    if unreadable:
+        faults.append(f"{unreadable} asset(s) could not be read")
+    if truncated:
+        faults.append(f"Artifact inventory exceeded {maximum_files} files")
+    missing_pins = pinned_digests.difference(artifacts)
+    if missing_pins:
+        faults.append(f"{len(missing_pins)} pinned artifact(s) are missing")
+    return (
+        usage.total,
+        usage.free,
+        supports_pinning,
+        supports_resumable_transfer,
+        tuple(
+            DeviceArtifactRecord(
+                digest_sha256=digest,
+                size_bytes=size,
+                pinned=digest in pinned_digests,
+            )
+            for digest, size in sorted(artifacts.items())
+        ),
+        transfers,
+        tuple(faults),
+    )
+
+
+def _load_cache_state(
+    asset_root: Path,
+) -> tuple[
+    bool,
+    bool,
+    set[str],
+    tuple[DeviceArtifactTransferStatus, ...],
+    tuple[str, ...],
+]:
+    state_path = asset_root / ".cueverge-cache-state.json"
+    if not state_path.exists():
+        return False, False, set(), (), ()
+    try:
+        value = json.loads(state_path.read_text(encoding="utf-8"))
+        if not isinstance(value, dict):
+            raise ValueError("cache state must be an object")
+        pinned_value = value.get("pinned_digests", [])
+        transfer_value = value.get("transfers", [])
+        if not isinstance(pinned_value, list) or not all(
+            isinstance(digest, str) for digest in pinned_value
+        ):
+            raise ValueError("pinned_digests must be a string array")
+        if not isinstance(transfer_value, list):
+            raise ValueError("transfers must be an array")
+        transfers = tuple(
+            DeviceArtifactTransferStatus.model_validate(transfer) for transfer in transfer_value
+        )
+        return (
+            bool(value.get("supports_pinning", False)),
+            bool(value.get("supports_resumable_transfer", False)),
+            set(pinned_value),
+            transfers,
+            (),
+        )
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError):
+        return False, False, set(), (), ("Cache state metadata is invalid",)

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Cable,
   Clock3,
@@ -10,14 +10,24 @@ import {
 
 import {
   createPairingToken,
+  ArtifactCacheCapability,
+  DeviceCapabilityDocument,
+  DiscoveredEndpoint,
+  getDiscoveredEndpoints,
   InstallationStatus,
+  MediaPlaybackCapability,
   PairingToken,
   removeResourceAssignment,
+  rejectDiscoveredEndpoint,
+  reviewDeviceCapabilities,
+  CapabilityReview,
   ResourceAssignment,
   Session,
   setDeviceConnectionPolicy,
   setDeviceEnrollmentState,
   setResourceAssignment,
+  testDeviceConnection,
+  probeEndpoint,
   Topology,
   TopologyNode,
 } from "../api";
@@ -174,12 +184,13 @@ export function InstallationPage({
           )}
         </Panel>
       </div>
-      {session?.role === "administrator" && topology && (
+      {(session?.role === "administrator" || session?.role === "operator") && topology && (
         <DeviceManagement
           agents={agents}
           installation={installation}
           assignments={assignments}
           enrollmentSupported={topology.enrollment_supported}
+          canAdminister={session.role === "administrator"}
           onRefresh={onRefresh}
         />
       )}
@@ -192,12 +203,14 @@ function DeviceManagement({
   installation,
   assignments,
   enrollmentSupported,
+  canAdminister,
   onRefresh,
 }: {
   agents: TopologyNode[];
   installation: InstallationStatus | null;
   assignments: ResourceAssignment[];
   enrollmentSupported: boolean;
+  canAdminister: boolean;
   onRefresh?: () => Promise<void> | void;
 }) {
   const [deviceKind, setDeviceKind] =
@@ -205,16 +218,108 @@ function DeviceManagement({
   const [pairingToken, setPairingToken] = useState<PairingToken | null>(null);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [now, setNow] = useState(Date.now());
+  const [copied, setCopied] = useState<string | null>(null);
+  const [capabilityJson, setCapabilityJson] = useState(() =>
+    JSON.stringify(capabilityTemplate("direct_media_agent"), null, 2),
+  );
+  const [capabilityReview, setCapabilityReview] = useState<CapabilityReview | null>(null);
+  const [reviewing, setReviewing] = useState(false);
+  const [discoveryAddress, setDiscoveryAddress] = useState("");
+  const [discoveredEndpoints, setDiscoveredEndpoints] = useState<DiscoveredEndpoint[]>([]);
+  const [probing, setProbing] = useState(false);
 
-  async function createToken() {
+  useEffect(() => {
+    if (!pairingToken) {
+      return;
+    }
+    const timer = window.setInterval(() => setNow(Date.now()), 1_000);
+    return () => window.clearInterval(timer);
+  }, [pairingToken]);
+
+  useEffect(() => {
+    if (!canAdminister) {
+      return;
+    }
+    getDiscoveredEndpoints()
+      .then(setDiscoveredEndpoints)
+      .catch(() => setError("Discovered endpoints could not be loaded."));
+  }, [canAdminister]);
+
+  const remainingSeconds = pairingToken
+    ? Math.max(0, Math.ceil((new Date(pairingToken.expires_at).getTime() - now) / 1_000))
+    : 0;
+  const enrollmentCommand = pairingToken
+    ? `cueverge-device-enroll --enrollment-url ${window.location.origin}/api/device/v2/enroll --display-name DEVICE_NAME --capabilities ./device-capabilities.json`
+    : "";
+  const transportSetting = pairingToken
+    ? `CUEVERGE_DEVICE_TRANSPORT_URL=${pairingToken.device_transport_url}`
+    : "";
+
+  async function copy(label: string, value: string) {
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopied(label);
+    } catch {
+      setError("Clipboard access failed. Select and copy the value manually.");
+    }
+  }
+
+  async function createToken(endpoint?: DiscoveredEndpoint) {
     setCreating(true);
     setError(null);
     try {
-      setPairingToken(await createPairingToken(deviceKind));
+      const kind = endpoint?.device_kind ?? deviceKind;
+      setDeviceKind(kind);
+      setPairingToken(await createPairingToken(kind, endpoint?.id));
+      setNow(Date.now());
+      setCopied(null);
+      if (endpoint) {
+        setDiscoveredEndpoints(await getDiscoveredEndpoints());
+      }
     } catch {
       setError("Pairing token creation failed.");
     } finally {
       setCreating(false);
+    }
+  }
+
+  async function reviewCapabilities() {
+    setReviewing(true);
+    setError(null);
+    try {
+      const document = JSON.parse(capabilityJson) as unknown;
+      setCapabilityReview(await reviewDeviceCapabilities(document));
+    } catch {
+      setCapabilityReview(null);
+      setError("Capability review failed. Check the JSON document and try again.");
+    } finally {
+      setReviewing(false);
+    }
+  }
+
+  async function probe() {
+    setProbing(true);
+    setError(null);
+    try {
+      await probeEndpoint(discoveryAddress);
+      setDiscoveryAddress("");
+      setDiscoveredEndpoints(await getDiscoveredEndpoints());
+    } catch {
+      setError(
+        "Discovery failed. Use a trusted HTTPS origin that resolves only to local/private addresses.",
+      );
+    } finally {
+      setProbing(false);
+    }
+  }
+
+  async function reject(endpointId: string) {
+    try {
+      await rejectDiscoveredEndpoint(endpointId);
+      setDiscoveredEndpoints(await getDiscoveredEndpoints());
+    } catch {
+      setError("The discovered endpoint could not be rejected.");
     }
   }
 
@@ -225,7 +330,88 @@ function DeviceManagement({
       className="device-management"
     >
       <div className="device-management__grid">
-        <section aria-labelledby="pair-device-title">
+        {canAdminister && (
+          <section
+            className="device-management__wide"
+            aria-labelledby="endpoint-discovery-title"
+          >
+            <h3 id="endpoint-discovery-title">Explicit controller discovery</h3>
+            <div className="endpoint-discovery-form">
+              <label>
+                HTTPS controller origin
+                <input
+                  placeholder="https://controller.local"
+                  value={discoveryAddress}
+                  onChange={(event) => setDiscoveryAddress(event.target.value)}
+                />
+              </label>
+              <button
+                disabled={probing || !discoveryAddress.trim()}
+                onClick={() => void probe()}
+              >
+                {probing ? "Probing…" : "Probe endpoint"}
+              </button>
+            </div>
+            {discoveredEndpoints.length ? (
+              <div className="discovered-endpoints">
+                {discoveredEndpoints.map((endpoint) => (
+                  <article key={endpoint.id}>
+                    <div>
+                      <strong>{endpoint.base_url}</strong>
+                      <small>
+                        {humanize(endpoint.device_kind)} · software{" "}
+                        {endpoint.software_version} · protocol v
+                        {endpoint.protocol_minimum}-v{endpoint.protocol_maximum}
+                      </small>
+                      <small>{endpoint.capability_kinds.join(", ")}</small>
+                    </div>
+                    <StatusText
+                      tone={
+                        endpoint.state === "rejected" || endpoint.state === "pairing"
+                          ? "neutral"
+                          : endpoint.state === "enrolled"
+                            ? "success"
+                          : endpoint.compatible
+                            ? "success"
+                            : "danger"
+                      }
+                    >
+                      {endpoint.state === "rejected"
+                        ? "Rejected"
+                        : endpoint.state === "pairing"
+                          ? "Pairing token issued"
+                          : endpoint.state === "enrolled"
+                            ? "Enrolled"
+                        : endpoint.compatible
+                          ? "Compatible · untrusted"
+                          : "Incompatible · untrusted"}
+                    </StatusText>
+                    <div className="discovered-endpoint-actions">
+                      {endpoint.state === "discovered" && endpoint.compatible && (
+                        <button onClick={() => void createToken(endpoint)}>
+                          Prepare enrollment
+                        </button>
+                      )}
+                      {endpoint.state !== "enrolled" && (
+                        <button
+                          disabled={endpoint.state === "rejected"}
+                          onClick={() => void reject(endpoint.id)}
+                        >
+                          Reject
+                        </button>
+                      )}
+                    </div>
+                  </article>
+                ))}
+              </div>
+            ) : (
+              <p className="muted">
+                No endpoints discovered. Discovery never grants trust or command authority.
+              </p>
+            )}
+          </section>
+        )}
+        {canAdminister && <section aria-labelledby="pair-device-title">
           <h3 id="pair-device-title">Pair a device</h3>
           {enrollmentSupported ? (
             <>
@@ -233,17 +419,58 @@ function DeviceManagement({
                 Device kind
                 <select
                   value={deviceKind}
-                  onChange={(event) =>
-                    setDeviceKind(event.target.value as PairingToken["device_kind"])
-                  }
+                  onChange={(event) => {
+                    const kind = event.target.value as PairingToken["device_kind"];
+                    setDeviceKind(kind);
+                    setCapabilityJson(JSON.stringify(capabilityTemplate(kind), null, 2));
+                    setCapabilityReview(null);
+                    setPairingToken(null);
+                  }}
                 >
                   <option value="direct_media_agent">Direct media agent</option>
                   <option value="downstream_controller">Downstream controller</option>
                 </select>
               </label>
+              <label>
+                Capability document
+                <textarea
+                  aria-label="Capability document"
+                  rows={12}
+                  spellCheck={false}
+                  value={capabilityJson}
+                  onChange={(event) => {
+                    setCapabilityJson(event.target.value);
+                    setCapabilityReview(null);
+                  }}
+                />
+              </label>
+              <button disabled={reviewing} onClick={() => void reviewCapabilities()}>
+                {reviewing ? "Reviewing…" : "Review capabilities"}
+              </button>
+              {capabilityReview && (
+                <div
+                  className={`capability-review capability-review--${
+                    capabilityReview.compatible ? "compatible" : "incompatible"
+                  }`}
+                  role="status"
+                >
+                  <StatusText tone={capabilityReview.compatible ? "success" : "danger"}>
+                    {capabilityReview.compatible
+                      ? `Compatible with protocol v${capabilityReview.controller_protocol_version}`
+                      : "Compatibility issues found"}
+                  </StatusText>
+                  {capabilityReview.issues.length > 0 && (
+                    <ul>
+                      {capabilityReview.issues.map((issue) => (
+                        <li key={issue.code}>{issue.message}</li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              )}
               <button
                 className="primary-button"
-                disabled={creating}
+                disabled={creating || !capabilityReview?.compatible}
                 onClick={() => void createToken()}
               >
                 {creating ? "Creating…" : "Create one-time token"}
@@ -252,18 +479,48 @@ function DeviceManagement({
                 <div className="pairing-token" role="status">
                   <strong>Copy this token now</strong>
                   <code>{pairingToken.pairing_token}</code>
+                  <button
+                    disabled={remainingSeconds === 0}
+                    onClick={() =>
+                      void copy("token", pairingToken.pairing_token)
+                    }
+                  >
+                    {copied === "token" ? "Token copied" : "Copy token"}
+                  </button>
                   <small>
-                    Expires {new Date(pairingToken.expires_at).toLocaleTimeString()} and can
-                    be used once.
+                    {remainingSeconds > 0
+                      ? `Expires in ${remainingSeconds} seconds and can be used once.`
+                      : "Expired. Create a new token before enrolling."}
                   </small>
+                  <div className="enrollment-guide">
+                    <strong>1. Review the device capability file</strong>
+                    <span>
+                      Declare only codecs, outputs, storage, and controls verified on the
+                      device.
+                    </span>
+                    <strong>2. Run enrollment on the device</strong>
+                    <code>{enrollmentCommand}</code>
+                    <button onClick={() => void copy("command", enrollmentCommand)}>
+                      {copied === "command" ? "Command copied" : "Copy command"}
+                    </button>
+                    <strong>3. Configure the authenticated transport</strong>
+                    <code>{transportSetting}</code>
+                    <button onClick={() => void copy("transport", transportSetting)}>
+                      {copied === "transport" ? "Setting copied" : "Copy setting"}
+                    </button>
+                    <small>
+                      The device generates and retains its private key. Paste the one-time
+                      token only at the hidden prompt.
+                    </small>
+                  </div>
                 </div>
               )}
             </>
           ) : (
             <p className="muted">Device enrollment is disabled on this controller.</p>
           )}
-        </section>
-        <section aria-labelledby="connection-policy-title">
+        </section>}
+        {canAdminister && <section aria-labelledby="connection-policy-title">
           <h3 id="connection-policy-title">Connection expectations</h3>
           <div className="policy-list">
             {agents.map((agent) => (
@@ -275,8 +532,8 @@ function DeviceManagement({
               />
             ))}
           </div>
-        </section>
-        <section aria-labelledby="device-lifecycle-title">
+        </section>}
+        {canAdminister && <section className="device-management__wide" aria-labelledby="device-lifecycle-title">
           <h3 id="device-lifecycle-title">Device lifecycle</h3>
           <div className="policy-list">
             {agents.map((agent) => (
@@ -288,16 +545,21 @@ function DeviceManagement({
               />
             ))}
           </div>
-        </section>
-        <section aria-labelledby="resource-assignment-title">
+        </section>}
+        {canAdminister && <section className="device-management__wide" aria-labelledby="resource-assignment-title">
           <h3 id="resource-assignment-title">Resource assignments</h3>
           <div className="policy-list">
             {installation?.resources
-              .filter((resource) => resource.kind === "media_agent")
+              .filter((resource) => resource.kind !== "pixel_output")
               .map((resource) => (
                 <ResourceAssignmentControl
                   key={resource.resource}
                   resource={resource.resource}
+                  capabilityKind={
+                    resource.kind === "media_agent"
+                      ? "media_playback"
+                      : "downstream_control"
+                  }
                   agents={agents}
                   assignment={assignments.find(
                     (assignment) => assignment.resource === resource.resource,
@@ -311,10 +573,97 @@ function DeviceManagement({
                 />
               ))}
           </div>
+        </section>}
+        <section className="device-management__wide" aria-labelledby="connection-test-title">
+          <h3 id="connection-test-title">Connection tests</h3>
+          <div className="policy-list">
+            {agents.map((agent) => (
+              <ConnectionTest key={agent.id} node={agent} />
+            ))}
+          </div>
         </section>
       </div>
       {error && <p role="alert">{error}</p>}
     </Panel>
+  );
+}
+
+function capabilityTemplate(
+  deviceKind: PairingToken["device_kind"],
+): Record<string, unknown> {
+  return {
+    schema_version: 1,
+    protocol: { minimum: 2, maximum: 2 },
+    device_kind: deviceKind,
+    software_version: "0.1.0",
+    capabilities:
+      deviceKind === "direct_media_agent"
+        ? [
+            {
+              kind: "media_playback",
+              codecs: ["h264"],
+              containers: ["mp4"],
+              max_outputs: 1,
+              supports_pause: true,
+              supports_seek: true,
+            },
+          ]
+        : [
+            {
+              kind: "downstream_control",
+              operations: ["query_status"],
+            },
+          ],
+  };
+}
+
+function ConnectionTest({ node }: { node: TopologyNode }) {
+  const [testing, setTesting] = useState(false);
+  const [result, setResult] = useState<Awaited<
+    ReturnType<typeof testDeviceConnection>
+  > | null>(null);
+  const [error, setError] = useState(false);
+
+  async function run() {
+    setTesting(true);
+    setError(false);
+    try {
+      setResult(await testDeviceConnection(node.id.replace("device:", "")));
+    } catch {
+      setError(true);
+    } finally {
+      setTesting(false);
+    }
+  }
+
+  return (
+    <div className="connection-test-row">
+      <div className="connection-test-row__header">
+        <div>
+          <strong>{node.label}</strong>
+          <small>{connectionStatus(node).label}</small>
+        </div>
+        <button disabled={testing} onClick={() => void run()}>
+          {testing ? "Testing…" : "Test connection"}
+        </button>
+      </div>
+      {result && (
+        <div className="connection-test-result" role="status">
+          <StatusText tone={result.result === "passed" ? "success" : "danger"}>
+            {result.result === "passed" ? "All checks passed" : "Action required"}
+          </StatusText>
+          <ul>
+            {result.checks.map((check) => (
+              <li key={check.name}>
+                <strong>{humanize(check.name)}</strong>
+                <span>{check.detail}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {error && <p role="alert">Connection test could not be completed.</p>}
+    </div>
   );
 }
 
@@ -403,12 +752,14 @@ function DeviceLifecycle({
 
 function ResourceAssignmentControl({
   resource,
+  capabilityKind,
   agents,
   assignment,
   onRefresh,
   onError,
 }: {
   resource: string;
+  capabilityKind: "media_playback" | "downstream_control";
   agents: TopologyNode[];
   assignment?: ResourceAssignment;
   onRefresh?: () => Promise<void> | void;
@@ -421,7 +772,7 @@ function ResourceAssignmentControl({
   const locked = currentNode?.connection === "connected";
   const candidates = agents.filter(
     (agent) =>
-      agent.capabilities.includes("media_playback") &&
+      agent.capabilities.includes(capabilityKind) &&
       (agent.connection === "disconnected" || agent.id === currentNode?.id),
   );
 
@@ -432,7 +783,7 @@ function ResourceAssignmentControl({
         await setResourceAssignment(
           resource,
           deviceId,
-          "media_playback",
+          capabilityKind,
           assignment?.revision ?? null,
         );
       } else if (assignment) {
@@ -526,6 +877,8 @@ function ConnectionPolicy({
 
 function NodeCard({ node }: { node: TopologyNode }) {
   const connection = connectionStatus(node);
+  const media = mediaCapability(node.capability_document);
+  const cache = cacheCapability(node.capability_document);
   const Icon =
     node.kind === "controller"
       ? Server
@@ -560,8 +913,18 @@ function NodeCard({ node }: { node: TopologyNode }) {
           <Detail label="Enrollment" value={enrollmentLabel(node)} />
           <Detail label="Compatibility" value={humanize(node.compatibility)} />
           <Detail
+            label="Compatibility detail"
+            value={node.compatibility_detail ?? "No compatibility diagnostic"}
+          />
+          <Detail
             label="Protocol"
-            value={node.protocol_version === null ? "Not observed" : `v${node.protocol_version}`}
+            value={
+              node.capability_document
+                ? `v${node.capability_document.protocol.minimum}–${node.capability_document.protocol.maximum}`
+                : node.protocol_version === null
+                  ? "Not observed"
+                  : `v${node.protocol_version}`
+            }
           />
           <Detail
             label="Capabilities"
@@ -576,6 +939,94 @@ function NodeCard({ node }: { node: TopologyNode }) {
             }
           />
           <Detail label="Software version" value={node.software_version ?? "Not reported"} />
+          <Detail
+            label="Media formats"
+            value={
+              media
+                ? `${media.containers.join(", ")} · ${media.codecs.join(", ")}`
+                : "Not declared"
+            }
+          />
+          <Detail
+            label="Output capacity"
+            value={media ? `${media.max_outputs} simultaneous output(s)` : "Not declared"}
+          />
+          <Detail
+            label="Playback controls"
+            value={
+              media
+                ? [
+                    media.supports_pause ? "Pause" : null,
+                    media.supports_seek ? "Seek" : null,
+                  ]
+                    .filter(Boolean)
+                    .join(", ") || "Play/stop only"
+                : "Not declared"
+            }
+          />
+          <Detail
+            label="Storage"
+            value={
+              node.storage_free_bytes !== null &&
+              node.storage_free_bytes !== undefined &&
+              node.storage_total_bytes
+                ? `${formatBytes(node.storage_free_bytes)} free of ${formatBytes(
+                    node.storage_total_bytes,
+                  )}`
+                : "Not declared"
+            }
+          />
+          <Detail
+            label="Artifacts"
+            value={
+              node.artifact_count === null || node.artifact_count === undefined
+                ? "Not reported"
+                : `${node.artifact_count} digest(s) · ${formatBytes(
+                    node.artifact_bytes ?? 0,
+                  )} · ${node.pinned_artifact_count ?? 0} pinned`
+            }
+          />
+          <Detail
+            label="Cache behavior"
+            value={
+              node.supports_pinning !== null &&
+              node.supports_pinning !== undefined
+                ? [
+                    node.supports_pinning ? "Pinning" : "No pinning",
+                    node.supports_resumable_transfer
+                      ? "Resumable transfer"
+                      : "No resumable transfer",
+                  ].join(", ")
+                : cache
+                ? [
+                    cache.supports_pinning ? "Pinning" : null,
+                    cache.supports_resumable_transfer ? "Resumable transfer" : null,
+                  ]
+                    .filter(Boolean)
+                    .join(", ") || "Inventory only"
+                : node.artifact_count !== null && node.artifact_count !== undefined
+                  ? "Inventory reporting only"
+                  : "Not declared"
+            }
+          />
+          <Detail
+            label="Transfers"
+            value={
+              node.active_transfers === null || node.active_transfers === undefined
+                ? "Not reported"
+                : `${node.active_transfers} active · ${node.failed_transfers ?? 0} failed`
+            }
+          />
+          <Detail
+            label="Certificate"
+            value={certificateExpiry(node.certificate_expires_at)}
+          />
+          {node.artifact_faults?.map((fault) => (
+            <div key={fault} className="diagnostic-error">
+              <dt>Storage fault</dt>
+              <dd>{fault}</dd>
+            </div>
+          ))}
           <Detail
             label="Latency / clock drift"
             value={
@@ -678,6 +1129,51 @@ function connectionStatus(node: TopologyNode): { tone: StatusTone; label: string
     return { tone: "warning", label: "Disconnected" };
   }
   return { tone: "neutral", label: "Not independently detectable" };
+}
+
+function mediaCapability(
+  document: DeviceCapabilityDocument | null | undefined,
+): MediaPlaybackCapability | null {
+  const capability = document?.capabilities.find(
+    (candidate) => candidate.kind === "media_playback",
+  );
+  return capability && "codecs" in capability
+    ? (capability as MediaPlaybackCapability)
+    : null;
+}
+
+function cacheCapability(
+  document: DeviceCapabilityDocument | null | undefined,
+): ArtifactCacheCapability | null {
+  const capability = document?.capabilities.find(
+    (candidate) => candidate.kind === "artifact_cache",
+  );
+  return capability && "total_bytes" in capability
+    ? (capability as ArtifactCacheCapability)
+    : null;
+}
+
+function formatBytes(value: number): string {
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let amount = value;
+  let unit = 0;
+  while (amount >= 1_000 && unit < units.length - 1) {
+    amount /= 1_000;
+    unit += 1;
+  }
+  return `${amount.toFixed(amount >= 10 || unit === 0 ? 0 : 1)} ${units[unit]}`;
+}
+
+function certificateExpiry(value: string | null | undefined): string {
+  if (!value) {
+    return "Not reported";
+  }
+  const expiry = new Date(value);
+  const remainingDays = Math.ceil((expiry.getTime() - Date.now()) / 86_400_000);
+  if (remainingDays < 0) {
+    return `Expired ${expiry.toLocaleDateString()}`;
+  }
+  return `Expires ${expiry.toLocaleDateString()} · ${remainingDays} day(s)`;
 }
 
 function formatObservationAge(ageMs: number): string {

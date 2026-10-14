@@ -16,13 +16,16 @@ from cueverge.gui.repository import (
     GuiRepository,
 )
 from cueverge.protocol.device_v2 import (
+    DeviceArtifactInventory,
     DeviceCommandAck,
     DeviceCredentialRotationRequest,
     DeviceCredentialRotationResponse,
     DeviceHeartbeat,
     DeviceHello,
+    DeviceKind,
     DeviceMediaCommand,
     DeviceMediaPosition,
+    DeviceTimingReport,
 )
 from cueverge.protocol.models import (
     AgentCommand,
@@ -99,7 +102,7 @@ def create_device_app(
             session_id = hello.device_session_id
             runtime_agent_id = None
             channel = None
-            if runtime is not None:
+            if runtime is not None and device.device_kind is DeviceKind.DIRECT_MEDIA_AGENT:
                 runtime_agent_id = _assigned_agent_id(repository, runtime, device.id)
                 channel = DeviceCommandChannel(websocket, session_id)
                 runtime_welcome = runtime.register_agent(
@@ -135,6 +138,7 @@ def create_device_app(
                 )
                 message_type = payload.get("type") if isinstance(payload, dict) else None
                 if message_type == "device.heartbeat":
+                    controller_receive_unix_ms = _now_ms()
                     heartbeat = DeviceHeartbeat.model_validate(payload)
                     heartbeat_ack = sessions.heartbeat(heartbeat)
                     if heartbeat_ack.accepted:
@@ -153,10 +157,63 @@ def create_device_app(
                                     agent_monotonic_ms=heartbeat.device_monotonic_ms,
                                 )
                             )
+                    heartbeat_ack = heartbeat_ack.model_copy(
+                        update={
+                            "controller_receive_unix_ms": controller_receive_unix_ms,
+                            "controller_send_unix_ms": _now_ms(),
+                        }
+                    )
                     await websocket.send_json(heartbeat_ack.model_dump(mode="json"))
                     if not heartbeat_ack.accepted:
                         await websocket.close(code=4403, reason="device session was fenced")
                         return
+                elif message_type == "device.timing.report":
+                    timing = DeviceTimingReport.model_validate(payload)
+                    if timing.device_id != peer.device_id:
+                        raise ValueError("timing identity differs from peer certificate")
+                    if not sessions.session_is_current(
+                        timing.device_id,
+                        timing.device_session_id,
+                        timing.controller_epoch,
+                    ):
+                        raise DeviceSessionError("timing report session was fenced")
+                    repository.mark_device_timing(
+                        device_id=device.id,
+                        session_id=str(timing.device_session_id),
+                        latency_ms=timing.round_trip_ms,
+                        clock_offset_ms=timing.clock_offset_ms,
+                    )
+                elif message_type == "device.artifact.inventory":
+                    inventory = DeviceArtifactInventory.model_validate(payload)
+                    if inventory.device_id != peer.device_id:
+                        raise ValueError("inventory identity differs from peer certificate")
+                    if not sessions.session_is_current(
+                        inventory.device_id,
+                        inventory.device_session_id,
+                        inventory.controller_epoch,
+                    ):
+                        raise DeviceSessionError("artifact inventory session was fenced")
+                    repository.replace_device_artifact_inventory(
+                        device_id=device.id,
+                        session_id=str(inventory.device_session_id),
+                        observed_at_ms=_now_ms(),
+                        total_bytes=inventory.total_bytes,
+                        free_bytes=inventory.free_bytes,
+                        supports_pinning=inventory.supports_pinning,
+                        supports_resumable_transfer=(inventory.supports_resumable_transfer),
+                        artifacts=tuple(
+                            (
+                                artifact.digest_sha256,
+                                artifact.size_bytes,
+                                artifact.pinned,
+                            )
+                            for artifact in inventory.artifacts
+                        ),
+                        transfers=tuple(
+                            transfer.model_dump(mode="json") for transfer in inventory.transfers
+                        ),
+                        faults=inventory.faults,
+                    )
                 elif message_type == "device.command.ack" and runtime is not None:
                     if runtime_agent_id is None:
                         raise ValueError("device has no runtime assignment")
