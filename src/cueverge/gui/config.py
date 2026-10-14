@@ -28,6 +28,9 @@ class GuiConfig(BaseModel):
     device_listener_port: int = Field(default=8443, ge=1, le=65535)
     device_listener_identities: tuple[str, ...] = ()
     device_listener_public_url: AnyUrl | None = None
+    asset_max_bytes: int = Field(default=10_000_000_000, gt=0)
+    asset_store_quota_bytes: int = Field(default=100_000_000_000, gt=0)
+    asset_chunk_max_bytes: int = Field(default=8_388_608, gt=0, le=67_108_864)
 
     @model_validator(mode="after")
     def validate_origins(self) -> "GuiConfig":
@@ -118,5 +121,15 @@ class GuiConfig(BaseModel):
                 AnyUrl(value)
                 if (value := os.environ.get("CUEVERGE_DEVICE_LISTENER_PUBLIC_URL"))
                 else None
+            ),
+            asset_max_bytes=int(os.environ.get("CUEVERGE_GUI_ASSET_MAX_BYTES", "10000000000")),
+            asset_store_quota_bytes=int(
+                os.environ.get(
+                    "CUEVERGE_GUI_ASSET_STORE_QUOTA_BYTES",
+                    "100000000000",
+                )
+            ),
+            asset_chunk_max_bytes=int(
+                os.environ.get("CUEVERGE_GUI_ASSET_CHUNK_MAX_BYTES", "8388608")
             ),
         )

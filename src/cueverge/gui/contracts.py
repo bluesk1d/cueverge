@@ -1,7 +1,8 @@
+from datetime import date
 from enum import StrEnum
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator, model_validator
 
 from cueverge.core.models import (
     InstallationDefinition,
@@ -21,6 +22,25 @@ class Role(StrEnum):
     OPERATOR = "operator"
     PUBLISHER = "publisher"
     ADMINISTRATOR = "administrator"
+
+
+def _normalize_folder(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = value.strip().strip("/")
+    parts = normalized.split("/") if normalized else []
+    if any(part in {"", ".", ".."} for part in parts) or "\\" in normalized:
+        raise ValueError("folder must contain plain slash-separated names")
+    return normalized or None
+
+
+def _normalize_tags(value: tuple[str, ...]) -> tuple[str, ...]:
+    normalized = tuple(tag.strip() for tag in value)
+    if any(not tag or len(tag) > 50 for tag in normalized):
+        raise ValueError("tags must contain between 1 and 50 characters")
+    if len({tag.casefold() for tag in normalized}) != len(normalized):
+        raise ValueError("tags must be unique ignoring case")
+    return normalized
 
 
 class DraftProject(GuiModel):
@@ -56,6 +76,8 @@ class ProjectSummary(GuiModel):
     id: str
     name: str
     head_revision: int = Field(ge=1)
+    metadata_revision: int = Field(ge=1)
+    archived_at: str | None
     created_at: str
     updated_at: str
 
@@ -64,6 +86,222 @@ class ProjectDraftResponse(GuiModel):
     project: ProjectSummary
     revision: int = Field(ge=1)
     draft: DraftProject
+
+
+class ProjectMetadataRequest(GuiModel):
+    name: str = Field(min_length=1, max_length=200)
+
+
+class ProjectMetadataConflictResponse(GuiModel):
+    code: Literal["project_metadata_conflict"] = "project_metadata_conflict"
+    requested_revision: int = Field(ge=1)
+    current_revision: int = Field(ge=1)
+
+
+class PortableAssetRevision(GuiModel):
+    revision: int = Field(ge=1)
+    digest_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    size_bytes: int = Field(ge=0)
+    media_type: str = Field(min_length=1, max_length=200)
+    original_filename: str = Field(min_length=1, max_length=255)
+    scan_status: Literal["unavailable", "clean", "quarantined"]
+    metadata: dict[str, JsonValue]
+    created_at: str
+
+    @field_validator("original_filename")
+    @classmethod
+    def validate_original_filename(cls, value: str) -> str:
+        if "/" in value or "\\" in value or "\x00" in value or value in {".", ".."}:
+            raise ValueError("portable original filename must be a plain filename")
+        return value
+
+    @model_validator(mode="after")
+    def reject_storage_paths(self) -> "PortableAssetRevision":
+        if _contains_storage_path(self.metadata):
+            raise ValueError("portable asset metadata cannot contain storage paths")
+        return self
+
+
+class PortableAsset(GuiModel):
+    source_id: str = Field(min_length=1)
+    name: str = Field(min_length=1, max_length=200)
+    current_revision: int = Field(ge=1)
+    owner: str | None = Field(default=None, max_length=200)
+    license: str | None = Field(default=None, max_length=500)
+    provenance: str | None = Field(default=None, max_length=4000)
+    review_status: Literal["unreviewed", "approved", "rejected"]
+    expires_on: date | None
+    folder: str | None = Field(default=None, max_length=200)
+    tags: tuple[str, ...] = Field(default=(), max_length=20)
+    favorite: bool
+    revisions: tuple[PortableAssetRevision, ...] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_revisions(self) -> "PortableAsset":
+        revision_numbers = [revision.revision for revision in self.revisions]
+        if len(revision_numbers) != len(set(revision_numbers)):
+            raise ValueError("portable asset revision numbers must be unique")
+        if self.current_revision not in revision_numbers:
+            raise ValueError("portable asset current revision must exist")
+        return self
+
+
+class ProjectExportDocument(GuiModel):
+    schema_version: Literal[1, 2] = 2
+    name: str = Field(min_length=1, max_length=200)
+    draft: DraftProject
+    assets: tuple[PortableAsset, ...] = ()
+
+    @model_validator(mode="after")
+    def validate_assets(self) -> "ProjectExportDocument":
+        source_ids = [asset.source_id for asset in self.assets]
+        if len(source_ids) != len(set(source_ids)):
+            raise ValueError("portable asset source IDs must be unique")
+        if self.schema_version == 1 and self.assets:
+            raise ValueError("schema-v1 exports cannot contain asset manifests")
+        return self
+
+
+def _contains_storage_path(value: JsonValue) -> bool:
+    if isinstance(value, dict):
+        for key, nested in value.items():
+            normalized_key = key.casefold().replace("-", "_")
+            if normalized_key in {
+                "path",
+                "absolute_path",
+                "object_path",
+                "source_path",
+                "temporary_path",
+            }:
+                return True
+            if _contains_storage_path(nested):
+                return True
+    elif isinstance(value, list):
+        return any(_contains_storage_path(item) for item in value)
+    return False
+
+
+class BeginAssetUploadRequest(GuiModel):
+    name: str = Field(min_length=1, max_length=200)
+    original_filename: str = Field(min_length=1, max_length=255)
+    media_type: str = Field(min_length=1, max_length=200)
+    total_bytes: int = Field(gt=0)
+    expected_sha256: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+    )
+
+
+class AssetSceneReferenceResponse(GuiModel):
+    scene_id: str
+    scene_name: str
+    output_id: str | None
+
+
+class UpdateAssetMetadataRequest(GuiModel):
+    owner: str | None = Field(default=None, max_length=200)
+    license: str | None = Field(default=None, max_length=500)
+    provenance: str | None = Field(default=None, max_length=4000)
+    review_status: Literal["unreviewed", "approved", "rejected"]
+    expires_on: date | None = None
+    folder: str | None = Field(default=None, max_length=200)
+    tags: tuple[str, ...] = Field(default=(), max_length=20)
+    favorite: bool = False
+
+    @field_validator("owner", "license", "provenance")
+    @classmethod
+    def normalize_optional_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        return normalized or None
+
+    @field_validator("folder")
+    @classmethod
+    def validate_folder(cls, value: str | None) -> str | None:
+        return _normalize_folder(value)
+
+    @field_validator("tags")
+    @classmethod
+    def normalize_tags(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        return _normalize_tags(value)
+
+
+class AssetMetadataConflictResponse(GuiModel):
+    code: Literal["asset_metadata_conflict"] = "asset_metadata_conflict"
+    requested_revision: int = Field(ge=1)
+    current_revision: int = Field(ge=1)
+
+
+class PlaceAssetRequest(GuiModel):
+    scene_id: str = Field(min_length=1)
+    output_id: str | None = Field(default=None, min_length=1)
+
+
+class ObjectOrganizationRequest(GuiModel):
+    folder: str | None = Field(default=None, max_length=200)
+    tags: tuple[str, ...] = Field(default=(), max_length=20)
+    favorite: bool = False
+
+    @field_validator("folder")
+    @classmethod
+    def validate_folder(cls, value: str | None) -> str | None:
+        return _normalize_folder(value)
+
+    @field_validator("tags")
+    @classmethod
+    def normalize_tags(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        return _normalize_tags(value)
+
+
+class CreateScenePresetRequest(ObjectOrganizationRequest):
+    scene_id: str = Field(min_length=1)
+    name: str = Field(min_length=1, max_length=200)
+
+
+class ApplyScenePresetRequest(GuiModel):
+    scene_id: str = Field(min_length=1)
+
+
+class AssetResponse(GuiModel):
+    id: str
+    project_id: str
+    name: str
+    status: str
+    current_revision: int | None
+    metadata_revision: int = Field(ge=1)
+    owner: str | None
+    license: str | None
+    provenance: str | None
+    review_status: Literal["unreviewed", "approved", "rejected"]
+    expires_on: str | None
+    folder: str | None
+    tags: tuple[str, ...]
+    favorite: bool
+    error: str | None
+    digest_sha256: str | None
+    size_bytes: int | None
+    media_type: str | None
+    original_filename: str | None
+    scan_status: str | None
+    metadata: dict[str, object] | None
+    original_file_status: Literal["pending", "available", "missing", "size_mismatch"]
+    artifact_faults: tuple[str, ...]
+    references: tuple[AssetSceneReferenceResponse, ...]
+    unused: bool
+    created_at: str
+    updated_at: str
+
+
+class AssetUploadResponse(GuiModel):
+    id: str
+    asset_id: str
+    total_bytes: int = Field(gt=0)
+    received_bytes: int = Field(ge=0)
+    state: str
+    error: str | None
+    chunk_max_bytes: int = Field(gt=0)
+    asset: AssetResponse
 
 
 class RevisionSummary(GuiModel):
@@ -110,6 +348,10 @@ class InstallationSummaryResponse(GuiModel):
     name: str
     revision: int = Field(ge=1)
     runtime_active: bool
+    folder: str | None
+    tags: tuple[str, ...]
+    favorite: bool
+    used_by_projects: tuple[str, ...]
     created_at: str
     updated_at: str
 
@@ -120,6 +362,19 @@ class CreateInstallationRequest(GuiModel):
 
 class UpdateInstallationRequest(GuiModel):
     name: str = Field(min_length=1, max_length=200)
+    folder: str | None = Field(default=None, max_length=200)
+    tags: tuple[str, ...] = Field(default=(), max_length=20)
+    favorite: bool = False
+
+    @field_validator("folder")
+    @classmethod
+    def validate_folder(cls, value: str | None) -> str | None:
+        return _normalize_folder(value)
+
+    @field_validator("tags")
+    @classmethod
+    def normalize_tags(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        return _normalize_tags(value)
 
 
 class InstallationConflictResponse(GuiModel):

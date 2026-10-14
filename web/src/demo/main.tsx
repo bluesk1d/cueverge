@@ -2,7 +2,7 @@ import { StrictMode, useState } from "react";
 import { createRoot } from "react-dom/client";
 
 import { AppShell, Workspace } from "../components/AppShell";
-import { OperatePage, SettingsPage } from "../App";
+import { OperatePage, SettingsPage, ShowsPage } from "../App";
 import { InstallationPage } from "../pages/InstallationPage";
 import { OverviewPage } from "../pages/OverviewPage";
 import "../styles.css";
@@ -11,6 +11,7 @@ import {
   demoInstallations,
   demoActivity,
   demoRuntime,
+  demoProjects,
   demoSession,
   demoTopology,
 } from "./overview-fixtures";
@@ -58,6 +59,8 @@ function VisualReviewFixture() {
             installations={demoInstallations}
             onRefresh={async () => undefined}
           />
+        ) : workspace === "shows" ? (
+          <ShowsPage session={demoSession} initialProjects={demoProjects} />
         ) : (
           <OverviewPage
             installation={demoInstallation}

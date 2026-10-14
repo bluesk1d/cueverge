@@ -5,6 +5,7 @@ import {
   RuntimeStatus,
   Session,
   Topology,
+  ProjectSummary,
 } from "../api";
 
 export const demoSession: Session = {
@@ -73,8 +74,24 @@ export const demoInstallations: InstallationSummary[] = [
     name: demoInstallation.name,
     revision: demoInstallation.revision,
     runtime_active: true,
+    folder: "Home",
+    tags: ["primary"],
+    favorite: true,
+    used_by_projects: ["Home Show"],
     created_at: "2026-10-13T06:00:00.000Z",
     updated_at: "2026-10-13T06:00:00.000Z",
+  },
+];
+
+export const demoProjects: ProjectSummary[] = [
+  {
+    id: "demo-project",
+    name: "Home Show",
+    head_revision: 3,
+    metadata_revision: 2,
+    archived_at: null,
+    created_at: "2026-10-13T06:00:00.000Z",
+    updated_at: "2026-10-13T06:30:00.000Z",
   },
 ];
 

@@ -1,8 +1,10 @@
+import hashlib
 import json
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
+import pytest
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
@@ -277,6 +279,311 @@ def test_installation_crud_preserves_runtime_active_record(tmp_path: Path) -> No
         headers=_mutation_headers(client, if_match='"2"'),
     )
     assert deleted.status_code == 204
+
+
+def test_project_metadata_duplicate_archive_import_and_export(tmp_path: Path) -> None:
+    runtime = ControllerRuntime()
+    client = TestClient(create_app(runtime, gui_services=_services(tmp_path, runtime)))
+    _login(client)
+
+    created = client.post(
+        "/api/gui/v1/projects/from-active",
+        json={"name": "Home Show"},
+        headers=_mutation_headers(client),
+    )
+    assert created.status_code == 201
+    project_id = created.json()["project"]["id"]
+    assert created.json()["project"]["metadata_revision"] == 1
+    installation = next(
+        item for item in client.get("/api/gui/v1/installations").json() if item["runtime_active"]
+    )
+    assert installation["used_by_projects"] == ["Home Show"]
+    organized_installation = client.put(
+        f"/api/gui/v1/installations/{installation['id']}",
+        json={
+            "name": installation["name"],
+            "folder": "Sites/Home",
+            "tags": ["home", "primary"],
+            "favorite": True,
+        },
+        headers=_mutation_headers(client, if_match='"1"'),
+    )
+    assert organized_installation.status_code == 200
+    assert organized_installation.json()["folder"] == "Sites/Home"
+    assert organized_installation.json()["tags"] == ["home", "primary"]
+    assert organized_installation.json()["favorite"] is True
+
+    renamed = client.put(
+        f"/api/gui/v1/projects/{project_id}",
+        json={"name": "Home Show 2026"},
+        headers=_mutation_headers(client, if_match='"1"'),
+    )
+    assert renamed.status_code == 200
+    assert renamed.headers["etag"] == '"2"'
+
+    duplicated = client.post(
+        f"/api/gui/v1/projects/{project_id}/duplicate",
+        json={"name": "Home Show Copy"},
+        headers=_mutation_headers(client),
+    )
+    assert duplicated.status_code == 201
+
+    exported = client.get(f"/api/gui/v1/projects/{project_id}/export")
+    assert exported.status_code == 200
+    assert exported.json()["name"] == "Home Show 2026"
+    imported_document = {**exported.json(), "name": "Imported Home Show"}
+    imported = client.post(
+        "/api/gui/v1/projects/import",
+        json=imported_document,
+        headers=_mutation_headers(client),
+    )
+    assert imported.status_code == 201
+
+    scene_id = created.json()["draft"]["scenes"][0]["id"]
+    organized = client.put(
+        f"/api/gui/v1/projects/{project_id}/scenes/{scene_id}/organization",
+        json={"folder": "Scenes/Ambient", "tags": ["ambient"], "favorite": True},
+        headers=_mutation_headers(client, if_match='"1"'),
+    )
+    assert organized.status_code == 200
+    assert organized.headers["etag"] == '"2"'
+    preset = client.post(
+        f"/api/gui/v1/projects/{project_id}/presets",
+        json={
+            "scene_id": scene_id,
+            "name": "Ambient base",
+            "folder": "Presets/Base",
+            "tags": ["base"],
+            "favorite": True,
+        },
+        headers=_mutation_headers(client, if_match='"2"'),
+    )
+    assert preset.status_code == 201
+    assert preset.headers["etag"] == '"3"'
+    preset_id = next(iter(preset.json()["draft"]["editor_metadata"]["scene_presets"]))
+    applied = client.post(
+        f"/api/gui/v1/projects/{project_id}/presets/{preset_id}/apply",
+        json={"scene_id": scene_id},
+        headers=_mutation_headers(client, if_match='"3"'),
+    )
+    assert applied.status_code == 200
+    assert applied.headers["etag"] == '"4"'
+    assert applied.json()["draft"]["editor_metadata"]["scene_preset_usage"] == {scene_id: preset_id}
+
+    archived = client.post(
+        f"/api/gui/v1/projects/{project_id}/archive",
+        headers=_mutation_headers(client, if_match='"2"'),
+    )
+    assert archived.status_code == 200
+    assert archived.json()["metadata_revision"] == 3
+    assert archived.json()["archived_at"] is not None
+
+    stale = client.put(
+        f"/api/gui/v1/projects/{project_id}",
+        json={"name": "Stale"},
+        headers=_mutation_headers(client, if_match='"2"'),
+    )
+    assert stale.status_code == 409
+    assert stale.json()["code"] == "project_metadata_conflict"
+    assert len(client.get("/api/gui/v1/projects").json()) == 3
+
+
+def test_asset_upload_api_is_chunked_resumable_and_digest_checked(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = ControllerRuntime()
+    services = _services(tmp_path, runtime)
+    processed_assets: list[str] = []
+    thumbnail = tmp_path / "thumbnail.jpg"
+    thumbnail.write_bytes(b"thumbnail")
+    monkeypatch.setattr(
+        services.asset_upload,
+        "process_asset",
+        lambda asset_id, *, occurred_at: processed_assets.append(asset_id),
+    )
+    monkeypatch.setattr(
+        services.asset_upload,
+        "get_artifact",
+        lambda asset_id, kind: (thumbnail, "image/jpeg"),
+    )
+    client = TestClient(create_app(runtime, gui_services=services))
+    _login(client)
+    project = client.post(
+        "/api/gui/v1/projects/from-active",
+        json={"name": "Asset fixture"},
+        headers=_mutation_headers(client),
+    ).json()
+    project_id = project["project"]["id"]
+    content = b"chunked-asset"
+    begun = client.post(
+        f"/api/gui/v1/projects/{project_id}/assets/uploads",
+        json={
+            "name": "Clip",
+            "original_filename": "clip.mp4",
+            "media_type": "video/mp4",
+            "total_bytes": len(content),
+            "expected_sha256": hashlib.sha256(content).hexdigest(),
+        },
+        headers=_mutation_headers(client),
+    )
+    assert begun.status_code == 201
+    upload_id = begun.json()["id"]
+
+    first = client.put(
+        f"/api/gui/v1/assets/uploads/{upload_id}",
+        content=content[:4],
+        headers={**_mutation_headers(client), "Upload-Offset": "0"},
+    )
+    assert first.status_code == 200
+    assert first.json()["received_bytes"] == 4
+    conflict = client.put(
+        f"/api/gui/v1/assets/uploads/{upload_id}",
+        content=content[4:],
+        headers={**_mutation_headers(client), "Upload-Offset": "0"},
+    )
+    assert conflict.status_code == 409
+    assert conflict.json()["detail"]["received_bytes"] == 4
+    completed = client.put(
+        f"/api/gui/v1/assets/uploads/{upload_id}",
+        content=content[4:],
+        headers={**_mutation_headers(client), "Upload-Offset": "4"},
+    )
+    assert completed.status_code == 200
+    assert completed.json()["state"] == "completed"
+    assert completed.json()["asset"]["status"] == "uploading"
+    assert processed_assets == [completed.json()["asset"]["id"]]
+    assets = client.get(f"/api/gui/v1/projects/{project_id}/assets")
+    assert len(assets.json()) == 1
+    assert assets.json()[0]["digest_sha256"] == hashlib.sha256(content).hexdigest()
+    assert assets.json()[0]["original_file_status"] == "available"
+    assert assets.json()[0]["artifact_faults"] == []
+    assert assets.json()[0]["references"] == []
+    assert assets.json()[0]["unused"] is True
+    artifact = client.get(
+        f"/api/gui/v1/assets/{completed.json()['asset']['id']}/artifacts/thumbnail"
+    )
+    assert artifact.status_code == 200
+    assert artifact.headers["content-type"] == "image/jpeg"
+    assert artifact.content == b"thumbnail"
+    asset_id = completed.json()["asset"]["id"]
+    governed = client.put(
+        f"/api/gui/v1/assets/{asset_id}/metadata",
+        json={
+            "owner": "Projection team",
+            "license": "Original production",
+            "provenance": "Created for the Home installation.",
+            "review_status": "approved",
+            "expires_on": "2027-10-31",
+            "folder": "Visuals/Windows",
+            "tags": ["window", "halloween"],
+            "favorite": True,
+        },
+        headers=_mutation_headers(client, if_match='"1"'),
+    )
+    assert governed.status_code == 200
+    assert governed.headers["etag"] == '"2"'
+    assert governed.json()["metadata_revision"] == 2
+    assert governed.json()["owner"] == "Projection team"
+    assert governed.json()["review_status"] == "approved"
+    assert governed.json()["expires_on"] == "2027-10-31"
+    assert governed.json()["folder"] == "Visuals/Windows"
+    assert governed.json()["tags"] == ["window", "halloween"]
+    assert governed.json()["favorite"] is True
+    stale = client.put(
+        f"/api/gui/v1/assets/{asset_id}/metadata",
+        json={
+            "owner": None,
+            "license": None,
+            "provenance": None,
+            "review_status": "unreviewed",
+            "expires_on": None,
+        },
+        headers=_mutation_headers(client, if_match='"1"'),
+    )
+    assert stale.status_code == 409
+    assert stale.json() == {
+        "code": "asset_metadata_conflict",
+        "requested_revision": 1,
+        "current_revision": 2,
+    }
+    assert any(
+        event.action == "asset.metadata.update" and event.target == asset_id
+        for event in services.repository.list_audit_events()
+    )
+    get_asset = services.asset_upload.get_asset
+    monkeypatch.setattr(
+        services.asset_upload,
+        "get_asset",
+        lambda requested_id: replace(
+            get_asset(requested_id),
+            status="ready",
+            original_file_status="available",
+        ),
+    )
+    scene = project["draft"]["scenes"][0]
+    output_id = scene["media"][0]["id"] if scene["schema_version"] == 2 else None
+    placed = client.post(
+        f"/api/gui/v1/projects/{project_id}/assets/{asset_id}/place",
+        json={"scene_id": scene["id"], "output_id": output_id},
+        headers=_mutation_headers(client, if_match='"1"'),
+    )
+    assert placed.status_code == 200
+    assert placed.headers["etag"] == '"2"'
+    assert placed.json()["draft"]["editor_metadata"]["asset_bindings"] == {asset_id: 1}
+    placed_scene = placed.json()["draft"]["scenes"][0]
+    if placed_scene["schema_version"] == 1:
+        assert placed_scene["media"]["asset"] == asset_id
+    else:
+        assert placed_scene["media"][0]["asset"] == asset_id
+    exported = client.get(f"/api/gui/v1/projects/{project_id}/export")
+    assert exported.status_code == 200
+    assert exported.json()["schema_version"] == 2
+    assert exported.json()["assets"][0]["source_id"] == asset_id
+    assert '"path"' not in json.dumps(exported.json()["assets"])
+    portable_document = {**exported.json(), "name": "Portable Asset Copy"}
+    imported_runtime = ControllerRuntime()
+    imported_client = TestClient(
+        create_app(
+            imported_runtime,
+            gui_services=_services(tmp_path / "portable-import", imported_runtime),
+        )
+    )
+    _login(imported_client)
+    unsafe_document = json.loads(json.dumps(portable_document))
+    unsafe_document["assets"][0]["revisions"][0]["original_filename"] = "../clip.mp4"
+    unsafe = imported_client.post(
+        "/api/gui/v1/projects/import",
+        json=unsafe_document,
+        headers=_mutation_headers(imported_client),
+    )
+    assert unsafe.status_code == 422
+    imported = imported_client.post(
+        "/api/gui/v1/projects/import",
+        json=portable_document,
+        headers=_mutation_headers(imported_client),
+    )
+    assert imported.status_code == 201
+    imported_project_id = imported.json()["project"]["id"]
+    imported_assets = imported_client.get(
+        f"/api/gui/v1/projects/{imported_project_id}/assets"
+    ).json()
+    assert len(imported_assets) == 1
+    imported_asset = imported_assets[0]
+    assert imported_asset["id"] != asset_id
+    assert imported_asset["status"] == "failed"
+    assert imported_asset["original_file_status"] == "missing"
+    assert "checksum-safe relink" in imported_asset["error"]
+    imported_scene = imported.json()["draft"]["scenes"][0]
+    imported_reference = (
+        imported_scene["media"]["asset"]
+        if imported_scene["schema_version"] == 1
+        else imported_scene["media"][0]["asset"]
+    )
+    assert imported_reference == imported_asset["id"]
+    assert imported.json()["draft"]["editor_metadata"]["asset_bindings"] == {
+        imported_asset["id"]: 1
+    }
 
 
 def test_explicit_discovery_is_untrusted_and_rejectable(tmp_path: Path) -> None:

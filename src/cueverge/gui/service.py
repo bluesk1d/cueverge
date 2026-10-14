@@ -9,6 +9,7 @@ from cueverge.controller.runtime import (
     ShowMode,
 )
 from cueverge.core.models import SceneCatalog
+from cueverge.gui.asset_upload import AssetUploadService
 from cueverge.gui.auth import AuthService
 from cueverge.gui.compiler import DraftCompiler
 from cueverge.gui.config import GuiConfig
@@ -55,6 +56,7 @@ class GuiServices:
     device_sessions: DeviceSessionRegistry
     wled_status: WledStatusObserver
     endpoint_discovery: EndpointDiscoveryService
+    asset_upload: AssetUploadService
 
     @classmethod
     def create(cls, config: GuiConfig, runtime: RuntimeStatusSource) -> "GuiServices":
@@ -82,4 +84,5 @@ class GuiServices:
             device_sessions=DeviceSessionRegistry(),
             wled_status=WledStatusObserver(),
             endpoint_discovery=EndpointDiscoveryService(),
+            asset_upload=AssetUploadService(config, repository),
         )

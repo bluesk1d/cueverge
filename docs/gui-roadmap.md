@@ -110,7 +110,7 @@ away from the current screen.
 | --- | ---: | --- |
 | GUI-00 | 11 / 12 | In progress |
 | GUI-01 | 13 / 13 | Complete |
-| GUI-02 | 0 / 11 | Not started |
+| GUI-02 | 10 / 11 | In progress |
 | GUI-03 | 0 / 39 | Not started |
 | GUI-04 | 0 / 28 | Not started |
 | GUI-05 | 0 / 27 | Not started |
@@ -198,29 +198,33 @@ Create the durable authoring model and an After Effects-style project panel.
 
 ### Scope
 
-- [ ] Create, duplicate, rename, archive, import, and export show projects.
-- [ ] Add folders, tags, search, favorites, and usage references for assets,
+- [x] Create, duplicate, rename, archive, import, and export show projects.
+- [x] Add folders, tags, search, favorites, and usage references for assets,
   scenes, installations, and reusable presets.
-- [ ] Upload assets in chunks with resumable transfer, size/type limits, checksum
+- [x] Upload assets in chunks with resumable transfer, size/type limits, checksum
   deduplication, malware scanning where deployed, and storage quotas.
-- [ ] Extract duration, dimensions, frame rate, codecs, channels, sample rate, and
+  Processing runs asynchronously after atomic promotion and resumes finalized
+  pending assets after controller restart. When ClamAV is deployed, clean,
+  quarantined, and scanner-failure outcomes are persisted; otherwise scanner
+  unavailability remains explicit.
+- [x] Extract duration, dimensions, frame rate, codecs, channels, sample rate, and
   loudness metadata.
-- [ ] Generate thumbnails, low-resolution review proxies, and audio waveforms
+- [x] Generate thumbnails, low-resolution review proxies, and audio waveforms
   asynchronously without replacing the original asset.
-- [ ] Track processing status, errors, missing files, unused assets, and every
+- [x] Track processing status, errors, missing files, unused assets, and every
   scene that references an asset.
-- [ ] Record ownership, license/provenance notes, review status, and expiration
+- [x] Record ownership, license/provenance notes, review status, and expiration
   where applicable.
-- [ ] Define relink, replace, version, retention, backup, and garbage-collection
+- [x] Define relink, replace, version, retention, backup, and garbage-collection
   behavior.
 
 ### Acceptance
 
-- [ ] A user can import visual and audio assets, inspect metadata and waveforms,
+- [x] A user can import visual and audio assets, inspect metadata and waveforms,
   organize them, and place references without knowing server file paths.
 - [ ] Publishing rejects missing, failed, quarantined, or incompatible required
   assets with precise diagnostics.
-- [ ] Export followed by import preserves the project and asset references without
+- [x] Export followed by import preserves the project and asset references without
   exposing credentials or host-specific absolute paths.
 
 ## Milestone GUI-03: visual installation mapper

@@ -2,14 +2,20 @@ import hashlib
 import json
 import sqlite3
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
-from typing import Literal
+from typing import Literal, cast
 from uuid import uuid4
 
 from pydantic import JsonValue
 
-from cueverge.gui.contracts import DraftProject, Role
+from cueverge.gui.contracts import (
+    DraftProject,
+    PortableAsset,
+    PortableAssetRevision,
+    ProjectExportDocument,
+    Role,
+)
 from cueverge.protocol.device_v2 import (
     DeviceCapabilityDocument,
     DeviceKind,
@@ -22,6 +28,8 @@ class StoredProject:
     id: str
     name: str
     head_revision: int
+    metadata_revision: int
+    archived_at: str | None
     created_at: str
     updated_at: str
 
@@ -32,6 +40,9 @@ class StoredInstallation:
     name: str
     revision: int
     runtime_active: bool
+    folder: str | None
+    tags: tuple[str, ...]
+    favorite: bool
     created_at: str
     updated_at: str
 
@@ -158,6 +169,12 @@ class ProjectNotFoundError(LookupError):
     pass
 
 
+class ProjectMetadataConflictError(RuntimeError):
+    def __init__(self, current_revision: int) -> None:
+        super().__init__("project metadata revision conflict")
+        self.current_revision = current_revision
+
+
 class InstallationNotFoundError(LookupError):
     pass
 
@@ -237,6 +254,9 @@ class GuiRepository:
                     id TEXT PRIMARY KEY,
                     name TEXT NOT NULL,
                     head_revision INTEGER NOT NULL CHECK (head_revision >= 1),
+                    metadata_revision INTEGER NOT NULL DEFAULT 1
+                        CHECK (metadata_revision >= 1),
+                    archived_at TEXT,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
@@ -246,6 +266,9 @@ class GuiRepository:
                     revision INTEGER NOT NULL CHECK (revision >= 1),
                     runtime_active INTEGER NOT NULL
                         CHECK (runtime_active IN (0, 1)),
+                    folder TEXT,
+                    tags_json TEXT NOT NULL DEFAULT '[]',
+                    favorite INTEGER NOT NULL DEFAULT 0 CHECK (favorite IN (0, 1)),
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
@@ -377,6 +400,76 @@ class GuiRepository:
                     observed_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS assets (
+                    id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                    name TEXT NOT NULL,
+                    status TEXT NOT NULL
+                        CHECK (status IN ('uploading', 'ready', 'failed', 'quarantined')),
+                    current_revision INTEGER,
+                    metadata_revision INTEGER NOT NULL DEFAULT 1
+                        CHECK (metadata_revision >= 1),
+                    owner TEXT,
+                    license TEXT,
+                    provenance TEXT,
+                    review_status TEXT NOT NULL DEFAULT 'unreviewed'
+                        CHECK (review_status IN ('unreviewed', 'approved', 'rejected')),
+                    expires_on TEXT,
+                    folder TEXT,
+                    tags_json TEXT NOT NULL DEFAULT '[]',
+                    favorite INTEGER NOT NULL DEFAULT 0 CHECK (favorite IN (0, 1)),
+                    error TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS asset_revisions (
+                    asset_id TEXT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+                    revision INTEGER NOT NULL CHECK (revision >= 1),
+                    digest_sha256 TEXT NOT NULL,
+                    size_bytes INTEGER NOT NULL CHECK (size_bytes >= 0),
+                    media_type TEXT NOT NULL,
+                    original_filename TEXT NOT NULL,
+                    scan_status TEXT NOT NULL
+                        CHECK (scan_status IN ('unavailable', 'clean', 'quarantined')),
+                    metadata_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY(asset_id, revision)
+                );
+                CREATE TABLE IF NOT EXISTS asset_uploads (
+                    id TEXT PRIMARY KEY,
+                    asset_id TEXT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+                    original_filename TEXT NOT NULL,
+                    media_type TEXT NOT NULL,
+                    total_bytes INTEGER NOT NULL CHECK (total_bytes > 0),
+                    expected_sha256 TEXT,
+                    received_bytes INTEGER NOT NULL CHECK (received_bytes >= 0),
+                    temp_name TEXT NOT NULL UNIQUE,
+                    state TEXT NOT NULL CHECK (state IN ('active', 'completed', 'failed')),
+                    error TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS installation_photos (
+                    id TEXT PRIMARY KEY,
+                    installation_id TEXT NOT NULL
+                        REFERENCES installations(id) ON DELETE CASCADE,
+                    name TEXT NOT NULL,
+                    viewpoint TEXT NOT NULL,
+                    original_filename TEXT NOT NULL,
+                    media_type TEXT NOT NULL,
+                    digest_sha256 TEXT NOT NULL,
+                    size_bytes INTEGER NOT NULL CHECK (size_bytes > 0),
+                    orientation_degrees INTEGER NOT NULL DEFAULT 0
+                        CHECK (orientation_degrees IN (0, 90, 180, 270)),
+                    crop_x REAL,
+                    crop_y REAL,
+                    crop_width REAL,
+                    crop_height REAL,
+                    scale_hint REAL,
+                    revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
                 INSERT OR IGNORE INTO schema_migrations(version, applied_at)
                 VALUES (1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
                 INSERT OR IGNORE INTO schema_migrations(version, applied_at)
@@ -476,6 +569,96 @@ class GuiRepository:
                 """
                 INSERT OR IGNORE INTO schema_migrations(version, applied_at)
                 VALUES (11, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+                """
+            )
+            project_columns = {
+                str(row["name"])
+                for row in connection.execute("PRAGMA table_info(projects)").fetchall()
+            }
+            if "metadata_revision" not in project_columns:
+                connection.execute(
+                    "ALTER TABLE projects ADD COLUMN metadata_revision INTEGER NOT NULL DEFAULT 1"
+                )
+            if "archived_at" not in project_columns:
+                connection.execute("ALTER TABLE projects ADD COLUMN archived_at TEXT")
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO schema_migrations(version, applied_at)
+                VALUES (12, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+                """
+            )
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO schema_migrations(version, applied_at)
+                VALUES (13, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+                """
+            )
+            asset_columns = {
+                str(row["name"])
+                for row in connection.execute("PRAGMA table_info(assets)").fetchall()
+            }
+            if "metadata_revision" not in asset_columns:
+                connection.execute(
+                    "ALTER TABLE assets ADD COLUMN metadata_revision INTEGER NOT NULL DEFAULT 1"
+                )
+            if "owner" not in asset_columns:
+                connection.execute("ALTER TABLE assets ADD COLUMN owner TEXT")
+            if "license" not in asset_columns:
+                connection.execute("ALTER TABLE assets ADD COLUMN license TEXT")
+            if "provenance" not in asset_columns:
+                connection.execute("ALTER TABLE assets ADD COLUMN provenance TEXT")
+            if "review_status" not in asset_columns:
+                connection.execute(
+                    "ALTER TABLE assets ADD COLUMN review_status TEXT NOT NULL DEFAULT 'unreviewed'"
+                )
+            if "expires_on" not in asset_columns:
+                connection.execute("ALTER TABLE assets ADD COLUMN expires_on TEXT")
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO schema_migrations(version, applied_at)
+                VALUES (14, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+                """
+            )
+            if "folder" not in asset_columns:
+                connection.execute("ALTER TABLE assets ADD COLUMN folder TEXT")
+            if "tags_json" not in asset_columns:
+                connection.execute(
+                    "ALTER TABLE assets ADD COLUMN tags_json TEXT NOT NULL DEFAULT '[]'"
+                )
+            if "favorite" not in asset_columns:
+                connection.execute(
+                    "ALTER TABLE assets ADD COLUMN favorite INTEGER NOT NULL DEFAULT 0"
+                )
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO schema_migrations(version, applied_at)
+                VALUES (15, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+                """
+            )
+            installation_columns = {
+                str(row["name"])
+                for row in connection.execute("PRAGMA table_info(installations)").fetchall()
+            }
+            if "folder" not in installation_columns:
+                connection.execute("ALTER TABLE installations ADD COLUMN folder TEXT")
+            if "tags_json" not in installation_columns:
+                connection.execute(
+                    "ALTER TABLE installations ADD COLUMN tags_json TEXT NOT NULL DEFAULT '[]'"
+                )
+            if "favorite" not in installation_columns:
+                connection.execute(
+                    "ALTER TABLE installations ADD COLUMN favorite INTEGER NOT NULL DEFAULT 0"
+                )
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO schema_migrations(version, applied_at)
+                VALUES (16, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+                """
+            )
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO schema_migrations(version, applied_at)
+                VALUES (17, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
                 """
             )
 
@@ -630,7 +813,8 @@ class GuiRepository:
         with self._connect() as connection:
             row = connection.execute(
                 """
-                SELECT id, name, revision, runtime_active, created_at, updated_at
+                SELECT id, name, revision, runtime_active, folder, tags_json,
+                       favorite, created_at, updated_at
                 FROM installations
                 WHERE runtime_active = 1
                 """
@@ -651,6 +835,9 @@ class GuiRepository:
             name=name,
             revision=1,
             runtime_active=True,
+            folder=None,
+            tags=(),
+            favorite=False,
             created_at=occurred_at,
             updated_at=occurred_at,
         )
@@ -668,6 +855,9 @@ class GuiRepository:
             name=name,
             revision=1,
             runtime_active=False,
+            folder=None,
+            tags=(),
+            favorite=False,
             created_at=occurred_at,
             updated_at=occurred_at,
         )
@@ -704,18 +894,28 @@ class GuiRepository:
         with self._connect() as connection:
             rows = connection.execute(
                 """
-                SELECT id, name, revision, runtime_active, created_at, updated_at
+                SELECT id, name, revision, runtime_active, folder, tags_json,
+                       favorite, created_at, updated_at
                 FROM installations
                 ORDER BY runtime_active DESC, name, id
                 """
             ).fetchall()
         return tuple(_stored_installation(row) for row in rows)
 
+    def installation_project_references(self, installation_id: str) -> tuple[str, ...]:
+        references: list[str] = []
+        for project in self.list_projects():
+            revision = self.get_revision(project.id)
+            if revision.draft.editor_metadata.get("installation_id") == installation_id:
+                references.append(project.name)
+        return tuple(sorted(references, key=str.casefold))
+
     def get_runtime_installation(self) -> StoredInstallation:
         with self._connect() as connection:
             row = connection.execute(
                 """
-                SELECT id, name, revision, runtime_active, created_at, updated_at
+                SELECT id, name, revision, runtime_active, folder, tags_json,
+                       favorite, created_at, updated_at
                 FROM installations
                 WHERE runtime_active = 1
                 """
@@ -728,7 +928,8 @@ class GuiRepository:
         with self._connect() as connection:
             row = connection.execute(
                 """
-                SELECT id, name, revision, runtime_active, created_at, updated_at
+                SELECT id, name, revision, runtime_active, folder, tags_json,
+                       favorite, created_at, updated_at
                 FROM installations
                 WHERE id = ?
                 """,
@@ -747,6 +948,9 @@ class GuiRepository:
         actor: str,
         role: Role,
         occurred_at: str,
+        folder: str | None = None,
+        tags: tuple[str, ...] = (),
+        favorite: bool = False,
     ) -> StoredInstallation:
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -766,10 +970,19 @@ class GuiRepository:
                 connection.execute(
                     """
                     UPDATE installations
-                    SET name = ?, revision = ?, updated_at = ?
+                    SET name = ?, folder = ?, tags_json = ?, favorite = ?,
+                        revision = ?, updated_at = ?
                     WHERE id = ?
                     """,
-                    (name, next_revision, occurred_at, installation_id),
+                    (
+                        name,
+                        folder,
+                        json.dumps(tags, separators=(",", ":")),
+                        int(favorite),
+                        next_revision,
+                        occurred_at,
+                        installation_id,
+                    ),
                 )
             except sqlite3.IntegrityError as error:
                 connection.rollback()
@@ -1994,25 +2207,331 @@ class GuiRepository:
             except BaseException:
                 connection.rollback()
                 raise
-        project = StoredProject(project_id, name, 1, occurred_at, occurred_at)
+        project = StoredProject(
+            id=project_id,
+            name=name,
+            head_revision=1,
+            metadata_revision=1,
+            archived_at=None,
+            created_at=occurred_at,
+            updated_at=occurred_at,
+        )
         return StoredRevision(project, 1, None, actor, "create", occurred_at, draft)
 
     def list_projects(self) -> tuple[StoredProject, ...]:
         with self._connect() as connection:
             rows = connection.execute(
                 """
-                SELECT id, name, head_revision, created_at, updated_at
+                SELECT id, name, head_revision, metadata_revision, archived_at,
+                       created_at, updated_at
                 FROM projects
                 ORDER BY updated_at DESC, id
                 """
             ).fetchall()
         return tuple(_stored_project(row) for row in rows)
 
+    def export_project(self, project_id: str) -> ProjectExportDocument:
+        revision = self.get_revision(project_id)
+        with self._connect() as connection:
+            asset_rows = connection.execute(
+                """
+                SELECT id, name, current_revision, owner, license, provenance,
+                       review_status, expires_on, folder, tags_json, favorite
+                FROM assets
+                WHERE project_id = ?
+                ORDER BY created_at, id
+                """,
+                (project_id,),
+            ).fetchall()
+            assets: list[PortableAsset] = []
+            for asset_row in asset_rows:
+                revision_rows = connection.execute(
+                    """
+                    SELECT revision, digest_sha256, size_bytes, media_type,
+                           original_filename, scan_status, metadata_json, created_at
+                    FROM asset_revisions
+                    WHERE asset_id = ?
+                    ORDER BY revision
+                    """,
+                    (str(asset_row["id"]),),
+                ).fetchall()
+                assets.append(
+                    PortableAsset(
+                        source_id=str(asset_row["id"]),
+                        name=str(asset_row["name"]),
+                        current_revision=int(asset_row["current_revision"]),
+                        owner=(str(asset_row["owner"]) if asset_row["owner"] is not None else None),
+                        license=(
+                            str(asset_row["license"]) if asset_row["license"] is not None else None
+                        ),
+                        provenance=(
+                            str(asset_row["provenance"])
+                            if asset_row["provenance"] is not None
+                            else None
+                        ),
+                        review_status=cast(
+                            Literal["unreviewed", "approved", "rejected"],
+                            str(asset_row["review_status"]),
+                        ),
+                        expires_on=(
+                            date.fromisoformat(str(asset_row["expires_on"]))
+                            if asset_row["expires_on"] is not None
+                            else None
+                        ),
+                        folder=(
+                            str(asset_row["folder"]) if asset_row["folder"] is not None else None
+                        ),
+                        tags=tuple(json.loads(str(asset_row["tags_json"]))),
+                        favorite=bool(asset_row["favorite"]),
+                        revisions=tuple(
+                            PortableAssetRevision(
+                                revision=int(revision_row["revision"]),
+                                digest_sha256=str(revision_row["digest_sha256"]),
+                                size_bytes=int(revision_row["size_bytes"]),
+                                media_type=str(revision_row["media_type"]),
+                                original_filename=str(revision_row["original_filename"]),
+                                scan_status=cast(
+                                    Literal["unavailable", "clean", "quarantined"],
+                                    str(revision_row["scan_status"]),
+                                ),
+                                metadata=json.loads(str(revision_row["metadata_json"])),
+                                created_at=str(revision_row["created_at"]),
+                            )
+                            for revision_row in revision_rows
+                        ),
+                    )
+                )
+        return ProjectExportDocument(
+            schema_version=2,
+            name=revision.project.name,
+            draft=revision.draft,
+            assets=tuple(assets),
+        )
+
+    def import_project(
+        self,
+        document: ProjectExportDocument,
+        *,
+        actor: str,
+        role: Role,
+        occurred_at: str,
+    ) -> StoredRevision:
+        project_id = str(uuid4())
+        asset_ids = {asset.source_id: str(uuid4()) for asset in document.assets}
+        draft = _remap_imported_asset_ids(document.draft, asset_ids)
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                """
+                INSERT INTO projects(id, name, head_revision, created_at, updated_at)
+                VALUES (?, ?, 1, ?, ?)
+                """,
+                (project_id, document.name, occurred_at, occurred_at),
+            )
+            connection.execute(
+                """
+                INSERT INTO revisions(
+                    project_id, revision, parent_revision, content_json,
+                    actor, transaction_kind, created_at
+                ) VALUES (?, 1, NULL, ?, ?, 'import', ?)
+                """,
+                (project_id, _draft_json(draft), actor, occurred_at),
+            )
+            for asset in document.assets:
+                asset_id = asset_ids[asset.source_id]
+                connection.execute(
+                    """
+                    INSERT INTO assets(
+                        id, project_id, name, status, current_revision,
+                        metadata_revision, owner, license, provenance,
+                        review_status, expires_on, folder, tags_json, favorite,
+                        error, created_at, updated_at
+                    ) VALUES (
+                        ?, ?, ?, 'failed', ?, 1, ?, ?, ?, ?, ?, ?, ?, ?,
+                        'original content requires checksum-safe relink after import',
+                        ?, ?
+                    )
+                    """,
+                    (
+                        asset_id,
+                        project_id,
+                        asset.name,
+                        asset.current_revision,
+                        asset.owner,
+                        asset.license,
+                        asset.provenance,
+                        asset.review_status,
+                        asset.expires_on.isoformat() if asset.expires_on is not None else None,
+                        asset.folder,
+                        json.dumps(asset.tags, separators=(",", ":")),
+                        int(asset.favorite),
+                        occurred_at,
+                        occurred_at,
+                    ),
+                )
+                connection.executemany(
+                    """
+                    INSERT INTO asset_revisions(
+                        asset_id, revision, digest_sha256, size_bytes, media_type,
+                        original_filename, scan_status, metadata_json, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    [
+                        (
+                            asset_id,
+                            asset_revision.revision,
+                            asset_revision.digest_sha256,
+                            asset_revision.size_bytes,
+                            asset_revision.media_type,
+                            asset_revision.original_filename,
+                            asset_revision.scan_status,
+                            json.dumps(
+                                asset_revision.metadata,
+                                sort_keys=True,
+                                separators=(",", ":"),
+                            ),
+                            asset_revision.created_at,
+                        )
+                        for asset_revision in asset.revisions
+                    ],
+                )
+            self._insert_audit(
+                connection,
+                actor=actor,
+                action="project.import",
+                target=project_id,
+                result="success",
+                occurred_at=occurred_at,
+                authorization_context={
+                    "role": role.value,
+                    "schema_version": document.schema_version,
+                    "asset_count": len(document.assets),
+                },
+            )
+            connection.commit()
+        project = StoredProject(
+            id=project_id,
+            name=document.name,
+            head_revision=1,
+            metadata_revision=1,
+            archived_at=None,
+            created_at=occurred_at,
+            updated_at=occurred_at,
+        )
+        return StoredRevision(project, 1, None, actor, "import", occurred_at, draft)
+
+    def update_project_metadata(
+        self,
+        *,
+        project_id: str,
+        expected_revision: int,
+        name: str,
+        actor: str,
+        role: Role,
+        occurred_at: str,
+    ) -> StoredProject:
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                """
+                SELECT metadata_revision
+                FROM projects
+                WHERE id = ?
+                """,
+                (project_id,),
+            ).fetchone()
+            if row is None:
+                connection.rollback()
+                raise ProjectNotFoundError(project_id)
+            current_revision = int(row["metadata_revision"])
+            if current_revision != expected_revision:
+                connection.rollback()
+                raise ProjectMetadataConflictError(current_revision)
+            next_revision = current_revision + 1
+            connection.execute(
+                """
+                UPDATE projects
+                SET name = ?, metadata_revision = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (name, next_revision, occurred_at, project_id),
+            )
+            self._insert_audit(
+                connection,
+                actor=actor,
+                action="project.update",
+                target=project_id,
+                result="success",
+                occurred_at=occurred_at,
+                authorization_context={
+                    "role": role.value,
+                    "previous_metadata_revision": current_revision,
+                    "created_metadata_revision": next_revision,
+                },
+            )
+            connection.commit()
+        return next(project for project in self.list_projects() if project.id == project_id)
+
+    def archive_project(
+        self,
+        *,
+        project_id: str,
+        expected_revision: int,
+        actor: str,
+        role: Role,
+        occurred_at: str,
+    ) -> StoredProject:
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                """
+                SELECT metadata_revision, archived_at
+                FROM projects
+                WHERE id = ?
+                """,
+                (project_id,),
+            ).fetchone()
+            if row is None:
+                connection.rollback()
+                raise ProjectNotFoundError(project_id)
+            current_revision = int(row["metadata_revision"])
+            if current_revision != expected_revision:
+                connection.rollback()
+                raise ProjectMetadataConflictError(current_revision)
+            if row["archived_at"] is not None:
+                connection.rollback()
+                raise ValueError("project is already archived")
+            next_revision = current_revision + 1
+            connection.execute(
+                """
+                UPDATE projects
+                SET metadata_revision = ?, archived_at = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (next_revision, occurred_at, occurred_at, project_id),
+            )
+            self._insert_audit(
+                connection,
+                actor=actor,
+                action="project.archive",
+                target=project_id,
+                result="success",
+                occurred_at=occurred_at,
+                authorization_context={
+                    "role": role.value,
+                    "previous_metadata_revision": current_revision,
+                    "created_metadata_revision": next_revision,
+                },
+            )
+            connection.commit()
+        return next(project for project in self.list_projects() if project.id == project_id)
+
     def get_revision(self, project_id: str, revision: int | None = None) -> StoredRevision:
         with self._connect() as connection:
             project_row = connection.execute(
                 """
-                SELECT id, name, head_revision, created_at, updated_at
+                SELECT id, name, head_revision, metadata_revision, archived_at,
+                       created_at, updated_at
                 FROM projects WHERE id = ?
                 """,
                 (project_id,),
@@ -2065,7 +2584,8 @@ class GuiRepository:
             try:
                 project_row = connection.execute(
                     """
-                    SELECT id, name, head_revision, created_at, updated_at
+                    SELECT id, name, head_revision, metadata_revision, archived_at,
+                           created_at, updated_at
                     FROM projects WHERE id = ?
                     """,
                     (project_id,),
@@ -2149,11 +2669,13 @@ class GuiRepository:
                 connection.rollback()
                 raise
         updated_project = StoredProject(
-            project.id,
-            project.name,
-            next_revision,
-            project.created_at,
-            occurred_at,
+            id=project.id,
+            name=project.name,
+            head_revision=next_revision,
+            metadata_revision=project.metadata_revision,
+            archived_at=project.archived_at,
+            created_at=project.created_at,
+            updated_at=occurred_at,
         )
         return StoredRevision(
             updated_project,
@@ -2180,7 +2702,8 @@ class GuiRepository:
             try:
                 project_row = connection.execute(
                     """
-                    SELECT id, name, head_revision, created_at, updated_at
+                    SELECT id, name, head_revision, metadata_revision, archived_at,
+                           created_at, updated_at
                     FROM projects WHERE id = ?
                     """,
                     (project_id,),
@@ -2281,11 +2804,13 @@ class GuiRepository:
                 raise
         restored_draft = DraftProject.model_validate_json(source_json)
         updated_project = StoredProject(
-            project.id,
-            project.name,
-            next_revision,
-            project.created_at,
-            occurred_at,
+            id=project.id,
+            name=project.name,
+            head_revision=next_revision,
+            metadata_revision=project.metadata_revision,
+            archived_at=project.archived_at,
+            created_at=project.created_at,
+            updated_at=occurred_at,
         )
         return StoredRevision(
             updated_project,
@@ -2384,6 +2909,8 @@ def _stored_project(row: sqlite3.Row) -> StoredProject:
         id=str(row["id"]),
         name=str(row["name"]),
         head_revision=int(row["head_revision"]),
+        metadata_revision=int(row["metadata_revision"]),
+        archived_at=(str(row["archived_at"]) if row["archived_at"] is not None else None),
         created_at=str(row["created_at"]),
         updated_at=str(row["updated_at"]),
     )
@@ -2420,11 +2947,17 @@ def _stored_device(row: sqlite3.Row) -> StoredDevice:
 
 
 def _stored_installation(row: sqlite3.Row) -> StoredInstallation:
+    tags = json.loads(str(row["tags_json"]))
+    if not isinstance(tags, list) or not all(isinstance(tag, str) for tag in tags):
+        raise ValueError("installation tags are invalid")
     return StoredInstallation(
         id=str(row["id"]),
         name=str(row["name"]),
         revision=int(row["revision"]),
         runtime_active=bool(row["runtime_active"]),
+        folder=str(row["folder"]) if row["folder"] is not None else None,
+        tags=tuple(tags),
+        favorite=bool(row["favorite"]),
         created_at=str(row["created_at"]),
         updated_at=str(row["updated_at"]),
     )
@@ -2463,6 +2996,45 @@ def _stored_discovered_endpoint(row: sqlite3.Row) -> StoredDiscoveredEndpoint:
 
 def _draft_json(draft: DraftProject) -> str:
     return json.dumps(draft.model_dump(mode="json"), sort_keys=True, separators=(",", ":"))
+
+
+def _remap_imported_asset_ids(
+    draft: DraftProject,
+    asset_ids: dict[str, str],
+) -> DraftProject:
+    if not asset_ids:
+        return draft
+    scenes = list(draft.scenes)
+    for scene_index, scene in enumerate(scenes):
+        if scene.schema_version == 1:
+            replacement = asset_ids.get(scene.media.asset or "")
+            if replacement is not None:
+                scenes[scene_index] = scene.model_copy(
+                    update={"media": scene.media.model_copy(update={"asset": replacement})}
+                )
+            continue
+        outputs = list(scene.media)
+        changed = False
+        for output_index, output in enumerate(outputs):
+            replacement = asset_ids.get(output.asset or "")
+            if replacement is not None:
+                outputs[output_index] = output.model_copy(update={"asset": replacement})
+                changed = True
+        if changed:
+            scenes[scene_index] = scene.model_copy(update={"media": tuple(outputs)})
+    editor_metadata = dict(draft.editor_metadata)
+    existing_bindings = editor_metadata.get("asset_bindings")
+    if isinstance(existing_bindings, dict):
+        editor_metadata["asset_bindings"] = {
+            asset_ids.get(str(asset_id), str(asset_id)): revision
+            for asset_id, revision in existing_bindings.items()
+        }
+    return draft.model_copy(
+        update={
+            "scenes": tuple(scenes),
+            "editor_metadata": editor_metadata,
+        }
+    )
 
 
 def _changed_top_level_paths(current_json: str, proposed_json: str) -> tuple[str, ...]:

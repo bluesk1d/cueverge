@@ -26,6 +26,10 @@ export interface InstallationSummary {
   name: string;
   revision: number;
   runtime_active: boolean;
+  folder: string | null;
+  tags: string[];
+  favorite: boolean;
+  used_by_projects: string[];
   created_at: string;
   updated_at: string;
 }
@@ -34,8 +38,80 @@ export interface ProjectSummary {
   id: string;
   name: string;
   head_revision: number;
+  metadata_revision: number;
+  archived_at: string | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface ProjectExportDocument {
+  schema_version: 1 | 2;
+  name: string;
+  draft: unknown;
+  assets?: unknown[];
+}
+
+export interface ProjectDraftRecord {
+  project: ProjectSummary;
+  revision: number;
+  draft: {
+    editor_metadata: Record<string, unknown>;
+    scenes: {
+      schema_version: 1 | 2;
+      id: string;
+      name: string;
+      failure_scene_id?: string | null;
+      completion?: { target_scene_id?: string | null };
+      media:
+        | { asset: string | null }
+        | { id: string; asset: string | null }[];
+    }[];
+  };
+}
+
+export interface AssetRecord {
+  id: string;
+  project_id: string;
+  name: string;
+  status: "uploading" | "ready" | "failed" | "quarantined";
+  current_revision: number | null;
+  metadata_revision: number;
+  owner: string | null;
+  license: string | null;
+  provenance: string | null;
+  review_status: "unreviewed" | "approved" | "rejected";
+  expires_on: string | null;
+  folder: string | null;
+  tags: string[];
+  favorite: boolean;
+  error: string | null;
+  digest_sha256: string | null;
+  size_bytes: number | null;
+  media_type: string | null;
+  original_filename: string | null;
+  scan_status: string | null;
+  metadata: Record<string, unknown> | null;
+  original_file_status: "pending" | "available" | "missing" | "size_mismatch";
+  artifact_faults: string[];
+  references: {
+    scene_id: string;
+    scene_name: string;
+    output_id: string | null;
+  }[];
+  unused: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AssetUploadRecord {
+  id: string;
+  asset_id: string;
+  total_bytes: number;
+  received_bytes: number;
+  state: "active" | "completed" | "failed";
+  error: string | null;
+  chunk_max_bytes: number;
+  asset: AssetRecord;
 }
 
 export interface RuntimeStatus {
@@ -347,13 +423,69 @@ export async function updateInstallation(
   installationId: string,
   revision: number,
   name: string,
+  folder: string | null,
+  tags: string[],
+  favorite: boolean,
 ): Promise<InstallationSummary> {
   return request<InstallationSummary>(
     `/api/gui/v1/installations/${encodeURIComponent(installationId)}`,
     {
       method: "PUT",
       headers: { ...mutationHeaders(), "If-Match": `"${revision}"` },
-      body: JSON.stringify({ name }),
+      body: JSON.stringify({ name, folder, tags, favorite }),
+    },
+  );
+}
+
+export async function organizeScene(
+  projectId: string,
+  revision: number,
+  sceneId: string,
+  organization: { folder: string | null; tags: string[]; favorite: boolean },
+): Promise<ProjectDraftRecord> {
+  return request<ProjectDraftRecord>(
+    `/api/gui/v1/projects/${encodeURIComponent(projectId)}/scenes/${encodeURIComponent(sceneId)}/organization`,
+    {
+      method: "PUT",
+      headers: { ...mutationHeaders(), "If-Match": `"${revision}"` },
+      body: JSON.stringify(organization),
+    },
+  );
+}
+
+export async function createScenePreset(
+  projectId: string,
+  revision: number,
+  values: {
+    scene_id: string;
+    name: string;
+    folder: string | null;
+    tags: string[];
+    favorite: boolean;
+  },
+): Promise<ProjectDraftRecord> {
+  return request<ProjectDraftRecord>(
+    `/api/gui/v1/projects/${encodeURIComponent(projectId)}/presets`,
+    {
+      method: "POST",
+      headers: { ...mutationHeaders(), "If-Match": `"${revision}"` },
+      body: JSON.stringify(values),
+    },
+  );
+}
+
+export async function applyScenePreset(
+  projectId: string,
+  revision: number,
+  presetId: string,
+  sceneId: string,
+): Promise<ProjectDraftRecord> {
+  return request<ProjectDraftRecord>(
+    `/api/gui/v1/projects/${encodeURIComponent(projectId)}/presets/${encodeURIComponent(presetId)}/apply`,
+    {
+      method: "POST",
+      headers: { ...mutationHeaders(), "If-Match": `"${revision}"` },
+      body: JSON.stringify({ scene_id: sceneId }),
     },
   );
 }
@@ -370,6 +502,159 @@ export async function deleteInstallation(
 
 export async function getProjects(): Promise<ProjectSummary[]> {
   return request<ProjectSummary[]>("/api/gui/v1/projects");
+}
+
+export async function getProjectDraft(projectId: string): Promise<ProjectDraftRecord> {
+  return request<ProjectDraftRecord>(
+    `/api/gui/v1/projects/${encodeURIComponent(projectId)}/draft`,
+  );
+}
+
+export async function createProjectFromActive(name: string): Promise<void> {
+  await request("/api/gui/v1/projects/from-active", {
+    method: "POST",
+    headers: mutationHeaders(),
+    body: JSON.stringify({ name }),
+  });
+}
+
+export async function renameProject(
+  projectId: string,
+  metadataRevision: number,
+  name: string,
+): Promise<void> {
+  await request(`/api/gui/v1/projects/${encodeURIComponent(projectId)}`, {
+    method: "PUT",
+    headers: { ...mutationHeaders(), "If-Match": `"${metadataRevision}"` },
+    body: JSON.stringify({ name }),
+  });
+}
+
+export async function duplicateProject(projectId: string, name: string): Promise<void> {
+  await request(`/api/gui/v1/projects/${encodeURIComponent(projectId)}/duplicate`, {
+    method: "POST",
+    headers: mutationHeaders(),
+    body: JSON.stringify({ name }),
+  });
+}
+
+export async function archiveProject(
+  projectId: string,
+  metadataRevision: number,
+): Promise<void> {
+  await request(`/api/gui/v1/projects/${encodeURIComponent(projectId)}/archive`, {
+    method: "POST",
+    headers: { ...mutationHeaders(), "If-Match": `"${metadataRevision}"` },
+  });
+}
+
+export async function exportProject(projectId: string): Promise<ProjectExportDocument> {
+  return request<ProjectExportDocument>(
+    `/api/gui/v1/projects/${encodeURIComponent(projectId)}/export`,
+  );
+}
+
+export async function importProject(document: ProjectExportDocument): Promise<void> {
+  await request("/api/gui/v1/projects/import", {
+    method: "POST",
+    headers: mutationHeaders(),
+    body: JSON.stringify(document),
+  });
+}
+
+export async function getAssets(projectId: string): Promise<AssetRecord[]> {
+  return request<AssetRecord[]>(
+    `/api/gui/v1/projects/${encodeURIComponent(projectId)}/assets`,
+  );
+}
+
+export function assetArtifactUrl(
+  assetId: string,
+  kind: "review" | "thumbnail" | "waveform",
+): string {
+  return `/api/gui/v1/assets/${encodeURIComponent(assetId)}/artifacts/${kind}`;
+}
+
+export async function updateAssetMetadata(
+  asset: AssetRecord,
+  values: Pick<
+    AssetRecord,
+    | "owner"
+    | "license"
+    | "provenance"
+    | "review_status"
+    | "expires_on"
+    | "folder"
+    | "tags"
+    | "favorite"
+  >,
+): Promise<AssetRecord> {
+  return request<AssetRecord>(
+    `/api/gui/v1/assets/${encodeURIComponent(asset.id)}/metadata`,
+    {
+      method: "PUT",
+      headers: { ...mutationHeaders(), "If-Match": `"${asset.metadata_revision}"` },
+      body: JSON.stringify(values),
+    },
+  );
+}
+
+export async function placeAsset(
+  projectId: string,
+  projectRevision: number,
+  assetId: string,
+  sceneId: string,
+  outputId: string | null,
+): Promise<ProjectDraftRecord> {
+  return request<ProjectDraftRecord>(
+    `/api/gui/v1/projects/${encodeURIComponent(projectId)}/assets/${encodeURIComponent(assetId)}/place`,
+    {
+      method: "POST",
+      headers: { ...mutationHeaders(), "If-Match": `"${projectRevision}"` },
+      body: JSON.stringify({ scene_id: sceneId, output_id: outputId }),
+    },
+  );
+}
+
+export async function uploadAsset(
+  projectId: string,
+  file: File,
+  onProgress: (receivedBytes: number) => void,
+): Promise<AssetUploadRecord> {
+  let upload = await request<AssetUploadRecord>(
+    `/api/gui/v1/projects/${encodeURIComponent(projectId)}/assets/uploads`,
+    {
+      method: "POST",
+      headers: mutationHeaders(),
+      body: JSON.stringify({
+        name: file.name.replace(/\.[^.]+$/, "") || file.name,
+        original_filename: file.name,
+        media_type: file.type || "application/octet-stream",
+        total_bytes: file.size,
+        expected_sha256: null,
+      }),
+    },
+  );
+  while (upload.received_bytes < file.size) {
+    const chunk = file.slice(
+      upload.received_bytes,
+      Math.min(file.size, upload.received_bytes + upload.chunk_max_bytes),
+    );
+    upload = await request<AssetUploadRecord>(
+      `/api/gui/v1/assets/uploads/${encodeURIComponent(upload.id)}`,
+      {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/octet-stream",
+          "Upload-Offset": String(upload.received_bytes),
+          "X-CSRF-Token": readCookie("cueverge_csrf") ?? "",
+        },
+        body: chunk,
+      },
+    );
+    onProgress(upload.received_bytes);
+  }
+  return upload;
 }
 
 export async function getRuntimeStatus(): Promise<RuntimeStatus> {

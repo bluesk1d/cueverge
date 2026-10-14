@@ -1,3 +1,4 @@
+import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Protocol
@@ -62,9 +63,18 @@ def create_app(
             ingress.start()
         if device_listener is not None:
             await device_listener.start()
+        asset_recovery = (
+            asyncio.create_task(
+                asyncio.to_thread(configured_gui.asset_upload.recover_pending_assets)
+            )
+            if configured_gui is not None
+            else None
+        )
         try:
             yield
         finally:
+            if asset_recovery is not None:
+                await asset_recovery
             if device_listener is not None:
                 await device_listener.stop()
             if ingress is not None:

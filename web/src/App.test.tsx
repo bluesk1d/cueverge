@@ -135,7 +135,146 @@ test("navigates across the exact top-level workspaces", async () => {
       return jsonResponse([]);
     }
     if (path.endsWith("/projects")) {
-      return jsonResponse([]);
+      return jsonResponse([
+        {
+          id: "project-1",
+          name: "Home Show",
+          head_revision: 2,
+          metadata_revision: 1,
+          archived_at: null,
+          created_at: "2026-10-13T06:00:00Z",
+          updated_at: "2026-10-13T06:30:00Z",
+        },
+      ]);
+    }
+    if (path.endsWith("/projects/project-1/assets")) {
+      return jsonResponse([
+        {
+          id: "asset-1",
+          project_id: "project-1",
+          name: "Window loop",
+          status: "ready",
+          current_revision: 1,
+          metadata_revision: 2,
+          owner: "Projection team",
+          license: "Original production",
+          provenance: "Created for the Home installation.",
+          review_status: "approved",
+          expires_on: "2027-10-31",
+          folder: "Visuals/Windows",
+          tags: ["window", "halloween"],
+          favorite: true,
+          error: null,
+          digest_sha256: "a".repeat(64),
+          size_bytes: 1048576,
+          media_type: "video/mp4",
+          original_filename: "window-loop.mp4",
+          scan_status: "unavailable",
+          metadata: {
+            duration_ms: 2500,
+            width: 1920,
+            height: 1080,
+            frame_rate: 29.97,
+            video_codecs: ["h264"],
+            audio_codecs: ["aac"],
+            channels: 2,
+            sample_rate: 48000,
+            loudness_lufs: -18.2,
+            artifacts: {
+              review: { media_type: "video/mp4", size_bytes: 1024 },
+              thumbnail: { media_type: "image/jpeg", size_bytes: 256 },
+              waveform: { media_type: "image/png", size_bytes: 128 },
+            },
+            status: "ready",
+          },
+          original_file_status: "available",
+          artifact_faults: [],
+          references: [
+            {
+              scene_id: "ambient",
+              scene_name: "Ambient",
+              output_id: "left-window",
+            },
+          ],
+          unused: false,
+          created_at: "2026-10-13T06:00:00Z",
+          updated_at: "2026-10-13T06:01:00Z",
+        },
+        {
+          id: "asset-2",
+          project_id: "project-1",
+          name: "Missing loop",
+          status: "ready",
+          current_revision: 1,
+          metadata_revision: 1,
+          owner: null,
+          license: null,
+          provenance: null,
+          review_status: "unreviewed",
+          expires_on: null,
+          folder: null,
+          tags: [],
+          favorite: false,
+          error: null,
+          digest_sha256: "b".repeat(64),
+          size_bytes: 2048,
+          media_type: "video/mp4",
+          original_filename: "missing-loop.mp4",
+          scan_status: "unavailable",
+          metadata: { status: "ready" },
+          original_file_status: "missing",
+          artifact_faults: ["review: missing"],
+          references: [],
+          unused: true,
+          created_at: "2026-10-13T06:02:00Z",
+          updated_at: "2026-10-13T06:02:00Z",
+        },
+      ]);
+    }
+    if (path.endsWith("/projects/project-1/draft")) {
+      return jsonResponse({
+        project: {
+          id: "project-1",
+          name: "Home Show",
+          head_revision: 2,
+          metadata_revision: 1,
+          archived_at: null,
+          created_at: "2026-10-13T06:00:00Z",
+          updated_at: "2026-10-13T06:30:00Z",
+        },
+        revision: 2,
+        draft: {
+          editor_metadata: {
+            scene_organization: {
+              ambient: {
+                folder: "Scenes/Ambient",
+                tags: ["ambient"],
+                favorite: true,
+              },
+            },
+            scene_presets: {
+              "preset-1": {
+                id: "preset-1",
+                name: "Ambient base",
+                folder: "Presets/Base",
+                tags: ["base"],
+                favorite: true,
+                schema_version: 2,
+                template: {},
+              },
+            },
+            scene_preset_usage: { ambient: "preset-1" },
+          },
+          scenes: [
+            {
+              schema_version: 2,
+              id: "ambient",
+              name: "Ambient",
+              media: [{ id: "left-window", asset: "asset-1" }],
+            },
+          ],
+        },
+      });
     }
     throw new Error(`unexpected request: ${path}`);
   });
@@ -148,6 +287,10 @@ test("navigates across the exact top-level workspaces", async () => {
   expect(screen.getByRole("heading", { name: "Installations" })).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Create installation" })).toBeDisabled();
   expect(screen.getByRole("button", { name: "Delete" })).toBeDisabled();
+  expect(
+    screen.getByRole("textbox", { name: "Folder for Visual Demo Installation" }),
+  ).toHaveValue("Home");
+  expect(screen.getByText("Used by Home Show")).toBeInTheDocument();
 
   fireEvent.click(screen.getByRole("button", { name: "Installation" }));
   expect(screen.getByRole("heading", { name: "Network Topology" })).toBeInTheDocument();
@@ -179,7 +322,41 @@ test("navigates across the exact top-level workspaces", async () => {
 
   fireEvent.click(screen.getByRole("button", { name: "Shows" }));
   expect(await screen.findByRole("heading", { name: "Shows" })).toBeInTheDocument();
-  expect(screen.getByText("No draft projects")).toBeInTheDocument();
+  expect(screen.getByDisplayValue("Home Show")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Duplicate" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Archive" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Export" })).toBeInTheDocument();
+  expect(await screen.findByText(/1920×1080/)).toBeInTheDocument();
+  expect(screen.getByText(/-18.2 LUFS/)).toBeInTheDocument();
+  expect(screen.getAllByText("Malware scan: unavailable")).toHaveLength(2);
+  expect(screen.getByText("Original file: available")).toBeInTheDocument();
+  expect(screen.getByText("Used by Ambient (left-window)")).toBeInTheDocument();
+  expect(screen.getByText("Original file: missing")).toBeInTheDocument();
+  expect(screen.getByText("Artifact review: missing")).toBeInTheDocument();
+  expect(screen.getByText("Unused in the current draft")).toBeInTheDocument();
+  expect(screen.getByText(/Favorite · Visuals\/Windows/)).toBeInTheDocument();
+  fireEvent.click(screen.getByText("Organization & governance · approved"));
+  expect(screen.getByDisplayValue("Projection team")).toBeInTheDocument();
+  expect(screen.getByDisplayValue("Original production")).toBeInTheDocument();
+  expect(screen.getByDisplayValue("Created for the Home installation.")).toBeInTheDocument();
+  expect(screen.getAllByRole("button", { name: "Place asset" })).toHaveLength(2);
+  fireEvent.click(screen.getByText("Scenes & reusable presets"));
+  expect(screen.getByText("Ambient base")).toBeInTheDocument();
+  expect(screen.getByDisplayValue("Scenes/Ambient")).toBeInTheDocument();
+  const assetSearch = screen.getByRole("searchbox", {
+    name: "Search assets in Home Show",
+  });
+  fireEvent.change(assetSearch, { target: { value: "halloween" } });
+  expect(screen.getByText("Window loop")).toBeInTheDocument();
+  expect(screen.queryByText("Missing loop")).not.toBeInTheDocument();
+  expect(screen.getByText(/Review proxy playback/).closest("video")).toHaveAttribute(
+    "src",
+    "/api/gui/v1/assets/asset-1/artifacts/review",
+  );
+  expect(screen.getByAltText("Waveform for Window loop")).toHaveAttribute(
+    "src",
+    "/api/gui/v1/assets/asset-1/artifacts/waveform",
+  );
 
   fireEvent.click(screen.getByRole("button", { name: "Operate" }));
   expect(screen.getByRole("heading", { name: "Show controls" })).toBeInTheDocument();

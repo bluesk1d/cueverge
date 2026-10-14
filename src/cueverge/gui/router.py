@@ -3,11 +3,29 @@ import time
 from collections.abc import Callable, Collection, Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Literal
+from uuid import uuid4
 
-from fastapi import APIRouter, Cookie, Depends, Header, HTTPException, Request, Response
-from fastapi.responses import JSONResponse
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Cookie,
+    Depends,
+    Header,
+    HTTPException,
+    Request,
+    Response,
+)
+from fastapi.responses import FileResponse, JSONResponse
 
 from cueverge.controller.runtime import ShowMode
+from cueverge.gui.asset_upload import (
+    AssetMetadataConflictError,
+    AssetMetadataLockedError,
+    AssetUploadConflictError,
+    AssetUploadError,
+    StoredAsset,
+    StoredAssetUpload,
+)
 from cueverge.gui.auth import (
     AuthenticatedSession,
     LoginRateLimitError,
@@ -15,7 +33,13 @@ from cueverge.gui.auth import (
 from cueverge.gui.compiler import CompilationError
 from cueverge.gui.contracts import (
     ActivityEventResponse,
+    ApplyScenePresetRequest,
+    AssetMetadataConflictResponse,
+    AssetResponse,
+    AssetSceneReferenceResponse,
+    AssetUploadResponse,
     AuditEventResponse,
+    BeginAssetUploadRequest,
     CapabilityReviewIssue,
     CapabilityReviewRequest,
     CapabilityReviewResponse,
@@ -24,6 +48,7 @@ from cueverge.gui.contracts import (
     CreateInstallationRequest,
     CreatePairingTokenRequest,
     CreateProjectRequest,
+    CreateScenePresetRequest,
     DeviceArtifactResponse,
     DeviceConnectionPolicyResponse,
     DeviceConnectionTestResponse,
@@ -38,11 +63,16 @@ from cueverge.gui.contracts import (
     LoginRequest,
     MaintenancePreviewRequest,
     MaintenancePreviewResponse,
+    ObjectOrganizationRequest,
     OperateActionRequest,
     OperateActionResponse,
     PairingTokenResponse,
+    PlaceAssetRequest,
     ProbeEndpointRequest,
     ProjectDraftResponse,
+    ProjectExportDocument,
+    ProjectMetadataConflictResponse,
+    ProjectMetadataRequest,
     ProjectSummary,
     ResourceAssignmentConflictResponse,
     ResourceAssignmentResponse,
@@ -56,6 +86,7 @@ from cueverge.gui.contracts import (
     SetResourceAssignmentRequest,
     TopologyNodeResponse,
     TopologyResponse,
+    UpdateAssetMetadataRequest,
     UpdateInstallationRequest,
 )
 from cueverge.gui.endpoint_discovery import EndpointDiscoveryError
@@ -67,6 +98,7 @@ from cueverge.gui.repository import (
     InstallationConflictError,
     InstallationNameConflictError,
     InstallationNotFoundError,
+    ProjectMetadataConflictError,
     ProjectNotFoundError,
     ResourceAssignmentConflictError,
     ResourceAssignmentInUseError,
@@ -231,6 +263,550 @@ def create_gui_router(services: GuiServices) -> APIRouter:
         )
         response.headers["ETag"] = _etag(revision.revision)
         return _project_draft(revision)
+
+    @router.post(
+        "/projects/from-active",
+        response_model=ProjectDraftResponse,
+        status_code=201,
+    )
+    def create_project_from_active(
+        body: ProjectMetadataRequest,
+        response: Response,
+        identity: Annotated[AuthenticatedSession, author],
+    ) -> ProjectDraftResponse:
+        draft = DraftProject(
+            schema_version=1,
+            installation=services.runtime.catalog.installation,
+            scenes=tuple(
+                services.runtime.catalog.scenes[scene_id].definition
+                for scene_id in sorted(services.runtime.catalog.scenes)
+            ),
+            editor_metadata={"installation_id": services.repository.get_runtime_installation().id},
+        )
+        revision = services.repository.create_project(
+            name=body.name,
+            draft=draft,
+            actor=identity.username,
+            role=identity.role,
+            occurred_at=_now_iso(),
+        )
+        response.headers["ETag"] = _etag(revision.revision)
+        return _project_draft(revision)
+
+    @router.put("/projects/{project_id}", response_model=ProjectSummary)
+    def update_project_metadata(
+        project_id: str,
+        body: ProjectMetadataRequest,
+        response: Response,
+        identity: Annotated[AuthenticatedSession, author],
+        if_match: Annotated[str | None, Header(alias="If-Match")] = None,
+    ) -> ProjectSummary | JSONResponse:
+        expected_revision = _parse_if_match(if_match)
+        try:
+            project = services.repository.update_project_metadata(
+                project_id=project_id,
+                expected_revision=expected_revision,
+                name=body.name,
+                actor=identity.username,
+                role=identity.role,
+                occurred_at=_now_iso(),
+            )
+        except ProjectNotFoundError as error:
+            raise HTTPException(
+                status_code=404,
+                detail={"code": "project_not_found"},
+            ) from error
+        except ProjectMetadataConflictError as error:
+            return JSONResponse(
+                status_code=409,
+                content=ProjectMetadataConflictResponse(
+                    requested_revision=expected_revision,
+                    current_revision=error.current_revision,
+                ).model_dump(mode="json"),
+            )
+        response.headers["ETag"] = _etag(project.metadata_revision)
+        return _project_summary(project)
+
+    @router.post(
+        "/projects/{project_id}/duplicate",
+        response_model=ProjectDraftResponse,
+        status_code=201,
+    )
+    def duplicate_project(
+        project_id: str,
+        body: ProjectMetadataRequest,
+        response: Response,
+        identity: Annotated[AuthenticatedSession, author],
+    ) -> ProjectDraftResponse:
+        try:
+            source = services.repository.get_revision(project_id)
+        except ProjectNotFoundError as error:
+            raise HTTPException(
+                status_code=404,
+                detail={"code": "project_not_found"},
+            ) from error
+        duplicated = services.repository.create_project(
+            name=body.name,
+            draft=source.draft,
+            actor=identity.username,
+            role=identity.role,
+            occurred_at=_now_iso(),
+        )
+        services.repository.append_audit(
+            actor=identity.username,
+            action="project.duplicate",
+            target=duplicated.project.id,
+            result="success",
+            occurred_at=_now_iso(),
+            authorization_context={
+                "role": identity.role.value,
+                "source_project_id": project_id,
+                "source_revision": source.revision,
+            },
+        )
+        response.headers["ETag"] = _etag(duplicated.revision)
+        return _project_draft(duplicated)
+
+    @router.post(
+        "/projects/{project_id}/archive",
+        response_model=ProjectSummary,
+    )
+    def archive_project(
+        project_id: str,
+        response: Response,
+        identity: Annotated[AuthenticatedSession, author],
+        if_match: Annotated[str | None, Header(alias="If-Match")] = None,
+    ) -> ProjectSummary | JSONResponse:
+        expected_revision = _parse_if_match(if_match)
+        try:
+            project = services.repository.archive_project(
+                project_id=project_id,
+                expected_revision=expected_revision,
+                actor=identity.username,
+                role=identity.role,
+                occurred_at=_now_iso(),
+            )
+        except ProjectNotFoundError as error:
+            raise HTTPException(
+                status_code=404,
+                detail={"code": "project_not_found"},
+            ) from error
+        except ProjectMetadataConflictError as error:
+            return JSONResponse(
+                status_code=409,
+                content=ProjectMetadataConflictResponse(
+                    requested_revision=expected_revision,
+                    current_revision=error.current_revision,
+                ).model_dump(mode="json"),
+            )
+        except ValueError as error:
+            raise HTTPException(
+                status_code=409,
+                detail={"code": "project_already_archived"},
+            ) from error
+        response.headers["ETag"] = _etag(project.metadata_revision)
+        return _project_summary(project)
+
+    @router.get(
+        "/projects/{project_id}/export",
+        response_model=ProjectExportDocument,
+        dependencies=[reader],
+    )
+    def export_project(project_id: str) -> ProjectExportDocument:
+        try:
+            return services.repository.export_project(project_id)
+        except ProjectNotFoundError as error:
+            raise HTTPException(
+                status_code=404,
+                detail={"code": "project_not_found"},
+            ) from error
+
+    @router.post(
+        "/projects/import",
+        response_model=ProjectDraftResponse,
+        status_code=201,
+    )
+    def import_project(
+        body: ProjectExportDocument,
+        response: Response,
+        identity: Annotated[AuthenticatedSession, author],
+    ) -> ProjectDraftResponse:
+        revision = services.repository.import_project(
+            body,
+            actor=identity.username,
+            role=identity.role,
+            occurred_at=_now_iso(),
+        )
+        response.headers["ETag"] = _etag(revision.revision)
+        return _project_draft(revision)
+
+    @router.put(
+        "/projects/{project_id}/scenes/{scene_id}/organization",
+        response_model=ProjectDraftResponse,
+    )
+    def organize_scene(
+        project_id: str,
+        scene_id: str,
+        body: ObjectOrganizationRequest,
+        response: Response,
+        identity: Annotated[AuthenticatedSession, author],
+        if_match: Annotated[str | None, Header(alias="If-Match")] = None,
+    ) -> ProjectDraftResponse | JSONResponse:
+        expected_revision = _parse_if_match(if_match)
+        try:
+            current = services.repository.get_revision(project_id)
+            draft = _organize_scene(current.draft, scene_id, body)
+            revision = services.repository.update_draft(
+                project_id=project_id,
+                expected_revision=expected_revision,
+                draft=draft,
+                actor=identity.username,
+                role=identity.role,
+                occurred_at=_now_iso(),
+            )
+        except ProjectNotFoundError as error:
+            raise HTTPException(status_code=404, detail={"code": "project_not_found"}) from error
+        except ValueError as error:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "scene_organization_invalid", "message": str(error)},
+            ) from error
+        except RevisionConflictError as error:
+            return _revision_conflict_response(error)
+        response.headers["ETag"] = _etag(revision.revision)
+        return _project_draft(revision)
+
+    @router.post(
+        "/projects/{project_id}/presets",
+        response_model=ProjectDraftResponse,
+        status_code=201,
+    )
+    def create_scene_preset(
+        project_id: str,
+        body: CreateScenePresetRequest,
+        response: Response,
+        identity: Annotated[AuthenticatedSession, author],
+        if_match: Annotated[str | None, Header(alias="If-Match")] = None,
+    ) -> ProjectDraftResponse | JSONResponse:
+        expected_revision = _parse_if_match(if_match)
+        try:
+            current = services.repository.get_revision(project_id)
+            draft = _create_scene_preset(current.draft, body)
+            revision = services.repository.update_draft(
+                project_id=project_id,
+                expected_revision=expected_revision,
+                draft=draft,
+                actor=identity.username,
+                role=identity.role,
+                occurred_at=_now_iso(),
+            )
+        except ProjectNotFoundError as error:
+            raise HTTPException(status_code=404, detail={"code": "project_not_found"}) from error
+        except ValueError as error:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "preset_invalid", "message": str(error)},
+            ) from error
+        except RevisionConflictError as error:
+            return _revision_conflict_response(error)
+        response.headers["ETag"] = _etag(revision.revision)
+        return _project_draft(revision)
+
+    @router.post(
+        "/projects/{project_id}/presets/{preset_id}/apply",
+        response_model=ProjectDraftResponse,
+    )
+    def apply_scene_preset(
+        project_id: str,
+        preset_id: str,
+        body: ApplyScenePresetRequest,
+        response: Response,
+        identity: Annotated[AuthenticatedSession, author],
+        if_match: Annotated[str | None, Header(alias="If-Match")] = None,
+    ) -> ProjectDraftResponse | JSONResponse:
+        expected_revision = _parse_if_match(if_match)
+        try:
+            current = services.repository.get_revision(project_id)
+            draft = _apply_scene_preset(current.draft, preset_id, body.scene_id)
+            revision = services.repository.update_draft(
+                project_id=project_id,
+                expected_revision=expected_revision,
+                draft=draft,
+                actor=identity.username,
+                role=identity.role,
+                occurred_at=_now_iso(),
+            )
+        except ProjectNotFoundError as error:
+            raise HTTPException(status_code=404, detail={"code": "project_not_found"}) from error
+        except ValueError as error:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "preset_application_invalid", "message": str(error)},
+            ) from error
+        except RevisionConflictError as error:
+            return _revision_conflict_response(error)
+        response.headers["ETag"] = _etag(revision.revision)
+        return _project_draft(revision)
+
+    @router.get(
+        "/projects/{project_id}/assets",
+        response_model=list[AssetResponse],
+        dependencies=[reader],
+    )
+    def assets(project_id: str) -> list[AssetResponse]:
+        try:
+            stored = services.asset_upload.list_assets(project_id)
+        except AssetUploadError as error:
+            raise HTTPException(
+                status_code=404,
+                detail={"code": "project_not_found"},
+            ) from error
+        return [_asset_response(asset) for asset in stored]
+
+    @router.get(
+        "/assets/{asset_id}/artifacts/{kind}",
+        response_class=FileResponse,
+        dependencies=[reader],
+    )
+    def asset_artifact(asset_id: str, kind: str) -> FileResponse:
+        try:
+            path, media_type = services.asset_upload.get_artifact(asset_id, kind)
+        except AssetUploadError as error:
+            raise HTTPException(
+                status_code=404,
+                detail={"code": "asset_artifact_not_found", "message": str(error)},
+            ) from error
+        return FileResponse(
+            path,
+            media_type=media_type,
+            headers={"Cache-Control": "private, max-age=31536000, immutable"},
+        )
+
+    @router.put("/assets/{asset_id}/metadata", response_model=AssetResponse)
+    def update_asset_metadata(
+        asset_id: str,
+        body: UpdateAssetMetadataRequest,
+        response: Response,
+        identity: Annotated[AuthenticatedSession, author],
+        if_match: Annotated[str | None, Header(alias="If-Match")] = None,
+    ) -> AssetResponse | JSONResponse:
+        expected_revision = _parse_if_match(if_match)
+        try:
+            asset = services.asset_upload.update_metadata(
+                asset_id=asset_id,
+                expected_revision=expected_revision,
+                owner=body.owner,
+                license_name=body.license,
+                provenance=body.provenance,
+                review_status=body.review_status,
+                expires_on=body.expires_on.isoformat() if body.expires_on is not None else None,
+                folder=body.folder,
+                tags=body.tags,
+                favorite=body.favorite,
+                actor=identity.username,
+                role=identity.role,
+                occurred_at=_now_iso(),
+            )
+        except AssetMetadataConflictError as error:
+            return JSONResponse(
+                status_code=409,
+                content=AssetMetadataConflictResponse(
+                    requested_revision=expected_revision,
+                    current_revision=error.current_revision,
+                ).model_dump(mode="json"),
+            )
+        except AssetMetadataLockedError as error:
+            raise HTTPException(
+                status_code=409,
+                detail={"code": "asset_metadata_locked", "message": str(error)},
+            ) from error
+        except AssetUploadError as error:
+            raise HTTPException(
+                status_code=404,
+                detail={"code": "asset_not_found"},
+            ) from error
+        response.headers["ETag"] = _etag(asset.metadata_revision)
+        return _asset_response(asset)
+
+    @router.post(
+        "/projects/{project_id}/assets/{asset_id}/place",
+        response_model=ProjectDraftResponse,
+    )
+    def place_asset(
+        project_id: str,
+        asset_id: str,
+        body: PlaceAssetRequest,
+        response: Response,
+        identity: Annotated[AuthenticatedSession, author],
+        if_match: Annotated[str | None, Header(alias="If-Match")] = None,
+    ) -> ProjectDraftResponse | JSONResponse:
+        expected_revision = _parse_if_match(if_match)
+        try:
+            asset = services.asset_upload.get_asset(asset_id)
+            revision = services.repository.get_revision(project_id)
+        except (AssetUploadError, ProjectNotFoundError) as error:
+            raise HTTPException(
+                status_code=404,
+                detail={"code": "asset_or_project_not_found"},
+            ) from error
+        if asset.project_id != project_id:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "asset_project_mismatch"},
+            )
+        if revision.project.archived_at is not None:
+            raise HTTPException(
+                status_code=409,
+                detail={"code": "project_archived"},
+            )
+        if asset.status != "ready" or asset.original_file_status != "available":
+            raise HTTPException(
+                status_code=409,
+                detail={"code": "asset_not_placeable", "status": asset.status},
+            )
+        if asset.current_revision is None:
+            raise HTTPException(
+                status_code=409,
+                detail={"code": "asset_revision_unavailable"},
+            )
+        try:
+            draft = _place_asset(
+                revision.draft,
+                asset_id=asset.id,
+                asset_revision=asset.current_revision,
+                scene_id=body.scene_id,
+                output_id=body.output_id,
+            )
+            updated = services.repository.update_draft(
+                project_id=project_id,
+                expected_revision=expected_revision,
+                draft=draft,
+                actor=identity.username,
+                role=identity.role,
+                occurred_at=_now_iso(),
+            )
+        except ValueError as error:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "asset_placement_invalid", "message": str(error)},
+            ) from error
+        except RevisionConflictError as error:
+            return JSONResponse(
+                status_code=409,
+                content=RevisionConflictResponse(
+                    requested_revision=error.requested_revision,
+                    current_revision=error.current_revision,
+                    conflicting_paths=error.conflicting_paths,
+                ).model_dump(mode="json"),
+            )
+        response.headers["ETag"] = _etag(updated.revision)
+        return _project_draft(updated)
+
+    @router.post(
+        "/projects/{project_id}/assets/uploads",
+        response_model=AssetUploadResponse,
+        status_code=201,
+    )
+    def begin_asset_upload(
+        project_id: str,
+        body: BeginAssetUploadRequest,
+        identity: Annotated[AuthenticatedSession, author],
+    ) -> AssetUploadResponse:
+        try:
+            asset, upload = services.asset_upload.begin(
+                project_id=project_id,
+                name=body.name,
+                original_filename=body.original_filename,
+                media_type=body.media_type,
+                total_bytes=body.total_bytes,
+                expected_sha256=body.expected_sha256,
+                actor=identity.username,
+                role=identity.role,
+                occurred_at=_now_iso(),
+            )
+        except AssetUploadError as error:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "asset_upload_rejected", "message": str(error)},
+            ) from error
+        return _asset_upload_response(
+            asset,
+            upload,
+            services.config.asset_chunk_max_bytes,
+        )
+
+    @router.get(
+        "/assets/uploads/{upload_id}",
+        response_model=AssetUploadResponse,
+        dependencies=[reader],
+    )
+    def get_asset_upload(upload_id: str) -> AssetUploadResponse:
+        try:
+            upload = services.asset_upload.get_upload(upload_id)
+            asset = services.asset_upload.get_asset(upload.asset_id)
+        except AssetUploadError as error:
+            raise HTTPException(
+                status_code=404,
+                detail={"code": "asset_upload_not_found"},
+            ) from error
+        return _asset_upload_response(
+            asset,
+            upload,
+            services.config.asset_chunk_max_bytes,
+        )
+
+    @router.put(
+        "/assets/uploads/{upload_id}",
+        response_model=AssetUploadResponse,
+    )
+    async def append_asset_upload(
+        upload_id: str,
+        request: Request,
+        background_tasks: BackgroundTasks,
+        identity: Annotated[AuthenticatedSession, author],
+        upload_offset: Annotated[int, Header(alias="Upload-Offset")],
+    ) -> AssetUploadResponse:
+        body = bytearray()
+        async for chunk in request.stream():
+            body.extend(chunk)
+            if len(body) > services.config.asset_chunk_max_bytes:
+                raise HTTPException(
+                    status_code=413,
+                    detail={"code": "asset_chunk_too_large"},
+                )
+        try:
+            asset, upload = services.asset_upload.append(
+                upload_id=upload_id,
+                offset=upload_offset,
+                chunk=bytes(body),
+                actor=identity.username,
+                role=identity.role,
+                occurred_at=_now_iso(),
+            )
+        except AssetUploadConflictError as error:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "asset_upload_offset_conflict",
+                    "received_bytes": error.received_bytes,
+                },
+            ) from error
+        except AssetUploadError as error:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "asset_upload_rejected", "message": str(error)},
+            ) from error
+        if upload.state == "completed" and asset.status == "uploading":
+            background_tasks.add_task(
+                services.asset_upload.process_asset,
+                asset.id,
+                occurred_at=_now_iso(),
+            )
+        return _asset_upload_response(
+            asset,
+            upload,
+            services.config.asset_chunk_max_bytes,
+        )
 
     @router.get(
         "/projects/{project_id}/draft",
@@ -418,7 +994,10 @@ def create_gui_router(services: GuiServices) -> APIRouter:
     )
     def installations() -> list[InstallationSummaryResponse]:
         return [
-            _installation_summary(installation)
+            _installation_summary(
+                installation,
+                services.repository.installation_project_references(installation.id),
+            )
             for installation in services.repository.list_installations()
         ]
 
@@ -445,7 +1024,7 @@ def create_gui_router(services: GuiServices) -> APIRouter:
                 detail={"code": "installation_name_conflict"},
             ) from error
         response.headers["ETag"] = _etag(installation.revision)
-        return _installation_summary(installation)
+        return _installation_summary(installation, ())
 
     @router.get(
         "/installations/{installation_id}",
@@ -461,7 +1040,10 @@ def create_gui_router(services: GuiServices) -> APIRouter:
                 detail={"code": "installation_not_found"},
             ) from error
         response.headers["ETag"] = _etag(installation.revision)
-        return _installation_summary(installation)
+        return _installation_summary(
+            installation,
+            services.repository.installation_project_references(installation.id),
+        )
 
     @router.put(
         "/installations/{installation_id}",
@@ -480,6 +1062,9 @@ def create_gui_router(services: GuiServices) -> APIRouter:
                 installation_id=installation_id,
                 expected_revision=expected_revision,
                 name=body.name,
+                folder=body.folder,
+                tags=body.tags,
+                favorite=body.favorite,
                 actor=identity.username,
                 role=identity.role,
                 occurred_at=_now_iso(),
@@ -503,7 +1088,10 @@ def create_gui_router(services: GuiServices) -> APIRouter:
                 ).model_dump(mode="json"),
             )
         response.headers["ETag"] = _etag(installation.revision)
-        return _installation_summary(installation)
+        return _installation_summary(
+            installation,
+            services.repository.installation_project_references(installation.id),
+        )
 
     @router.delete(
         "/installations/{installation_id}",
@@ -1501,6 +2089,8 @@ def _project_summary(project: StoredProject) -> ProjectSummary:
         id=project.id,
         name=project.name,
         head_revision=project.head_revision,
+        metadata_revision=project.metadata_revision,
+        archived_at=project.archived_at,
         created_at=project.created_at,
         updated_at=project.updated_at,
     )
@@ -1531,14 +2121,219 @@ def _resource_assignment(
 
 def _installation_summary(
     installation: StoredInstallation,
+    used_by_projects: tuple[str, ...],
 ) -> InstallationSummaryResponse:
     return InstallationSummaryResponse(
         id=installation.id,
         name=installation.name,
         revision=installation.revision,
         runtime_active=installation.runtime_active,
+        folder=installation.folder,
+        tags=installation.tags,
+        favorite=installation.favorite,
+        used_by_projects=used_by_projects,
         created_at=installation.created_at,
         updated_at=installation.updated_at,
+    )
+
+
+def _asset_response(asset: StoredAsset) -> AssetResponse:
+    return AssetResponse(
+        id=asset.id,
+        project_id=asset.project_id,
+        name=asset.name,
+        status=asset.status,
+        current_revision=asset.current_revision,
+        metadata_revision=asset.metadata_revision,
+        owner=asset.owner,
+        license=asset.license,
+        provenance=asset.provenance,
+        review_status=asset.review_status,
+        expires_on=asset.expires_on,
+        folder=asset.folder,
+        tags=asset.tags,
+        favorite=asset.favorite,
+        error=asset.error,
+        digest_sha256=asset.digest_sha256,
+        size_bytes=asset.size_bytes,
+        media_type=asset.media_type,
+        original_filename=asset.original_filename,
+        scan_status=asset.scan_status,
+        metadata=asset.metadata,
+        original_file_status=asset.original_file_status,
+        artifact_faults=asset.artifact_faults,
+        references=tuple(
+            AssetSceneReferenceResponse(
+                scene_id=reference.scene_id,
+                scene_name=reference.scene_name,
+                output_id=reference.output_id,
+            )
+            for reference in asset.references
+        ),
+        unused=asset.unused,
+        created_at=asset.created_at,
+        updated_at=asset.updated_at,
+    )
+
+
+def _asset_upload_response(
+    asset: StoredAsset,
+    upload: StoredAssetUpload,
+    chunk_max_bytes: int,
+) -> AssetUploadResponse:
+    return AssetUploadResponse(
+        id=upload.id,
+        asset_id=upload.asset_id,
+        total_bytes=upload.total_bytes,
+        received_bytes=upload.received_bytes,
+        state=upload.state,
+        error=upload.error,
+        chunk_max_bytes=chunk_max_bytes,
+        asset=_asset_response(asset),
+    )
+
+
+def _place_asset(
+    draft: DraftProject,
+    *,
+    asset_id: str,
+    asset_revision: int,
+    scene_id: str,
+    output_id: str | None,
+) -> DraftProject:
+    scenes = list(draft.scenes)
+    for index, scene in enumerate(scenes):
+        if scene.id != scene_id:
+            continue
+        if scene.schema_version == 1:
+            if output_id is not None:
+                raise ValueError("schema-v1 scenes do not accept a media output ID")
+            scenes[index] = scene.model_copy(
+                update={"media": scene.media.model_copy(update={"asset": asset_id})}
+            )
+        else:
+            if output_id is None:
+                raise ValueError("schema-v2 scenes require a media output ID")
+            outputs = list(scene.media)
+            for output_index, output in enumerate(outputs):
+                if output.id == output_id:
+                    outputs[output_index] = output.model_copy(update={"asset": asset_id})
+                    break
+            else:
+                raise ValueError("scene media output does not exist")
+            scenes[index] = scene.model_copy(update={"media": tuple(outputs)})
+        break
+    else:
+        raise ValueError("scene does not exist")
+    editor_metadata = dict(draft.editor_metadata)
+    existing_bindings = editor_metadata.get("asset_bindings", {})
+    if not isinstance(existing_bindings, dict):
+        raise ValueError("draft asset bindings are invalid")
+    bindings = dict(existing_bindings)
+    bindings[asset_id] = asset_revision
+    editor_metadata["asset_bindings"] = bindings
+    return draft.model_copy(
+        update={
+            "scenes": tuple(scenes),
+            "editor_metadata": editor_metadata,
+        }
+    )
+
+
+def _organize_scene(
+    draft: DraftProject,
+    scene_id: str,
+    organization: ObjectOrganizationRequest,
+) -> DraftProject:
+    if not any(scene.id == scene_id for scene in draft.scenes):
+        raise ValueError("scene does not exist")
+    editor_metadata = dict(draft.editor_metadata)
+    current = editor_metadata.get("scene_organization", {})
+    if not isinstance(current, dict):
+        raise ValueError("scene organization metadata is invalid")
+    organized = dict(current)
+    organized[scene_id] = organization.model_dump(mode="json")
+    editor_metadata["scene_organization"] = organized
+    return draft.model_copy(update={"editor_metadata": editor_metadata})
+
+
+def _create_scene_preset(
+    draft: DraftProject,
+    body: CreateScenePresetRequest,
+) -> DraftProject:
+    scene = next((candidate for candidate in draft.scenes if candidate.id == body.scene_id), None)
+    if scene is None:
+        raise ValueError("scene does not exist")
+    editor_metadata = dict(draft.editor_metadata)
+    current = editor_metadata.get("scene_presets", {})
+    if not isinstance(current, dict):
+        raise ValueError("scene preset metadata is invalid")
+    presets = dict(current)
+    preset_id = str(uuid4())
+    presets[preset_id] = {
+        "id": preset_id,
+        "name": body.name,
+        "folder": body.folder,
+        "tags": list(body.tags),
+        "favorite": body.favorite,
+        "schema_version": scene.schema_version,
+        "template": scene.model_dump(mode="json"),
+    }
+    editor_metadata["scene_presets"] = presets
+    return draft.model_copy(update={"editor_metadata": editor_metadata})
+
+
+def _apply_scene_preset(
+    draft: DraftProject,
+    preset_id: str,
+    scene_id: str,
+) -> DraftProject:
+    presets = draft.editor_metadata.get("scene_presets", {})
+    if not isinstance(presets, dict):
+        raise ValueError("scene preset metadata is invalid")
+    preset = presets.get(preset_id)
+    if not isinstance(preset, dict):
+        raise ValueError("preset does not exist")
+    template = preset.get("template")
+    if not isinstance(template, dict):
+        raise ValueError("preset does not exist")
+    scenes = list(draft.scenes)
+    for index, scene in enumerate(scenes):
+        if scene.id != scene_id:
+            continue
+        if preset.get("schema_version") != scene.schema_version:
+            raise ValueError("preset schema does not match target scene")
+        values = dict(template)
+        values["id"] = scene.id
+        values["name"] = scene.name
+        scenes[index] = type(scene).model_validate(values)
+        break
+    else:
+        raise ValueError("scene does not exist")
+    editor_metadata = dict(draft.editor_metadata)
+    current_usage = editor_metadata.get("scene_preset_usage", {})
+    if not isinstance(current_usage, dict):
+        raise ValueError("scene preset usage metadata is invalid")
+    usage = dict(current_usage)
+    usage[scene_id] = preset_id
+    editor_metadata["scene_preset_usage"] = usage
+    return DraftProject.model_validate(
+        {
+            **draft.model_dump(mode="json"),
+            "scenes": [scene.model_dump(mode="json") for scene in scenes],
+            "editor_metadata": editor_metadata,
+        }
+    )
+
+
+def _revision_conflict_response(error: RevisionConflictError) -> JSONResponse:
+    return JSONResponse(
+        status_code=409,
+        content=RevisionConflictResponse(
+            requested_revision=error.requested_revision,
+            current_revision=error.current_revision,
+            conflicting_paths=error.conflicting_paths,
+        ).model_dump(mode="json"),
     )
 
 

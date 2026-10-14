@@ -3,11 +3,21 @@ import { FormEvent, useCallback, useEffect, useState } from "react";
 import {
   ApiError,
   ActivityEvent,
+  applyScenePreset,
+  AssetRecord,
+  assetArtifactUrl,
+  archiveProject,
   createInstallation,
+  createProjectFromActive,
+  createScenePreset,
   deleteInstallation,
+  duplicateProject,
+  exportProject,
   getActivity,
+  getAssets,
   getInstallation,
   getInstallations,
+  getProjectDraft,
   getProjects,
   getResourceAssignments,
   getRuntimeStatus,
@@ -15,18 +25,26 @@ import {
   getTopology,
   InstallationStatus,
   InstallationSummary,
+  importProject,
   login,
   logout,
   MaintenancePreview,
   operate,
+  organizeScene,
+  placeAsset,
   OperateAction,
   ProjectSummary,
+  ProjectDraftRecord,
+  ProjectExportDocument,
+  renameProject,
   ResourceAssignment,
   RuntimeStatus,
   Session,
   startMaintenancePreview,
   Topology,
   updateInstallation,
+  updateAssetMetadata,
+  uploadAsset,
 } from "./api";
 import { AppShell, Workspace } from "./components/AppShell";
 import {
@@ -188,7 +206,7 @@ function AuthenticatedApp({
           onRefresh={() => loadStatus(true)}
         />
       )}
-      {workspace === "shows" && <ShowsPage />}
+      {workspace === "shows" && <ShowsPage session={session} />}
       {workspace === "operate" && (
         <OperatePage
           session={session}
@@ -270,13 +288,61 @@ function Login({ onAuthenticated }: { onAuthenticated: (session: Session) => voi
   );
 }
 
-function ShowsPage() {
-  const [projects, setProjects] = useState<ProjectSummary[] | null>(null);
+export function ShowsPage({
+  session,
+  initialProjects,
+}: {
+  session: Session;
+  initialProjects?: ProjectSummary[];
+}) {
+  const [projects, setProjects] = useState<ProjectSummary[] | null>(
+    initialProjects ?? null,
+  );
   const [error, setError] = useState(false);
+  const [name, setName] = useState("");
+  const [search, setSearch] = useState("");
+  const [busy, setBusy] = useState(false);
+  const canAuthor = ["designer", "publisher", "administrator"].includes(session.role);
+
+  const loadProjects = useCallback(async () => {
+    try {
+      setProjects(await getProjects());
+      setError(false);
+    } catch {
+      setError(true);
+    }
+  }, []);
 
   useEffect(() => {
-    getProjects().then(setProjects).catch(() => setError(true));
-  }, []);
+    if (initialProjects === undefined) {
+      void loadProjects();
+    }
+  }, [initialProjects, loadProjects]);
+
+  async function run(action: () => Promise<void>) {
+    setBusy(true);
+    setError(false);
+    try {
+      await action();
+      await loadProjects();
+    } catch {
+      setError(true);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function importFile(file: File) {
+    const document = JSON.parse(await file.text()) as ProjectExportDocument;
+    await run(() => importProject(document));
+  }
+
+  const filteredProjects =
+    projects?.filter((project) =>
+      project.name.toLocaleLowerCase().includes(search.toLocaleLowerCase()),
+    ) ?? null;
+  const activeProjects = filteredProjects?.filter((project) => !project.archived_at) ?? [];
+  const archivedProjects = filteredProjects?.filter((project) => project.archived_at) ?? [];
 
   return (
     <>
@@ -285,30 +351,1053 @@ function ShowsPage() {
         title="Shows"
         description="Revisioned drafts remain isolated from the active show package."
       />
+      {canAuthor && (
+        <Panel
+          title="Project actions"
+          description="Create from Home or import a portable project document"
+          className="project-actions-panel"
+        >
+          <div className="project-actions">
+            <label>
+              Project name
+              <input
+                maxLength={200}
+                value={name}
+                onChange={(event) => setName(event.target.value)}
+              />
+            </label>
+            <button
+              className="primary-button"
+              disabled={busy || !name.trim()}
+              onClick={() =>
+                void run(async () => {
+                  await createProjectFromActive(name);
+                  setName("");
+                })
+              }
+            >
+              Create from Home
+            </button>
+            <label className="file-button">
+              Import project
+              <input
+                accept="application/json,.json"
+                disabled={busy}
+                type="file"
+                onChange={(event) => {
+                  const file = event.target.files?.[0];
+                  if (file) {
+                    void importFile(file);
+                  }
+                }}
+              />
+            </label>
+          </div>
+        </Panel>
+      )}
       <Panel title="Draft projects">
+        <label className="project-search">
+          Search projects
+          <input value={search} onChange={(event) => setSearch(event.target.value)} />
+        </label>
         {error ? (
           <ErrorState />
         ) : projects === null ? (
           <Skeleton lines={3} />
-        ) : projects.length === 0 ? (
+        ) : filteredProjects?.length === 0 ? (
           <EmptyState
             title="No draft projects"
-            description="The authoring API is ready for the first revisioned project."
+            description={
+              projects.length
+                ? "No projects match the current search."
+                : "Create a revisioned project from Home or import one."
+            }
           />
         ) : (
-          <div className="project-grid">
-            {projects.map((project) => (
-              <article className="project-card" key={project.id}>
-                <span>Revision {project.head_revision}</span>
-                <h2>{project.name}</h2>
-                <p>Updated {new Date(project.updated_at).toLocaleString()}</p>
-              </article>
-            ))}
-          </div>
+          <>
+            <ProjectGroup
+              title="Active"
+              projects={activeProjects}
+              canAuthor={canAuthor}
+              busy={busy}
+              run={run}
+            />
+            {archivedProjects.length > 0 && (
+              <ProjectGroup
+                title="Archived"
+                projects={archivedProjects}
+                canAuthor={canAuthor}
+                busy={busy}
+                run={run}
+              />
+            )}
+          </>
         )}
       </Panel>
     </>
   );
+}
+
+function ProjectGroup({
+  title,
+  projects,
+  canAuthor,
+  busy,
+  run,
+}: {
+  title: string;
+  projects: ProjectSummary[];
+  canAuthor: boolean;
+  busy: boolean;
+  run: (action: () => Promise<void>) => Promise<void>;
+}) {
+  return (
+    <section className="project-group" aria-label={`${title} projects`}>
+      <h3>{title}</h3>
+      <div className="project-grid">
+        {projects.map((project) => (
+          <ProjectCard
+            key={project.id}
+            project={project}
+            canAuthor={canAuthor}
+            busy={busy}
+            run={run}
+          />
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function ProjectCard({
+  project,
+  canAuthor,
+  busy,
+  run,
+}: {
+  project: ProjectSummary;
+  canAuthor: boolean;
+  busy: boolean;
+  run: (action: () => Promise<void>) => Promise<void>;
+}) {
+  const [name, setName] = useState(project.name);
+  const [assets, setAssets] = useState<AssetRecord[] | null>(null);
+  const [draft, setDraft] = useState<ProjectDraftRecord | null>(null);
+  const [assetSearch, setAssetSearch] = useState("");
+  const [uploadProgress, setUploadProgress] = useState<number | null>(null);
+  const [assetError, setAssetError] = useState<string | null>(null);
+
+  const loadAssets = useCallback(async () => {
+    try {
+      const [loadedAssets, loadedDraft] = await Promise.all([
+        getAssets(project.id),
+        getProjectDraft(project.id),
+      ]);
+      setAssets(loadedAssets);
+      setDraft(loadedDraft);
+      setAssetError(null);
+    } catch {
+      setAssetError("Assets could not be loaded.");
+    }
+  }, [project.id]);
+
+  useEffect(() => {
+    void loadAssets();
+  }, [loadAssets]);
+
+  useEffect(() => {
+    if (!assets?.some((asset) => asset.status === "uploading")) {
+      return;
+    }
+    const timer = window.setTimeout(() => void loadAssets(), 2000);
+    return () => window.clearTimeout(timer);
+  }, [assets, loadAssets]);
+
+  async function upload(file: File) {
+    setUploadProgress(0);
+    setAssetError(null);
+    try {
+      const result = await uploadAsset(project.id, file, (receivedBytes) => {
+        setUploadProgress(Math.round((receivedBytes / file.size) * 100));
+      });
+      if (result.state === "failed") {
+        setAssetError(result.error ?? "Upload verification failed.");
+      }
+      await loadAssets();
+    } catch {
+      setAssetError("Asset upload failed.");
+    } finally {
+      setUploadProgress(null);
+    }
+  }
+
+  async function download() {
+    const document = await exportProject(project.id);
+    const blob = new Blob([JSON.stringify(document, null, 2)], {
+      type: "application/json",
+    });
+    const url = URL.createObjectURL(blob);
+    const anchor = window.document.createElement("a");
+    anchor.href = url;
+    anchor.download = `${project.name.replace(/[^A-Za-z0-9._-]+/g, "-")}.cueverge.json`;
+    anchor.click();
+    URL.revokeObjectURL(url);
+  }
+
+  const visibleAssets =
+    assets?.filter((asset) => {
+      const search = assetSearch.trim().toLocaleLowerCase();
+      if (!search) {
+        return true;
+      }
+      return [
+        asset.name,
+        asset.original_filename,
+        asset.folder,
+        asset.owner,
+        asset.license,
+        ...asset.tags,
+      ].some((value) => value?.toLocaleLowerCase().includes(search));
+    }) ?? null;
+
+  return (
+    <article className="project-card">
+      <span>
+        Draft r{project.head_revision} · Metadata r{project.metadata_revision}
+      </span>
+      {canAuthor && !project.archived_at ? (
+        <input
+          aria-label={`Name for ${project.name}`}
+          disabled={busy}
+          maxLength={200}
+          value={name}
+          onChange={(event) => setName(event.target.value)}
+        />
+      ) : (
+        <h2>{project.name}</h2>
+      )}
+      <p>Updated {new Date(project.updated_at).toLocaleString()}</p>
+      <div className="project-card__actions">
+        <button onClick={() => void download()}>Export</button>
+        {canAuthor && !project.archived_at && (
+          <>
+            <button
+              disabled={busy || !name.trim() || name === project.name}
+              onClick={() =>
+                void run(() =>
+                  renameProject(project.id, project.metadata_revision, name),
+                )
+              }
+            >
+              Rename
+            </button>
+            <button
+              disabled={busy}
+              onClick={() =>
+                void run(() => duplicateProject(project.id, `${project.name} Copy`))
+              }
+            >
+              Duplicate
+            </button>
+            <button
+              disabled={busy}
+              onClick={() =>
+                void run(() => archiveProject(project.id, project.metadata_revision))
+              }
+            >
+              Archive
+            </button>
+          </>
+        )}
+        <input
+          aria-label={`Search assets in ${project.name}`}
+          placeholder="Search assets, folders, tags, owners…"
+          type="search"
+          value={assetSearch}
+          onChange={(event) => setAssetSearch(event.target.value)}
+        />
+      </div>
+      <div className="project-assets">
+        <strong>Assets</strong>
+        {canAuthor && !project.archived_at && (
+          <label className="file-button file-button--compact">
+            Add visual or audio asset
+            <input
+              accept="video/mp4,video/webm,video/quicktime,audio/mpeg,audio/wav,audio/flac,audio/ogg,image/png,image/jpeg,image/webp"
+              disabled={uploadProgress !== null}
+              type="file"
+              onChange={(event) => {
+                const file = event.target.files?.[0];
+                if (file) {
+                  void upload(file);
+                }
+              }}
+            />
+          </label>
+        )}
+        {uploadProgress !== null && (
+          <div className="upload-progress" role="status">
+            <span style={{ width: `${uploadProgress}%` }} />
+            <small>{uploadProgress}% uploaded</small>
+          </div>
+        )}
+        {assetError && <p role="alert">{assetError}</p>}
+        {visibleAssets === null ? (
+          <small>Loading assets…</small>
+        ) : visibleAssets.length ? (
+          <ul>
+            {visibleAssets.map((asset) => (
+              <li key={asset.id}>
+                <AssetPreview asset={asset} />
+                <div>
+                  <strong>{asset.name}</strong>
+                  <small>
+                    {asset.original_filename ?? "Upload pending"} ·{" "}
+                    {asset.size_bytes === null ? "—" : formatAssetBytes(asset.size_bytes)}
+                  </small>
+                  <small>
+                    {asset.favorite ? "Favorite · " : ""}
+                    {asset.folder ?? "Unfiled"}
+                    {asset.tags.length ? ` · ${asset.tags.join(", ")}` : ""}
+                  </small>
+                  {asset.metadata && <small>{formatAssetMetadata(asset.metadata)}</small>}
+                  <small>Malware scan: {asset.scan_status ?? "pending"}</small>
+                  <small>Original file: {asset.original_file_status.replace("_", " ")}</small>
+                  {asset.artifact_faults.map((fault) => (
+                    <small className="asset-diagnostic asset-diagnostic--danger" key={fault}>
+                      Artifact {fault}
+                    </small>
+                  ))}
+                  {asset.unused ? (
+                    <small className="asset-diagnostic asset-diagnostic--warning">
+                      Unused in the current draft
+                    </small>
+                  ) : (
+                    <small>
+                      Used by{" "}
+                      {asset.references
+                        .map((reference) =>
+                          reference.output_id
+                            ? `${reference.scene_name} (${reference.output_id})`
+                            : reference.scene_name,
+                        )
+                        .join(", ")}
+                    </small>
+                  )}
+                  {asset.error && <small role="alert">{asset.error}</small>}
+                  <AssetGovernance
+                    asset={asset}
+                    canEdit={canAuthor && !project.archived_at}
+                    onUpdated={(updated) =>
+                      setAssets((current) =>
+                        current?.map((candidate) =>
+                          candidate.id === updated.id ? updated : candidate,
+                        ) ?? null,
+                      )
+                    }
+                  />
+                  {canAuthor && !project.archived_at && draft && (
+                    <AssetPlacement
+                      asset={asset}
+                      draft={draft}
+                      projectId={project.id}
+                      onPlaced={async (updated) => {
+                        setDraft(updated);
+                        await loadAssets();
+                      }}
+                    />
+                  )}
+                </div>
+                <StatusText
+                  tone={
+                    asset.original_file_status === "missing" ||
+                    asset.original_file_status === "size_mismatch" ||
+                    asset.artifact_faults.length
+                      ? "danger"
+                      : asset.status === "ready"
+                      ? "success"
+                      : asset.status === "failed" || asset.status === "quarantined"
+                        ? "danger"
+                        : "info"
+                  }
+                >
+                  {asset.original_file_status === "missing"
+                    ? "missing"
+                    : asset.original_file_status === "size_mismatch"
+                      ? "corrupt"
+                      : asset.artifact_faults.length
+                        ? "artifact fault"
+                        : asset.status === "uploading"
+                          ? "processing"
+                          : asset.status}
+                </StatusText>
+              </li>
+            ))}
+          </ul>
+        ) : assets?.length ? (
+          <small>No assets match this search.</small>
+        ) : (
+          <small>No assets imported.</small>
+        )}
+      </div>
+      {draft && (
+        <ScenePresetOrganizer
+          canEdit={canAuthor && !project.archived_at}
+          draft={draft}
+          projectId={project.id}
+          onUpdated={setDraft}
+        />
+      )}
+    </article>
+  );
+}
+
+function ScenePresetOrganizer({
+  projectId,
+  draft,
+  canEdit,
+  onUpdated,
+}: {
+  projectId: string;
+  draft: ProjectDraftRecord;
+  canEdit: boolean;
+  onUpdated: (draft: ProjectDraftRecord) => void;
+}) {
+  const [search, setSearch] = useState("");
+  const [selectedScene, setSelectedScene] = useState(draft.draft.scenes[0]?.id ?? "");
+  const [presetName, setPresetName] = useState("");
+  const [presetFolder, setPresetFolder] = useState("");
+  const [presetTags, setPresetTags] = useState("");
+  const [presetFavorite, setPresetFavorite] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const metadata = draft.draft.editor_metadata;
+  const organizations = metadataRecord(metadata.scene_organization);
+  const presets = Object.values(metadataRecord(metadata.scene_presets)).map(metadataRecord);
+  const presetUsage = metadataRecord(metadata.scene_preset_usage);
+  const normalizedSearch = search.toLocaleLowerCase();
+  const visibleScenes = draft.draft.scenes.filter((scene) => {
+    const organization = metadataRecord(organizations[scene.id]);
+    return [scene.name, scene.id, organization.folder, ...metadataStrings(organization.tags)]
+      .some((value) => String(value ?? "").toLocaleLowerCase().includes(normalizedSearch));
+  });
+  const visiblePresets = presets.filter((preset) =>
+    [preset.name, preset.folder, ...metadataStrings(preset.tags)].some((value) =>
+      String(value ?? "").toLocaleLowerCase().includes(normalizedSearch),
+    ),
+  );
+
+  async function createPreset() {
+    if (!selectedScene || !presetName.trim()) {
+      return;
+    }
+    setBusy(true);
+    try {
+      onUpdated(
+        await createScenePreset(projectId, draft.revision, {
+          scene_id: selectedScene,
+          name: presetName,
+          folder: presetFolder || null,
+          tags: presetTags
+            .split(",")
+            .map((tag) => tag.trim())
+            .filter(Boolean),
+          favorite: presetFavorite,
+        }),
+      );
+      setPresetName("");
+      setPresetFolder("");
+      setPresetTags("");
+      setPresetFavorite(false);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function applyPreset(presetId: string) {
+    if (!selectedScene) {
+      return;
+    }
+    setBusy(true);
+    try {
+      onUpdated(
+        await applyScenePreset(
+          projectId,
+          draft.revision,
+          presetId,
+          selectedScene,
+        ),
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <details className="scene-library">
+      <summary>Scenes & reusable presets</summary>
+      <input
+        aria-label="Search scenes and presets"
+        placeholder="Search scenes, folders, tags, presets…"
+        type="search"
+        value={search}
+        onChange={(event) => setSearch(event.target.value)}
+      />
+      <div className="scene-library__grid">
+        <section>
+          <strong>Scenes</strong>
+          {visibleScenes.map((scene) => {
+            const referencedBy = draft.draft.scenes
+              .filter(
+                (candidate) =>
+                  candidate.failure_scene_id === scene.id ||
+                  candidate.completion?.target_scene_id === scene.id,
+              )
+              .map((candidate) => candidate.name);
+            return (
+              <SceneOrganizationRow
+                key={scene.id}
+                canEdit={canEdit}
+                draft={draft}
+                organization={metadataRecord(organizations[scene.id])}
+                projectId={projectId}
+                referencedBy={referencedBy}
+                scene={scene}
+                onUpdated={onUpdated}
+              />
+            );
+          })}
+        </section>
+        <section>
+          <strong>Reusable presets</strong>
+          {canEdit && (
+            <div className="preset-create">
+              <select
+                aria-label="Source or target scene"
+                disabled={busy}
+                value={selectedScene}
+                onChange={(event) => setSelectedScene(event.target.value)}
+              >
+                {draft.draft.scenes.map((scene) => (
+                  <option key={scene.id} value={scene.id}>
+                    {scene.name}
+                  </option>
+                ))}
+              </select>
+              <input
+                aria-label="Preset name"
+                disabled={busy}
+                placeholder="Preset name"
+                value={presetName}
+                onChange={(event) => setPresetName(event.target.value)}
+              />
+              <input
+                aria-label="Preset folder"
+                disabled={busy}
+                placeholder="Folder"
+                value={presetFolder}
+                onChange={(event) => setPresetFolder(event.target.value)}
+              />
+              <input
+                aria-label="Preset tags"
+                disabled={busy}
+                placeholder="tag, tag"
+                value={presetTags}
+                onChange={(event) => setPresetTags(event.target.value)}
+              />
+              <label>
+                <input
+                  checked={presetFavorite}
+                  disabled={busy}
+                  type="checkbox"
+                  onChange={(event) => setPresetFavorite(event.target.checked)}
+                />
+                Favorite
+              </label>
+              <button
+                disabled={busy || !presetName.trim() || !selectedScene}
+                onClick={() => void createPreset()}
+              >
+                Save scene as preset
+              </button>
+            </div>
+          )}
+          {visiblePresets.length ? (
+            <ul>
+              {visiblePresets.map((preset) => {
+                const presetId = String(preset.id);
+                const usedBy = Object.entries(presetUsage)
+                  .filter(([, value]) => value === presetId)
+                  .map(([sceneId]) => sceneId);
+                return (
+                  <li key={presetId}>
+                    <strong>{String(preset.name)}</strong>
+                    <small>
+                      {preset.favorite ? "Favorite · " : ""}
+                      {String(preset.folder ?? "Unfiled")}
+                      {metadataStrings(preset.tags).length
+                        ? ` · ${metadataStrings(preset.tags).join(", ")}`
+                        : ""}
+                    </small>
+                    <small>{usedBy.length ? `Used by ${usedBy.join(", ")}` : "Unused"}</small>
+                    {canEdit && (
+                      <button disabled={busy} onClick={() => void applyPreset(presetId)}>
+                        Apply to selected scene
+                      </button>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          ) : (
+            <small>No reusable presets.</small>
+          )}
+        </section>
+      </div>
+    </details>
+  );
+}
+
+function SceneOrganizationRow({
+  projectId,
+  draft,
+  scene,
+  organization,
+  referencedBy,
+  canEdit,
+  onUpdated,
+}: {
+  projectId: string;
+  draft: ProjectDraftRecord;
+  scene: ProjectDraftRecord["draft"]["scenes"][number];
+  organization: Record<string, unknown>;
+  referencedBy: string[];
+  canEdit: boolean;
+  onUpdated: (draft: ProjectDraftRecord) => void;
+}) {
+  const [folder, setFolder] = useState(String(organization.folder ?? ""));
+  const [tags, setTags] = useState(metadataStrings(organization.tags).join(", "));
+  const [favorite, setFavorite] = useState(organization.favorite === true);
+  const [saving, setSaving] = useState(false);
+
+  async function save() {
+    setSaving(true);
+    try {
+      onUpdated(
+        await organizeScene(projectId, draft.revision, scene.id, {
+          folder: folder || null,
+          tags: tags
+            .split(",")
+            .map((tag) => tag.trim())
+            .filter(Boolean),
+          favorite,
+        }),
+      );
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <article>
+      <strong>{scene.name}</strong>
+      <small>{referencedBy.length ? `Referenced by ${referencedBy.join(", ")}` : "No incoming references"}</small>
+      {canEdit && (
+        <>
+          <input
+            aria-label={`Folder for scene ${scene.name}`}
+            disabled={saving}
+            placeholder="Folder"
+            value={folder}
+            onChange={(event) => setFolder(event.target.value)}
+          />
+          <input
+            aria-label={`Tags for scene ${scene.name}`}
+            disabled={saving}
+            placeholder="tag, tag"
+            value={tags}
+            onChange={(event) => setTags(event.target.value)}
+          />
+          <label>
+            <input
+              checked={favorite}
+              disabled={saving}
+              type="checkbox"
+              onChange={(event) => setFavorite(event.target.checked)}
+            />
+            Favorite
+          </label>
+          <button disabled={saving} onClick={() => void save()}>
+            Save scene organization
+          </button>
+        </>
+      )}
+    </article>
+  );
+}
+
+function metadataRecord(value: unknown): Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function metadataStrings(value: unknown): string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === "string")
+    ? value
+    : [];
+}
+
+function AssetGovernance({
+  asset,
+  canEdit,
+  onUpdated,
+}: {
+  asset: AssetRecord;
+  canEdit: boolean;
+  onUpdated: (asset: AssetRecord) => void;
+}) {
+  const [owner, setOwner] = useState(asset.owner ?? "");
+  const [license, setLicense] = useState(asset.license ?? "");
+  const [provenance, setProvenance] = useState(asset.provenance ?? "");
+  const [reviewStatus, setReviewStatus] = useState(asset.review_status);
+  const [expiresOn, setExpiresOn] = useState(asset.expires_on ?? "");
+  const [folder, setFolder] = useState(asset.folder ?? "");
+  const [tags, setTags] = useState(asset.tags.join(", "));
+  const [favorite, setFavorite] = useState(asset.favorite);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const expired =
+    asset.expires_on !== null &&
+    new Date(`${asset.expires_on}T23:59:59`).getTime() < Date.now();
+
+  async function save(event: FormEvent) {
+    event.preventDefault();
+    setSaving(true);
+    setError(null);
+    try {
+      onUpdated(
+        await updateAssetMetadata(asset, {
+          owner: owner || null,
+          license: license || null,
+          provenance: provenance || null,
+          review_status: reviewStatus,
+          expires_on: expiresOn || null,
+          folder: folder || null,
+          tags: tags
+            .split(",")
+            .map((tag) => tag.trim())
+            .filter(Boolean),
+          favorite,
+        }),
+      );
+    } catch {
+      setError("Asset governance metadata could not be saved. Reload and retry.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <details className="asset-governance">
+      <summary>
+        Organization & governance · {asset.review_status}
+        {expired ? " · expired" : ""}
+      </summary>
+      <form onSubmit={(event) => void save(event)}>
+        <label>
+          Folder
+          <input
+            disabled={!canEdit || saving}
+            maxLength={200}
+            placeholder="Visuals/Windows"
+            value={folder}
+            onChange={(event) => setFolder(event.target.value)}
+          />
+        </label>
+        <label>
+          Tags
+          <input
+            disabled={!canEdit || saving}
+            maxLength={1000}
+            placeholder="window, halloween"
+            value={tags}
+            onChange={(event) => setTags(event.target.value)}
+          />
+        </label>
+        <label className="asset-governance__favorite">
+          <input
+            checked={favorite}
+            disabled={!canEdit || saving}
+            type="checkbox"
+            onChange={(event) => setFavorite(event.target.checked)}
+          />
+          Favorite
+        </label>
+        <label>
+          Owner
+          <input
+            disabled={!canEdit || saving}
+            maxLength={200}
+            value={owner}
+            onChange={(event) => setOwner(event.target.value)}
+          />
+        </label>
+        <label>
+          License
+          <input
+            disabled={!canEdit || saving}
+            maxLength={500}
+            value={license}
+            onChange={(event) => setLicense(event.target.value)}
+          />
+        </label>
+        <label>
+          Review status
+          <select
+            disabled={!canEdit || saving}
+            value={reviewStatus}
+            onChange={(event) =>
+              setReviewStatus(
+                event.target.value as AssetRecord["review_status"],
+              )
+            }
+          >
+            <option value="unreviewed">Unreviewed</option>
+            <option value="approved">Approved</option>
+            <option value="rejected">Rejected</option>
+          </select>
+        </label>
+        <label>
+          Expires
+          <input
+            disabled={!canEdit || saving}
+            type="date"
+            value={expiresOn}
+            onChange={(event) => setExpiresOn(event.target.value)}
+          />
+        </label>
+        <label className="asset-governance__wide">
+          Provenance notes
+          <textarea
+            disabled={!canEdit || saving}
+            maxLength={4000}
+            rows={3}
+            value={provenance}
+            onChange={(event) => setProvenance(event.target.value)}
+          />
+        </label>
+        {error && <small role="alert">{error}</small>}
+        {canEdit && (
+          <button disabled={saving} type="submit">
+            {saving ? "Saving…" : "Save governance"}
+          </button>
+        )}
+      </form>
+    </details>
+  );
+}
+
+function AssetPlacement({
+  asset,
+  draft,
+  projectId,
+  onPlaced,
+}: {
+  asset: AssetRecord;
+  draft: ProjectDraftRecord;
+  projectId: string;
+  onPlaced: (draft: ProjectDraftRecord) => Promise<void>;
+}) {
+  const options: {
+    sceneId: string;
+    outputId: string | null;
+    label: string;
+  }[] = [];
+  for (const scene of draft.draft.scenes) {
+    if (Array.isArray(scene.media)) {
+      options.push(
+        ...scene.media.map((output) => ({
+          sceneId: scene.id,
+          outputId: output.id,
+          label: `${scene.name} · ${output.id}`,
+        })),
+      );
+    } else {
+      options.push({
+        sceneId: scene.id,
+        outputId: null,
+        label: scene.name,
+      });
+    }
+  }
+  const [selected, setSelected] = useState("0");
+  const [placing, setPlacing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    const target = options[Number(selected)];
+    if (!target) {
+      setError("Select a scene media output.");
+      return;
+    }
+    setPlacing(true);
+    setError(null);
+    try {
+      await onPlaced(
+        await placeAsset(
+          projectId,
+          draft.revision,
+          asset.id,
+          target.sceneId,
+          target.outputId,
+        ),
+      );
+    } catch {
+      setError("Asset placement failed. Reload the project and retry.");
+    } finally {
+      setPlacing(false);
+    }
+  }
+
+  return (
+    <form className="asset-placement" onSubmit={(event) => void submit(event)}>
+      <label>
+        Place in scene output
+        <select
+          disabled={
+            placing ||
+            asset.status !== "ready" ||
+            asset.original_file_status !== "available"
+          }
+          value={selected}
+          onChange={(event) => setSelected(event.target.value)}
+        >
+          {options.map((option, index) => (
+            <option key={`${option.sceneId}:${option.outputId ?? "media"}`} value={index}>
+              {option.label}
+            </option>
+          ))}
+        </select>
+      </label>
+      <button
+        disabled={
+          placing ||
+          asset.status !== "ready" ||
+          asset.original_file_status !== "available" ||
+          !options.length
+        }
+        type="submit"
+      >
+        {placing ? "Placing…" : "Place asset"}
+      </button>
+      {error && <small role="alert">{error}</small>}
+    </form>
+  );
+}
+
+function AssetPreview({ asset }: { asset: AssetRecord }) {
+  const hasReview = hasAssetArtifact(asset, "review");
+  const hasThumbnail = hasAssetArtifact(asset, "thumbnail");
+  const hasWaveform = hasAssetArtifact(asset, "waveform");
+  if (asset.media_type?.startsWith("video/") && hasReview) {
+    return (
+      <div className="asset-preview asset-preview--video">
+        <video
+          controls
+          poster={hasThumbnail ? assetArtifactUrl(asset.id, "thumbnail") : undefined}
+          preload="metadata"
+          src={assetArtifactUrl(asset.id, "review")}
+        >
+          Review proxy playback is unsupported by this browser.
+        </video>
+        {hasWaveform && (
+          <img
+            alt={`Waveform for ${asset.name}`}
+            src={assetArtifactUrl(asset.id, "waveform")}
+          />
+        )}
+      </div>
+    );
+  }
+  if (asset.media_type?.startsWith("audio/") && hasReview) {
+    return (
+      <div className="asset-preview asset-preview--audio">
+        {hasWaveform && (
+          <img
+            alt={`Waveform for ${asset.name}`}
+            src={assetArtifactUrl(asset.id, "waveform")}
+          />
+        )}
+        <audio controls preload="metadata" src={assetArtifactUrl(asset.id, "review")}>
+          Review proxy playback is unsupported by this browser.
+        </audio>
+      </div>
+    );
+  }
+  if (asset.media_type?.startsWith("image/") && hasReview) {
+    return (
+      <img
+        alt={`Review proxy for ${asset.name}`}
+        className="asset-preview"
+        loading="lazy"
+        src={assetArtifactUrl(asset.id, "review")}
+      />
+    );
+  }
+  return <div className="asset-preview asset-preview--pending" aria-hidden="true" />;
+}
+
+function hasAssetArtifact(asset: AssetRecord, kind: string): boolean {
+  const artifacts = asset.metadata?.artifacts;
+  return (
+    typeof artifacts === "object" &&
+    artifacts !== null &&
+    !Array.isArray(artifacts) &&
+    kind in artifacts
+  );
+}
+
+function formatAssetMetadata(metadata: Record<string, unknown>): string {
+  const values: string[] = [];
+  if (typeof metadata.duration_ms === "number") {
+    values.push(`${(metadata.duration_ms / 1000).toFixed(2)}s`);
+  }
+  if (typeof metadata.width === "number" && typeof metadata.height === "number") {
+    values.push(`${metadata.width}×${metadata.height}`);
+  }
+  if (typeof metadata.frame_rate === "number") {
+    values.push(`${metadata.frame_rate} fps`);
+  }
+  for (const key of ["video_codecs", "audio_codecs"] as const) {
+    const codecs = metadata[key];
+    if (Array.isArray(codecs) && codecs.every((codec) => typeof codec === "string")) {
+      values.push(codecs.join(", "));
+    }
+  }
+  if (typeof metadata.channels === "number") {
+    values.push(`${metadata.channels} ch`);
+  }
+  if (typeof metadata.sample_rate === "number") {
+    values.push(`${metadata.sample_rate} Hz`);
+  }
+  if (typeof metadata.loudness_lufs === "number") {
+    values.push(`${metadata.loudness_lufs} LUFS`);
+  }
+  return values.length ? values.join(" · ") : "Metadata unavailable";
+}
+
+function formatAssetBytes(value: number): string {
+  if (value >= 1_000_000_000) {
+    return `${(value / 1_000_000_000).toFixed(1)} GB`;
+  }
+  if (value >= 1_000_000) {
+    return `${(value / 1_000_000).toFixed(1)} MB`;
+  }
+  if (value >= 1_000) {
+    return `${(value / 1_000).toFixed(1)} KB`;
+  }
+  return `${value} B`;
 }
 
 export function OperatePage({
@@ -913,6 +2002,7 @@ export function SettingsPage({
   const [name, setName] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
+  const [search, setSearch] = useState("");
   const canManage = session.role === "administrator";
 
   async function create() {
@@ -959,8 +2049,27 @@ export function SettingsPage({
             </button>
           </div>
         )}
+        <label>
+          Search installations
+          <input
+            type="search"
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+          />
+        </label>
         <div className="installation-records">
-          {installations.map((installation) => (
+          {installations
+            .filter((installation) =>
+              [
+                installation.name,
+                installation.folder,
+                ...installation.tags,
+                ...installation.used_by_projects,
+              ].some((value) =>
+                value?.toLocaleLowerCase().includes(search.toLocaleLowerCase()),
+              ),
+            )
+            .map((installation) => (
             <InstallationRecord
               key={installation.id}
               installation={installation}
@@ -968,7 +2077,7 @@ export function SettingsPage({
               onRefresh={onRefresh}
               onError={setError}
             />
-          ))}
+            ))}
         </div>
         {error && <p role="alert">{error}</p>}
       </Panel>
@@ -988,12 +2097,25 @@ function InstallationRecord({
   onError: (message: string) => void;
 }) {
   const [name, setName] = useState(installation.name);
+  const [folder, setFolder] = useState(installation.folder ?? "");
+  const [tags, setTags] = useState(installation.tags.join(", "));
+  const [favorite, setFavorite] = useState(installation.favorite);
   const [saving, setSaving] = useState(false);
 
   async function save() {
     setSaving(true);
     try {
-      await updateInstallation(installation.id, installation.revision, name);
+      await updateInstallation(
+        installation.id,
+        installation.revision,
+        name,
+        folder || null,
+        tags
+          .split(",")
+          .map((tag) => tag.trim())
+          .filter(Boolean),
+        favorite,
+      );
       await onRefresh();
     } catch {
       onError("Installation update failed. Refresh and try again.");
@@ -1025,6 +2147,16 @@ function InstallationRecord({
           Revision {installation.revision} ·{" "}
           {installation.runtime_active ? "Runtime backed" : "Not provisioned"}
         </small>
+        <small>
+          {installation.favorite ? "Favorite · " : ""}
+          {installation.folder ?? "Unfiled"}
+          {installation.tags.length ? ` · ${installation.tags.join(", ")}` : ""}
+        </small>
+        <small>
+          {installation.used_by_projects.length
+            ? `Used by ${installation.used_by_projects.join(", ")}`
+            : "Not used by a project"}
+        </small>
       </div>
       {canManage && (
         <div className="installation-record__actions">
@@ -1037,6 +2169,29 @@ function InstallationRecord({
               value={name}
               onChange={(event) => setName(event.target.value)}
             />
+          </label>
+          <input
+            aria-label={`Folder for ${installation.name}`}
+            disabled={saving}
+            placeholder="Home/Outdoor"
+            value={folder}
+            onChange={(event) => setFolder(event.target.value)}
+          />
+          <input
+            aria-label={`Tags for ${installation.name}`}
+            disabled={saving}
+            placeholder="primary, halloween"
+            value={tags}
+            onChange={(event) => setTags(event.target.value)}
+          />
+          <label>
+            <input
+              checked={favorite}
+              disabled={saving}
+              type="checkbox"
+              onChange={(event) => setFavorite(event.target.checked)}
+            />
+            Favorite
           </label>
           <button
             disabled={saving || !name.trim() || name === installation.name}

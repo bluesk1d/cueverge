@@ -35,6 +35,12 @@ for (const viewport of viewports) {
     await expect(page.getByRole("heading", { name: "Runtime counters" })).toBeVisible();
     await expect(page.getByRole("heading", { name: "Automation state" })).toBeVisible();
 
+    await page.getByRole("button", { name: "Shows", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "Draft projects" })).toBeVisible();
+    await expect(page.getByRole("textbox", { name: "Name for Home Show" })).toHaveValue(
+      "Home Show",
+    );
+
     await page.getByRole("button", { name: "Settings", exact: true }).click();
     await expect(page.getByRole("heading", { name: "Installations" })).toBeVisible();
     await expect(page.getByText("Runtime backed")).toBeVisible();
