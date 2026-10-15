@@ -386,6 +386,523 @@ the database and object manifest, then promotes atomically; it never silently
 overwrites a healthy newer revision. Backup retention is configured per backup
 target and does not shorten the live store's 30-day trash guarantee.
 
+### Installation photo viewpoints
+
+GUI-03 installation photos are installation-owned, revisioned records whose
+bytes live in the shared content-addressed object store. JPEG, PNG, and WebP
+uploads use server-generated paths, a 25 MB request limit, digest verification,
+atomic promotion, authenticated delivery, and audited designer-or-higher
+mutations. Deleting a photo record does not directly remove its deduplicated
+object; lifecycle garbage collection determines when the digest is unreachable.
+
+Each photo records a display name, named viewpoint, original filename and media
+type, orientation in 90-degree increments, an optional normalized crop
+rectangle, and an optional positive scale hint. Crop coordinates must be
+complete and remain inside the image. Metadata updates and deletion use the
+photo's independent optimistic revision. These viewpoints are the durable
+background layer for later geometry, surface, and calibration tools.
+
+Installation geometry uses normalized coordinates in a selected photo
+viewpoint. Revisioned geometry records support outputs, pixel segments,
+fixtures, ordered paths, projector surfaces, masks, audience zones, and
+safety/no-output zones. Area objects require a closed polygon with at least
+three points, paths and pixel segments require at least two ordered points, and
+fixtures require exactly one point. The initial SVG mapper provides
+photo selection, click-to-draw points, overlay rendering, selection for edit,
+optimistic updates, and audited removal. These photo coordinates remain a view
+layer; shared stage coordinates and projector-native transforms are separate
+later GUI-03 models.
+
+Projector-surface mappings bind a four-corner projector-surface geometry record
+to a logical projector resource, native pixel dimensions, normalized native
+crop, and a rectangular extent in shared stage space. Cueverge derives a full
+3×3 homography from native pixel corners to the selected photo quadrilateral
+and rejects singular planes. The homography, native crop, and surface-to-stage
+extent remain independent transforms: photo calibration never changes stage
+coordinates, and stage layout never rewrites projector-native pixels. Mapping
+metadata has its own optimistic revision and audit events.
+The native model also records 0/90/180/270-degree orientation, independent
+horizontal/vertical mirroring, and explicit semantic mask IDs validated against
+mask geometry in the installation. One native/stage mapping enumerates every
+semantic-linked photo instance with its own points and derived homography;
+adding or recalibrating a viewpoint does not duplicate or rewrite the native
+canvas, crop, masks, orientation, or shared-stage extent.
+The SVG mapper exposes projector resource, native resolution, stage extent,
+native crop, four-corner creation, and the resulting homography diagnostics.
+Corner handles are labeled in native-canvas order and support pointer dragging,
+undo, trapezoidal perspective, and mirrored corner order while remaining
+clamped to normalized photo bounds.
+Mapping content is either a generated calibration grid or a ready managed image
+asset. The selected content reference is persisted independently from the
+surface geometry and shown as a native-frame preview while the photo overlay
+defines its destination quadrilateral.
+
+Projector mappings explicitly select `planar` or `subdivided` surface behavior.
+Planar surfaces require exactly four corners and expose a homography.
+Subdivided/non-planar surfaces require additional control points, expose no
+single homography, and return a publication/simulation diagnostic directing
+the designer to define planar sub-surfaces. Arbitrary mask geometry remains a
+separate editable layer rather than being folded into the surface transform.
+
+Mapper alignment preview reuses the bounded maintenance-preview API. It is
+available only to operators/administrators, requires maintenance mode and idle
+playback, expires after 15 seconds, records audit, and remains explicitly
+simulation-only. Local corner and crop changes are not persisted until Save.
+No development validation sends a grid or other output to physical hardware.
+
+An existing geometry record can be rebound only to another photo owned by the
+same installation. The mapper immediately displays its temporary control
+points over the newly selected calibration photo; saving preserves the
+projector mapping identity, native/stage configuration, and content reference
+while recalculating the derived photo homography from the newly marked physical
+corners.
+
+Projector fit defaults to preserving the cropped native-canvas aspect ratio.
+The mapper compares that ratio with the stage-space surface, reports expected
+letterbox/pillarbox behavior, warns when explicit stretch will distort content,
+and reports intentional crop and overscan. Stretch and overscan are persisted
+only through explicit controls. Photo points remain clamped to the normalized
+view, while overscan is the deliberate mechanism for allowing content beyond
+the physical surface.
+
+Geometry instances can represent the same semantic installation object across
+multiple photo viewpoints. Each instance has its own record/revision and
+photo-space coordinates while sharing a stable semantic ID and stable ordered
+landmark IDs. New linked instances must belong to the same installation, use
+the same geometry kind, and provide the same landmark count. Editing points
+preserves existing landmark IDs and assigns new IDs only to newly added points.
+Editing any instance synchronizes shared semantic metadata—name, color, label
+visibility, lock/hide, layer order, wiring direction, and physical index
+range—to all linked instances under their own revisions. Photo assignment,
+points, and landmark coordinates remain viewpoint-specific.
+Browser acceptance covers one wide viewpoint and two close-ups: a linked
+fixture edited in the wide view immediately presents the shared update in both
+close-ups while each SVG instance retains a distinct photo-space position.
+
+Easy-mode browser acceptance covers a non-level compound-angle quadrilateral:
+one managed still is previewed through the saved mapping, a second managed
+still is selected and saved, and the test verifies that the surface points and
+3×3 homography remain unchanged while only the content reference changes.
+
+Overlap browser acceptance pairs two mapped projector surfaces, adjusts gamma,
+brightness, and black-level compensation, switches between native and mapped
+previews, persists the overlap revision, and verifies that neither projector's
+managed source-artwork reference changes.
+
+Shared-stage coverage analysis partitions the bounding stage extent at every
+projector edge and classifies cells as singly covered, overlapping, or
+uncovered. Explicit projector masks are inverse-projected from their calibrated
+photo view through the saved homography into stage-space occlusion polygons.
+The API retains contributing resources/source IDs, and the mapper renders
+covered, overlap, occluded, and uncovered regions in one stage-space SVG
+suitable for cross-projector animation and simulation diagnostics.
+
+Semantic geometry may store optional shared-stage points independently from
+all photo instances. The runtime mapper export is allowed only for the
+runtime-backed installation, rejects unknown projector/lighting resources and
+fixtures or paths missing stage geometry, and emits logical resources, native
+projector/stage models, lighting surfaces, stage-local pixels, fixtures, and
+paths. Photo IDs, raster points, filenames, and viewpoint transforms are
+excluded from the runtime document.
+
+Mapper preflight runs before runtime export and project compilation. It reports
+and blocks ambiguous semantic instances in one photo, fixtures/paths
+disconnected from stage geometry, stage points outside calibrated projector
+coverage, duplicate projector-resource mappings, and overlapping physical
+pixel index ranges. Diagnostics include stable object IDs and actionable
+messages. Accepted projector onset/release delays and lighting onset/release
+offsets are included in the runtime mapper document; cancelled or abandoned
+temporary sessions never change those exported values.
+
+Geometry layer metadata persists color, label visibility, lock, hidden state,
+and signed draw order under the geometry revision. The SVG mapper renders
+visible layers in order, blocks editing locked objects, and provides label and
+color controls. Editor-only tools include a 1% normalized-coordinate snap grid,
+zoom, pan with zoom-aware pointer conversion, point undo, and normalized
+point-to-point measurement.
+
+Pixel segments persist forward/reverse wiring direction, start index, and pixel
+count. The mapper displays index ranges and direction, diagnoses gaps,
+overlapping index ranges, and endpoint discontinuities, and animates ordered
+path traversal. Geometry bounding-box overlap diagnostics report the
+higher-z-index object that has draw precedence.
+
+Indexed pixel-segment geometry can bind to a logical lighting surface with
+local width/height and a nonsingular six-value affine transform into shared
+stage space. Cueverge distributes the declared physical pixel count over the
+ordered polyline in wiring direction and returns each output index's
+surface-local coordinate, stage coordinate, and rectangular footprint. Each
+surface retains output resource, fixture, group, ordered-path, strand, and
+calibration memberships. The mapper exposes transform/membership controls and
+photo-view pixel/index footprints without treating photo pixels as the
+authoritative lighting coordinate system.
+
+Lighting surfaces persist their own ordered local control points within local
+width/height bounds. Photo-assisted segment points seed these coordinates only
+when a surface is first created; subsequent photo edits and alternate
+viewpoints do not rewrite the local model. Multiple independent planar
+surfaces can therefore map through separate affine transforms into shared
+stage space. Arbitrary 3D geometry remains intentionally out of scope.
+Semantic-linked pixel-segment instances resolve to the same authoritative
+lighting-surface record even when viewed through different photos. The API
+returns the requested view's geometry ID while preserving identical physical
+indices, local/stage positions, footprints, fixture/group/path/strand
+memberships, and calibration. Browser acceptance switches viewpoints,
+verifies the photo overlay moves, verifies logical pixels do not, and exercises
+the local traversal preview before any output arm or hardware command.
+
+Pixel-layout generators create rows, serpentine grids, rings, rectangular
+outlines, individual pixels, or validated imported normalized coordinates.
+Open paths include both endpoints; closed paths distribute pixels around the
+loop without duplicating the closing point. Generated photo points seed
+surface-local coordinates and retain the declared physical count and index
+range. The mapper exposes the bounded maintenance-mode pixel-index-chase
+preview, which remains simulation-only until protocol dispatch is explicitly
+implemented and commissioned.
+
+Calibration values live with the object they affect and share its optimistic
+revision/audit boundary. Projector mappings persist a 0–1 brightness limit and
+bounded ±5000 ms media start delay. Lighting surfaces persist a 0–1 brightness
+limit and bounded ±5000 ms timing offset. These controls sit beside the
+maintenance-gated projector-alignment and pixel-identification previews;
+preview requests remain simulation-only until physical command paths are
+commissioned.
+
+Protocol-v2 capability documents support generic timing calibration for media,
+audio, pixels, network lights, smart switches, relays, and future physical
+effects. Onset and release adjustments are independent bounded ranges with a
+declared resolution and active-adjustment safety flag. Devices also declare
+maintenance-reference, armed-trial, or simulation-only testing and optional
+A/B support. Topology diagnostics display these constraints without assuming
+that undeclared actuators are calibratable.
+
+Timing calibration sessions are temporary, revisioned, audited, and expire
+after ten minutes. Starting one requires maintenance mode and idle playback and
+cancels any prior active session for that target. Onset and release sessions
+retain distinct baselines and proposed values. The UI provides ±100 ms coarse
+and ±10 ms fine nudges, explicit earlier/later direction labels, reset, and A/B
+baseline/proposed comparison. Accept atomically writes the applicable
+projector or lighting offset and advances its mapping revision; Cancel and
+expiry leave persisted calibration untouched. Sessions remain simulation-only
+until reference playback and actuator dispatch are commissioned.
+
+Projector overlap calibrations pair two mapped projector surfaces in the same
+installation with an explicit shared-stage polygon. Revisioned controls persist
+blend-ramp width, overlap gamma, independent brightness, RGB white balance,
+3×3 color correction matrices, and black-level compensation for both
+projectors. The mapper renders a non-destructive dual-gradient/grid pattern for
+adjustment; source artwork and each projector's native mapping remain
+unchanged.
+
+Overlap diagnostics report narrow-ramp seam risk, combined double-brightness,
+non-linear gamma falloff, black-level mismatch, white-balance mismatch, and
+color-matrix mismatch. Native preview displays the two calibrated sources
+separately; mapped preview combines their ramps in the overlap. Both are local,
+non-destructive views derived from the same revisioned calibration record.
+
+Accepting a timing session creates an immutable calibration-evidence record
+containing target resource, adjustment kind/value, test asset and version,
+assigned device identity, reported software/firmware version, timestamp,
+operator, observed variability, notes, and captured hardware, routing, display
+mode, media-setting, and environmental context. Review compares current
+assignment/firmware/context with that evidence and reports precise stale
+reasons. Cancelled or expired sessions never create accepted evidence.
+
+Optional computer-vision or external analysis may submit geometry suggestions
+with photo, kind, points, confidence, and human-readable evidence. Suggestions
+render as distinct dashed overlays and can be rejected or loaded into the
+manual editor. Review changes only suggestion state; it never creates or
+updates authoritative geometry. The designer must edit as needed and invoke
+the ordinary revisioned Save Geometry workflow.
+
+Physical-output safety arms are resource-specific, require idle maintenance
+mode and exact typed resource confirmation, display the assigned device or
+controller-owned identity, and expire after 5–30 seconds. Creating a new arm
+stops the prior arm for that resource. Every arm exposes an actuator-specific
+stop action (`stop media playback` or `stop realtime pixel output`) that remains
+available independently of blackout; blackout is never described as a
+universal safety mechanism. Arm/stop actions are audited and currently send no
+hardware command. Future live test dispatch must require an active matching
+arm.
+
+### Timeline foundation
+
+GUI-04 begins with a DOM-based timeline whose width scales from scene duration
+and configurable pixels per second. It provides a ruler, horizontally
+scrollable tracks, snapped click/keyboard playhead movement, safe-point marker
+creation/removal, protected regions, and an editor-only loop range. Optional
+quantization supports 1, 10, 100, 250, 500, or 1000 ms increments. Scheduling
+changes persist in the runtime-compatible scene scheduling document, while
+loop range, quantization, and zoom remain in project editor metadata. Saves use
+the existing optimistic draft revision.
+
+Timeline rows are typed and carry stable IDs plus explicit resource bindings.
+Scene media and lighting outputs produce built-in read-only identity/binding
+tracks. Designers can add revisioned editor tracks for audio references,
+fixtures, groups, and paths, select any track, inspect its stable ID/kind, and
+edit custom names and bindings in the track property panel. Custom track
+metadata remains editor-only until later cue/composition schemas consume it.
+
+Reusable compositions live in revisioned editor metadata with stable UUIDs,
+names, durations, child composition IDs, per-composition safe points/protected
+regions, loop/zoom/quantization state, and typed tracks. The server validates
+all references and rejects cycles. The hierarchy reports parent-composition
+and scene usage, supports explicit scene instantiation, and lets the editor
+switch the same ruler/playhead into each composition's independent timeline.
+Every composition declares one validated logical editing space: projector
+native pixels, lighting-surface local coordinates, or shared-stage units. The
+record includes an explicit target ID and positive width/height. Hierarchy and
+timeline UI show the space, target, and dimensions; server validation rejects
+missing/unsupported spaces or nonpositive dimensions.
+
+Opening a shared-stage composition renders the calibrated installation model
+behind its timeline: projector covered/overlap/occluded/uncovered regions,
+authoritative stage-space lighting pixels, audience zones, and safety/no-output
+zones. The mapper runtime export now carries audience and safety polygons in
+shared-stage coordinates. Stage composition overlays never consume photo IDs
+or raster coordinates.
+
+Timeline navigation keeps one scene-owned global playhead while switching
+between the scene root and nested compositions. Breadcrumbs show and navigate
+the root-to-current hierarchy without resetting time. A composition may
+declare a nonnegative local-time offset; its ruler/playhead displays
+`global - offset` clamped to its duration, while keyboard movement still
+advances the single global playhead. No composition owns an independent
+playback clock.
+
+Scene composition instances are revisioned editor records with globally stable
+instance UUIDs, referenced composition IDs, nonnegative scene start offsets,
+positive time scale up to 16×, JSON parameter overrides, and explicit x/y
+placement in the target composition space. Server validation rejects duplicate
+IDs, unknown compositions/scenes, invalid rates/offsets, non-object overrides,
+or incomplete placement. Hierarchy usage and instance properties remain
+inspectable independently from the reusable composition definition.
+
+Composition dependency controls report parent-composition and scene usage.
+Unused definitions may be deleted directly. Used definitions require an
+explicit replacement; replacement rewrites parent children, scene roots, and
+stable scene-instance references, rejects cycle-producing choices, removes the
+old definition, and cleans orphaned timeline-view/track metadata. The server's
+reference and cycle validation remains the final write boundary.
+
+Named synchronization markers are separate from scheduling safe points. Each
+marker has a globally stable ID, a name unique within its editing space, and a
+bounded local timestamp. Typed visual, audio, lighting, switch, and
+physical-effect cues either store an independent local timestamp or reference
+one marker plus an explicit signed offset. Moving a marker therefore changes
+all linked cue evaluations atomically without rewriting cue records; detaching
+a cue captures its evaluated timestamp and clears the marker and offset.
+Markers with linked cues cannot be deleted, and marker movement is constrained
+so every linked cue remains inside the editing-space duration.
+
+Every save deterministically expands synchronization cues into an explicit,
+sorted `timeline_sync_schedule`. Scene-root cues map directly to scene time.
+Reusable-composition cues map through each hierarchy path using accumulated
+local offsets, and scene instances apply `scene start + local time × time
+scale`. Each resolved record retains the cue, marker, editing-space, scene, and
+context IDs so later package compilation can consume timestamps without
+interpreting opaque editor UI state. Server validation rejects duplicate IDs,
+unknown editing spaces, cross-space marker links, unsupported cue kinds,
+ambiguous linked/absolute timing, and out-of-bounds resolved local times.
+
+Project compilation does not copy or ask the runtime to interpret composition
+editor metadata. The compiler independently walks every scene-root and
+instance context and writes `runtime/composition-graph.json` into the immutable
+package. This versioned document contains concrete scene contexts, accumulated
+offsets and time scales, placement, explicit output/resource bindings, and
+stable cues sorted by resolved scene timestamp. Scene-root media and lighting
+tracks resolve from the runtime scene outputs; custom composition tracks
+resolve from their declared resource bindings. Editor-provided resolved
+schedules are not trusted as compiler input.
+
+Compilation is lossless-or-fail. A cue resolving outside its scene, a cue whose
+track has no runtime binding, or an instance with arbitrary parameter
+overrides that the package cannot yet represent blocks compilation. The API
+returns structured diagnostics with stable codes and involved object IDs, and
+no partially compiled package is installed. Empty or cue-free composition
+contexts remain explicit no-op contexts rather than being mistaken for runtime
+effects.
+
+Lighting synchronization cues are duration-bearing layers rather than
+instantaneous annotations. Their start can be moved directly or remain linked
+to a named marker by an explicit offset, and their duration can be resized
+within the editing-space boundary. The property editor exposes the runtime
+lighting primitive, optional segment/fixture/path target, start and duration,
+color and end color, brightness and end brightness, fades, blend mode,
+precedence, deterministic seed, period, pixel width, density, and reverse
+direction. The timeline renders the resulting duration as the layer width.
+
+The server validates every lighting layer through the same `LightingCue` model
+used by runtime scenes and additionally ensures its complete interval fits in
+the local editing space. Marker movement accounts for linked lighting
+durations, so moving a shared anchor cannot push a linked layer past the
+composition boundary. Composition compilation carries the full validated
+lighting payload into each explicit runtime cue and scales duration alongside
+start time for time-scaled instances.
+
+Timeline media-output tracks resolve the exact asset revision binding already
+stored on the scene output, while custom audio-reference tracks bind by stable
+asset ID. When processing produced them, the timeline displays the existing
+authenticated thumbnail and waveform artifacts as non-authoritative timing
+references behind cues and regions. Video tracks may show both thumbnail and
+waveform layers; audio-reference tracks show their waveform. Missing assets or
+derivatives remain explicit in the track instead of producing a fabricated
+preview. The timeline does not create duplicate derivative files or persist
+artifact URLs in project metadata.
+
+Image, video, and nested-composition layers can carry ordered 2D transform
+keyframes in any scene or composition editing space. A layer has a stable ID,
+source ID, output-track binding, start, duration, and at least one keyframe.
+Each keyframe stores position, independent X/Y scale, rotation, anchor,
+opacity, and normalized left/top/right/bottom crop or reveal bounds. Scale may
+be negative for intentional mirroring but cannot be zero; crop bounds cannot
+remove the entire source.
+
+Interpolation is explicit per keyframe: hold, linear, ease-in, ease-out, or
+Bezier. Bezier records preserve four temporal control values plus spatial
+incoming and outgoing handle vectors. Non-Bezier interpolation cannot retain
+hidden Bezier controls. The server enforces stable globally unique layer and
+keyframe IDs, ordered unique keyframe times, valid source composition
+references, bounded layer intervals, normalized opacity/crop, and complete
+interpolation data.
+
+Compilation flattens each transform layer through every scene-root and instance
+context. Runtime records contain the concrete output binding, scene start and
+scaled duration, source identity, editing-space/context provenance, and every
+keyframe with its explicit scene timestamp and interpolation controls. Unknown
+track bindings and intervals extending beyond a scene fail compilation with
+structured diagnostics rather than dropping animation.
+
+Shared-stage transform layers render their ordered positions as an editable
+motion path over calibrated coverage. Bezier segments use the stored spatial
+incoming/outgoing vectors and display their handles; the selected keyframe is
+shown with previous/next position ghosts. Clicking the stage moves the selected
+position directly. Optional spatial snapping chooses the nearest candidate
+within a bounded screen-space threshold from named fixture/path landmarks,
+projector-surface edges, or overlap seams. Keyframe time can independently snap
+to a named synchronization marker without changing spatial coordinates.
+
+Motion diagnostics sample every segment instead of checking endpoints only.
+They warn when any sample enters an explicit uncovered polygon, an occlusion
+mask, or a location with no covered/overlap calibration evidence. These are
+editor diagnostics only: they do not change authored coordinates, synthesize
+handoffs, or activate projector output.
+
+Every transform layer is authored once in the logical coordinate space of its
+containing scene or composition. The editor displays that space, target, and
+dimensions beside the layer controls. Compiled transform records repeat this
+contract explicitly as `coordinate_space` and declare a calibration policy:
+static installation calibration is applied at runtime and
+`projector_handoff_keyframes` is false. A stage-space motion therefore remains
+one layer and one keyframe sequence while crossing any number of calibrated
+projector surfaces; no projector-native duplicates or manual seam fades are
+generated or required.
+
+Property animation is allowlisted rather than inferred from arbitrary editor
+objects. Runtime transform keyframes support position, independent X/Y scale,
+rotation, anchor, opacity, and crop/reveal bounds. Lighting primitive, target,
+colors, brightness, blend, precedence, seed, and primitive parameters remain
+static for each duration-bearing cue until the runtime schema or GUI-05 baking
+pipeline defines deterministic animation for them. The editor states this
+boundary explicitly; it does not render preview-only lighting animation.
+
+Validation rejects generic property-keyframe metadata and extra transform or
+interpolation fields. Compiled transform records declare
+`keyframed_properties` and a `property_animation_policy` of runtime transforms,
+static lighting cues, and rejection for unsupported properties. This prevents
+packages from silently losing editor-only animation.
+
+The root scene timeline exposes the runtime scheduling and output contract
+without requiring JSON edits. In addition to safe points and protected
+intervals, creators can edit scene priority, completion policy and target,
+request policy and TTL, explicit resource claims, the required media clock
+source, per-output required/optional status, media start calibration offsets,
+and signed lighting timing offsets. Composition timelines do not duplicate
+these scene-owned controls.
+
+Timeline saves write these fields directly into the versioned runtime scene
+document, not editor metadata. The existing core scene models remain the final
+boundary for valid priority ranges, completion targets, clock-source
+requirements, claimed resources, output uniqueness, offset ranges, and
+scheduling invariants.
+
+Lighting cue presets are revisioned editor templates with stable IDs, names,
+and fully validated lighting payloads. Saving a preset copies the selected
+cue's values into the template; applying it copies those values into every
+selected lighting cue. Runtime cues cannot carry `preset_id` or other hidden
+template references, and compilation remains independent of preset metadata.
+
+Compound selection spans cues and transform layers in the active editing
+space. A bounded bulk shift preserves marker links by changing cue offsets,
+moves detached cues and layer intervals directly, and is disabled if any
+selected interval would leave the editing-space duration. Duplicate creates
+new stable cue, layer, and keyframe IDs while copying values; delete removes
+the selected records. Presets and compound selection are editor operations,
+not runtime dependencies.
+
+Timeline validation runs continuously over the unsaved editor state. It checks
+scene priority, completion/request policy, claims, clock-source requirements,
+safe points, protected intervals, marker identity/timing, cue bindings and
+intervals, lighting fades/targets, transform bindings and intervals, unique
+keyframe times, nonzero scale, opacity, and crop bounds. Diagnostics carry
+stable codes and object IDs, appear in a global validation panel and beside
+the selected cue/layer/keyframe, and mark invalid timeline items.
+
+The timeline save action is disabled while any diagnostic remains. Resolving
+the exact field clears the error immediately; server/core-model and compiler
+validation remain authoritative defense-in-depth rather than the first place a
+creator learns that editor state is invalid.
+
+The integrated GUI-04 multi-output acceptance authors and saves, without JSON
+editing, a media output with thumbnail/waveform timing evidence, a separate
+audio-reference track, baseline lighting, two overlapping fixture pulses, a
+path sweep, one named synchronization marker, and a safe transition point.
+Browser assertions inspect the persisted scene and editor records, including
+semantic fixture/path targets and marker offsets.
+
+The projector-composition acceptance opens a 1920×1080 projector-native
+composition, edits a layer position without rendering any location photo,
+saves, returns through the composition breadcrumb to the root scene, and then
+opens the installation mapper. The mapper verifies that the same logical
+projector mapping exposes independent homographies for wide, left-close, and
+right-close calibrated photo views.
+
+Reusable-composition acceptance creates a child definition, links it into a
+parent, instantiates it in a scene with placement, time scale, and explicit
+overrides, edits the child's timeline, and verifies the instance still points
+to the same stable child ID with overrides visible. Separate authenticated API
+acceptance rejects graph cycles, while compiler acceptance inspects explicit
+contexts, outputs, cues, transforms, and timestamps in the immutable runtime
+package.
+
+Dependency acceptance reports every parent-composition edge, root-scene edge,
+and scene-instance reference, including the stable instance ID. Unused
+definitions can be deleted; any parent-, scene-, or instance-referenced
+definition requires an explicit replacement. Replacement rewrites all three
+reference classes and preserves linked semantics, so there is no silent
+conversion to an independent copy.
+
+GUI-04 closeout adds bounded editor history and deterministic evaluated-state
+inspection. Undo and redo restore complete timeline snapshots for compositions,
+instances, tracks, markers, cues, transforms, presets, safe/protected timing,
+and scene policy. Scrubbing emits a stable, sorted evaluated-state document for
+active cues and transform state; repeated evaluation at the same timestamp is
+byte-identical.
+
+Final marker acceptance links visual, audio, lighting, switch, and
+physical-effect actions to one named marker and verifies their intentional
+offsets in the explicit resolved schedule after moving the marker once. Final
+motion acceptance uses one semi-transparent curved stage-space layer from left
+projector coverage, through calibrated overlap, into right projector coverage,
+with no projector-native handoff layer.
+
+Save/reload browser acceptance preserves exact layer/keyframe timing and
+ordering after undo and redo. Compiler acceptance independently sorts explicit
+runtime cues by timestamp and stable identity. Unsupported lighting-property
+keyframes and nested time remapping are disabled with schema-gap explanations;
+crafted unsupported metadata is rejected by authenticated API validation
+instead of being previewed or compiled lossily.
+
 Topology exposes each enrolled device's complete typed capability document and
 active certificate expiry without exposing certificate contents. The UI shows
 protocol range, media codecs/containers, simultaneous-output limits,

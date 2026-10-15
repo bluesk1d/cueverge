@@ -250,6 +250,100 @@ class GuiRepository:
                     version INTEGER PRIMARY KEY,
                     applied_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS timing_calibration_sessions (
+                    id TEXT PRIMARY KEY,
+                    target_kind TEXT NOT NULL
+                        CHECK (target_kind IN ('projector_mapping', 'lighting_surface')),
+                    geometry_id TEXT NOT NULL,
+                    adjustment_kind TEXT NOT NULL
+                        CHECK (adjustment_kind IN ('onset', 'release')),
+                    baseline_ms INTEGER NOT NULL,
+                    proposed_ms INTEGER NOT NULL,
+                    state TEXT NOT NULL
+                        CHECK (state IN ('active', 'accepted', 'cancelled', 'expired')),
+                    revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
+                    actor TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS projector_overlap_calibrations (
+                    id TEXT PRIMARY KEY,
+                    installation_id TEXT NOT NULL
+                        REFERENCES installations(id) ON DELETE CASCADE,
+                    first_geometry_id TEXT NOT NULL
+                        REFERENCES projector_surface_mappings(geometry_id) ON DELETE CASCADE,
+                    second_geometry_id TEXT NOT NULL
+                        REFERENCES projector_surface_mappings(geometry_id) ON DELETE CASCADE,
+                    stage_points_json TEXT NOT NULL,
+                    ramp_width REAL NOT NULL CHECK (ramp_width > 0 AND ramp_width <= 1),
+                    overlap_gamma REAL NOT NULL CHECK (overlap_gamma > 0 AND overlap_gamma <= 5),
+                    first_brightness REAL NOT NULL
+                        CHECK (first_brightness > 0 AND first_brightness <= 1),
+                    second_brightness REAL NOT NULL
+                        CHECK (second_brightness > 0 AND second_brightness <= 1),
+                    first_white_json TEXT NOT NULL,
+                    second_white_json TEXT NOT NULL,
+                    first_color_matrix_json TEXT NOT NULL,
+                    second_color_matrix_json TEXT NOT NULL,
+                    first_black_level REAL NOT NULL
+                        CHECK (first_black_level >= 0 AND first_black_level <= 1),
+                    second_black_level REAL NOT NULL
+                        CHECK (second_black_level >= 0 AND second_black_level <= 1),
+                    revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(first_geometry_id, second_geometry_id)
+                );
+                CREATE TABLE IF NOT EXISTS accepted_calibrations (
+                    id TEXT PRIMARY KEY,
+                    target_kind TEXT NOT NULL,
+                    geometry_id TEXT NOT NULL,
+                    adjustment_kind TEXT NOT NULL,
+                    accepted_ms INTEGER NOT NULL,
+                    resource TEXT NOT NULL,
+                    device_id TEXT,
+                    software_version TEXT,
+                    test_asset_id TEXT,
+                    test_asset_version TEXT,
+                    observed_variability_ms REAL,
+                    notes TEXT,
+                    context_json TEXT NOT NULL,
+                    actor TEXT NOT NULL,
+                    accepted_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS geometry_suggestions (
+                    id TEXT PRIMARY KEY,
+                    installation_id TEXT NOT NULL
+                        REFERENCES installations(id) ON DELETE CASCADE,
+                    photo_id TEXT NOT NULL
+                        REFERENCES installation_photos(id) ON DELETE CASCADE,
+                    kind TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    points_json TEXT NOT NULL,
+                    closed INTEGER NOT NULL CHECK (closed IN (0, 1)),
+                    confidence REAL NOT NULL CHECK (confidence >= 0 AND confidence <= 1),
+                    evidence TEXT NOT NULL,
+                    state TEXT NOT NULL DEFAULT 'pending'
+                        CHECK (state IN ('pending', 'reviewed', 'rejected')),
+                    created_by TEXT NOT NULL,
+                    reviewed_by TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS output_safety_arms (
+                    id TEXT PRIMARY KEY,
+                    resource TEXT NOT NULL,
+                    resource_kind TEXT NOT NULL,
+                    device_identity TEXT NOT NULL,
+                    stop_action TEXT NOT NULL,
+                    state TEXT NOT NULL
+                        CHECK (state IN ('active', 'stopped', 'expired')),
+                    actor TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS projects (
                     id TEXT PRIMARY KEY,
                     name TEXT NOT NULL,
@@ -470,6 +564,98 @@ class GuiRepository:
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS installation_geometry (
+                    id TEXT PRIMARY KEY,
+                    installation_id TEXT NOT NULL
+                        REFERENCES installations(id) ON DELETE CASCADE,
+                    photo_id TEXT NOT NULL
+                        REFERENCES installation_photos(id) ON DELETE CASCADE,
+                    kind TEXT NOT NULL CHECK (kind IN (
+                        'output', 'pixel_segment', 'fixture', 'path',
+                        'projector_surface', 'mask', 'audience_zone', 'safety_zone'
+                    )),
+                    name TEXT NOT NULL,
+                    semantic_id TEXT NOT NULL,
+                    landmark_ids_json TEXT NOT NULL,
+                    color TEXT NOT NULL DEFAULT '#6ee7ff',
+                    label_visible INTEGER NOT NULL DEFAULT 1
+                        CHECK (label_visible IN (0, 1)),
+                    locked INTEGER NOT NULL DEFAULT 0 CHECK (locked IN (0, 1)),
+                    hidden INTEGER NOT NULL DEFAULT 0 CHECK (hidden IN (0, 1)),
+                    z_index INTEGER NOT NULL DEFAULT 0,
+                    direction TEXT NOT NULL DEFAULT 'forward'
+                        CHECK (direction IN ('forward', 'reverse')),
+                    start_index INTEGER,
+                    pixel_count INTEGER,
+                    stage_points_json TEXT,
+                    points_json TEXT NOT NULL,
+                    closed INTEGER NOT NULL CHECK (closed IN (0, 1)),
+                    revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS projector_surface_mappings (
+                    geometry_id TEXT PRIMARY KEY
+                        REFERENCES installation_geometry(id) ON DELETE CASCADE,
+                    resource TEXT NOT NULL,
+                    native_width INTEGER NOT NULL CHECK (native_width > 0),
+                    native_height INTEGER NOT NULL CHECK (native_height > 0),
+                    stage_x REAL NOT NULL,
+                    stage_y REAL NOT NULL,
+                    stage_width REAL NOT NULL CHECK (stage_width > 0),
+                    stage_height REAL NOT NULL CHECK (stage_height > 0),
+                    crop_x REAL NOT NULL DEFAULT 0,
+                    crop_y REAL NOT NULL DEFAULT 0,
+                    crop_width REAL NOT NULL DEFAULT 1,
+                    crop_height REAL NOT NULL DEFAULT 1,
+                    content_asset_id TEXT REFERENCES assets(id) ON DELETE SET NULL,
+                    surface_model TEXT NOT NULL DEFAULT 'planar'
+                        CHECK (surface_model IN ('planar', 'subdivided')),
+                    fit_mode TEXT NOT NULL DEFAULT 'preserve'
+                        CHECK (fit_mode IN ('preserve', 'stretch')),
+                    overscan INTEGER NOT NULL DEFAULT 0 CHECK (overscan IN (0, 1)),
+                    brightness_limit REAL NOT NULL DEFAULT 1.0
+                        CHECK (brightness_limit > 0 AND brightness_limit <= 1),
+                    media_start_delay_ms INTEGER NOT NULL DEFAULT 0
+                        CHECK (media_start_delay_ms >= -5000 AND media_start_delay_ms <= 5000),
+                    media_release_delay_ms INTEGER NOT NULL DEFAULT 0
+                        CHECK (media_release_delay_ms >= -5000 AND media_release_delay_ms <= 5000),
+                    orientation_degrees INTEGER NOT NULL DEFAULT 0
+                        CHECK (orientation_degrees IN (0, 90, 180, 270)),
+                    mirror_x INTEGER NOT NULL DEFAULT 0 CHECK (mirror_x IN (0, 1)),
+                    mirror_y INTEGER NOT NULL DEFAULT 0 CHECK (mirror_y IN (0, 1)),
+                    mask_semantic_ids_json TEXT NOT NULL DEFAULT '[]',
+                    revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS lighting_surfaces (
+                    geometry_id TEXT PRIMARY KEY
+                        REFERENCES installation_geometry(id) ON DELETE CASCADE,
+                    resource TEXT NOT NULL,
+                    local_width REAL NOT NULL CHECK (local_width > 0),
+                    local_height REAL NOT NULL CHECK (local_height > 0),
+                    local_points_json TEXT NOT NULL,
+                    stage_matrix_json TEXT NOT NULL,
+                    fixture_id TEXT,
+                    group_id TEXT,
+                    path_id TEXT,
+                    strand_id TEXT,
+                    calibration_id TEXT,
+                    pixel_footprint_width REAL NOT NULL DEFAULT 0.01
+                        CHECK (pixel_footprint_width > 0),
+                    pixel_footprint_height REAL NOT NULL DEFAULT 0.01
+                        CHECK (pixel_footprint_height > 0),
+                    brightness_limit REAL NOT NULL DEFAULT 1.0
+                        CHECK (brightness_limit > 0 AND brightness_limit <= 1),
+                    timing_offset_ms INTEGER NOT NULL DEFAULT 0
+                        CHECK (timing_offset_ms >= -5000 AND timing_offset_ms <= 5000),
+                    release_offset_ms INTEGER NOT NULL DEFAULT 0
+                        CHECK (release_offset_ms >= -5000 AND release_offset_ms <= 5000),
+                    revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
                 INSERT OR IGNORE INTO schema_migrations(version, applied_at)
                 VALUES (1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
                 INSERT OR IGNORE INTO schema_migrations(version, applied_at)
@@ -659,6 +845,273 @@ class GuiRepository:
                 """
                 INSERT OR IGNORE INTO schema_migrations(version, applied_at)
                 VALUES (17, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+                """
+            )
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO schema_migrations(version, applied_at)
+                VALUES (18, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+                """
+            )
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO schema_migrations(version, applied_at)
+                VALUES (19, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+                """
+            )
+            mapping_columns = {
+                str(row["name"])
+                for row in connection.execute(
+                    "PRAGMA table_info(projector_surface_mappings)"
+                ).fetchall()
+            }
+            if "content_asset_id" not in mapping_columns:
+                connection.execute(
+                    "ALTER TABLE projector_surface_mappings "
+                    "ADD COLUMN content_asset_id TEXT REFERENCES assets(id) ON DELETE SET NULL"
+                )
+            if "surface_model" not in mapping_columns:
+                connection.execute(
+                    "ALTER TABLE projector_surface_mappings "
+                    "ADD COLUMN surface_model TEXT NOT NULL DEFAULT 'planar'"
+                )
+            if "fit_mode" not in mapping_columns:
+                connection.execute(
+                    "ALTER TABLE projector_surface_mappings "
+                    "ADD COLUMN fit_mode TEXT NOT NULL DEFAULT 'preserve'"
+                )
+            if "overscan" not in mapping_columns:
+                connection.execute(
+                    "ALTER TABLE projector_surface_mappings "
+                    "ADD COLUMN overscan INTEGER NOT NULL DEFAULT 0"
+                )
+            if "brightness_limit" not in mapping_columns:
+                connection.execute(
+                    "ALTER TABLE projector_surface_mappings "
+                    "ADD COLUMN brightness_limit REAL NOT NULL DEFAULT 1.0"
+                )
+            if "media_start_delay_ms" not in mapping_columns:
+                connection.execute(
+                    "ALTER TABLE projector_surface_mappings "
+                    "ADD COLUMN media_start_delay_ms INTEGER NOT NULL DEFAULT 0"
+                )
+            if "media_release_delay_ms" not in mapping_columns:
+                connection.execute(
+                    "ALTER TABLE projector_surface_mappings "
+                    "ADD COLUMN media_release_delay_ms INTEGER NOT NULL DEFAULT 0"
+                )
+            if "orientation_degrees" not in mapping_columns:
+                connection.execute(
+                    "ALTER TABLE projector_surface_mappings "
+                    "ADD COLUMN orientation_degrees INTEGER NOT NULL DEFAULT 0"
+                )
+            if "mirror_x" not in mapping_columns:
+                connection.execute(
+                    "ALTER TABLE projector_surface_mappings "
+                    "ADD COLUMN mirror_x INTEGER NOT NULL DEFAULT 0"
+                )
+            if "mirror_y" not in mapping_columns:
+                connection.execute(
+                    "ALTER TABLE projector_surface_mappings "
+                    "ADD COLUMN mirror_y INTEGER NOT NULL DEFAULT 0"
+                )
+            if "mask_semantic_ids_json" not in mapping_columns:
+                connection.execute(
+                    "ALTER TABLE projector_surface_mappings "
+                    "ADD COLUMN mask_semantic_ids_json TEXT NOT NULL DEFAULT '[]'"
+                )
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO schema_migrations(version, applied_at)
+                VALUES (20, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+                """
+            )
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO schema_migrations(version, applied_at)
+                VALUES (21, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+                """
+            )
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO schema_migrations(version, applied_at)
+                VALUES (22, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+                """
+            )
+            geometry_columns = {
+                str(row["name"])
+                for row in connection.execute("PRAGMA table_info(installation_geometry)").fetchall()
+            }
+            if "semantic_id" not in geometry_columns:
+                connection.execute("ALTER TABLE installation_geometry ADD COLUMN semantic_id TEXT")
+                connection.execute(
+                    "UPDATE installation_geometry SET semantic_id = id WHERE semantic_id IS NULL"
+                )
+            if "landmark_ids_json" not in geometry_columns:
+                connection.execute(
+                    "ALTER TABLE installation_geometry "
+                    "ADD COLUMN landmark_ids_json TEXT NOT NULL DEFAULT '[]'"
+                )
+            if "color" not in geometry_columns:
+                connection.execute(
+                    "ALTER TABLE installation_geometry "
+                    "ADD COLUMN color TEXT NOT NULL DEFAULT '#6ee7ff'"
+                )
+            if "label_visible" not in geometry_columns:
+                connection.execute(
+                    "ALTER TABLE installation_geometry "
+                    "ADD COLUMN label_visible INTEGER NOT NULL DEFAULT 1"
+                )
+            if "locked" not in geometry_columns:
+                connection.execute(
+                    "ALTER TABLE installation_geometry ADD COLUMN locked INTEGER NOT NULL DEFAULT 0"
+                )
+            if "hidden" not in geometry_columns:
+                connection.execute(
+                    "ALTER TABLE installation_geometry ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0"
+                )
+            if "z_index" not in geometry_columns:
+                connection.execute(
+                    "ALTER TABLE installation_geometry "
+                    "ADD COLUMN z_index INTEGER NOT NULL DEFAULT 0"
+                )
+            if "direction" not in geometry_columns:
+                connection.execute(
+                    "ALTER TABLE installation_geometry "
+                    "ADD COLUMN direction TEXT NOT NULL DEFAULT 'forward'"
+                )
+            if "start_index" not in geometry_columns:
+                connection.execute(
+                    "ALTER TABLE installation_geometry ADD COLUMN start_index INTEGER"
+                )
+            if "pixel_count" not in geometry_columns:
+                connection.execute(
+                    "ALTER TABLE installation_geometry ADD COLUMN pixel_count INTEGER"
+                )
+            if "stage_points_json" not in geometry_columns:
+                connection.execute(
+                    "ALTER TABLE installation_geometry ADD COLUMN stage_points_json TEXT"
+                )
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO schema_migrations(version, applied_at)
+                VALUES (23, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+                """
+            )
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO schema_migrations(version, applied_at)
+                VALUES (24, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+                """
+            )
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO schema_migrations(version, applied_at)
+                VALUES (25, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+                """
+            )
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO schema_migrations(version, applied_at)
+                VALUES (26, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+                """
+            )
+            lighting_columns = {
+                str(row["name"])
+                for row in connection.execute("PRAGMA table_info(lighting_surfaces)").fetchall()
+            }
+            if "local_points_json" not in lighting_columns:
+                connection.execute(
+                    "ALTER TABLE lighting_surfaces ADD COLUMN local_points_json TEXT"
+                )
+            if "brightness_limit" not in lighting_columns:
+                connection.execute(
+                    "ALTER TABLE lighting_surfaces "
+                    "ADD COLUMN brightness_limit REAL NOT NULL DEFAULT 1.0"
+                )
+            if "timing_offset_ms" not in lighting_columns:
+                connection.execute(
+                    "ALTER TABLE lighting_surfaces "
+                    "ADD COLUMN timing_offset_ms INTEGER NOT NULL DEFAULT 0"
+                )
+            if "release_offset_ms" not in lighting_columns:
+                connection.execute(
+                    "ALTER TABLE lighting_surfaces "
+                    "ADD COLUMN release_offset_ms INTEGER NOT NULL DEFAULT 0"
+                )
+                connection.execute(
+                    "UPDATE lighting_surfaces SET local_points_json = '[]' "
+                    "WHERE local_points_json IS NULL"
+                )
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO schema_migrations(version, applied_at)
+                VALUES (27, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+                """
+            )
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO schema_migrations(version, applied_at)
+                VALUES (28, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+                """
+            )
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO schema_migrations(version, applied_at)
+                VALUES (29, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+                """
+            )
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO schema_migrations(version, applied_at)
+                VALUES (30, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+                """
+            )
+            session_columns = {
+                str(row["name"])
+                for row in connection.execute(
+                    "PRAGMA table_info(timing_calibration_sessions)"
+                ).fetchall()
+            }
+            for column, definition in (
+                ("test_asset_id", "TEXT"),
+                ("test_asset_version", "TEXT"),
+                ("observed_variability_ms", "REAL"),
+                ("notes", "TEXT"),
+                ("context_json", "TEXT NOT NULL DEFAULT '{}'"),
+            ):
+                if column not in session_columns:
+                    connection.execute(
+                        f"ALTER TABLE timing_calibration_sessions ADD COLUMN {column} {definition}"
+                    )
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO schema_migrations(version, applied_at)
+                VALUES (31, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+                """
+            )
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO schema_migrations(version, applied_at)
+                VALUES (32, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+                """
+            )
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO schema_migrations(version, applied_at)
+                VALUES (33, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+                """
+            )
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO schema_migrations(version, applied_at)
+                VALUES (34, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+                """
+            )
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO schema_migrations(version, applied_at)
+                VALUES (35, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
                 """
             )
 

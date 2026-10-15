@@ -79,7 +79,7 @@ Rotate the laptop credential while its agent task is stopped, then use
 
 ```powershell
 cueverge-device-rotate `
-  --transport-url wss://controller-host:8443/api/device/v2/agent/ws
+  --transport-url wss://controller-host:7443/api/device/v2/agent/ws
 ```
 
 Live validation covered prepare/play, authoritative position telemetry, pause,

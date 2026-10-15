@@ -121,13 +121,61 @@ class DownstreamControlCapability(DeviceProtocolModel):
         return self
 
 
+class TimingAdjustment(DeviceProtocolModel):
+    minimum_ms: int = Field(ge=-60_000, le=60_000)
+    maximum_ms: int = Field(ge=-60_000, le=60_000)
+    resolution_ms: int = Field(gt=0, le=10_000)
+    adjustable_while_active: bool = False
+
+    @model_validator(mode="after")
+    def validate_adjustment(self) -> "TimingAdjustment":
+        if self.maximum_ms < self.minimum_ms:
+            raise ValueError("timing maximum must be greater than or equal to minimum")
+        if (self.maximum_ms - self.minimum_ms) % self.resolution_ms:
+            raise ValueError("timing range must be divisible by its resolution")
+        return self
+
+
+class TimingCalibrationCapability(DeviceProtocolModel):
+    kind: Literal["timing_calibration"] = "timing_calibration"
+    actuator_kinds: tuple[
+        Literal[
+            "media",
+            "audio",
+            "pixels",
+            "network_light",
+            "smart_switch",
+            "relay",
+            "physical_effect",
+        ],
+        ...,
+    ] = Field(min_length=1)
+    onset: TimingAdjustment | None = None
+    release: TimingAdjustment | None = None
+    safe_test_procedure: Literal[
+        "maintenance_reference",
+        "armed_trials",
+        "simulation_only",
+    ]
+    supports_ab_comparison: bool = False
+
+    @model_validator(mode="after")
+    def validate_timing_capability(self) -> "TimingCalibrationCapability":
+        if len(self.actuator_kinds) != len(set(self.actuator_kinds)):
+            raise ValueError("timing actuator kinds must be unique")
+        if self.onset is None and self.release is None:
+            raise ValueError("timing calibration must declare onset or release adjustment")
+        return self
+
+
 DeviceCapability = Annotated[
     MediaPlaybackCapability
     | ArtifactCacheCapability
     | ClockCapability
     | PixelOutputCapability
     | ObservationCapability
-    | DownstreamControlCapability,
+    | DownstreamControlCapability
+    | TimingCalibrationCapability,
     Field(discriminator="kind"),
 ]
 

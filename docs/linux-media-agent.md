@@ -253,7 +253,7 @@ journalctl -k --since today
 
       ```bash
       cueverge-device-rotate \
-        --transport-url wss://controller-host:8443/api/device/v2/agent/ws
+        --transport-url wss://controller-host:7443/api/device/v2/agent/ws
       systemctl --user restart cueverge-media-agent.service
       ```
 - [ ] Copy all media into the local asset root.

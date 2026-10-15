@@ -34,6 +34,214 @@ export interface InstallationSummary {
   updated_at: string;
 }
 
+export interface InstallationPhoto {
+  id: string;
+  installation_id: string;
+  name: string;
+  viewpoint: string;
+  original_filename: string;
+  media_type: string;
+  digest_sha256: string;
+  size_bytes: number;
+  orientation_degrees: 0 | 90 | 180 | 270;
+  crop_x: number | null;
+  crop_y: number | null;
+  crop_width: number | null;
+  crop_height: number | null;
+  scale_hint: number | null;
+  revision: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export type InstallationGeometryKind =
+  | "output"
+  | "pixel_segment"
+  | "fixture"
+  | "path"
+  | "projector_surface"
+  | "mask"
+  | "audience_zone"
+  | "safety_zone";
+
+export interface InstallationGeometry {
+  id: string;
+  installation_id: string;
+  photo_id: string;
+  kind: InstallationGeometryKind;
+  name: string;
+  semantic_id: string;
+  landmark_ids: string[];
+  color: string;
+  label_visible: boolean;
+  locked: boolean;
+  hidden: boolean;
+  z_index: number;
+  direction: "forward" | "reverse";
+  start_index: number | null;
+  pixel_count: number | null;
+  stage_points: [number, number][] | null;
+  points: { x: number; y: number }[];
+  closed: boolean;
+  revision: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface GeometrySuggestion {
+  id: string;
+  installation_id: string;
+  photo_id: string;
+  kind: InstallationGeometryKind;
+  name: string;
+  points: { x: number; y: number }[];
+  closed: boolean;
+  confidence: number;
+  evidence: string;
+  state: "pending" | "reviewed" | "rejected";
+  created_by: string;
+  reviewed_by: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ProjectorMapping {
+  geometry_id: string;
+  resource: string;
+  native_width: number;
+  native_height: number;
+  stage_x: number;
+  stage_y: number;
+  stage_width: number;
+  stage_height: number;
+  crop_x: number;
+  crop_y: number;
+  crop_width: number;
+  crop_height: number;
+  content_asset_id: string | null;
+  surface_model: "planar" | "subdivided";
+  fit_mode: "preserve" | "stretch";
+  overscan: boolean;
+  brightness_limit: number;
+  media_start_delay_ms: number;
+  media_release_delay_ms: number;
+  orientation_degrees: 0 | 90 | 180 | 270;
+  mirror_x: boolean;
+  mirror_y: boolean;
+  mask_semantic_ids: string[];
+  homography: number[] | null;
+  diagnostic: string | null;
+  fit_diagnostics: string[];
+  photo_views: {
+    geometry_id: string;
+    photo_id: string;
+    points: { x: number; y: number }[];
+    homography: number[] | null;
+  }[];
+  revision: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface LightingSurface {
+  geometry_id: string;
+  resource: string;
+  local_width: number;
+  local_height: number;
+  local_points: [number, number][];
+  stage_matrix: [number, number, number, number, number, number];
+  fixture_id: string | null;
+  group_id: string | null;
+  path_id: string | null;
+  strand_id: string | null;
+  calibration_id: string | null;
+  pixel_footprint_width: number;
+  pixel_footprint_height: number;
+  brightness_limit: number;
+  timing_offset_ms: number;
+  release_offset_ms: number;
+  pixels: {
+    output_index: number;
+    local_x: number;
+    local_y: number;
+    stage_x: number;
+    stage_y: number;
+    footprint_width: number;
+    footprint_height: number;
+  }[];
+  revision: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ProjectorOverlap {
+  id: string;
+  installation_id: string;
+  first_geometry_id: string;
+  second_geometry_id: string;
+  stage_points: [number, number][];
+  ramp_width: number;
+  overlap_gamma: number;
+  first_brightness: number;
+  second_brightness: number;
+  first_white: [number, number, number];
+  second_white: [number, number, number];
+  first_color_matrix: number[];
+  second_color_matrix: number[];
+  first_black_level: number;
+  second_black_level: number;
+  diagnostics: string[];
+  revision: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface StageCoverage {
+  installation_id: string;
+  minimum_x: number;
+  minimum_y: number;
+  maximum_x: number;
+  maximum_y: number;
+  regions: {
+    kind: "covered" | "overlap" | "occluded" | "uncovered";
+    points: [number, number][];
+    resources: string[];
+    source_ids: string[];
+  }[];
+}
+
+export interface InstallationMapperExport {
+  schema_version: 1;
+  installation_id: string;
+  resources: InstallationResource[];
+  projectors: Record<string, unknown>[];
+  lighting_surfaces: {
+    semantic_id: string;
+    resource: string;
+    pixels?: {
+      output_index: number;
+      stage_x: number;
+      stage_y: number;
+    }[];
+  }[];
+  fixtures: {
+    semantic_id: string;
+    name: string;
+    stage_points: [number, number][];
+  }[];
+  paths: {
+    semantic_id: string;
+    name: string;
+    stage_points: [number, number][];
+  }[];
+  zones: {
+    semantic_id: string;
+    name: string;
+    kind: "audience_zone" | "safety_zone";
+    stage_points: [number, number][];
+  }[];
+}
+
 export interface ProjectSummary {
   id: string;
   name: string;
@@ -55,17 +263,29 @@ export interface ProjectDraftRecord {
   project: ProjectSummary;
   revision: number;
   draft: {
+    schema_version?: number;
+    installation?: unknown;
     editor_metadata: Record<string, unknown>;
     scenes: {
       schema_version: 1 | 2;
       id: string;
       name: string;
+      duration_ms?: number;
+      resources?: string[];
       failure_scene_id?: string | null;
       completion?: { target_scene_id?: string | null };
+      scheduling?: {
+        safe_points_ms?: number[];
+        protected_intervals?: { start_ms: number; end_ms: number }[];
+        [key: string]: unknown;
+      };
       media:
         | { asset: string | null }
         | { id: string; asset: string | null }[];
+      lighting?: unknown;
+      [key: string]: unknown;
     }[];
+    [key: string]: unknown;
   };
 }
 
@@ -204,6 +424,33 @@ export interface GenericDeviceCapability {
   [key: string]: unknown;
 }
 
+export interface TimingAdjustment {
+  minimum_ms: number;
+  maximum_ms: number;
+  resolution_ms: number;
+  adjustable_while_active: boolean;
+}
+
+export interface TimingCalibrationCapability {
+  kind: "timing_calibration";
+  actuator_kinds: (
+    | "media"
+    | "audio"
+    | "pixels"
+    | "network_light"
+    | "smart_switch"
+    | "relay"
+    | "physical_effect"
+  )[];
+  onset: TimingAdjustment | null;
+  release: TimingAdjustment | null;
+  safe_test_procedure:
+    | "maintenance_reference"
+    | "armed_trials"
+    | "simulation_only";
+  supports_ab_comparison: boolean;
+}
+
 export interface DeviceCapabilityDocument {
   schema_version: 1;
   protocol: ProtocolRange;
@@ -212,6 +459,7 @@ export interface DeviceCapabilityDocument {
   capabilities: (
     | MediaPlaybackCapability
     | ArtifactCacheCapability
+    | TimingCalibrationCapability
     | GenericDeviceCapability
   )[];
 }
@@ -291,6 +539,49 @@ export interface MaintenancePreview {
   simulation_only: true;
   started_at: string;
   expires_at: string;
+}
+
+export interface OutputArm {
+  id: string;
+  resource: string;
+  resource_kind: string;
+  device_identity: string;
+  stop_action: string;
+  state: "active" | "stopped" | "expired";
+  expires_at: string;
+  hardware_command_sent: false;
+}
+
+export interface TimingCalibrationSession {
+  id: string;
+  target_kind: "projector_mapping" | "lighting_surface";
+  geometry_id: string;
+  adjustment_kind: "onset" | "release";
+  baseline_ms: number;
+  proposed_ms: number;
+  state: "active" | "accepted" | "cancelled" | "expired";
+  revision: number;
+  simulation_only: true;
+  expires_at: string;
+}
+
+export interface AcceptedCalibration {
+  id: string;
+  target_kind: TimingCalibrationSession["target_kind"];
+  geometry_id: string;
+  adjustment_kind: TimingCalibrationSession["adjustment_kind"];
+  accepted_ms: number;
+  resource: string;
+  device_id: string | null;
+  software_version: string | null;
+  test_asset_id: string | null;
+  test_asset_version: string | null;
+  observed_variability_ms: number | null;
+  notes: string | null;
+  context: Record<string, unknown>;
+  actor: string;
+  accepted_at: string;
+  stale_reasons: string[];
 }
 
 export interface ResourceAssignment {
@@ -500,6 +791,252 @@ export async function deleteInstallation(
   });
 }
 
+export async function getInstallationPhotos(
+  installationId: string,
+): Promise<InstallationPhoto[]> {
+  return request<InstallationPhoto[]>(
+    `/api/gui/v1/installations/${encodeURIComponent(installationId)}/photos`,
+  );
+}
+
+export function installationPhotoUrl(photoId: string): string {
+  return `/api/gui/v1/installation-photos/${encodeURIComponent(photoId)}/content`;
+}
+
+export async function uploadInstallationPhoto(
+  installationId: string,
+  file: File,
+  name: string,
+  viewpoint: string,
+): Promise<InstallationPhoto> {
+  return request<InstallationPhoto>(
+    `/api/gui/v1/installations/${encodeURIComponent(installationId)}/photos`,
+    {
+      method: "POST",
+      headers: {
+        ...mutationHeaders(),
+        "Content-Type": file.type,
+        "X-Photo-Name": name,
+        "X-Photo-Viewpoint": viewpoint,
+        "X-Original-Filename": file.name,
+      },
+      body: file,
+    },
+  );
+}
+
+export async function updateInstallationPhoto(
+  photo: InstallationPhoto,
+  values: Pick<
+    InstallationPhoto,
+    | "name"
+    | "viewpoint"
+    | "orientation_degrees"
+    | "crop_x"
+    | "crop_y"
+    | "crop_width"
+    | "crop_height"
+    | "scale_hint"
+  >,
+): Promise<InstallationPhoto> {
+  return request<InstallationPhoto>(
+    `/api/gui/v1/installation-photos/${encodeURIComponent(photo.id)}`,
+    {
+      method: "PUT",
+      headers: { ...mutationHeaders(), "If-Match": `"${photo.revision}"` },
+      body: JSON.stringify(values),
+    },
+  );
+}
+
+export async function deleteInstallationPhoto(photo: InstallationPhoto): Promise<void> {
+  await request(`/api/gui/v1/installation-photos/${encodeURIComponent(photo.id)}`, {
+    method: "DELETE",
+    headers: { ...mutationHeaders(), "If-Match": `"${photo.revision}"` },
+  });
+}
+
+export async function getInstallationGeometry(
+  installationId: string,
+  photoId?: string,
+): Promise<InstallationGeometry[]> {
+  const query = photoId ? `?photo_id=${encodeURIComponent(photoId)}` : "";
+  return request<InstallationGeometry[]>(
+    `/api/gui/v1/installations/${encodeURIComponent(installationId)}/geometry${query}`,
+  );
+}
+
+export async function saveInstallationGeometry(
+  installationId: string,
+  geometry: Omit<
+    InstallationGeometry,
+    | "id"
+    | "installation_id"
+    | "landmark_ids"
+    | "semantic_id"
+    | "revision"
+    | "created_at"
+    | "updated_at"
+  > & { semantic_id: string | null },
+  existing?: InstallationGeometry,
+): Promise<InstallationGeometry> {
+  const path = existing
+    ? `/api/gui/v1/installation-geometry/${encodeURIComponent(existing.id)}`
+    : `/api/gui/v1/installations/${encodeURIComponent(installationId)}/geometry`;
+  return request<InstallationGeometry>(path, {
+    method: existing ? "PUT" : "POST",
+    headers: existing
+      ? { ...mutationHeaders(), "If-Match": `"${existing.revision}"` }
+      : mutationHeaders(),
+    body: JSON.stringify(geometry),
+  });
+}
+
+export async function deleteInstallationGeometry(
+  geometry: InstallationGeometry,
+): Promise<void> {
+  await request(
+    `/api/gui/v1/installation-geometry/${encodeURIComponent(geometry.id)}`,
+    {
+      method: "DELETE",
+      headers: { ...mutationHeaders(), "If-Match": `"${geometry.revision}"` },
+    },
+  );
+}
+
+export async function getGeometrySuggestions(
+  installationId: string,
+): Promise<GeometrySuggestion[]> {
+  return request<GeometrySuggestion[]>(
+    `/api/gui/v1/installations/${encodeURIComponent(installationId)}/geometry-suggestions`,
+  );
+}
+
+export async function reviewGeometrySuggestion(
+  suggestionId: string,
+  action: "review" | "reject",
+): Promise<GeometrySuggestion> {
+  return request<GeometrySuggestion>(
+    `/api/gui/v1/geometry-suggestions/${encodeURIComponent(suggestionId)}/${action}`,
+    { method: "POST", headers: mutationHeaders() },
+  );
+}
+
+export async function getProjectorMapping(
+  geometryId: string,
+): Promise<ProjectorMapping> {
+  return request<ProjectorMapping>(
+    `/api/gui/v1/installation-geometry/${encodeURIComponent(geometryId)}/projector-mapping`,
+  );
+}
+
+export async function saveProjectorMapping(
+  geometryId: string,
+  values: Omit<
+    ProjectorMapping,
+    | "geometry_id"
+    | "homography"
+    | "diagnostic"
+    | "fit_diagnostics"
+    | "photo_views"
+    | "revision"
+    | "created_at"
+    | "updated_at"
+  >,
+  revision?: number,
+): Promise<ProjectorMapping> {
+  return request<ProjectorMapping>(
+    `/api/gui/v1/installation-geometry/${encodeURIComponent(geometryId)}/projector-mapping`,
+    {
+      method: "PUT",
+      headers:
+        revision === undefined
+          ? mutationHeaders()
+          : { ...mutationHeaders(), "If-Match": `"${revision}"` },
+      body: JSON.stringify(values),
+    },
+  );
+}
+
+export async function getLightingSurface(
+  geometryId: string,
+): Promise<LightingSurface> {
+  return request<LightingSurface>(
+    `/api/gui/v1/installation-geometry/${encodeURIComponent(geometryId)}/lighting-surface`,
+  );
+}
+
+export async function saveLightingSurface(
+  geometryId: string,
+  values: Omit<
+    LightingSurface,
+    "geometry_id" | "pixels" | "revision" | "created_at" | "updated_at"
+  >,
+  revision?: number,
+): Promise<LightingSurface> {
+  return request<LightingSurface>(
+    `/api/gui/v1/installation-geometry/${encodeURIComponent(geometryId)}/lighting-surface`,
+    {
+      method: "PUT",
+      headers:
+        revision === undefined
+          ? mutationHeaders()
+          : { ...mutationHeaders(), "If-Match": `"${revision}"` },
+      body: JSON.stringify(values),
+    },
+  );
+}
+
+export async function getProjectorOverlaps(
+  installationId: string,
+): Promise<ProjectorOverlap[]> {
+  return request<ProjectorOverlap[]>(
+    `/api/gui/v1/installations/${encodeURIComponent(installationId)}/projector-overlaps`,
+  );
+}
+
+export async function saveProjectorOverlap(
+  installationId: string,
+  values: Omit<
+    ProjectorOverlap,
+    | "id"
+    | "installation_id"
+    | "diagnostics"
+    | "revision"
+    | "created_at"
+    | "updated_at"
+  > & { id?: string },
+  revision?: number,
+): Promise<ProjectorOverlap> {
+  return request<ProjectorOverlap>(
+    `/api/gui/v1/installations/${encodeURIComponent(installationId)}/projector-overlaps`,
+    {
+      method: "PUT",
+      headers:
+        revision === undefined
+          ? mutationHeaders()
+          : { ...mutationHeaders(), "If-Match": `"${revision}"` },
+      body: JSON.stringify(values),
+    },
+  );
+}
+
+export async function getStageCoverage(
+  installationId: string,
+): Promise<StageCoverage> {
+  return request<StageCoverage>(
+    `/api/gui/v1/installations/${encodeURIComponent(installationId)}/stage-coverage`,
+  );
+}
+
+export async function getInstallationMapperExport(
+  installationId: string,
+): Promise<InstallationMapperExport> {
+  return request<InstallationMapperExport>(
+    `/api/gui/v1/installations/${encodeURIComponent(installationId)}/mapper-export`,
+  );
+}
+
 export async function getProjects(): Promise<ProjectSummary[]> {
   return request<ProjectSummary[]>("/api/gui/v1/projects");
 }
@@ -507,6 +1044,21 @@ export async function getProjects(): Promise<ProjectSummary[]> {
 export async function getProjectDraft(projectId: string): Promise<ProjectDraftRecord> {
   return request<ProjectDraftRecord>(
     `/api/gui/v1/projects/${encodeURIComponent(projectId)}/draft`,
+  );
+}
+
+export async function updateProjectDraft(
+  projectId: string,
+  revision: number,
+  draft: ProjectDraftRecord["draft"],
+): Promise<ProjectDraftRecord> {
+  return request<ProjectDraftRecord>(
+    `/api/gui/v1/projects/${encodeURIComponent(projectId)}/draft`,
+    {
+      method: "PUT",
+      headers: { ...mutationHeaders(), "If-Match": `"${revision}"` },
+      body: JSON.stringify(draft),
+    },
   );
 }
 
@@ -566,6 +1118,10 @@ export async function getAssets(projectId: string): Promise<AssetRecord[]> {
   return request<AssetRecord[]>(
     `/api/gui/v1/projects/${encodeURIComponent(projectId)}/assets`,
   );
+}
+
+export async function getImageAssetLibrary(): Promise<AssetRecord[]> {
+  return request<AssetRecord[]>("/api/gui/v1/assets/image-library");
 }
 
 export function assetArtifactUrl(
@@ -809,6 +1365,96 @@ export async function startMaintenancePreview(
       duration_seconds: durationSeconds,
     }),
   });
+}
+
+export async function createOutputArm(
+  resource: string,
+  confirmation: string,
+  durationSeconds: number,
+): Promise<OutputArm> {
+  return request<OutputArm>("/api/gui/v1/maintenance/output-arms", {
+    method: "POST",
+    headers: mutationHeaders(),
+    body: JSON.stringify({
+      resource,
+      confirmation,
+      duration_seconds: durationSeconds,
+    }),
+  });
+}
+
+export async function stopOutputArm(armId: string): Promise<OutputArm> {
+  return request<OutputArm>(
+    `/api/gui/v1/maintenance/output-arms/${encodeURIComponent(armId)}/stop`,
+    { method: "POST", headers: mutationHeaders() },
+  );
+}
+
+export async function startTimingCalibration(
+  targetKind: TimingCalibrationSession["target_kind"],
+  geometryId: string,
+  adjustmentKind: TimingCalibrationSession["adjustment_kind"],
+  provenance: {
+    test_asset_id: string | null;
+    test_asset_version: string | null;
+    observed_variability_ms: number | null;
+    notes: string | null;
+    context: Record<string, unknown>;
+  },
+): Promise<TimingCalibrationSession> {
+  return request<TimingCalibrationSession>("/api/gui/v1/timing-calibrations", {
+    method: "POST",
+    headers: mutationHeaders(),
+    body: JSON.stringify({
+      target_kind: targetKind,
+      geometry_id: geometryId,
+      adjustment_kind: adjustmentKind,
+      ...provenance,
+    }),
+  });
+}
+
+export async function reviewAcceptedCalibrations(
+  targetKind: TimingCalibrationSession["target_kind"],
+  geometryId: string,
+  context: Record<string, unknown>,
+): Promise<AcceptedCalibration[]> {
+  return request<AcceptedCalibration[]>("/api/gui/v1/accepted-calibrations/review", {
+    method: "POST",
+    headers: mutationHeaders(),
+    body: JSON.stringify({
+      target_kind: targetKind,
+      geometry_id: geometryId,
+      context,
+    }),
+  });
+}
+
+export async function adjustTimingCalibration(
+  session: TimingCalibrationSession,
+  proposedMs: number,
+): Promise<TimingCalibrationSession> {
+  return request<TimingCalibrationSession>(
+    `/api/gui/v1/timing-calibrations/${encodeURIComponent(session.id)}`,
+    {
+      method: "PUT",
+      headers: { ...mutationHeaders(), "If-Match": `"${session.revision}"` },
+      body: JSON.stringify({ proposed_ms: proposedMs }),
+    },
+  );
+}
+
+export async function finishTimingCalibration(
+  session: TimingCalibrationSession,
+  action: "accept" | "cancel",
+): Promise<TimingCalibrationSession> {
+  return request<TimingCalibrationSession>(
+    `/api/gui/v1/timing-calibrations/${encodeURIComponent(session.id)}/${action}`,
+    {
+      method: "POST",
+      headers: { ...mutationHeaders(), "If-Match": `"${session.revision}"` },
+    },
+  );
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {

@@ -25,7 +25,7 @@ class GuiConfig(BaseModel):
     device_enrollment_attempts_per_minute: int = Field(default=10, ge=1, le=100)
     device_listener_enabled: bool = False
     device_listener_host: str = "0.0.0.0"
-    device_listener_port: int = Field(default=8443, ge=1, le=65535)
+    device_listener_port: int = Field(default=7443, ge=1, le=65535)
     device_listener_identities: tuple[str, ...] = ()
     device_listener_public_url: AnyUrl | None = None
     asset_max_bytes: int = Field(default=10_000_000_000, gt=0)
@@ -111,7 +111,7 @@ class GuiConfig(BaseModel):
             ).lower()
             in {"1", "true", "yes"},
             device_listener_host=os.environ.get("CUEVERGE_DEVICE_LISTENER_HOST", "0.0.0.0"),
-            device_listener_port=int(os.environ.get("CUEVERGE_DEVICE_LISTENER_PORT", "8443")),
+            device_listener_port=int(os.environ.get("CUEVERGE_DEVICE_LISTENER_PORT", "7443")),
             device_listener_identities=tuple(
                 value.strip()
                 for value in os.environ.get("CUEVERGE_DEVICE_LISTENER_IDENTITIES", "").split(",")

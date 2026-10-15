@@ -17,7 +17,17 @@ from cueverge.gui.device_ca import DeviceCertificateAuthority
 from cueverge.gui.device_enrollment import DeviceEnrollmentService
 from cueverge.gui.device_session import DeviceSessionRegistry
 from cueverge.gui.endpoint_discovery import EndpointDiscoveryService
+from cueverge.gui.geometry_suggestions import GeometrySuggestionService
+from cueverge.gui.installation_geometry import InstallationGeometryService
+from cueverge.gui.installation_photos import InstallationPhotoService
+from cueverge.gui.lighting_surface import LightingSurfaceService
+from cueverge.gui.mapper_export import MapperExportService
+from cueverge.gui.output_arming import OutputArmService
+from cueverge.gui.projector_mapping import ProjectorMappingService
+from cueverge.gui.projector_overlap import ProjectorOverlapService
 from cueverge.gui.repository import GuiRepository
+from cueverge.gui.stage_coverage import StageCoverageService
+from cueverge.gui.timing_calibration import TimingCalibrationService
 from cueverge.gui.wled_status import WledStatusObserver
 
 
@@ -57,6 +67,16 @@ class GuiServices:
     wled_status: WledStatusObserver
     endpoint_discovery: EndpointDiscoveryService
     asset_upload: AssetUploadService
+    installation_photos: InstallationPhotoService
+    installation_geometry: InstallationGeometryService
+    projector_mapping: ProjectorMappingService
+    lighting_surface: LightingSurfaceService
+    timing_calibration: TimingCalibrationService
+    projector_overlap: ProjectorOverlapService
+    geometry_suggestions: GeometrySuggestionService
+    output_arming: OutputArmService
+    stage_coverage: StageCoverageService
+    mapper_export: MapperExportService
 
     @classmethod
     def create(cls, config: GuiConfig, runtime: RuntimeStatusSource) -> "GuiServices":
@@ -74,6 +94,8 @@ class GuiServices:
             authority = DeviceCertificateAuthority(config.data_root / "device-ca", password)
             authority.provision()
             device_enrollment = DeviceEnrollmentService(config, repository, authority)
+        installation_geometry = InstallationGeometryService(repository)
+        lighting_surface = LightingSurfaceService(repository, installation_geometry)
         return cls(
             config=config,
             repository=repository,
@@ -85,4 +107,14 @@ class GuiServices:
             wled_status=WledStatusObserver(),
             endpoint_discovery=EndpointDiscoveryService(),
             asset_upload=AssetUploadService(config, repository),
+            installation_photos=InstallationPhotoService(config, repository),
+            installation_geometry=installation_geometry,
+            projector_mapping=ProjectorMappingService(repository, installation_geometry),
+            lighting_surface=lighting_surface,
+            timing_calibration=TimingCalibrationService(repository),
+            projector_overlap=ProjectorOverlapService(repository),
+            geometry_suggestions=GeometrySuggestionService(repository),
+            output_arming=OutputArmService(repository),
+            stage_coverage=StageCoverageService(repository),
+            mapper_export=MapperExportService(repository, lighting_surface),
         )

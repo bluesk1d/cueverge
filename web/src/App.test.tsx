@@ -28,6 +28,31 @@ test("shows the authenticated shell and truthful overview", async () => {
     if (path.endsWith("/installations")) {
       return jsonResponse(demoInstallations);
     }
+    if (path.endsWith("/installations/demo-installation/photos")) {
+      return jsonResponse([]);
+    }
+    if (path.includes("/installations/demo-installation/geometry")) {
+      return jsonResponse([]);
+    }
+    if (path.endsWith("/installations/demo-installation/projector-overlaps")) {
+      return jsonResponse([]);
+    }
+    if (path.endsWith("/installations/demo-installation/geometry-suggestions")) {
+      return jsonResponse([]);
+    }
+    if (path.endsWith("/installations/demo-installation/stage-coverage")) {
+      return jsonResponse({
+        installation_id: "demo-installation",
+        minimum_x: 0,
+        minimum_y: 0,
+        maximum_x: 1,
+        maximum_y: 1,
+        regions: [],
+      });
+    }
+    if (path.endsWith("/assets/image-library")) {
+      return jsonResponse([]);
+    }
     if (path.endsWith("/runtime/status")) {
       return jsonResponse(demoRuntime);
     }
@@ -90,6 +115,31 @@ test("navigates across the exact top-level workspaces", async () => {
     }
     if (path.endsWith("/installations")) {
       return jsonResponse(demoInstallations);
+    }
+    if (path.endsWith("/installations/demo-installation/photos")) {
+      return jsonResponse([]);
+    }
+    if (path.includes("/installations/demo-installation/geometry")) {
+      return jsonResponse([]);
+    }
+    if (path.endsWith("/installations/demo-installation/projector-overlaps")) {
+      return jsonResponse([]);
+    }
+    if (path.endsWith("/installations/demo-installation/geometry-suggestions")) {
+      return jsonResponse([]);
+    }
+    if (path.endsWith("/installations/demo-installation/stage-coverage")) {
+      return jsonResponse({
+        installation_id: "demo-installation",
+        minimum_x: 0,
+        minimum_y: 0,
+        maximum_x: 1,
+        maximum_y: 1,
+        regions: [],
+      });
+    }
+    if (path.endsWith("/assets/image-library")) {
+      return jsonResponse([]);
     }
     if (path.endsWith("/runtime/status")) {
       return jsonResponse(demoRuntime);
@@ -286,7 +336,7 @@ test("navigates across the exact top-level workspaces", async () => {
   expect(screen.getByRole("heading", { name: "Settings" })).toBeInTheDocument();
   expect(screen.getByRole("heading", { name: "Installations" })).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Create installation" })).toBeDisabled();
-  expect(screen.getByRole("button", { name: "Delete" })).toBeDisabled();
+  expect(await screen.findByRole("button", { name: "Delete" })).toBeDisabled();
   expect(
     screen.getByRole("textbox", { name: "Folder for Visual Demo Installation" }),
   ).toHaveValue("Home");

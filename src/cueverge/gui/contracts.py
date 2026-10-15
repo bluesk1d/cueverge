@@ -6,6 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator, m
 
 from cueverge.core.models import (
     InstallationDefinition,
+    LightingCue,
     SceneDefinitionV1,
     SceneDefinitionV2,
 )
@@ -54,7 +55,516 @@ class DraftProject(GuiModel):
         scene_ids = [scene.id for scene in self.scenes]
         if len(scene_ids) != len(set(scene_ids)):
             raise ValueError("draft scene IDs must be unique")
+        _validate_composition_graph(
+            self.editor_metadata,
+            {scene.id: scene.duration_ms for scene in self.scenes},
+        )
         return self
+
+
+def _validate_composition_graph(
+    editor_metadata: dict[str, JsonValue],
+    scene_durations: dict[str, int],
+) -> None:
+    scene_ids = set(scene_durations)
+    raw_compositions = editor_metadata.get("compositions", {})
+    raw_instances = editor_metadata.get("scene_compositions", {})
+    raw_instance_records = editor_metadata.get("composition_instances", {})
+    if (
+        not isinstance(raw_compositions, dict)
+        or not isinstance(raw_instances, dict)
+        or not isinstance(raw_instance_records, dict)
+    ):
+        raise ValueError("composition metadata must be objects")
+    compositions: dict[str, dict[str, JsonValue]] = {}
+    for composition_id, value in raw_compositions.items():
+        if not isinstance(value, dict) or value.get("id") != composition_id:
+            raise ValueError("composition keys must match stable composition IDs")
+        if not isinstance(value.get("name"), str) or not value["name"]:
+            raise ValueError("composition name is required")
+        duration = value.get("duration_ms")
+        if not isinstance(duration, int) or isinstance(duration, bool) or duration <= 0:
+            raise ValueError("composition duration must be a positive integer")
+        if value.get("space_kind") not in {
+            "projector_native",
+            "lighting_surface",
+            "stage",
+        }:
+            raise ValueError("composition must declare a supported logical editing space")
+        if not isinstance(value.get("target_id"), str) or not value["target_id"]:
+            raise ValueError("composition editing space requires a target ID")
+        for dimension in ("width", "height"):
+            size = value.get(dimension)
+            if not isinstance(size, (int, float)) or isinstance(size, bool) or size <= 0:
+                raise ValueError("composition editing-space dimensions must be positive")
+        offset = value.get("local_time_offset_ms", 0)
+        if not isinstance(offset, int) or isinstance(offset, bool) or offset < 0:
+            raise ValueError("composition local-time offset must be a nonnegative integer")
+        children = value.get("children", [])
+        if not isinstance(children, list) or not all(isinstance(child, str) for child in children):
+            raise ValueError("composition children must be stable ID strings")
+        if len(children) != len(set(children)):
+            raise ValueError("composition children must be unique")
+        compositions[composition_id] = value
+    for composition_id, value in compositions.items():
+        children = value.get("children", [])
+        assert isinstance(children, list)
+        unknown = {child for child in children if isinstance(child, str)}.difference(compositions)
+        if unknown:
+            raise ValueError(
+                f"composition {composition_id} references unknown children: {sorted(unknown)}"
+            )
+    visiting: set[str] = set()
+    visited: set[str] = set()
+
+    def visit(composition_id: str) -> None:
+        if composition_id in visiting:
+            raise ValueError("composition graph cannot contain cycles")
+        if composition_id in visited:
+            return
+        visiting.add(composition_id)
+        children = compositions[composition_id].get("children", [])
+        assert isinstance(children, list)
+        for child in children:
+            assert isinstance(child, str)
+            visit(child)
+        visiting.remove(composition_id)
+        visited.add(composition_id)
+
+    for composition_id in compositions:
+        visit(composition_id)
+    unknown_scenes = set(raw_instances).difference(scene_ids)
+    if unknown_scenes:
+        raise ValueError(
+            f"composition instances reference unknown scenes: {sorted(unknown_scenes)}"
+        )
+    for scene_id, value in raw_instances.items():
+        if not isinstance(value, list) or not all(
+            isinstance(composition_id, str) for composition_id in value
+        ):
+            raise ValueError(f"scene {scene_id} composition instances must be stable IDs")
+        if len(value) != len(set(value)):
+            raise ValueError(f"scene {scene_id} composition instances must be unique")
+        unknown = {
+            composition_id for composition_id in value if isinstance(composition_id, str)
+        }.difference(compositions)
+        if unknown:
+            raise ValueError(f"scene {scene_id} references unknown compositions: {sorted(unknown)}")
+    seen_instance_ids: set[str] = set()
+    unknown_instance_scenes = set(raw_instance_records).difference(scene_ids)
+    if unknown_instance_scenes:
+        raise ValueError(
+            f"composition instances reference unknown scenes: {sorted(unknown_instance_scenes)}"
+        )
+    for scene_id, values in raw_instance_records.items():
+        if not isinstance(values, list):
+            raise ValueError(f"scene {scene_id} composition instances must be a list")
+        for value in values:
+            if not isinstance(value, dict):
+                raise ValueError("composition instance must be an object")
+            instance_id = value.get("id")
+            instance_composition_id = value.get("composition_id")
+            if not isinstance(instance_id, str) or not instance_id:
+                raise ValueError("composition instance requires a stable ID")
+            if instance_id in seen_instance_ids:
+                raise ValueError("composition instance IDs must be unique")
+            seen_instance_ids.add(instance_id)
+            if (
+                not isinstance(instance_composition_id, str)
+                or instance_composition_id not in compositions
+            ):
+                raise ValueError("composition instance references an unknown composition")
+            start_offset = value.get("start_offset_ms")
+            if (
+                not isinstance(start_offset, int)
+                or isinstance(start_offset, bool)
+                or start_offset < 0
+            ):
+                raise ValueError("composition instance start offset must be nonnegative")
+            time_scale = value.get("time_scale")
+            if (
+                not isinstance(time_scale, (int, float))
+                or isinstance(time_scale, bool)
+                or time_scale <= 0
+                or time_scale > 16
+            ):
+                raise ValueError("composition instance time scale must be in (0, 16]")
+            if not isinstance(value.get("parameter_overrides", {}), dict):
+                raise ValueError("composition parameter overrides must be an object")
+            placement = value.get("placement")
+            if not isinstance(placement, dict) or not all(
+                isinstance(placement.get(axis), (int, float))
+                and not isinstance(placement.get(axis), bool)
+                for axis in ("x", "y")
+            ):
+                raise ValueError("composition instance placement requires numeric x and y")
+    _validate_timeline_sync(editor_metadata, scene_durations, compositions)
+    _validate_transform_layers(editor_metadata, scene_durations, compositions)
+
+
+def _validate_timeline_sync(
+    editor_metadata: dict[str, JsonValue],
+    scene_durations: dict[str, int],
+    compositions: dict[str, dict[str, JsonValue]],
+) -> None:
+    raw_markers = editor_metadata.get("timeline_markers", {})
+    raw_cues = editor_metadata.get("timeline_cues", {})
+    raw_presets = editor_metadata.get("timeline_cue_presets", [])
+    if not isinstance(raw_markers, dict) or not isinstance(raw_cues, dict):
+        raise ValueError("timeline marker and cue metadata must be objects")
+    if not isinstance(raw_presets, list):
+        raise ValueError("timeline cue presets must be a list")
+    preset_ids: set[str] = set()
+    for value in raw_presets:
+        if not isinstance(value, dict):
+            raise ValueError("timeline cue preset must be an object")
+        preset_id = value.get("id")
+        if not isinstance(preset_id, str) or not preset_id:
+            raise ValueError("timeline cue preset requires a stable ID")
+        if preset_id in preset_ids:
+            raise ValueError("timeline cue preset IDs must be unique")
+        preset_ids.add(preset_id)
+        if not isinstance(value.get("name"), str) or not value["name"]:
+            raise ValueError("timeline cue preset name is required")
+        lighting = value.get("lighting")
+        if not isinstance(lighting, dict):
+            raise ValueError("timeline cue preset requires lighting properties")
+        LightingCue.model_validate({"id": preset_id, "start_ms": 0, **lighting})
+    durations = dict(scene_durations)
+    for composition_id, composition in compositions.items():
+        duration = composition["duration_ms"]
+        assert isinstance(duration, int) and not isinstance(duration, bool)
+        durations[composition_id] = duration
+    unknown_spaces = (set(raw_markers) | set(raw_cues)).difference(durations)
+    if unknown_spaces:
+        raise ValueError(
+            f"timeline synchronization references unknown editing spaces: {sorted(unknown_spaces)}"
+        )
+    marker_spaces: dict[str, str] = {}
+    marker_times: dict[str, int] = {}
+    for space_id, values in raw_markers.items():
+        if not isinstance(values, list):
+            raise ValueError(f"timeline markers for {space_id} must be a list")
+        names: set[str] = set()
+        for value in values:
+            if not isinstance(value, dict):
+                raise ValueError("timeline marker must be an object")
+            marker_id = value.get("id")
+            name = value.get("name")
+            time_ms = value.get("time_ms")
+            if not isinstance(marker_id, str) or not marker_id:
+                raise ValueError("timeline marker requires a stable ID")
+            if marker_id in marker_spaces:
+                raise ValueError("timeline marker IDs must be unique")
+            if not isinstance(name, str) or not name.strip() or len(name) > 200:
+                raise ValueError("timeline marker name must contain 1 to 200 characters")
+            normalized_name = name.strip().casefold()
+            if normalized_name in names:
+                raise ValueError("timeline marker names must be unique within an editing space")
+            names.add(normalized_name)
+            if (
+                not isinstance(time_ms, int)
+                or isinstance(time_ms, bool)
+                or time_ms < 0
+                or time_ms > durations[space_id]
+            ):
+                raise ValueError("timeline marker time must be within its editing space")
+            marker_spaces[marker_id] = space_id
+            marker_times[marker_id] = time_ms
+    cue_ids: set[str] = set()
+    supported_kinds = {
+        "visual",
+        "audio",
+        "lighting",
+        "switch",
+        "physical_effect",
+    }
+    for space_id, values in raw_cues.items():
+        if not isinstance(values, list):
+            raise ValueError(f"timeline cues for {space_id} must be a list")
+        for value in values:
+            if not isinstance(value, dict):
+                raise ValueError("timeline cue must be an object")
+            unsupported_fields = set(value).difference(
+                {
+                    "id",
+                    "name",
+                    "kind",
+                    "track_id",
+                    "time_ms",
+                    "marker_id",
+                    "marker_offset_ms",
+                    "lighting",
+                }
+            )
+            if unsupported_fields:
+                raise ValueError(f"unsupported timeline cue fields: {sorted(unsupported_fields)}")
+            cue_id = value.get("id")
+            if not isinstance(cue_id, str) or not cue_id:
+                raise ValueError("timeline cue requires a stable ID")
+            if cue_id in cue_ids:
+                raise ValueError("timeline cue IDs must be unique")
+            cue_ids.add(cue_id)
+            if value.get("kind") not in supported_kinds:
+                raise ValueError("timeline cue kind is unsupported")
+            if not isinstance(value.get("name"), str) or not value["name"]:
+                raise ValueError("timeline cue name is required")
+            if not isinstance(value.get("track_id"), str) or not value["track_id"]:
+                raise ValueError("timeline cue requires a track ID")
+            marker_id = value.get("marker_id")
+            time_ms = value.get("time_ms")
+            offset_ms = value.get("marker_offset_ms", 0)
+            if not isinstance(offset_ms, int) or isinstance(offset_ms, bool):
+                raise ValueError("timeline cue marker offset must be an integer")
+            if marker_id is None:
+                if (
+                    not isinstance(time_ms, int)
+                    or isinstance(time_ms, bool)
+                    or time_ms < 0
+                    or time_ms > durations[space_id]
+                ):
+                    raise ValueError("detached timeline cue time must be within its editing space")
+                if offset_ms != 0:
+                    raise ValueError("detached timeline cue cannot retain a marker offset")
+                effective_time = time_ms
+            else:
+                if not isinstance(marker_id, str) or marker_spaces.get(marker_id) != space_id:
+                    raise ValueError("timeline cue marker must exist in the same editing space")
+                if time_ms is not None:
+                    raise ValueError("marker-linked timeline cue cannot store an absolute time")
+                effective_time = marker_times[marker_id] + offset_ms
+                if effective_time < 0 or effective_time > durations[space_id]:
+                    raise ValueError(
+                        "timeline cue marker offset resolves outside its editing space"
+                    )
+            lighting = value.get("lighting")
+            if value.get("kind") == "lighting":
+                if not isinstance(lighting, dict):
+                    raise ValueError("lighting timeline cue requires runtime properties")
+                runtime_cue = LightingCue.model_validate(
+                    {
+                        "id": cue_id,
+                        "start_ms": effective_time,
+                        **lighting,
+                    }
+                )
+                if runtime_cue.start_ms + runtime_cue.duration_ms > durations[space_id]:
+                    raise ValueError("lighting timeline cue extends beyond its editing space")
+            elif lighting is not None:
+                raise ValueError("non-lighting timeline cue cannot define lighting properties")
+
+
+def _validate_transform_layers(
+    editor_metadata: dict[str, JsonValue],
+    scene_durations: dict[str, int],
+    compositions: dict[str, dict[str, JsonValue]],
+) -> None:
+    raw_layers = editor_metadata.get("timeline_transform_layers", {})
+    if not isinstance(raw_layers, dict):
+        raise ValueError("timeline transform layer metadata must be an object")
+    raw_property_keyframes = editor_metadata.get("timeline_property_keyframes", {})
+    if not isinstance(raw_property_keyframes, dict):
+        raise ValueError("timeline property keyframe metadata must be an object")
+    if any(value for value in raw_property_keyframes.values()):
+        raise ValueError(
+            "generic property keyframes are unsupported until runtime or baking support exists"
+        )
+    durations = dict(scene_durations)
+    for composition_id, composition in compositions.items():
+        duration = composition["duration_ms"]
+        assert isinstance(duration, int) and not isinstance(duration, bool)
+        durations[composition_id] = duration
+    unknown_spaces = set(raw_layers).difference(durations)
+    if unknown_spaces:
+        raise ValueError(
+            f"transform layers reference unknown editing spaces: {sorted(unknown_spaces)}"
+        )
+    layer_ids: set[str] = set()
+    keyframe_ids: set[str] = set()
+    transform_edges: dict[str, set[str]] = {}
+    for composition_id, composition in compositions.items():
+        children = composition.get("children", [])
+        transform_edges[composition_id] = (
+            {child for child in children if isinstance(child, str)}
+            if isinstance(children, list)
+            else set()
+        )
+    for space_id, values in raw_layers.items():
+        if not isinstance(values, list):
+            raise ValueError(f"transform layers for {space_id} must be a list")
+        for value in values:
+            if not isinstance(value, dict):
+                raise ValueError("transform layer must be an object")
+            layer_id = value.get("id")
+            if not isinstance(layer_id, str) or not layer_id:
+                raise ValueError("transform layer requires a stable ID")
+            if layer_id in layer_ids:
+                raise ValueError("transform layer IDs must be unique")
+            layer_ids.add(layer_id)
+            if not isinstance(value.get("name"), str) or not value["name"]:
+                raise ValueError("transform layer name is required")
+            kind = value.get("kind")
+            if kind not in {"image", "video", "composition"}:
+                raise ValueError("transform layer kind is unsupported")
+            source_id = value.get("source_id")
+            if not isinstance(source_id, str) or not source_id:
+                raise ValueError("transform layer source ID is required")
+            if kind == "composition" and source_id not in compositions:
+                raise ValueError("transform layer references an unknown composition")
+            if kind == "composition" and space_id in transform_edges:
+                transform_edges[space_id].add(source_id)
+            if not isinstance(value.get("track_id"), str) or not value["track_id"]:
+                raise ValueError("transform layer requires a track ID")
+            start_ms = value.get("start_ms")
+            duration_ms = value.get("duration_ms")
+            if (
+                not isinstance(start_ms, int)
+                or isinstance(start_ms, bool)
+                or start_ms < 0
+                or not isinstance(duration_ms, int)
+                or isinstance(duration_ms, bool)
+                or duration_ms <= 0
+                or start_ms + duration_ms > durations[space_id]
+            ):
+                raise ValueError("transform layer interval must fit its editing space")
+            keyframes = value.get("keyframes")
+            if not isinstance(keyframes, list) or not keyframes:
+                raise ValueError("transform layer requires at least one keyframe")
+            times: list[int] = []
+            for keyframe in keyframes:
+                if not isinstance(keyframe, dict):
+                    raise ValueError("transform keyframe must be an object")
+                keyframe_id = keyframe.get("id")
+                if not isinstance(keyframe_id, str) or not keyframe_id:
+                    raise ValueError("transform keyframe requires a stable ID")
+                if keyframe_id in keyframe_ids:
+                    raise ValueError("transform keyframe IDs must be unique")
+                keyframe_ids.add(keyframe_id)
+                time_ms = keyframe.get("time_ms")
+                if (
+                    not isinstance(time_ms, int)
+                    or isinstance(time_ms, bool)
+                    or time_ms < 0
+                    or time_ms > duration_ms
+                ):
+                    raise ValueError("transform keyframe time must fit its layer")
+                times.append(time_ms)
+                _validate_transform_keyframe(keyframe)
+            if times != sorted(set(times)):
+                raise ValueError("transform keyframe times must be unique and ordered")
+    visiting: set[str] = set()
+    visited: set[str] = set()
+
+    def visit(composition_id: str) -> None:
+        if composition_id in visiting:
+            raise ValueError("nested transform compositions cannot contain cycles")
+        if composition_id in visited:
+            return
+        visiting.add(composition_id)
+        for child_id in transform_edges[composition_id]:
+            visit(child_id)
+        visiting.remove(composition_id)
+        visited.add(composition_id)
+
+    for composition_id in compositions:
+        visit(composition_id)
+
+
+def _validate_transform_keyframe(keyframe: dict[str, JsonValue]) -> None:
+    supported_fields = {
+        "id",
+        "time_ms",
+        "position",
+        "scale",
+        "rotation_deg",
+        "anchor",
+        "opacity",
+        "crop",
+        "interpolation",
+    }
+    unsupported_fields = set(keyframe).difference(supported_fields)
+    if unsupported_fields:
+        raise ValueError(f"unsupported transform keyframe properties: {sorted(unsupported_fields)}")
+    for field, length in (
+        ("position", 2),
+        ("scale", 2),
+        ("anchor", 2),
+        ("crop", 4),
+    ):
+        value = keyframe.get(field)
+        if (
+            not isinstance(value, list)
+            or len(value) != length
+            or not all(
+                isinstance(item, (int, float)) and not isinstance(item, bool) for item in value
+            )
+        ):
+            raise ValueError(f"transform keyframe {field} must contain {length} numbers")
+    scale = keyframe["scale"]
+    crop = keyframe["crop"]
+    assert isinstance(scale, list) and isinstance(crop, list)
+    scale_numbers = [
+        float(value)
+        for value in scale
+        if isinstance(value, (int, float)) and not isinstance(value, bool)
+    ]
+    crop_numbers = [
+        float(value)
+        for value in crop
+        if isinstance(value, (int, float)) and not isinstance(value, bool)
+    ]
+    if any(value == 0 for value in scale_numbers):
+        raise ValueError("transform keyframe scale cannot be zero")
+    if any(value < 0 or value > 1 for value in crop_numbers):
+        raise ValueError("transform keyframe crop bounds must be normalized")
+    if crop_numbers[0] + crop_numbers[2] >= 1 or crop_numbers[1] + crop_numbers[3] >= 1:
+        raise ValueError("transform keyframe crop removes the entire layer")
+    rotation = keyframe.get("rotation_deg")
+    opacity = keyframe.get("opacity")
+    if not isinstance(rotation, (int, float)) or isinstance(rotation, bool):
+        raise ValueError("transform keyframe rotation must be numeric")
+    if (
+        not isinstance(opacity, (int, float))
+        or isinstance(opacity, bool)
+        or opacity < 0
+        or opacity > 1
+    ):
+        raise ValueError("transform keyframe opacity must be between 0 and 1")
+    interpolation = keyframe.get("interpolation")
+    if not isinstance(interpolation, dict) or interpolation.get("kind") not in {
+        "hold",
+        "linear",
+        "ease_in",
+        "ease_out",
+        "bezier",
+    }:
+        raise ValueError("transform keyframe interpolation is unsupported")
+    unsupported_interpolation = set(interpolation).difference(
+        {"kind", "temporal_bezier", "spatial_in", "spatial_out"}
+    )
+    if unsupported_interpolation:
+        raise ValueError(
+            f"unsupported transform interpolation properties: {sorted(unsupported_interpolation)}"
+        )
+    temporal = interpolation.get("temporal_bezier")
+    spatial_in = interpolation.get("spatial_in")
+    spatial_out = interpolation.get("spatial_out")
+    if interpolation["kind"] == "bezier":
+        for name, value, length in (
+            ("temporal", temporal, 4),
+            ("spatial in", spatial_in, 2),
+            ("spatial out", spatial_out, 2),
+        ):
+            if (
+                not isinstance(value, list)
+                or len(value) != length
+                or not all(
+                    isinstance(item, (int, float)) and not isinstance(item, bool) for item in value
+                )
+            ):
+                raise ValueError(f"Bezier {name} controls must contain {length} numbers")
+    elif any(value is not None for value in (temporal, spatial_in, spatial_out)):
+        raise ValueError("non-Bezier keyframes cannot define Bezier controls")
 
 
 class LoginRequest(GuiModel):
@@ -381,6 +891,368 @@ class InstallationConflictResponse(GuiModel):
     code: Literal["installation_conflict"] = "installation_conflict"
     requested_revision: int
     current_revision: int | None
+
+
+class InstallationPhotoResponse(GuiModel):
+    id: str
+    installation_id: str
+    name: str
+    viewpoint: str
+    original_filename: str
+    media_type: str
+    digest_sha256: str
+    size_bytes: int = Field(gt=0)
+    orientation_degrees: Literal[0, 90, 180, 270]
+    crop_x: float | None
+    crop_y: float | None
+    crop_width: float | None
+    crop_height: float | None
+    scale_hint: float | None
+    revision: int = Field(ge=1)
+    created_at: str
+    updated_at: str
+
+
+class UpdateInstallationPhotoRequest(GuiModel):
+    name: str = Field(min_length=1, max_length=200)
+    viewpoint: str = Field(min_length=1, max_length=200)
+    orientation_degrees: Literal[0, 90, 180, 270] = 0
+    crop_x: float | None = Field(default=None, ge=0, le=1)
+    crop_y: float | None = Field(default=None, ge=0, le=1)
+    crop_width: float | None = Field(default=None, gt=0, le=1)
+    crop_height: float | None = Field(default=None, gt=0, le=1)
+    scale_hint: float | None = Field(default=None, gt=0)
+
+    @model_validator(mode="after")
+    def validate_crop(self) -> "UpdateInstallationPhotoRequest":
+        crop = (self.crop_x, self.crop_y, self.crop_width, self.crop_height)
+        if any(value is not None for value in crop) and any(value is None for value in crop):
+            raise ValueError("crop requires x, y, width, and height")
+        if (
+            self.crop_x is not None
+            and self.crop_width is not None
+            and self.crop_x + self.crop_width > 1
+        ):
+            raise ValueError("crop exceeds photo width")
+        if (
+            self.crop_y is not None
+            and self.crop_height is not None
+            and self.crop_y + self.crop_height > 1
+        ):
+            raise ValueError("crop exceeds photo height")
+        return self
+
+
+class GeometryPoint(GuiModel):
+    x: float = Field(ge=0, le=1)
+    y: float = Field(ge=0, le=1)
+
+
+GeometryKind = Literal[
+    "output",
+    "pixel_segment",
+    "fixture",
+    "path",
+    "projector_surface",
+    "mask",
+    "audience_zone",
+    "safety_zone",
+]
+
+
+class InstallationGeometryRequest(GuiModel):
+    photo_id: str = Field(min_length=1)
+    kind: GeometryKind
+    name: str = Field(min_length=1, max_length=200)
+    points: tuple[GeometryPoint, ...] = Field(min_length=1, max_length=500)
+    closed: bool
+    semantic_id: str | None = None
+    color: str = Field(default="#6ee7ff", pattern=r"^#[0-9a-fA-F]{6}$")
+    label_visible: bool = True
+    locked: bool = False
+    hidden: bool = False
+    z_index: int = Field(default=0, ge=-1000, le=1000)
+    direction: Literal["forward", "reverse"] = "forward"
+    start_index: int | None = Field(default=None, ge=0)
+    pixel_count: int | None = Field(default=None, gt=0)
+    stage_points: tuple[tuple[float, float], ...] | None = Field(
+        default=None,
+        min_length=1,
+        max_length=500,
+    )
+
+    @model_validator(mode="after")
+    def validate_shape(self) -> "InstallationGeometryRequest":
+        polygon_kinds = {
+            "output",
+            "projector_surface",
+            "mask",
+            "audience_zone",
+            "safety_zone",
+        }
+        if self.kind in polygon_kinds and (not self.closed or len(self.points) < 3):
+            raise ValueError("area geometry requires at least three points and a closed shape")
+        if self.kind == "path" and len(self.points) < 2:
+            raise ValueError("linear geometry requires at least two points")
+        if self.kind == "fixture" and len(self.points) != 1:
+            raise ValueError("fixture geometry requires exactly one point")
+        if self.kind == "pixel_segment" and (self.start_index is None or self.pixel_count is None):
+            raise ValueError("pixel segments require start index and pixel count")
+        if (
+            self.kind == "pixel_segment"
+            and len(self.points) < 2
+            and not (len(self.points) == 1 and self.pixel_count == 1)
+        ):
+            raise ValueError("pixel segments require two points, or one point for one pixel")
+        if self.kind != "pixel_segment" and (
+            self.start_index is not None or self.pixel_count is not None
+        ):
+            raise ValueError("pixel index range is valid only for pixel segments")
+        return self
+
+
+class InstallationGeometryResponse(InstallationGeometryRequest):
+    id: str
+    installation_id: str
+    semantic_id: str
+    landmark_ids: tuple[str, ...]
+    revision: int = Field(ge=1)
+    created_at: str
+    updated_at: str
+
+
+class GeometrySuggestionRequest(GuiModel):
+    photo_id: str = Field(min_length=1)
+    kind: GeometryKind
+    name: str = Field(min_length=1, max_length=200)
+    points: tuple[GeometryPoint, ...] = Field(min_length=1, max_length=500)
+    closed: bool
+    confidence: float = Field(ge=0, le=1)
+    evidence: str = Field(min_length=1, max_length=4000)
+
+
+class GeometrySuggestionResponse(GeometrySuggestionRequest):
+    id: str
+    installation_id: str
+    state: Literal["pending", "reviewed", "rejected"]
+    created_by: str
+    reviewed_by: str | None
+    created_at: str
+    updated_at: str
+
+
+class ProjectorMappingRequest(GuiModel):
+    resource: str = Field(min_length=1, max_length=200)
+    native_width: int = Field(gt=0, le=16384)
+    native_height: int = Field(gt=0, le=16384)
+    stage_x: float
+    stage_y: float
+    stage_width: float = Field(gt=0)
+    stage_height: float = Field(gt=0)
+    crop_x: float = Field(default=0, ge=0, le=1)
+    crop_y: float = Field(default=0, ge=0, le=1)
+    crop_width: float = Field(default=1, gt=0, le=1)
+    crop_height: float = Field(default=1, gt=0, le=1)
+    content_asset_id: str | None = None
+    surface_model: Literal["planar", "subdivided"] = "planar"
+    fit_mode: Literal["preserve", "stretch"] = "preserve"
+    overscan: bool = False
+    brightness_limit: float = Field(default=1, gt=0, le=1)
+    media_start_delay_ms: int = Field(default=0, ge=-5000, le=5000)
+    media_release_delay_ms: int = Field(default=0, ge=-5000, le=5000)
+    orientation_degrees: Literal[0, 90, 180, 270] = 0
+    mirror_x: bool = False
+    mirror_y: bool = False
+    mask_semantic_ids: tuple[str, ...] = ()
+
+    @model_validator(mode="after")
+    def validate_crop(self) -> "ProjectorMappingRequest":
+        if self.crop_x + self.crop_width > 1 or self.crop_y + self.crop_height > 1:
+            raise ValueError("projector crop exceeds the native canvas")
+        return self
+
+
+class ProjectorMappingResponse(ProjectorMappingRequest):
+    geometry_id: str
+    homography: tuple[float, ...] | None
+    diagnostic: str | None
+    fit_diagnostics: tuple[str, ...]
+    photo_views: tuple["ProjectorPhotoViewResponse", ...]
+    revision: int = Field(ge=1)
+    created_at: str
+    updated_at: str
+
+
+class ProjectorPhotoViewResponse(GuiModel):
+    geometry_id: str
+    photo_id: str
+    points: tuple[GeometryPoint, ...]
+    homography: tuple[float, ...] | None
+
+
+class LightingSurfaceRequest(GuiModel):
+    resource: str = Field(min_length=1, max_length=200)
+    local_width: float = Field(gt=0)
+    local_height: float = Field(gt=0)
+    local_points: tuple[tuple[float, float], ...] = Field(min_length=1, max_length=500)
+    stage_matrix: tuple[float, float, float, float, float, float]
+    fixture_id: str | None = Field(default=None, max_length=200)
+    group_id: str | None = Field(default=None, max_length=200)
+    path_id: str | None = Field(default=None, max_length=200)
+    strand_id: str | None = Field(default=None, max_length=200)
+    calibration_id: str | None = Field(default=None, max_length=200)
+    pixel_footprint_width: float = Field(default=0.01, gt=0)
+    pixel_footprint_height: float = Field(default=0.01, gt=0)
+    brightness_limit: float = Field(default=1, gt=0, le=1)
+    timing_offset_ms: int = Field(default=0, ge=-5000, le=5000)
+    release_offset_ms: int = Field(default=0, ge=-5000, le=5000)
+
+
+class MappedPixelResponse(GuiModel):
+    output_index: int = Field(ge=0)
+    local_x: float
+    local_y: float
+    stage_x: float
+    stage_y: float
+    footprint_width: float = Field(gt=0)
+    footprint_height: float = Field(gt=0)
+
+
+class LightingSurfaceResponse(LightingSurfaceRequest):
+    geometry_id: str
+    pixels: tuple[MappedPixelResponse, ...]
+    revision: int = Field(ge=1)
+    created_at: str
+    updated_at: str
+
+
+class CreateOutputArmRequest(GuiModel):
+    resource: str = Field(min_length=1)
+    confirmation: str = Field(min_length=1)
+    duration_seconds: int = Field(default=15, ge=5, le=30)
+
+
+class OutputArmResponse(GuiModel):
+    id: str
+    resource: str
+    resource_kind: str
+    device_identity: str
+    stop_action: str
+    state: Literal["active", "stopped", "expired"]
+    expires_at: str
+    hardware_command_sent: Literal[False] = False
+
+
+class StartTimingCalibrationRequest(GuiModel):
+    target_kind: Literal["projector_mapping", "lighting_surface"]
+    geometry_id: str = Field(min_length=1)
+    adjustment_kind: Literal["onset", "release"]
+    test_asset_id: str | None = Field(default=None, max_length=200)
+    test_asset_version: str | None = Field(default=None, max_length=200)
+    observed_variability_ms: float | None = Field(default=None, ge=0)
+    notes: str | None = Field(default=None, max_length=4000)
+    context: dict[str, JsonValue] = Field(default_factory=dict)
+
+
+class UpdateTimingCalibrationRequest(GuiModel):
+    proposed_ms: int = Field(ge=-5000, le=5000)
+
+
+class TimingCalibrationSessionResponse(GuiModel):
+    id: str
+    target_kind: Literal["projector_mapping", "lighting_surface"]
+    geometry_id: str
+    adjustment_kind: Literal["onset", "release"]
+    baseline_ms: int
+    proposed_ms: int
+    state: Literal["active", "accepted", "cancelled", "expired"]
+    revision: int = Field(ge=1)
+    simulation_only: Literal[True] = True
+    expires_at: str
+
+
+class AcceptedCalibrationResponse(GuiModel):
+    id: str
+    target_kind: Literal["projector_mapping", "lighting_surface"]
+    geometry_id: str
+    adjustment_kind: Literal["onset", "release"]
+    accepted_ms: int
+    resource: str
+    device_id: str | None
+    software_version: str | None
+    test_asset_id: str | None
+    test_asset_version: str | None
+    observed_variability_ms: float | None
+    notes: str | None
+    context: dict[str, JsonValue]
+    actor: str
+    accepted_at: str
+    stale_reasons: tuple[str, ...]
+
+
+class ReviewCalibrationContextRequest(GuiModel):
+    target_kind: Literal["projector_mapping", "lighting_surface"]
+    geometry_id: str = Field(min_length=1)
+    context: dict[str, JsonValue] = Field(default_factory=dict)
+
+
+class ProjectorOverlapRequest(GuiModel):
+    id: str | None = None
+    first_geometry_id: str = Field(min_length=1)
+    second_geometry_id: str = Field(min_length=1)
+    stage_points: tuple[tuple[float, float], ...] = Field(min_length=3, max_length=100)
+    ramp_width: float = Field(gt=0, le=1)
+    overlap_gamma: float = Field(gt=0, le=5)
+    first_brightness: float = Field(gt=0, le=1)
+    second_brightness: float = Field(gt=0, le=1)
+    first_white: tuple[float, float, float]
+    second_white: tuple[float, float, float]
+    first_color_matrix: tuple[float, ...] = Field(min_length=9, max_length=9)
+    second_color_matrix: tuple[float, ...] = Field(min_length=9, max_length=9)
+    first_black_level: float = Field(ge=0, le=1)
+    second_black_level: float = Field(ge=0, le=1)
+
+
+class ProjectorOverlapResponse(ProjectorOverlapRequest):
+    id: str
+    installation_id: str
+    revision: int = Field(ge=1)
+    diagnostics: tuple[str, ...]
+    created_at: str
+    updated_at: str
+
+
+class StageRegionResponse(GuiModel):
+    kind: Literal["covered", "overlap", "occluded", "uncovered"]
+    points: tuple[tuple[float, float], ...]
+    resources: tuple[str, ...]
+    source_ids: tuple[str, ...]
+
+
+class StageCoverageResponse(GuiModel):
+    installation_id: str
+    minimum_x: float
+    minimum_y: float
+    maximum_x: float
+    maximum_y: float
+    regions: tuple[StageRegionResponse, ...]
+
+
+class InstallationMapperExportResponse(GuiModel):
+    schema_version: Literal[1] = 1
+    installation_id: str
+    resources: tuple[InstallationResourceResponse, ...]
+    projectors: tuple[dict[str, JsonValue], ...]
+    lighting_surfaces: tuple[dict[str, JsonValue], ...]
+    fixtures: tuple[dict[str, JsonValue], ...]
+    paths: tuple[dict[str, JsonValue], ...]
+    zones: tuple[dict[str, JsonValue], ...]
+
+
+class MapperDiagnosticResponse(GuiModel):
+    code: str
+    message: str
+    object_ids: tuple[str, ...]
 
 
 class RuntimeStatusResponse(GuiModel):

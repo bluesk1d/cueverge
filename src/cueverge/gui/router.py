@@ -32,6 +32,7 @@ from cueverge.gui.auth import (
 )
 from cueverge.gui.compiler import CompilationError
 from cueverge.gui.contracts import (
+    AcceptedCalibrationResponse,
     ActivityEventResponse,
     ApplyScenePresetRequest,
     AssetMetadataConflictResponse,
@@ -46,6 +47,7 @@ from cueverge.gui.contracts import (
     CompilationResponse,
     ConnectionTestCheck,
     CreateInstallationRequest,
+    CreateOutputArmRequest,
     CreatePairingTokenRequest,
     CreateProjectRequest,
     CreateScenePresetRequest,
@@ -56,16 +58,28 @@ from cueverge.gui.contracts import (
     DeviceTransferStatusResponse,
     DiscoveredEndpointResponse,
     DraftProject,
+    GeometryPoint,
+    GeometrySuggestionRequest,
+    GeometrySuggestionResponse,
     InstallationConflictResponse,
+    InstallationGeometryRequest,
+    InstallationGeometryResponse,
+    InstallationMapperExportResponse,
+    InstallationPhotoResponse,
     InstallationResourceResponse,
     InstallationStatusResponse,
     InstallationSummaryResponse,
+    LightingSurfaceRequest,
+    LightingSurfaceResponse,
     LoginRequest,
     MaintenancePreviewRequest,
     MaintenancePreviewResponse,
+    MappedPixelResponse,
+    MapperDiagnosticResponse,
     ObjectOrganizationRequest,
     OperateActionRequest,
     OperateActionResponse,
+    OutputArmResponse,
     PairingTokenResponse,
     PlaceAssetRequest,
     ProbeEndpointRequest,
@@ -73,9 +87,15 @@ from cueverge.gui.contracts import (
     ProjectExportDocument,
     ProjectMetadataConflictResponse,
     ProjectMetadataRequest,
+    ProjectorMappingRequest,
+    ProjectorMappingResponse,
+    ProjectorOverlapRequest,
+    ProjectorOverlapResponse,
+    ProjectorPhotoViewResponse,
     ProjectSummary,
     ResourceAssignmentConflictResponse,
     ResourceAssignmentResponse,
+    ReviewCalibrationContextRequest,
     RevisionConflictResponse,
     RevisionSummary,
     Role,
@@ -84,12 +104,48 @@ from cueverge.gui.contracts import (
     SetDeviceConnectionPolicyRequest,
     SetDeviceEnrollmentStateRequest,
     SetResourceAssignmentRequest,
+    StageCoverageResponse,
+    StageRegionResponse,
+    StartTimingCalibrationRequest,
+    TimingCalibrationSessionResponse,
     TopologyNodeResponse,
     TopologyResponse,
     UpdateAssetMetadataRequest,
+    UpdateInstallationPhotoRequest,
     UpdateInstallationRequest,
+    UpdateTimingCalibrationRequest,
 )
 from cueverge.gui.endpoint_discovery import EndpointDiscoveryError
+from cueverge.gui.geometry_suggestions import (
+    GeometrySuggestionError,
+    StoredGeometrySuggestion,
+)
+from cueverge.gui.installation_geometry import (
+    InstallationGeometryConflictError,
+    InstallationGeometryError,
+    StoredInstallationGeometry,
+)
+from cueverge.gui.installation_photos import (
+    MAX_PHOTO_BYTES,
+    InstallationPhotoConflictError,
+    InstallationPhotoError,
+    StoredInstallationPhoto,
+)
+from cueverge.gui.lighting_surface import (
+    LightingSurfaceError,
+    StoredLightingSurface,
+)
+from cueverge.gui.mapper_export import MapperExportError
+from cueverge.gui.output_arming import OutputArmError, StoredOutputArm
+from cueverge.gui.projector_mapping import (
+    ProjectorMappingConflictError,
+    ProjectorMappingError,
+    StoredProjectorMapping,
+)
+from cueverge.gui.projector_overlap import (
+    ProjectorOverlapError,
+    StoredProjectorOverlap,
+)
 from cueverge.gui.repository import (
     ActiveInstallationDeleteError,
     DeviceNotFoundError,
@@ -111,6 +167,11 @@ from cueverge.gui.repository import (
     StoredRevision,
 )
 from cueverge.gui.service import GuiServices
+from cueverge.gui.timing_calibration import (
+    StoredAcceptedCalibration,
+    StoredTimingCalibration,
+    TimingCalibrationError,
+)
 from cueverge.protocol.device_v2 import (
     DEVICE_PROTOCOL_VERSION,
     DeviceKind,
@@ -564,6 +625,26 @@ def create_gui_router(services: GuiServices) -> APIRouter:
         return [_asset_response(asset) for asset in stored]
 
     @router.get(
+        "/assets/image-library",
+        response_model=list[AssetResponse],
+        dependencies=[reader],
+    )
+    def image_asset_library() -> list[AssetResponse]:
+        assets = (
+            asset
+            for project in services.repository.list_projects()
+            for asset in services.asset_upload.list_assets(project.id)
+        )
+        return [
+            _asset_response(asset)
+            for asset in assets
+            if asset.status == "ready"
+            and asset.original_file_status == "available"
+            and asset.media_type is not None
+            and asset.media_type.startswith("image/")
+        ]
+
+    @router.get(
         "/assets/{asset_id}/artifacts/{kind}",
         response_class=FileResponse,
         dependencies=[reader],
@@ -945,6 +1026,24 @@ def create_gui_router(services: GuiServices) -> APIRouter:
                     conflicting_paths=(),
                 ).model_dump(mode="json"),
             )
+        installation_id = revision.draft.editor_metadata.get("installation_id")
+        if isinstance(installation_id, str):
+            diagnostics = services.mapper_export.validate(installation_id)
+            if diagnostics:
+                raise HTTPException(
+                    status_code=422,
+                    detail={
+                        "code": "mapper_validation_failed",
+                        "diagnostics": [
+                            {
+                                "code": diagnostic.code,
+                                "message": diagnostic.message,
+                                "object_ids": diagnostic.object_ids,
+                            }
+                            for diagnostic in diagnostics
+                        ],
+                    },
+                )
         try:
             compiled = services.compiler.compile(
                 project_id=project_id,
@@ -965,7 +1064,18 @@ def create_gui_router(services: GuiServices) -> APIRouter:
             )
             raise HTTPException(
                 status_code=422,
-                detail={"code": "compilation_failed", "message": str(error)},
+                detail={
+                    "code": "compilation_failed",
+                    "message": str(error),
+                    "diagnostics": [
+                        {
+                            "code": diagnostic.code,
+                            "message": diagnostic.message,
+                            "object_ids": diagnostic.object_ids,
+                        }
+                        for diagnostic in error.diagnostics
+                    ],
+                },
             ) from error
         services.repository.append_audit(
             actor=identity.username,
@@ -1093,6 +1203,601 @@ def create_gui_router(services: GuiServices) -> APIRouter:
             services.repository.installation_project_references(installation.id),
         )
 
+    @router.get(
+        "/installations/{installation_id}/photos",
+        response_model=list[InstallationPhotoResponse],
+        dependencies=[reader],
+    )
+    def installation_photos(installation_id: str) -> list[InstallationPhotoResponse]:
+        return [
+            _installation_photo(photo)
+            for photo in services.installation_photos.list(installation_id)
+        ]
+
+    @router.post(
+        "/installations/{installation_id}/photos",
+        response_model=InstallationPhotoResponse,
+        status_code=201,
+    )
+    async def create_installation_photo(
+        installation_id: str,
+        request: Request,
+        identity: Annotated[AuthenticatedSession, author],
+        photo_name: Annotated[str, Header(alias="X-Photo-Name")],
+        viewpoint: Annotated[str, Header(alias="X-Photo-Viewpoint")],
+        original_filename: Annotated[str, Header(alias="X-Original-Filename")],
+        content_type: Annotated[str, Header(alias="Content-Type")],
+    ) -> InstallationPhotoResponse:
+        content = bytearray()
+        async for chunk in request.stream():
+            content.extend(chunk)
+            if len(content) > MAX_PHOTO_BYTES:
+                raise HTTPException(
+                    status_code=413,
+                    detail={"code": "installation_photo_too_large"},
+                )
+        try:
+            photo = services.installation_photos.create(
+                installation_id=installation_id,
+                name=photo_name,
+                viewpoint=viewpoint,
+                original_filename=original_filename,
+                media_type=content_type,
+                content=bytes(content),
+                actor=identity.username,
+                role=identity.role,
+                occurred_at=_now_iso(),
+            )
+        except InstallationPhotoError as error:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "installation_photo_rejected", "message": str(error)},
+            ) from error
+        return _installation_photo(photo)
+
+    @router.get(
+        "/installation-photos/{photo_id}/content",
+        response_class=FileResponse,
+        dependencies=[reader],
+    )
+    def installation_photo_content(photo_id: str) -> FileResponse:
+        try:
+            path, media_type = services.installation_photos.content(photo_id)
+        except InstallationPhotoError as error:
+            raise HTTPException(
+                status_code=404,
+                detail={"code": "installation_photo_not_found"},
+            ) from error
+        return FileResponse(path, media_type=media_type, headers={"Cache-Control": "private"})
+
+    @router.put(
+        "/installation-photos/{photo_id}",
+        response_model=InstallationPhotoResponse,
+    )
+    def update_installation_photo(
+        photo_id: str,
+        body: UpdateInstallationPhotoRequest,
+        response: Response,
+        identity: Annotated[AuthenticatedSession, author],
+        if_match: Annotated[str | None, Header(alias="If-Match")] = None,
+    ) -> InstallationPhotoResponse | JSONResponse:
+        expected_revision = _parse_if_match(if_match)
+        try:
+            photo = services.installation_photos.update(
+                photo_id=photo_id,
+                expected_revision=expected_revision,
+                name=body.name,
+                viewpoint=body.viewpoint,
+                orientation_degrees=body.orientation_degrees,
+                crop_x=body.crop_x,
+                crop_y=body.crop_y,
+                crop_width=body.crop_width,
+                crop_height=body.crop_height,
+                scale_hint=body.scale_hint,
+                actor=identity.username,
+                role=identity.role,
+                occurred_at=_now_iso(),
+            )
+        except InstallationPhotoConflictError as error:
+            return JSONResponse(
+                status_code=409,
+                content={
+                    "code": "installation_photo_conflict",
+                    "requested_revision": expected_revision,
+                    "current_revision": error.current_revision,
+                },
+            )
+        except InstallationPhotoError as error:
+            raise HTTPException(
+                status_code=404,
+                detail={"code": "installation_photo_not_found"},
+            ) from error
+        response.headers["ETag"] = _etag(photo.revision)
+        return _installation_photo(photo)
+
+    @router.delete(
+        "/installation-photos/{photo_id}",
+        status_code=204,
+        response_class=Response,
+        response_model=None,
+    )
+    def delete_installation_photo(
+        photo_id: str,
+        identity: Annotated[AuthenticatedSession, author],
+        if_match: Annotated[str | None, Header(alias="If-Match")] = None,
+    ) -> Response | JSONResponse:
+        expected_revision = _parse_if_match(if_match)
+        try:
+            services.installation_photos.delete(
+                photo_id=photo_id,
+                expected_revision=expected_revision,
+                actor=identity.username,
+                role=identity.role,
+                occurred_at=_now_iso(),
+            )
+        except InstallationPhotoConflictError as error:
+            return JSONResponse(
+                status_code=409,
+                content={
+                    "code": "installation_photo_conflict",
+                    "requested_revision": expected_revision,
+                    "current_revision": error.current_revision,
+                },
+            )
+        except InstallationPhotoError as error:
+            raise HTTPException(
+                status_code=404,
+                detail={"code": "installation_photo_not_found"},
+            ) from error
+        return Response(status_code=204)
+
+    @router.get(
+        "/installations/{installation_id}/geometry",
+        response_model=list[InstallationGeometryResponse],
+        dependencies=[reader],
+    )
+    def installation_geometry(
+        installation_id: str,
+        photo_id: str | None = None,
+    ) -> list[InstallationGeometryResponse]:
+        return [
+            _installation_geometry(item)
+            for item in services.installation_geometry.list(installation_id, photo_id)
+        ]
+
+    @router.post(
+        "/installations/{installation_id}/geometry",
+        response_model=InstallationGeometryResponse,
+        status_code=201,
+    )
+    def create_installation_geometry(
+        installation_id: str,
+        body: InstallationGeometryRequest,
+        identity: Annotated[AuthenticatedSession, author],
+    ) -> InstallationGeometryResponse:
+        try:
+            geometry = services.installation_geometry.create(
+                installation_id=installation_id,
+                photo_id=body.photo_id,
+                kind=body.kind,
+                name=body.name,
+                points=tuple((point.x, point.y) for point in body.points),
+                closed=body.closed,
+                semantic_id=body.semantic_id,
+                color=body.color,
+                label_visible=body.label_visible,
+                locked=body.locked,
+                hidden=body.hidden,
+                z_index=body.z_index,
+                direction=body.direction,
+                start_index=body.start_index,
+                pixel_count=body.pixel_count,
+                stage_points=body.stage_points,
+                actor=identity.username,
+                role=identity.role,
+                occurred_at=_now_iso(),
+            )
+        except InstallationGeometryError as error:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "installation_geometry_rejected", "message": str(error)},
+            ) from error
+        return _installation_geometry(geometry)
+
+    @router.put(
+        "/installation-geometry/{geometry_id}",
+        response_model=InstallationGeometryResponse,
+    )
+    def update_installation_geometry(
+        geometry_id: str,
+        body: InstallationGeometryRequest,
+        response: Response,
+        identity: Annotated[AuthenticatedSession, author],
+        if_match: Annotated[str | None, Header(alias="If-Match")] = None,
+    ) -> InstallationGeometryResponse | JSONResponse:
+        expected_revision = _parse_if_match(if_match)
+        try:
+            geometry = services.installation_geometry.update(
+                geometry_id=geometry_id,
+                expected_revision=expected_revision,
+                photo_id=body.photo_id,
+                kind=body.kind,
+                name=body.name,
+                points=tuple((point.x, point.y) for point in body.points),
+                closed=body.closed,
+                color=body.color,
+                label_visible=body.label_visible,
+                locked=body.locked,
+                hidden=body.hidden,
+                z_index=body.z_index,
+                direction=body.direction,
+                start_index=body.start_index,
+                pixel_count=body.pixel_count,
+                stage_points=body.stage_points,
+                actor=identity.username,
+                role=identity.role,
+                occurred_at=_now_iso(),
+            )
+        except InstallationGeometryConflictError as error:
+            return JSONResponse(
+                status_code=409,
+                content={
+                    "code": "installation_geometry_conflict",
+                    "requested_revision": expected_revision,
+                    "current_revision": error.current_revision,
+                },
+            )
+        except InstallationGeometryError as error:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "installation_geometry_rejected", "message": str(error)},
+            ) from error
+        response.headers["ETag"] = _etag(geometry.revision)
+        return _installation_geometry(geometry)
+
+    @router.delete(
+        "/installation-geometry/{geometry_id}",
+        status_code=204,
+        response_class=Response,
+        response_model=None,
+    )
+    def delete_installation_geometry(
+        geometry_id: str,
+        identity: Annotated[AuthenticatedSession, author],
+        if_match: Annotated[str | None, Header(alias="If-Match")] = None,
+    ) -> Response | JSONResponse:
+        expected_revision = _parse_if_match(if_match)
+        try:
+            services.installation_geometry.delete(
+                geometry_id=geometry_id,
+                expected_revision=expected_revision,
+                actor=identity.username,
+                role=identity.role,
+                occurred_at=_now_iso(),
+            )
+        except InstallationGeometryConflictError as error:
+            return JSONResponse(
+                status_code=409,
+                content={
+                    "code": "installation_geometry_conflict",
+                    "requested_revision": expected_revision,
+                    "current_revision": error.current_revision,
+                },
+            )
+        except InstallationGeometryError as error:
+            raise HTTPException(
+                status_code=404,
+                detail={"code": "installation_geometry_not_found"},
+            ) from error
+        return Response(status_code=204)
+
+    @router.get(
+        "/installations/{installation_id}/geometry-suggestions",
+        response_model=list[GeometrySuggestionResponse],
+        dependencies=[reader],
+    )
+    def geometry_suggestions(
+        installation_id: str,
+    ) -> list[GeometrySuggestionResponse]:
+        return [
+            _geometry_suggestion(suggestion)
+            for suggestion in services.geometry_suggestions.list(installation_id)
+        ]
+
+    @router.post(
+        "/installations/{installation_id}/geometry-suggestions",
+        response_model=GeometrySuggestionResponse,
+        status_code=201,
+    )
+    def create_geometry_suggestion(
+        installation_id: str,
+        body: GeometrySuggestionRequest,
+        identity: Annotated[AuthenticatedSession, author],
+    ) -> GeometrySuggestionResponse:
+        try:
+            suggestion = services.geometry_suggestions.create(
+                installation_id=installation_id,
+                photo_id=body.photo_id,
+                kind=body.kind,
+                name=body.name,
+                points=tuple((point.x, point.y) for point in body.points),
+                closed=body.closed,
+                confidence=body.confidence,
+                evidence=body.evidence,
+                actor=identity.username,
+                role=identity.role,
+                occurred_at=_now_iso(),
+            )
+        except GeometrySuggestionError as error:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "geometry_suggestion_invalid", "message": str(error)},
+            ) from error
+        return _geometry_suggestion(suggestion)
+
+    @router.post(
+        "/geometry-suggestions/{suggestion_id}/{action}",
+        response_model=GeometrySuggestionResponse,
+    )
+    def review_geometry_suggestion(
+        suggestion_id: str,
+        action: Literal["review", "reject"],
+        identity: Annotated[AuthenticatedSession, author],
+    ) -> GeometrySuggestionResponse:
+        try:
+            suggestion = services.geometry_suggestions.review(
+                suggestion_id,
+                state="reviewed" if action == "review" else "rejected",
+                actor=identity.username,
+                role=identity.role,
+                occurred_at=_now_iso(),
+            )
+        except GeometrySuggestionError as error:
+            raise HTTPException(
+                status_code=409,
+                detail={"code": "geometry_suggestion_not_pending"},
+            ) from error
+        return _geometry_suggestion(suggestion)
+
+    @router.get(
+        "/installation-geometry/{geometry_id}/projector-mapping",
+        response_model=ProjectorMappingResponse,
+        dependencies=[reader],
+    )
+    def projector_mapping(geometry_id: str) -> ProjectorMappingResponse:
+        try:
+            return _projector_mapping(services.projector_mapping.get(geometry_id))
+        except ProjectorMappingError as error:
+            raise HTTPException(
+                status_code=404,
+                detail={"code": "projector_mapping_not_found"},
+            ) from error
+
+    @router.put(
+        "/installation-geometry/{geometry_id}/projector-mapping",
+        response_model=ProjectorMappingResponse,
+    )
+    def update_projector_mapping(
+        geometry_id: str,
+        body: ProjectorMappingRequest,
+        response: Response,
+        identity: Annotated[AuthenticatedSession, author],
+        if_match: Annotated[str | None, Header(alias="If-Match")] = None,
+    ) -> ProjectorMappingResponse | JSONResponse:
+        expected_revision = _parse_optional_if_match(if_match)
+        try:
+            mapping = services.projector_mapping.upsert(
+                geometry_id=geometry_id,
+                expected_revision=expected_revision,
+                actor=identity.username,
+                role=identity.role,
+                occurred_at=_now_iso(),
+                **body.model_dump(),
+            )
+        except ProjectorMappingConflictError as error:
+            return JSONResponse(
+                status_code=409,
+                content={
+                    "code": "projector_mapping_conflict",
+                    "requested_revision": expected_revision,
+                    "current_revision": error.current_revision,
+                },
+            )
+        except ProjectorMappingError as error:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "projector_mapping_invalid", "message": str(error)},
+            ) from error
+        response.headers["ETag"] = _etag(mapping.revision)
+        return _projector_mapping(mapping)
+
+    @router.get(
+        "/installations/{installation_id}/projector-overlaps",
+        response_model=list[ProjectorOverlapResponse],
+        dependencies=[reader],
+    )
+    def projector_overlaps(
+        installation_id: str,
+    ) -> list[ProjectorOverlapResponse]:
+        return [
+            _projector_overlap(overlap)
+            for overlap in services.projector_overlap.list(installation_id)
+        ]
+
+    @router.get(
+        "/installations/{installation_id}/stage-coverage",
+        response_model=StageCoverageResponse,
+        dependencies=[reader],
+    )
+    def stage_coverage(installation_id: str) -> StageCoverageResponse:
+        coverage = services.stage_coverage.analyze(installation_id)
+        return StageCoverageResponse(
+            installation_id=coverage.installation_id,
+            minimum_x=coverage.minimum_x,
+            minimum_y=coverage.minimum_y,
+            maximum_x=coverage.maximum_x,
+            maximum_y=coverage.maximum_y,
+            regions=tuple(
+                StageRegionResponse(
+                    kind=region.kind,
+                    points=region.points,
+                    resources=region.resources,
+                    source_ids=region.source_ids,
+                )
+                for region in coverage.regions
+            ),
+        )
+
+    @router.get(
+        "/installations/{installation_id}/mapper-export",
+        response_model=InstallationMapperExportResponse,
+        dependencies=[reader],
+    )
+    def mapper_export(installation_id: str) -> InstallationMapperExportResponse:
+        runtime_installation = services.repository.get_runtime_installation()
+        if installation_id != runtime_installation.id:
+            raise HTTPException(
+                status_code=409,
+                detail={"code": "installation_not_runtime_backed"},
+            )
+        try:
+            document = services.mapper_export.export(installation_id)
+        except MapperExportError as error:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "mapper_export_invalid",
+                    "diagnostics": [
+                        {
+                            "code": diagnostic.code,
+                            "message": diagnostic.message,
+                            "object_ids": diagnostic.object_ids,
+                        }
+                        for diagnostic in error.diagnostics
+                    ],
+                },
+            ) from error
+        resources = _installation_resources(services)
+        for section in ("projectors", "lighting_surfaces"):
+            values = document.get(section)
+            if not isinstance(values, list):
+                raise RuntimeError(f"mapper export {section} has invalid shape")
+            for value in values:
+                if not isinstance(value, dict) or value.get("resource") not in resources:
+                    raise HTTPException(
+                        status_code=422,
+                        detail={
+                            "code": "mapper_export_unknown_resource",
+                            "section": section,
+                        },
+                    )
+        return InstallationMapperExportResponse.model_validate(
+            {
+                **document,
+                "resources": list(resources.values()),
+            }
+        )
+
+    @router.get(
+        "/installations/{installation_id}/mapper-validation",
+        response_model=list[MapperDiagnosticResponse],
+        dependencies=[reader],
+    )
+    def mapper_validation(
+        installation_id: str,
+    ) -> list[MapperDiagnosticResponse]:
+        return [
+            MapperDiagnosticResponse(
+                code=diagnostic.code,
+                message=diagnostic.message,
+                object_ids=diagnostic.object_ids,
+            )
+            for diagnostic in services.mapper_export.validate(installation_id)
+        ]
+
+    @router.put(
+        "/installations/{installation_id}/projector-overlaps",
+        response_model=ProjectorOverlapResponse,
+    )
+    def update_projector_overlap(
+        installation_id: str,
+        body: ProjectorOverlapRequest,
+        response: Response,
+        identity: Annotated[AuthenticatedSession, author],
+        if_match: Annotated[str | None, Header(alias="If-Match")] = None,
+    ) -> ProjectorOverlapResponse:
+        try:
+            overlap = services.projector_overlap.upsert(
+                overlap_id=body.id,
+                expected_revision=_parse_optional_if_match(if_match),
+                installation_id=installation_id,
+                first_geometry_id=body.first_geometry_id,
+                second_geometry_id=body.second_geometry_id,
+                stage_points=body.stage_points,
+                ramp_width=body.ramp_width,
+                overlap_gamma=body.overlap_gamma,
+                first_brightness=body.first_brightness,
+                second_brightness=body.second_brightness,
+                first_white=body.first_white,
+                second_white=body.second_white,
+                first_color_matrix=body.first_color_matrix,
+                second_color_matrix=body.second_color_matrix,
+                first_black_level=body.first_black_level,
+                second_black_level=body.second_black_level,
+                actor=identity.username,
+                role=identity.role,
+                occurred_at=_now_iso(),
+            )
+        except ProjectorOverlapError as error:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "projector_overlap_invalid", "message": str(error)},
+            ) from error
+        response.headers["ETag"] = _etag(overlap.revision)
+        return _projector_overlap(overlap)
+
+    @router.get(
+        "/installation-geometry/{geometry_id}/lighting-surface",
+        response_model=LightingSurfaceResponse,
+        dependencies=[reader],
+    )
+    def lighting_surface(geometry_id: str) -> LightingSurfaceResponse:
+        try:
+            return _lighting_surface(services.lighting_surface.get(geometry_id))
+        except LightingSurfaceError as error:
+            raise HTTPException(
+                status_code=404,
+                detail={"code": "lighting_surface_not_found"},
+            ) from error
+
+    @router.put(
+        "/installation-geometry/{geometry_id}/lighting-surface",
+        response_model=LightingSurfaceResponse,
+    )
+    def update_lighting_surface(
+        geometry_id: str,
+        body: LightingSurfaceRequest,
+        response: Response,
+        identity: Annotated[AuthenticatedSession, author],
+        if_match: Annotated[str | None, Header(alias="If-Match")] = None,
+    ) -> LightingSurfaceResponse:
+        try:
+            surface = services.lighting_surface.upsert(
+                geometry_id=geometry_id,
+                expected_revision=_parse_optional_if_match(if_match),
+                actor=identity.username,
+                role=identity.role,
+                occurred_at=_now_iso(),
+                **body.model_dump(),
+            )
+        except LightingSurfaceError as error:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "lighting_surface_invalid", "message": str(error)},
+            ) from error
+        response.headers["ETag"] = _etag(surface.revision)
+        return _lighting_surface(surface)
+
     @router.delete(
         "/installations/{installation_id}",
         status_code=204,
@@ -1161,6 +1866,87 @@ def create_gui_router(services: GuiServices) -> APIRouter:
         )
 
     @router.post(
+        "/maintenance/output-arms",
+        response_model=OutputArmResponse,
+        status_code=201,
+    )
+    def create_output_arm(
+        body: CreateOutputArmRequest,
+        identity: Annotated[AuthenticatedSession, operator_mutation],
+    ) -> OutputArmResponse:
+        status = services.runtime.status()
+        operations = status.get("operations")
+        mode = operations.get("mode") if isinstance(operations, dict) else None
+        if mode != ShowMode.MAINTENANCE.value or status.get("active_scene") is not None:
+            raise HTTPException(
+                status_code=409,
+                detail={"code": "output_arm_requires_idle_maintenance"},
+            )
+        resource = _installation_resources(services).get(body.resource)
+        if resource is None or resource.kind == "downstream_controller":
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "output_arm_resource_not_supported"},
+            )
+        assignment = next(
+            (
+                item
+                for item in services.repository.list_resource_assignments()
+                if item.resource == body.resource
+            ),
+            None,
+        )
+        if assignment is not None:
+            device = services.repository.get_device(assignment.device_id)
+            device_identity = f"{device.display_name} ({device.id})"
+        else:
+            device_identity = resource.target or f"controller-owned {body.resource}"
+        try:
+            arm = services.output_arming.create(
+                resource=body.resource,
+                resource_kind=resource.kind,
+                device_identity=device_identity,
+                stop_action=(
+                    "stop media playback"
+                    if resource.kind == "media_agent"
+                    else "stop realtime pixel output"
+                ),
+                confirmation=body.confirmation,
+                duration_seconds=body.duration_seconds,
+                actor=identity.username,
+                role=identity.role,
+                occurred_at=_now_iso(),
+            )
+        except OutputArmError as error:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "output_arm_invalid", "message": str(error)},
+            ) from error
+        return _output_arm(arm)
+
+    @router.post(
+        "/maintenance/output-arms/{arm_id}/stop",
+        response_model=OutputArmResponse,
+    )
+    def stop_output_arm(
+        arm_id: str,
+        identity: Annotated[AuthenticatedSession, operator_mutation],
+    ) -> OutputArmResponse:
+        try:
+            arm = services.output_arming.stop(
+                arm_id,
+                actor=identity.username,
+                role=identity.role,
+                occurred_at=_now_iso(),
+            )
+        except OutputArmError as error:
+            raise HTTPException(
+                status_code=409,
+                detail={"code": "output_arm_not_active"},
+            ) from error
+        return _output_arm(arm)
+
+    @router.post(
         "/maintenance/test-pattern-preview",
         response_model=MaintenancePreviewResponse,
     )
@@ -1217,6 +2003,117 @@ def create_gui_router(services: GuiServices) -> APIRouter:
             started_at=started_at.isoformat(),
             expires_at=expires_at.isoformat(),
         )
+
+    @router.post(
+        "/timing-calibrations",
+        response_model=TimingCalibrationSessionResponse,
+        status_code=201,
+    )
+    def start_timing_calibration(
+        body: StartTimingCalibrationRequest,
+        identity: Annotated[AuthenticatedSession, operator_mutation],
+    ) -> TimingCalibrationSessionResponse:
+        status = services.runtime.status()
+        operations = status.get("operations")
+        mode = operations.get("mode") if isinstance(operations, dict) else None
+        if mode != ShowMode.MAINTENANCE.value or status.get("active_scene") is not None:
+            raise HTTPException(
+                status_code=409,
+                detail={"code": "timing_calibration_requires_idle_maintenance"},
+            )
+        try:
+            session = services.timing_calibration.start(
+                target_kind=body.target_kind,
+                geometry_id=body.geometry_id,
+                adjustment_kind=body.adjustment_kind,
+                actor=identity.username,
+                role=identity.role,
+                occurred_at=_now_iso(),
+                test_asset_id=body.test_asset_id,
+                test_asset_version=body.test_asset_version,
+                observed_variability_ms=body.observed_variability_ms,
+                notes=body.notes,
+                context=body.context,
+            )
+        except TimingCalibrationError as error:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "timing_calibration_invalid", "message": str(error)},
+            ) from error
+        return _timing_calibration(session)
+
+    @router.post(
+        "/accepted-calibrations/review",
+        response_model=list[AcceptedCalibrationResponse],
+        dependencies=[reader],
+    )
+    def accepted_calibrations(
+        body: ReviewCalibrationContextRequest,
+    ) -> list[AcceptedCalibrationResponse]:
+        return [
+            _accepted_calibration(calibration)
+            for calibration in services.timing_calibration.accepted(
+                body.target_kind,
+                body.geometry_id,
+                body.context,
+            )
+        ]
+
+    @router.put(
+        "/timing-calibrations/{session_id}",
+        response_model=TimingCalibrationSessionResponse,
+    )
+    def update_timing_calibration(
+        session_id: str,
+        body: UpdateTimingCalibrationRequest,
+        response: Response,
+        identity: Annotated[AuthenticatedSession, operator_mutation],
+        if_match: Annotated[str | None, Header(alias="If-Match")] = None,
+    ) -> TimingCalibrationSessionResponse:
+        try:
+            session = services.timing_calibration.update(
+                session_id,
+                expected_revision=_parse_if_match(if_match),
+                proposed_ms=body.proposed_ms,
+                actor=identity.username,
+                role=identity.role,
+                occurred_at=_now_iso(),
+            )
+        except TimingCalibrationError as error:
+            raise HTTPException(
+                status_code=409,
+                detail={"code": "timing_calibration_conflict", "message": str(error)},
+            ) from error
+        response.headers["ETag"] = _etag(session.revision)
+        return _timing_calibration(session)
+
+    @router.post(
+        "/timing-calibrations/{session_id}/{action}",
+        response_model=TimingCalibrationSessionResponse,
+    )
+    def finish_timing_calibration(
+        session_id: str,
+        action: Literal["accept", "cancel"],
+        response: Response,
+        identity: Annotated[AuthenticatedSession, operator_mutation],
+        if_match: Annotated[str | None, Header(alias="If-Match")] = None,
+    ) -> TimingCalibrationSessionResponse:
+        try:
+            session = services.timing_calibration.finish(
+                session_id,
+                expected_revision=_parse_if_match(if_match),
+                accept=action == "accept",
+                actor=identity.username,
+                role=identity.role,
+                occurred_at=_now_iso(),
+            )
+        except TimingCalibrationError as error:
+            raise HTTPException(
+                status_code=409,
+                detail={"code": "timing_calibration_conflict", "message": str(error)},
+            ) from error
+        response.headers["ETag"] = _etag(session.revision)
+        return _timing_calibration(session)
 
     @router.post("/operate/actions", response_model=OperateActionResponse)
     async def operate(
@@ -2084,6 +2981,10 @@ def _parse_if_match(value: str | None) -> int:
     return revision
 
 
+def _parse_optional_if_match(value: str | None) -> int | None:
+    return _parse_if_match(value) if value is not None else None
+
+
 def _project_summary(project: StoredProject) -> ProjectSummary:
     return ProjectSummary(
         id=project.id,
@@ -2134,6 +3035,233 @@ def _installation_summary(
         used_by_projects=used_by_projects,
         created_at=installation.created_at,
         updated_at=installation.updated_at,
+    )
+
+
+def _installation_photo(photo: StoredInstallationPhoto) -> InstallationPhotoResponse:
+    return InstallationPhotoResponse(
+        id=photo.id,
+        installation_id=photo.installation_id,
+        name=photo.name,
+        viewpoint=photo.viewpoint,
+        original_filename=photo.original_filename,
+        media_type=photo.media_type,
+        digest_sha256=photo.digest_sha256,
+        size_bytes=photo.size_bytes,
+        orientation_degrees=photo.orientation_degrees,
+        crop_x=photo.crop_x,
+        crop_y=photo.crop_y,
+        crop_width=photo.crop_width,
+        crop_height=photo.crop_height,
+        scale_hint=photo.scale_hint,
+        revision=photo.revision,
+        created_at=photo.created_at,
+        updated_at=photo.updated_at,
+    )
+
+
+def _installation_geometry(
+    geometry: StoredInstallationGeometry,
+) -> InstallationGeometryResponse:
+    return InstallationGeometryResponse(
+        id=geometry.id,
+        installation_id=geometry.installation_id,
+        photo_id=geometry.photo_id,
+        kind=geometry.kind,
+        name=geometry.name,
+        semantic_id=geometry.semantic_id,
+        landmark_ids=geometry.landmark_ids,
+        color=geometry.color,
+        label_visible=geometry.label_visible,
+        locked=geometry.locked,
+        hidden=geometry.hidden,
+        z_index=geometry.z_index,
+        direction=geometry.direction,
+        start_index=geometry.start_index,
+        pixel_count=geometry.pixel_count,
+        stage_points=geometry.stage_points,
+        points=tuple(GeometryPoint(x=point[0], y=point[1]) for point in geometry.points),
+        closed=geometry.closed,
+        revision=geometry.revision,
+        created_at=geometry.created_at,
+        updated_at=geometry.updated_at,
+    )
+
+
+def _geometry_suggestion(
+    suggestion: StoredGeometrySuggestion,
+) -> GeometrySuggestionResponse:
+    return GeometrySuggestionResponse(
+        id=suggestion.id,
+        installation_id=suggestion.installation_id,
+        photo_id=suggestion.photo_id,
+        kind=suggestion.kind,
+        name=suggestion.name,
+        points=tuple(GeometryPoint(x=point[0], y=point[1]) for point in suggestion.points),
+        closed=suggestion.closed,
+        confidence=suggestion.confidence,
+        evidence=suggestion.evidence,
+        state=suggestion.state,
+        created_by=suggestion.created_by,
+        reviewed_by=suggestion.reviewed_by,
+        created_at=suggestion.created_at,
+        updated_at=suggestion.updated_at,
+    )
+
+
+def _projector_mapping(mapping: StoredProjectorMapping) -> ProjectorMappingResponse:
+    return ProjectorMappingResponse(
+        geometry_id=mapping.geometry_id,
+        resource=mapping.resource,
+        native_width=mapping.native_width,
+        native_height=mapping.native_height,
+        stage_x=mapping.stage_x,
+        stage_y=mapping.stage_y,
+        stage_width=mapping.stage_width,
+        stage_height=mapping.stage_height,
+        crop_x=mapping.crop_x,
+        crop_y=mapping.crop_y,
+        crop_width=mapping.crop_width,
+        crop_height=mapping.crop_height,
+        content_asset_id=mapping.content_asset_id,
+        surface_model=mapping.surface_model,
+        fit_mode=mapping.fit_mode,
+        overscan=mapping.overscan,
+        brightness_limit=mapping.brightness_limit,
+        media_start_delay_ms=mapping.media_start_delay_ms,
+        media_release_delay_ms=mapping.media_release_delay_ms,
+        orientation_degrees=mapping.orientation_degrees,
+        mirror_x=mapping.mirror_x,
+        mirror_y=mapping.mirror_y,
+        mask_semantic_ids=mapping.mask_semantic_ids,
+        homography=mapping.homography,
+        diagnostic=mapping.diagnostic,
+        fit_diagnostics=mapping.fit_diagnostics,
+        photo_views=tuple(
+            ProjectorPhotoViewResponse(
+                geometry_id=view.geometry_id,
+                photo_id=view.photo_id,
+                points=tuple(GeometryPoint(x=point[0], y=point[1]) for point in view.points),
+                homography=view.homography,
+            )
+            for view in mapping.photo_views
+        ),
+        revision=mapping.revision,
+        created_at=mapping.created_at,
+        updated_at=mapping.updated_at,
+    )
+
+
+def _lighting_surface(surface: StoredLightingSurface) -> LightingSurfaceResponse:
+    return LightingSurfaceResponse(
+        geometry_id=surface.geometry_id,
+        resource=surface.resource,
+        local_width=surface.local_width,
+        local_height=surface.local_height,
+        local_points=surface.local_points,
+        stage_matrix=surface.stage_matrix,
+        fixture_id=surface.fixture_id,
+        group_id=surface.group_id,
+        path_id=surface.path_id,
+        strand_id=surface.strand_id,
+        calibration_id=surface.calibration_id,
+        pixel_footprint_width=surface.pixel_footprint_width,
+        pixel_footprint_height=surface.pixel_footprint_height,
+        brightness_limit=surface.brightness_limit,
+        timing_offset_ms=surface.timing_offset_ms,
+        release_offset_ms=surface.release_offset_ms,
+        pixels=tuple(
+            MappedPixelResponse(
+                output_index=pixel.output_index,
+                local_x=pixel.local_x,
+                local_y=pixel.local_y,
+                stage_x=pixel.stage_x,
+                stage_y=pixel.stage_y,
+                footprint_width=pixel.footprint_width,
+                footprint_height=pixel.footprint_height,
+            )
+            for pixel in surface.pixels
+        ),
+        revision=surface.revision,
+        created_at=surface.created_at,
+        updated_at=surface.updated_at,
+    )
+
+
+def _timing_calibration(
+    session: StoredTimingCalibration,
+) -> TimingCalibrationSessionResponse:
+    return TimingCalibrationSessionResponse(
+        id=session.id,
+        target_kind=session.target_kind,
+        geometry_id=session.geometry_id,
+        adjustment_kind=session.adjustment_kind,
+        baseline_ms=session.baseline_ms,
+        proposed_ms=session.proposed_ms,
+        state=session.state,
+        revision=session.revision,
+        expires_at=session.expires_at,
+    )
+
+
+def _output_arm(arm: StoredOutputArm) -> OutputArmResponse:
+    return OutputArmResponse(
+        id=arm.id,
+        resource=arm.resource,
+        resource_kind=arm.resource_kind,
+        device_identity=arm.device_identity,
+        stop_action=arm.stop_action,
+        state=arm.state,
+        expires_at=arm.expires_at,
+    )
+
+
+def _accepted_calibration(
+    calibration: StoredAcceptedCalibration,
+) -> AcceptedCalibrationResponse:
+    return AcceptedCalibrationResponse(
+        id=calibration.id,
+        target_kind=calibration.target_kind,
+        geometry_id=calibration.geometry_id,
+        adjustment_kind=calibration.adjustment_kind,
+        accepted_ms=calibration.accepted_ms,
+        resource=calibration.resource,
+        device_id=calibration.device_id,
+        software_version=calibration.software_version,
+        test_asset_id=calibration.test_asset_id,
+        test_asset_version=calibration.test_asset_version,
+        observed_variability_ms=calibration.observed_variability_ms,
+        notes=calibration.notes,
+        context=calibration.context,
+        actor=calibration.actor,
+        accepted_at=calibration.accepted_at,
+        stale_reasons=calibration.stale_reasons,
+    )
+
+
+def _projector_overlap(
+    overlap: StoredProjectorOverlap,
+) -> ProjectorOverlapResponse:
+    return ProjectorOverlapResponse(
+        id=overlap.id,
+        installation_id=overlap.installation_id,
+        first_geometry_id=overlap.first_geometry_id,
+        second_geometry_id=overlap.second_geometry_id,
+        stage_points=overlap.stage_points,
+        ramp_width=overlap.ramp_width,
+        overlap_gamma=overlap.overlap_gamma,
+        first_brightness=overlap.first_brightness,
+        second_brightness=overlap.second_brightness,
+        first_white=overlap.first_white,
+        second_white=overlap.second_white,
+        first_color_matrix=overlap.first_color_matrix,
+        second_color_matrix=overlap.second_color_matrix,
+        first_black_level=overlap.first_black_level,
+        second_black_level=overlap.second_black_level,
+        diagnostics=overlap.diagnostics,
+        revision=overlap.revision,
+        created_at=overlap.created_at,
+        updated_at=overlap.updated_at,
     )
 
 

@@ -1,0 +1,100 @@
+{
+  "schema_version": 1,
+  "runtime": {
+    "python": ">=3.12",
+    "locked_environment": [
+      "pyproject.toml",
+      "uv.lock"
+    ],
+    "system_packages": [
+      {
+        "name": "ca-certificates",
+        "required": true,
+        "reason": "TLS trust for external services and device connections"
+      },
+      {
+        "name": "ffmpeg",
+        "required": true,
+        "provides": [
+          "ffmpeg",
+          "ffprobe"
+        ],
+        "reason": "Asset probing, loudness analysis, thumbnails, proxies, and waveforms"
+      },
+      {
+        "name": "clamav",
+        "required": false,
+        "provides": [
+          "clamscan",
+          "freshclam"
+        ],
+        "reason": "Optional uploaded-asset malware scanning and signature updates"
+      }
+    ],
+    "ffmpeg_capabilities": {
+      "encoders": [
+        "aac",
+        "libmp3lame",
+        "libx264",
+        "mjpeg",
+        "png"
+      ],
+      "filters": [
+        "aformat",
+        "ebur128",
+        "scale",
+        "showwavespic",
+        "thumbnail"
+      ],
+      "probe_features": [
+        "format",
+        "streams",
+        "json_output"
+      ]
+    },
+    "preflight_commands": [
+      "python --version",
+      "ffmpeg -version",
+      "ffprobe -version",
+      "ffmpeg -hide_banner -encoders",
+      "ffmpeg -hide_banner -filters"
+    ]
+  },
+  "frontend_build": {
+    "node": ">=20.19 <23",
+    "package_manager": "npm",
+    "lockfile": "web/package-lock.json",
+    "runtime_image": false
+  },
+  "optional_malware_scanning": {
+    "scanner": "clamscan",
+    "definition_updater": "freshclam",
+    "absence_behavior": "Report scan status as unavailable; never report clean",
+    "production_policy": "Install ClamAV and schedule definition updates when publication policy requires malware scanning"
+  },
+  "persistent_paths": [
+    "GUI SQLite database and WAL files",
+    "device certificate authority state",
+    "content-addressed original assets",
+    "derived artifacts",
+    "compiled and published packages",
+    "logs and audit-retention state"
+  ],
+  "excluded_from_controller_image": [
+    {
+      "name": "mpv",
+      "owner": "media agent",
+      "reason": "Requires host display, audio, GPU/decoder stack, and IPC"
+    },
+    {
+      "name": "Caddy",
+      "owner": "edge deployment",
+      "reason": "TLS termination is deployment infrastructure rather than a controller runtime subprocess"
+    },
+    {
+      "name": "WLED",
+      "owner": "physical device",
+      "reason": "Controller communicates over HTTP and DDP; firmware is not packaged in the image"
+    }
+  ]
+}

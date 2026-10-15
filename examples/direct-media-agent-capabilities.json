@@ -18,6 +18,22 @@
       "max_outputs": 1,
       "supports_pause": true,
       "supports_seek": true
+    },
+    {
+      "kind": "timing_calibration",
+      "actuator_kinds": [
+        "media",
+        "audio"
+      ],
+      "onset": {
+        "minimum_ms": -5000,
+        "maximum_ms": 5000,
+        "resolution_ms": 5,
+        "adjustable_while_active": true
+      },
+      "release": null,
+      "safe_test_procedure": "maintenance_reference",
+      "supports_ab_comparison": true
     }
   ]
 }

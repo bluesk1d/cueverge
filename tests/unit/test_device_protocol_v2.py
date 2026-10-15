@@ -16,6 +16,8 @@ from cueverge.protocol.device_v2 import (
     EnrollmentState,
     MediaPlaybackCapability,
     ProtocolRange,
+    TimingAdjustment,
+    TimingCalibrationCapability,
 )
 
 DEVICE_ID = UUID("9c004799-7704-48f1-b5f4-f083628c7faa")
@@ -42,6 +44,37 @@ def test_pairing_token_is_masked_when_serialized() -> None:
 
     assert request.model_dump()["pairing_token"] != "single-use-secret"
     assert "single-use-secret" not in request.model_dump_json()
+
+
+def test_generic_timing_calibration_capability_is_typed_and_bounded() -> None:
+    capability = TimingCalibrationCapability(
+        actuator_kinds=("media", "audio", "pixels", "relay"),
+        onset=TimingAdjustment(
+            minimum_ms=-5000,
+            maximum_ms=5000,
+            resolution_ms=5,
+            adjustable_while_active=True,
+        ),
+        release=TimingAdjustment(
+            minimum_ms=-1000,
+            maximum_ms=1000,
+            resolution_ms=10,
+        ),
+        safe_test_procedure="maintenance_reference",
+        supports_ab_comparison=True,
+    )
+    document = _media_capabilities().model_copy(
+        update={"capabilities": (*_media_capabilities().capabilities, capability)}
+    )
+
+    reloaded = DeviceCapabilityDocument.model_validate_json(document.model_dump_json())
+    timing = reloaded.capabilities[-1]
+    assert timing.kind == "timing_calibration"
+    assert timing.onset is not None
+    assert timing.onset.adjustable_while_active is True
+
+    with pytest.raises(ValidationError, match="divisible"):
+        TimingAdjustment(minimum_ms=0, maximum_ms=100, resolution_ms=30)
 
 
 def test_device_kind_restricts_authority_capabilities() -> None:

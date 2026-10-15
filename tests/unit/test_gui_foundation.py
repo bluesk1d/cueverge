@@ -17,6 +17,7 @@ from cueverge.gui.endpoint_discovery import (
     DiscoveredController,
     EndpointDiscoveryService,
 )
+from cueverge.gui.mapper_export import MapperExportError
 from cueverge.gui.passwords import hash_password
 from cueverge.gui.service import GuiServices
 from cueverge.protocol.device_v2 import (
@@ -234,7 +235,8 @@ def test_draft_revisions_are_durable_and_reject_stale_writes(tmp_path: Path) -> 
 
 def test_installation_crud_preserves_runtime_active_record(tmp_path: Path) -> None:
     runtime = ControllerRuntime()
-    client = TestClient(create_app(runtime, gui_services=_services(tmp_path, runtime)))
+    services = _services(tmp_path, runtime)
+    client = TestClient(create_app(runtime, gui_services=services))
     _login(client)
 
     listed = client.get("/api/gui/v1/installations")
@@ -242,6 +244,11 @@ def test_installation_crud_preserves_runtime_active_record(tmp_path: Path) -> No
     assert len(listed.json()) == 1
     active = listed.json()[0]
     assert active["runtime_active"] is True
+    empty_export = client.get(f"/api/gui/v1/installations/{active['id']}/mapper-export")
+    assert empty_export.status_code == 200
+    assert {resource["resource"] for resource in empty_export.json()["resources"]} == {
+        binding.resource for binding in runtime.catalog.installation.resources
+    }
 
     created = client.post(
         "/api/gui/v1/installations",
@@ -267,6 +274,612 @@ def test_installation_crud_preserves_runtime_active_record(tmp_path: Path) -> No
     )
     assert stale.status_code == 409
     assert stale.json()["code"] == "installation_conflict"
+
+    photo = client.post(
+        f"/api/gui/v1/installations/{installation_id}/photos",
+        content=b"synthetic-photo",
+        headers={
+            **_mutation_headers(client),
+            "Content-Type": "image/jpeg",
+            "X-Photo-Name": "Wide front",
+            "X-Photo-Viewpoint": "Front yard",
+            "X-Original-Filename": "front.jpg",
+        },
+    )
+    assert photo.status_code == 201
+    photo_id = photo.json()["id"]
+    assert photo.json()["revision"] == 1
+    content = client.get(f"/api/gui/v1/installation-photos/{photo_id}/content")
+    assert content.status_code == 200
+    assert content.content == b"synthetic-photo"
+    edited_photo = client.put(
+        f"/api/gui/v1/installation-photos/{photo_id}",
+        json={
+            "name": "Wide front",
+            "viewpoint": "Front yard",
+            "orientation_degrees": 90,
+            "crop_x": 0.1,
+            "crop_y": 0.2,
+            "crop_width": 0.8,
+            "crop_height": 0.7,
+            "scale_hint": 120.5,
+        },
+        headers=_mutation_headers(client, if_match='"1"'),
+    )
+    assert edited_photo.status_code == 200
+    assert edited_photo.json()["revision"] == 2
+    assert edited_photo.json()["orientation_degrees"] == 90
+    suggestion = client.post(
+        f"/api/gui/v1/installations/{installation_id}/geometry-suggestions",
+        json={
+            "photo_id": photo_id,
+            "kind": "projector_surface",
+            "name": "Suggested garage surface",
+            "points": [
+                {"x": 0.1, "y": 0.1},
+                {"x": 0.9, "y": 0.1},
+                {"x": 0.9, "y": 0.8},
+                {"x": 0.1, "y": 0.8},
+            ],
+            "closed": True,
+            "confidence": 0.87,
+            "evidence": "Detected rectangular high-contrast plane.",
+        },
+        headers=_mutation_headers(client),
+    )
+    assert suggestion.status_code == 201
+    assert client.get(f"/api/gui/v1/installations/{installation_id}/geometry").json() == []
+    reviewed_suggestion = client.post(
+        f"/api/gui/v1/geometry-suggestions/{suggestion.json()['id']}/review",
+        headers=_mutation_headers(client),
+    )
+    assert reviewed_suggestion.json()["state"] == "reviewed"
+    assert client.get(f"/api/gui/v1/installations/{installation_id}/geometry").json() == []
+    geometry = client.post(
+        f"/api/gui/v1/installations/{installation_id}/geometry",
+        json={
+            "photo_id": photo_id,
+            "kind": "projector_surface",
+            "name": "Garage door",
+            "points": [
+                {"x": 0.85, "y": 0.12},
+                {"x": 0.18, "y": 0.2},
+                {"x": 0.12, "y": 0.82},
+                {"x": 0.92, "y": 0.9},
+            ],
+            "closed": True,
+        },
+        headers=_mutation_headers(client),
+    )
+    assert geometry.status_code == 201
+    geometry_id = geometry.json()["id"]
+    mask = client.post(
+        f"/api/gui/v1/installations/{installation_id}/geometry",
+        json={
+            "photo_id": photo_id,
+            "kind": "mask",
+            "name": "Window trim mask",
+            "points": [
+                {"x": 0.1, "y": 0.1},
+                {"x": 0.2, "y": 0.1},
+                {"x": 0.2, "y": 0.2},
+            ],
+            "closed": True,
+        },
+        headers=_mutation_headers(client),
+    )
+    assert mask.status_code == 201
+    mapping = client.put(
+        f"/api/gui/v1/installation-geometry/{geometry_id}/projector-mapping",
+        json={
+            "resource": "projector.left",
+            "native_width": 1920,
+            "native_height": 1080,
+            "stage_x": 0,
+            "stage_y": 0,
+            "stage_width": 4.0,
+            "stage_height": 2.25,
+            "crop_x": 0,
+            "crop_y": 0,
+            "crop_width": 0.8,
+            "crop_height": 1,
+            "brightness_limit": 0.75,
+            "media_start_delay_ms": 120,
+            "orientation_degrees": 90,
+            "mirror_x": True,
+            "mirror_y": False,
+            "mask_semantic_ids": [mask.json()["semantic_id"]],
+        },
+        headers=_mutation_headers(client),
+    )
+    assert mapping.status_code == 200
+    assert mapping.json()["revision"] == 1
+    assert len(mapping.json()["homography"]) == 9
+    assert mapping.json()["homography"][8] == 1
+    assert mapping.json()["homography"] != [1, 0, 0, 0, 1, 0, 0, 0, 1]
+    assert mapping.json()["brightness_limit"] == 0.75
+    assert mapping.json()["media_start_delay_ms"] == 120
+    assert mapping.json()["orientation_degrees"] == 90
+    assert mapping.json()["mirror_x"] is True
+    assert mapping.json()["mask_semantic_ids"] == [mask.json()["semantic_id"]]
+    assert len(mapping.json()["photo_views"]) == 1
+    initial_coverage = client.get(f"/api/gui/v1/installations/{installation_id}/stage-coverage")
+    assert "occluded" in {region["kind"] for region in initial_coverage.json()["regions"]}
+    maintenance = client.post(
+        "/api/gui/v1/operate/actions",
+        json={"action": "maintenance"},
+        headers=_mutation_headers(client),
+    )
+    assert maintenance.status_code == 200
+    arm_resource = runtime.catalog.installation.resources[0].resource
+    arm = client.post(
+        "/api/gui/v1/maintenance/output-arms",
+        json={
+            "resource": arm_resource,
+            "confirmation": arm_resource,
+            "duration_seconds": 15,
+        },
+        headers=_mutation_headers(client),
+    )
+    assert arm.status_code == 201
+    assert arm.json()["state"] == "active"
+    assert arm.json()["hardware_command_sent"] is False
+    assert arm.json()["device_identity"]
+    stopped_arm = client.post(
+        f"/api/gui/v1/maintenance/output-arms/{arm.json()['id']}/stop",
+        headers=_mutation_headers(client),
+    )
+    assert stopped_arm.json()["state"] == "stopped"
+    assert stopped_arm.json()["stop_action"] == "stop media playback"
+    timing = client.post(
+        "/api/gui/v1/timing-calibrations",
+        json={
+            "target_kind": "projector_mapping",
+            "geometry_id": geometry_id,
+            "adjustment_kind": "release",
+            "test_asset_id": "timing-reference",
+            "test_asset_version": "sha256:fixture",
+            "observed_variability_ms": 12.5,
+            "notes": "Observed from the front yard.",
+            "context": {
+                "hardware": "projector-a",
+                "routing": "hdmi-1",
+                "display_mode": "1920x1080@60",
+                "media_settings": "mpv-default",
+                "environment": "night",
+            },
+        },
+        headers=_mutation_headers(client),
+    )
+    assert timing.status_code == 201
+    assert timing.json()["baseline_ms"] == 0
+    adjusted = client.put(
+        f"/api/gui/v1/timing-calibrations/{timing.json()['id']}",
+        json={"proposed_ms": -85},
+        headers=_mutation_headers(client, if_match='"1"'),
+    )
+    assert adjusted.status_code == 200
+    assert adjusted.json()["baseline_ms"] == 0
+    assert adjusted.json()["proposed_ms"] == -85
+    accepted = client.post(
+        f"/api/gui/v1/timing-calibrations/{timing.json()['id']}/accept",
+        headers=_mutation_headers(client, if_match='"2"'),
+    )
+    assert accepted.status_code == 200
+    assert accepted.json()["state"] == "accepted"
+    persisted_mapping = client.get(
+        f"/api/gui/v1/installation-geometry/{geometry_id}/projector-mapping"
+    )
+    assert persisted_mapping.json()["media_release_delay_ms"] == -85
+    calibration_review = client.post(
+        "/api/gui/v1/accepted-calibrations/review",
+        json={
+            "target_kind": "projector_mapping",
+            "geometry_id": geometry_id,
+            "context": {
+                "hardware": "projector-a",
+                "routing": "hdmi-2",
+                "display_mode": "1920x1080@60",
+                "media_settings": "mpv-default",
+                "environment": "night",
+            },
+        },
+        headers=_mutation_headers(client),
+    )
+    assert calibration_review.status_code == 200
+    assert calibration_review.json()[0]["test_asset_version"] == "sha256:fixture"
+    assert "Routing changed." in calibration_review.json()[0]["stale_reasons"]
+    cancelled_timing = client.post(
+        "/api/gui/v1/timing-calibrations",
+        json={
+            "target_kind": "projector_mapping",
+            "geometry_id": geometry_id,
+            "adjustment_kind": "onset",
+        },
+        headers=_mutation_headers(client),
+    )
+    changed_timing = client.put(
+        f"/api/gui/v1/timing-calibrations/{cancelled_timing.json()['id']}",
+        json={"proposed_ms": 500},
+        headers=_mutation_headers(client, if_match='"1"'),
+    )
+    cancelled = client.post(
+        f"/api/gui/v1/timing-calibrations/{cancelled_timing.json()['id']}/cancel",
+        headers=_mutation_headers(client, if_match=f'"{changed_timing.json()["revision"]}"'),
+    )
+    assert cancelled.json()["state"] == "cancelled"
+    assert (
+        client.get(f"/api/gui/v1/installation-geometry/{geometry_id}/projector-mapping").json()[
+            "media_start_delay_ms"
+        ]
+        == 120
+    )
+    calibration_photo = client.post(
+        f"/api/gui/v1/installations/{installation_id}/photos",
+        content=b"fresh-calibration-photo",
+        headers={
+            **_mutation_headers(client),
+            "Content-Type": "image/jpeg",
+            "X-Photo-Name": "Fresh calibration",
+            "X-Photo-Viewpoint": "Front yard calibrated",
+            "X-Original-Filename": "calibration.jpg",
+        },
+    )
+    assert calibration_photo.status_code == 201
+    calibration_photo_id = calibration_photo.json()["id"]
+    edited_geometry = client.put(
+        f"/api/gui/v1/installation-geometry/{geometry_id}",
+        json={
+            "photo_id": calibration_photo_id,
+            "kind": "projector_surface",
+            "name": "Garage projection surface",
+            "points": [
+                *geometry.json()["points"],
+                {"x": 0.5, "y": 0.55},
+            ],
+            "closed": True,
+        },
+        headers=_mutation_headers(client, if_match='"1"'),
+    )
+    assert edited_geometry.status_code == 200
+    assert edited_geometry.json()["revision"] == 2
+    assert edited_geometry.json()["photo_id"] == calibration_photo_id
+    subdivided = client.put(
+        f"/api/gui/v1/installation-geometry/{geometry_id}/projector-mapping",
+        json={
+            "resource": "projector.left",
+            "native_width": 1920,
+            "native_height": 1080,
+            "stage_x": 0,
+            "stage_y": 0,
+            "stage_width": 4.0,
+            "stage_height": 2.25,
+            "crop_x": 0,
+            "crop_y": 0,
+            "crop_width": 0.8,
+            "crop_height": 1,
+            "surface_model": "subdivided",
+            "content_asset_id": None,
+            "fit_mode": "stretch",
+            "overscan": True,
+        },
+        headers=_mutation_headers(client, if_match='"2"'),
+    )
+    assert subdivided.status_code == 200
+    assert subdivided.json()["homography"] is None
+    assert "single homography cannot represent" in subdivided.json()["diagnostic"]
+    assert "Stretch distortion will be visible." in subdivided.json()["fit_diagnostics"]
+    assert "Overscan is enabled" in " ".join(subdivided.json()["fit_diagnostics"])
+    linked_geometry = client.post(
+        f"/api/gui/v1/installations/{installation_id}/geometry",
+        json={
+            "photo_id": photo_id,
+            "kind": "projector_surface",
+            "name": "Garage projection in original view",
+            "points": edited_geometry.json()["points"],
+            "closed": True,
+            "semantic_id": edited_geometry.json()["semantic_id"],
+        },
+        headers=_mutation_headers(client),
+    )
+    assert linked_geometry.status_code == 201
+    assert linked_geometry.json()["semantic_id"] == edited_geometry.json()["semantic_id"]
+    assert linked_geometry.json()["landmark_ids"] == edited_geometry.json()["landmark_ids"]
+    linked_geometry_id = linked_geometry.json()["id"]
+    second_mapping = client.put(
+        f"/api/gui/v1/installation-geometry/{linked_geometry_id}/projector-mapping",
+        json={
+            "resource": "projector.right",
+            "native_width": 1920,
+            "native_height": 1080,
+            "stage_x": 3,
+            "stage_y": 1,
+            "stage_width": 4,
+            "stage_height": 2.25,
+            "surface_model": "subdivided",
+        },
+        headers=_mutation_headers(client),
+    )
+    assert second_mapping.status_code == 200
+    multi_view_mapping = client.get(
+        f"/api/gui/v1/installation-geometry/{geometry_id}/projector-mapping"
+    )
+    assert len(multi_view_mapping.json()["photo_views"]) == 2
+    assert {view["photo_id"] for view in multi_view_mapping.json()["photo_views"]} == {
+        photo_id,
+        calibration_photo_id,
+    }
+    overlap = client.put(
+        f"/api/gui/v1/installations/{installation_id}/projector-overlaps",
+        json={
+            "first_geometry_id": geometry_id,
+            "second_geometry_id": linked_geometry_id,
+            "stage_points": [[3, 1], [4, 1], [4, 2.25], [3, 2.25]],
+            "ramp_width": 0.2,
+            "overlap_gamma": 1.1,
+            "first_brightness": 0.9,
+            "second_brightness": 0.85,
+            "first_white": [1, 0.98, 0.95],
+            "second_white": [0.96, 1, 0.97],
+            "first_color_matrix": [1, 0, 0, 0, 1, 0, 0, 0, 1],
+            "second_color_matrix": [1, 0, 0, 0, 1, 0, 0, 0, 1],
+            "first_black_level": 0.02,
+            "second_black_level": 0.04,
+        },
+        headers=_mutation_headers(client),
+    )
+    assert overlap.status_code == 200
+    assert overlap.json()["revision"] == 1
+    assert overlap.json()["overlap_gamma"] == 1.1
+    assert "Combined overlap brightness may appear double-bright." in overlap.json()["diagnostics"]
+    assert "Projector black levels do not match." in overlap.json()["diagnostics"]
+    coverage = client.get(f"/api/gui/v1/installations/{installation_id}/stage-coverage")
+    assert coverage.status_code == 200
+    region_kinds = {region["kind"] for region in coverage.json()["regions"]}
+    assert {"covered", "overlap", "uncovered"} <= region_kinds
+    renamed_link = client.put(
+        f"/api/gui/v1/installation-geometry/{linked_geometry_id}",
+        json={
+            "photo_id": photo_id,
+            "kind": "projector_surface",
+            "name": "Shared garage projection",
+            "points": [
+                {"x": 0.8, "y": 0.15},
+                *linked_geometry.json()["points"][1:],
+            ],
+            "closed": True,
+            "semantic_id": linked_geometry.json()["semantic_id"],
+            "color": "#ff8800",
+            "label_visible": True,
+            "locked": False,
+            "hidden": False,
+            "z_index": 2,
+            "direction": "forward",
+            "start_index": None,
+            "pixel_count": None,
+        },
+        headers=_mutation_headers(client, if_match='"1"'),
+    )
+    assert renamed_link.status_code == 200
+    linked_instances = [
+        item
+        for item in client.get(f"/api/gui/v1/installations/{installation_id}/geometry").json()
+        if item["semantic_id"] == linked_geometry.json()["semantic_id"]
+    ]
+    assert {item["name"] for item in linked_instances} == {"Shared garage projection"}
+    assert {item["color"] for item in linked_instances} == {"#ff8800"}
+    assert (
+        len(
+            {
+                tuple((point["x"], point["y"]) for point in item["points"])
+                for item in linked_instances
+            }
+        )
+        == 2
+    )
+    duplicate_mapping = client.put(
+        f"/api/gui/v1/installation-geometry/{linked_geometry_id}/projector-mapping",
+        json={
+            "resource": "projector.left",
+            "native_width": 1920,
+            "native_height": 1080,
+            "stage_x": 3,
+            "stage_y": 1,
+            "stage_width": 4,
+            "stage_height": 2.25,
+            "surface_model": "subdivided",
+        },
+        headers=_mutation_headers(client, if_match='"1"'),
+    )
+    assert duplicate_mapping.status_code == 200
+    diagnostics = services.mapper_export.validate(installation_id)
+    assert "multiply_assigned_projector_resource" in {diagnostic.code for diagnostic in diagnostics}
+    with pytest.raises(MapperExportError):
+        services.mapper_export.export(installation_id)
+    restored_mapping = client.put(
+        f"/api/gui/v1/installation-geometry/{linked_geometry_id}/projector-mapping",
+        json={
+            "resource": "projector.right",
+            "native_width": 1920,
+            "native_height": 1080,
+            "stage_x": 3,
+            "stage_y": 1,
+            "stage_width": 4,
+            "stage_height": 2.25,
+            "surface_model": "subdivided",
+        },
+        headers=_mutation_headers(client, if_match='"2"'),
+    )
+    assert restored_mapping.status_code == 200
+    assert (
+        client.delete(
+            f"/api/gui/v1/installation-geometry/{linked_geometry_id}",
+            headers=_mutation_headers(client, if_match='"2"'),
+        ).status_code
+        == 204
+    )
+    pixel_segment = client.post(
+        f"/api/gui/v1/installations/{installation_id}/geometry",
+        json={
+            "photo_id": photo_id,
+            "kind": "pixel_segment",
+            "name": "Roofline pixels",
+            "points": [{"x": 0.1, "y": 0.9}, {"x": 0.9, "y": 0.9}],
+            "closed": False,
+            "direction": "reverse",
+            "start_index": 100,
+            "pixel_count": 50,
+        },
+        headers=_mutation_headers(client),
+    )
+    assert pixel_segment.status_code == 201
+    assert pixel_segment.json()["direction"] == "reverse"
+    assert pixel_segment.json()["start_index"] == 100
+    assert pixel_segment.json()["pixel_count"] == 50
+    lighting_surface = client.put(
+        f"/api/gui/v1/installation-geometry/{pixel_segment.json()['id']}/lighting-surface",
+        json={
+            "resource": "roofline.demo",
+            "local_width": 10,
+            "local_height": 2,
+            "local_points": [[1, 1], [9, 1]],
+            "stage_matrix": [1, 0, 0, 1, 5, 3],
+            "fixture_id": "roofline",
+            "group_id": "front",
+            "path_id": "roof-path",
+            "strand_id": "strand-a",
+            "calibration_id": "cal-1",
+            "pixel_footprint_width": 0.02,
+            "pixel_footprint_height": 0.03,
+            "brightness_limit": 0.6,
+            "timing_offset_ms": -45,
+        },
+        headers=_mutation_headers(client),
+    )
+    assert lighting_surface.status_code == 200
+    assert len(lighting_surface.json()["pixels"]) == 50
+    assert lighting_surface.json()["pixels"][0]["output_index"] == 100
+    assert lighting_surface.json()["pixels"][-1]["output_index"] == 149
+    assert lighting_surface.json()["pixels"][0]["stage_x"] == 14
+    assert lighting_surface.json()["brightness_limit"] == 0.6
+    assert lighting_surface.json()["timing_offset_ms"] == -45
+    fixture = client.post(
+        f"/api/gui/v1/installations/{installation_id}/geometry",
+        json={
+            "photo_id": photo_id,
+            "kind": "fixture",
+            "name": "Window center",
+            "points": [{"x": 0.5, "y": 0.5}],
+            "stage_points": [[2, 1]],
+            "closed": False,
+        },
+        headers=_mutation_headers(client),
+    )
+    path = client.post(
+        f"/api/gui/v1/installations/{installation_id}/geometry",
+        json={
+            "photo_id": photo_id,
+            "kind": "path",
+            "name": "Window sweep",
+            "points": [{"x": 0.2, "y": 0.5}, {"x": 0.8, "y": 0.5}],
+            "stage_points": [[1, 1], [3, 1]],
+            "closed": False,
+        },
+        headers=_mutation_headers(client),
+    )
+    zone = client.post(
+        f"/api/gui/v1/installations/{installation_id}/geometry",
+        json={
+            "photo_id": photo_id,
+            "kind": "safety_zone",
+            "name": "No output walkway",
+            "points": [
+                {"x": 0.1, "y": 0.8},
+                {"x": 0.4, "y": 0.8},
+                {"x": 0.4, "y": 0.95},
+            ],
+            "stage_points": [[0, 1.8], [2, 1.8], [2, 2.2]],
+            "closed": True,
+        },
+        headers=_mutation_headers(client),
+    )
+    assert fixture.status_code == 201
+    assert path.status_code == 201
+    assert zone.status_code == 201
+    mapped_export = services.mapper_export.export(installation_id)
+    assert mapped_export["fixtures"][0]["stage_points"] == [[2, 1]]
+    assert mapped_export["paths"][0]["stage_points"] == [[1, 1], [3, 1]]
+    assert mapped_export["zones"][0]["kind"] == "safety_zone"
+    assert mapped_export["zones"][0]["stage_points"] == [
+        [0, 1.8],
+        [2, 1.8],
+        [2, 2.2],
+    ]
+    assert mapped_export["projectors"][0]["media_start_delay_ms"] == 0
+    assert mapped_export["lighting_surfaces"][0]["timing_offset_ms"] == -45
+    assert "photo" not in json.dumps(mapped_export)
+    linked_pixels = client.post(
+        f"/api/gui/v1/installations/{installation_id}/geometry",
+        json={
+            "photo_id": calibration_photo_id,
+            "kind": "pixel_segment",
+            "name": "Roofline pixels close-up",
+            "points": [{"x": 0.2, "y": 0.7}, {"x": 0.8, "y": 0.75}],
+            "closed": False,
+            "semantic_id": pixel_segment.json()["semantic_id"],
+            "direction": "reverse",
+            "start_index": 100,
+            "pixel_count": 50,
+        },
+        headers=_mutation_headers(client),
+    )
+    assert linked_pixels.status_code == 201
+    linked_surface = client.get(
+        f"/api/gui/v1/installation-geometry/{linked_pixels.json()['id']}/lighting-surface"
+    )
+    assert linked_surface.status_code == 200
+    assert linked_surface.json()["geometry_id"] == linked_pixels.json()["id"]
+    assert linked_surface.json()["pixels"] == lighting_surface.json()["pixels"]
+    assert linked_pixels.json()["points"] != pixel_segment.json()["points"]
+    assert (
+        client.delete(
+            f"/api/gui/v1/installation-geometry/{linked_pixels.json()['id']}",
+            headers=_mutation_headers(client, if_match='"1"'),
+        ).status_code
+        == 204
+    )
+    assert (
+        client.delete(
+            f"/api/gui/v1/installation-geometry/{pixel_segment.json()['id']}",
+            headers=_mutation_headers(client, if_match='"1"'),
+        ).status_code
+        == 204
+    )
+    removed_geometry = client.delete(
+        f"/api/gui/v1/installation-geometry/{geometry_id}",
+        headers=_mutation_headers(client, if_match='"3"'),
+    )
+    assert removed_geometry.status_code == 204
+    assert (
+        client.delete(
+            f"/api/gui/v1/installation-geometry/{mask.json()['id']}",
+            headers=_mutation_headers(client, if_match='"1"'),
+        ).status_code
+        == 204
+    )
+    for item in (fixture, path, zone):
+        assert (
+            client.delete(
+                f"/api/gui/v1/installation-geometry/{item.json()['id']}",
+                headers=_mutation_headers(client, if_match='"1"'),
+            ).status_code
+            == 204
+        )
+    removed_photo = client.delete(
+        f"/api/gui/v1/installation-photos/{photo_id}",
+        headers=_mutation_headers(client, if_match='"2"'),
+    )
+    assert removed_photo.status_code == 204
 
     active_delete = client.delete(
         f"/api/gui/v1/installations/{active['id']}",
@@ -386,6 +999,222 @@ def test_project_metadata_duplicate_archive_import_and_export(tmp_path: Path) ->
     assert stale.status_code == 409
     assert stale.json()["code"] == "project_metadata_conflict"
     assert len(client.get("/api/gui/v1/projects").json()) == 3
+
+
+def test_project_rejects_cyclic_composition_graph(tmp_path: Path) -> None:
+    runtime = ControllerRuntime()
+    client = TestClient(create_app(runtime, gui_services=_services(tmp_path, runtime)))
+    _login(client)
+
+    created = client.post(
+        "/api/gui/v1/projects",
+        json={
+            "name": "Cyclic compositions",
+            "draft": _draft(
+                editor_metadata={
+                    "compositions": {
+                        "composition-a": {
+                            "id": "composition-a",
+                            "name": "A",
+                            "duration_ms": 1000,
+                            "space_kind": "stage",
+                            "target_id": "shared-stage",
+                            "width": 10,
+                            "height": 4,
+                            "children": ["composition-b"],
+                        },
+                        "composition-b": {
+                            "id": "composition-b",
+                            "name": "B",
+                            "duration_ms": 1000,
+                            "space_kind": "projector_native",
+                            "target_id": "projector.left",
+                            "width": 1920,
+                            "height": 1080,
+                            "children": ["composition-a"],
+                        },
+                    }
+                }
+            ),
+        },
+        headers=_mutation_headers(client),
+    )
+
+    assert created.status_code == 422
+    assert "cannot contain cycles" in created.text
+    invalid_instance = client.post(
+        "/api/gui/v1/projects",
+        json={
+            "name": "Invalid composition instance",
+            "draft": _draft(
+                editor_metadata={
+                    "compositions": {
+                        "composition-a": {
+                            "id": "composition-a",
+                            "name": "A",
+                            "duration_ms": 1000,
+                            "space_kind": "stage",
+                            "target_id": "shared-stage",
+                            "width": 10,
+                            "height": 4,
+                            "children": [],
+                        }
+                    },
+                    "composition_instances": {
+                        "ambient": [
+                            {
+                                "id": "instance-a",
+                                "composition_id": "composition-a",
+                                "start_offset_ms": 0,
+                                "time_scale": 0,
+                                "parameter_overrides": {},
+                                "placement": {"x": 0, "y": 0},
+                            }
+                        ]
+                    },
+                }
+            ),
+        },
+        headers=_mutation_headers(client),
+    )
+    assert invalid_instance.status_code == 422
+    assert "time scale" in invalid_instance.text
+
+
+def test_project_validates_timeline_synchronization_anchors(tmp_path: Path) -> None:
+    runtime = ControllerRuntime()
+    client = TestClient(create_app(runtime, gui_services=_services(tmp_path, runtime)))
+    _login(client)
+    valid_metadata = {
+        "timeline_cue_presets": [
+            {
+                "id": "preset-impact",
+                "name": "Impact",
+                "lighting": {
+                    "primitive": "solid",
+                    "duration_ms": 250,
+                    "target": None,
+                    "color": "#FFFFFF",
+                    "brightness": 1,
+                },
+            }
+        ],
+        "timeline_markers": {
+            "ambient": [{"id": "marker-impact", "name": "Impact", "time_ms": 1000}]
+        },
+        "timeline_cues": {
+            "ambient": [
+                {
+                    "id": "cue-light",
+                    "name": "Lighting impact",
+                    "kind": "lighting",
+                    "track_id": "lighting:roofline",
+                    "time_ms": None,
+                    "marker_id": "marker-impact",
+                    "marker_offset_ms": -100,
+                    "lighting": {
+                        "primitive": "solid",
+                        "duration_ms": 250,
+                        "target": None,
+                        "color": "#FFFFFF",
+                        "brightness": 1,
+                        "fade_in_ms": 0,
+                        "fade_out_ms": 0,
+                        "period_ms": 200,
+                        "width_pixels": 1,
+                        "density": 0.1,
+                        "seed": 0,
+                        "reverse": False,
+                        "blend_mode": "replace",
+                        "precedence": 0,
+                    },
+                }
+            ]
+        },
+    }
+    created = client.post(
+        "/api/gui/v1/projects",
+        json={
+            "name": "Synchronized cues",
+            "draft": _draft(editor_metadata=valid_metadata),
+        },
+        headers=_mutation_headers(client),
+    )
+    assert created.status_code == 201
+
+    invalid_metadata = {
+        **valid_metadata,
+        "timeline_cues": {
+            "ambient": [
+                {
+                    "id": "cue-light",
+                    "name": "Lighting impact",
+                    "kind": "lighting",
+                    "track_id": "lighting:roofline",
+                    "time_ms": None,
+                    "marker_id": "missing-marker",
+                    "marker_offset_ms": 0,
+                    "lighting": {
+                        "primitive": "solid",
+                        "duration_ms": 250,
+                        "target": None,
+                        "color": "#FFFFFF",
+                        "brightness": 1,
+                    },
+                }
+            ]
+        },
+    }
+    rejected = client.post(
+        "/api/gui/v1/projects",
+        json={
+            "name": "Broken synchronized cues",
+            "draft": _draft(editor_metadata=invalid_metadata),
+        },
+        headers=_mutation_headers(client),
+    )
+    assert rejected.status_code == 422
+    assert "marker must exist in the same editing space" in rejected.text
+
+    unsupported_property = client.post(
+        "/api/gui/v1/projects",
+        json={
+            "name": "Preview-only keyframes",
+            "draft": _draft(
+                editor_metadata={
+                    "timeline_property_keyframes": {
+                        "ambient": [{"property": "lighting.brightness"}]
+                    }
+                }
+            ),
+        },
+        headers=_mutation_headers(client),
+    )
+    assert unsupported_property.status_code == 422
+    assert "generic property keyframes are unsupported" in unsupported_property.text
+
+    hidden_preset_reference = client.post(
+        "/api/gui/v1/projects",
+        json={
+            "name": "Hidden preset reference",
+            "draft": _draft(
+                editor_metadata={
+                    **valid_metadata,
+                    "timeline_cues": {
+                        "ambient": [
+                            {
+                                **valid_metadata["timeline_cues"]["ambient"][0],
+                                "preset_id": "preset-impact",
+                            }
+                        ]
+                    },
+                }
+            ),
+        },
+        headers=_mutation_headers(client),
+    )
+    assert hidden_preset_reference.status_code == 422
+    assert "unsupported timeline cue fields" in hidden_preset_reference.text
 
 
 def test_asset_upload_api_is_chunked_resumable_and_digest_checked(
@@ -655,6 +1484,310 @@ def test_compilation_round_trips_through_loader_without_runtime_side_effects(
     assert status.json()["source"] == "controller_runtime"
     assert runtime.active_scene is None
     assert runtime.sink.frames == []
+
+
+def test_compilation_flattens_compositions_and_reports_unsupported_constructs(
+    tmp_path: Path,
+) -> None:
+    runtime = ControllerRuntime()
+    services = _services(tmp_path, runtime)
+    client = TestClient(create_app(runtime, gui_services=services))
+    _login(client)
+    composition = {
+        "id": "impact",
+        "name": "Impact",
+        "duration_ms": 1000,
+        "space_kind": "stage",
+        "target_id": "shared-stage",
+        "width": 10,
+        "height": 4,
+        "local_time_offset_ms": 500,
+        "children": [],
+    }
+    metadata = {
+        "compositions": {"impact": composition},
+        "scene_compositions": {"ambient": ["impact"]},
+        "timeline_tracks": {
+            "impact": [
+                {
+                    "id": "fixture-track",
+                    "kind": "fixture",
+                    "name": "Window fixture",
+                    "resource_binding": "fixture.window",
+                }
+            ]
+        },
+        "timeline_markers": {"impact": [{"id": "impact-marker", "name": "Impact", "time_ms": 100}]},
+        "timeline_transform_layers": {
+            "impact": [
+                {
+                    "id": "ghost-layer",
+                    "name": "Ghost",
+                    "kind": "image",
+                    "source_id": "ghost-asset",
+                    "track_id": "fixture-track",
+                    "start_ms": 200,
+                    "duration_ms": 500,
+                    "keyframes": [
+                        {
+                            "id": "ghost-start",
+                            "time_ms": 0,
+                            "position": [0, 0],
+                            "scale": [1, 1],
+                            "rotation_deg": 0,
+                            "anchor": [0.5, 0.5],
+                            "opacity": 0.5,
+                            "crop": [0, 0, 0, 0],
+                            "interpolation": {
+                                "kind": "bezier",
+                                "temporal_bezier": [0.25, 0.1, 0.25, 1],
+                                "spatial_in": [-1, 0],
+                                "spatial_out": [1, 0],
+                            },
+                        },
+                        {
+                            "id": "ghost-end",
+                            "time_ms": 500,
+                            "position": [4, 2],
+                            "scale": [1.5, 0.75],
+                            "rotation_deg": 15,
+                            "anchor": [0.5, 0.5],
+                            "opacity": 1,
+                            "crop": [0.1, 0, 0.1, 0],
+                            "interpolation": {
+                                "kind": "ease_out",
+                                "temporal_bezier": None,
+                                "spatial_in": None,
+                                "spatial_out": None,
+                            },
+                        },
+                    ],
+                }
+            ]
+        },
+        "timeline_cues": {
+            "impact": [
+                {
+                    "id": "impact-cue",
+                    "name": "Window flash",
+                    "kind": "lighting",
+                    "track_id": "fixture-track",
+                    "time_ms": None,
+                    "marker_id": "impact-marker",
+                    "marker_offset_ms": 50,
+                    "lighting": {
+                        "primitive": "pulse",
+                        "duration_ms": 300,
+                        "target": {"kind": "fixture", "id": "fixture.window"},
+                        "color": "#FF6600",
+                        "brightness": 0.8,
+                        "fade_in_ms": 25,
+                        "fade_out_ms": 25,
+                        "period_ms": 150,
+                        "width_pixels": 2,
+                        "density": 0.25,
+                        "seed": 42,
+                        "reverse": False,
+                        "blend_mode": "add",
+                        "precedence": 10,
+                    },
+                },
+                {
+                    "id": "audio-lead",
+                    "name": "Audio lead",
+                    "kind": "audio",
+                    "track_id": "fixture-track",
+                    "time_ms": None,
+                    "marker_id": "impact-marker",
+                    "marker_offset_ms": -50,
+                },
+            ]
+        },
+    }
+    created = client.post(
+        "/api/gui/v1/projects",
+        json={"name": "Compiled composition", "draft": _draft(editor_metadata=metadata)},
+        headers=_mutation_headers(client),
+    )
+    project_id = created.json()["project"]["id"]
+
+    compiled = client.post(
+        f"/api/gui/v1/projects/{project_id}/compile",
+        headers=_mutation_headers(client, if_match='"1"'),
+    )
+
+    assert compiled.status_code == 200
+    package_root = next((tmp_path / "compiled" / project_id).glob("r1-*"))
+    runtime_graph = json.loads(
+        (package_root / "runtime" / "composition-graph.json").read_text(encoding="utf-8")
+    )
+    runtime_scene = runtime_graph["scenes"][0]
+    assert runtime_scene["contexts"][1] == {
+        "scene_id": "ambient",
+        "context_id": "scene:ambient>impact",
+        "editing_space_id": "impact",
+        "offset_ms": 500,
+        "time_scale": 1.0,
+        "placement": {"x": 0.0, "y": 0.0},
+        "parameter_overrides": {},
+    }
+    assert runtime_scene["outputs"] == [
+        {
+            "id": "scene:ambient>impact|fixture-track",
+            "context_id": "scene:ambient>impact",
+            "track_id": "fixture-track",
+            "track_kind": "fixture",
+            "resource_binding": "fixture.window",
+        }
+    ]
+    assert [cue["source_cue_id"] for cue in runtime_scene["cues"]] == [
+        "audio-lead",
+        "impact-cue",
+    ]
+    assert runtime_scene["cues"][0]["timestamp_ms"] == 550
+    assert runtime_scene["cues"][1] == {
+        "id": "scene:ambient>impact|impact-cue",
+        "source_cue_id": "impact-cue",
+        "name": "Window flash",
+        "kind": "lighting",
+        "output_id": "scene:ambient>impact|fixture-track",
+        "timestamp_ms": 650,
+        "local_time_ms": 150,
+        "marker_id": "impact-marker",
+        "marker_name": "Impact",
+        "marker_offset_ms": 50,
+        "editing_space_id": "impact",
+        "context_id": "scene:ambient>impact",
+        "lighting": {
+            "primitive": "pulse",
+            "duration_ms": 300,
+            "target": {"kind": "fixture", "id": "fixture.window"},
+            "color": "#FF6600",
+            "brightness": 0.8,
+            "fade_in_ms": 25,
+            "fade_out_ms": 25,
+            "period_ms": 150,
+            "width_pixels": 2,
+            "density": 0.25,
+            "seed": 42,
+            "reverse": False,
+            "blend_mode": "add",
+            "precedence": 10,
+        },
+    }
+    assert runtime_scene["transform_layers"][0] == {
+        "id": "scene:ambient>impact|ghost-layer",
+        "source_layer_id": "ghost-layer",
+        "name": "Ghost",
+        "kind": "image",
+        "source_id": "ghost-asset",
+        "output_id": "scene:ambient>impact|fixture-track",
+        "editing_space_id": "impact",
+        "context_id": "scene:ambient>impact",
+        "coordinate_space": {
+            "kind": "stage",
+            "target_id": "shared-stage",
+            "width": 10,
+            "height": 4,
+        },
+        "calibration_policy": {
+            "static_installation_calibration": "runtime",
+            "projector_handoff_keyframes": False,
+        },
+        "keyframed_properties": [
+            "position",
+            "scale_x",
+            "scale_y",
+            "rotation",
+            "anchor",
+            "opacity",
+            "crop",
+        ],
+        "property_animation_policy": {
+            "transform": "runtime",
+            "lighting": "static_cue",
+            "unsupported": "reject",
+        },
+        "start_ms": 700,
+        "duration_ms": 500,
+        "keyframes": [
+            {
+                "id": "ghost-start",
+                "time_ms": 0,
+                "timestamp_ms": 700,
+                "position": [0, 0],
+                "scale": [1, 1],
+                "rotation_deg": 0,
+                "anchor": [0.5, 0.5],
+                "opacity": 0.5,
+                "crop": [0, 0, 0, 0],
+                "interpolation": {
+                    "kind": "bezier",
+                    "temporal_bezier": [0.25, 0.1, 0.25, 1],
+                    "spatial_in": [-1, 0],
+                    "spatial_out": [1, 0],
+                },
+            },
+            {
+                "id": "ghost-end",
+                "time_ms": 500,
+                "timestamp_ms": 1200,
+                "position": [4, 2],
+                "scale": [1.5, 0.75],
+                "rotation_deg": 15,
+                "anchor": [0.5, 0.5],
+                "opacity": 1,
+                "crop": [0.1, 0, 0.1, 0],
+                "interpolation": {
+                    "kind": "ease_out",
+                    "temporal_bezier": None,
+                    "spatial_in": None,
+                    "spatial_out": None,
+                },
+            },
+        ],
+    }
+
+    unsupported_metadata = {
+        "compositions": {"impact": composition},
+        "composition_instances": {
+            "ambient": [
+                {
+                    "id": "impact-instance",
+                    "composition_id": "impact",
+                    "start_offset_ms": 0,
+                    "time_scale": 1,
+                    "parameter_overrides": {"variant": "ghost"},
+                    "placement": {"x": 0, "y": 0},
+                }
+            ]
+        },
+    }
+    unsupported = client.post(
+        "/api/gui/v1/projects",
+        json={
+            "name": "Unsupported composition",
+            "draft": _draft(editor_metadata=unsupported_metadata),
+        },
+        headers=_mutation_headers(client),
+    )
+    unsupported_project_id = unsupported.json()["project"]["id"]
+    rejected = client.post(
+        f"/api/gui/v1/projects/{unsupported_project_id}/compile",
+        headers=_mutation_headers(client, if_match='"1"'),
+    )
+    assert rejected.status_code == 422
+    assert rejected.json()["detail"]["code"] == "compilation_failed"
+    assert rejected.json()["detail"]["diagnostics"] == [
+        {
+            "code": "unsupported_composition_parameter_override",
+            "message": (
+                "composition instance impact-instance has parameter overrides "
+                "that cannot yet be represented by the runtime package"
+            ),
+            "object_ids": ["impact-instance", "impact"],
+        }
+    ]
 
 
 def test_operate_actions_require_role_csrf_and_are_audited(tmp_path: Path) -> None:

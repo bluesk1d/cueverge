@@ -29,7 +29,7 @@ uv run pytest
 Run the controller:
 
 ```bash
-uv run uvicorn cueverge.controller.app:app --host 127.0.0.1 --port 8000
+uv run uvicorn cueverge.controller.app:app --host 127.0.0.1 --port 7000
 ```
 
 The browser GUI and certificate-enrollment API remain disabled unless

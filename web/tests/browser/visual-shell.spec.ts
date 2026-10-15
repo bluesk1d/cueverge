@@ -29,6 +29,19 @@ for (const viewport of viewports) {
     await page.getByRole("button", { name: "Installation", exact: true }).click();
     await expect(page.getByRole("heading", { name: "Network Topology" })).toBeVisible();
     await expect(page.getByRole("heading", { name: "media-client-left" })).toBeVisible();
+    const topologyPanel = page
+      .getByRole("heading", { name: "Topology", exact: true })
+      .locator("xpath=ancestor::section");
+    const photosPanel = page
+      .getByRole("heading", { name: "Installation Photos" })
+      .locator("xpath=ancestor::section");
+    const [topologyBox, photosBox] = await Promise.all([
+      topologyPanel.boundingBox(),
+      photosPanel.boundingBox(),
+    ]);
+    expect(topologyBox).not.toBeNull();
+    expect(photosBox).not.toBeNull();
+    expect(photosBox!.y - (topologyBox!.y + topologyBox!.height)).toBeGreaterThanOrEqual(12);
 
     await page.getByRole("button", { name: "Operate", exact: true }).click();
     await expect(page.getByRole("heading", { name: "Show controls" })).toBeVisible();

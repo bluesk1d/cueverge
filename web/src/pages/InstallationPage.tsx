@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import type { CSSProperties } from "react";
 import {
   Cable,
   Clock3,
@@ -9,11 +10,33 @@ import {
 } from "lucide-react";
 
 import {
+  AssetRecord,
+  assetArtifactUrl,
+  deleteInstallationPhoto,
+  deleteInstallationGeometry,
   createPairingToken,
   ArtifactCacheCapability,
   DeviceCapabilityDocument,
   DiscoveredEndpoint,
   getDiscoveredEndpoints,
+  getInstallationPhotos,
+  getInstallationGeometry,
+  getImageAssetLibrary,
+  getProjectorMapping,
+  getLightingSurface,
+  getProjectorOverlaps,
+  getGeometrySuggestions,
+  getStageCoverage,
+  installationPhotoUrl,
+  InstallationPhoto,
+  InstallationGeometry,
+  InstallationGeometryKind,
+  ProjectorMapping,
+  LightingSurface,
+  ProjectorOverlap,
+  GeometrySuggestion,
+  StageCoverage,
+  MaintenancePreview,
   InstallationStatus,
   MediaPlaybackCapability,
   PairingToken,
@@ -27,9 +50,25 @@ import {
   setDeviceEnrollmentState,
   setResourceAssignment,
   testDeviceConnection,
+  updateInstallationPhoto,
+  saveInstallationGeometry,
+  saveProjectorMapping,
+  saveLightingSurface,
+  saveProjectorOverlap,
+  startMaintenancePreview,
+  startTimingCalibration,
+  adjustTimingCalibration,
+  finishTimingCalibration,
+  TimingCalibrationSession,
+  AcceptedCalibration,
+  reviewAcceptedCalibrations,
+  reviewGeometrySuggestion,
+  uploadInstallationPhoto,
   probeEndpoint,
   Topology,
   TopologyNode,
+  TimingCalibrationCapability,
+  TimingAdjustment,
 } from "../api";
 import {
   EmptyState,
@@ -89,7 +128,6 @@ export function InstallationPage({
           )
         }
       />
-
       <section className="topology-summary" aria-label="Topology summary">
         <Summary
           label="Controller"
@@ -184,6 +222,22 @@ export function InstallationPage({
           )}
         </Panel>
       </div>
+      {installation && (
+        <InstallationPhotos
+          installationId={installation.installation_id}
+          projectorResources={installation.resources
+            .filter((resource) => resource.kind === "media_agent")
+            .map((resource) => resource.resource)}
+          canEdit={
+            session !== undefined &&
+            ["designer", "publisher", "administrator"].includes(session.role)
+          }
+          canPreview={
+            session !== undefined &&
+            ["operator", "administrator"].includes(session.role)
+          }
+        />
+      )}
       {(session?.role === "administrator" || session?.role === "operator") && topology && (
         <DeviceManagement
           agents={agents}
@@ -196,6 +250,2075 @@ export function InstallationPage({
       )}
     </>
   );
+}
+
+function InstallationPhotos({
+  installationId,
+  projectorResources,
+  canEdit,
+  canPreview,
+}: {
+  installationId: string;
+  projectorResources: string[];
+  canEdit: boolean;
+  canPreview: boolean;
+}) {
+  const [photos, setPhotos] = useState<InstallationPhoto[]>([]);
+  const [geometry, setGeometry] = useState<InstallationGeometry[]>([]);
+  const [imageAssets, setImageAssets] = useState<AssetRecord[]>([]);
+  const [overlaps, setOverlaps] = useState<ProjectorOverlap[]>([]);
+  const [suggestions, setSuggestions] = useState<GeometrySuggestion[]>([]);
+  const [stageCoverage, setStageCoverage] = useState<StageCoverage | null>(null);
+  const [name, setName] = useState("");
+  const [viewpoint, setViewpoint] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function load() {
+    try {
+      const [loadedPhotos, loadedGeometry, loadedImages, loadedOverlaps, loadedSuggestions, loadedCoverage] = await Promise.all([
+        getInstallationPhotos(installationId),
+        getInstallationGeometry(installationId),
+        getImageAssetLibrary(),
+        getProjectorOverlaps(installationId),
+        getGeometrySuggestions(installationId),
+        getStageCoverage(installationId),
+      ]);
+      setPhotos(loadedPhotos);
+      setGeometry(loadedGeometry);
+      setImageAssets(loadedImages);
+      setOverlaps(loadedOverlaps);
+      setSuggestions(loadedSuggestions);
+      setStageCoverage(loadedCoverage);
+      setError(null);
+    } catch {
+      setError("Installation photos could not be loaded.");
+    }
+  }
+
+  useEffect(() => {
+    void load();
+  }, [installationId]);
+
+  async function upload(file: File) {
+    setBusy(true);
+    setError(null);
+    try {
+      await uploadInstallationPhoto(
+        installationId,
+        file,
+        name || file.name.replace(/\.[^.]+$/, ""),
+        viewpoint || "Primary",
+      );
+      setName("");
+      setViewpoint("");
+      await load();
+    } catch {
+      setError("Installation photo upload failed.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="installation-design-stack">
+      <Panel
+        title="Installation Photos"
+        description="Named viewpoints for visual mapping, calibration, and simulation"
+      >
+        {canEdit && (
+          <div className="photo-upload">
+            <input
+              aria-label="Photo name"
+              disabled={busy}
+              placeholder="Wide front view"
+              value={name}
+              onChange={(event) => setName(event.target.value)}
+            />
+            <input
+              aria-label="Named viewpoint"
+              disabled={busy}
+              placeholder="Front yard"
+              value={viewpoint}
+              onChange={(event) => setViewpoint(event.target.value)}
+            />
+            <label className="file-button">
+              Add installation photo
+              <input
+                accept="image/jpeg,image/png,image/webp"
+                disabled={busy}
+                type="file"
+                onChange={(event) => {
+                  const file = event.target.files?.[0];
+                  if (file) {
+                    void upload(file);
+                  }
+                }}
+              />
+            </label>
+          </div>
+        )}
+        {error && <p role="alert">{error}</p>}
+        {photos.length ? (
+          <div className="installation-photos">
+            {photos.map((photo) => (
+              <InstallationPhotoCard
+                key={photo.id}
+                photo={photo}
+                canEdit={canEdit}
+                onRefresh={load}
+              />
+            ))}
+          </div>
+        ) : (
+          <EmptyState
+            title="No installation photos"
+            description="Add wide views, close-ups, or alternate angles before mapping geometry."
+          />
+        )}
+      </Panel>
+      {photos.length > 0 && (
+        <Panel
+          title="Visual Mapper"
+          description="Geometry, projector transforms, lighting surfaces, and diagnostics"
+        >
+          <GeometryMapper
+            installationId={installationId}
+            projectorResources={projectorResources}
+            photos={photos}
+            geometry={geometry}
+            imageAssets={imageAssets}
+            overlaps={overlaps}
+            suggestions={suggestions}
+            stageCoverage={stageCoverage}
+            canEdit={canEdit}
+            canPreview={canPreview}
+            onRefresh={load}
+          />
+        </Panel>
+      )}
+    </div>
+  );
+}
+
+function InstallationPhotoCard({
+  photo,
+  canEdit,
+  onRefresh,
+}: {
+  photo: InstallationPhoto;
+  canEdit: boolean;
+  onRefresh: () => Promise<void>;
+}) {
+  const [name, setName] = useState(photo.name);
+  const [viewpoint, setViewpoint] = useState(photo.viewpoint);
+  const [orientation, setOrientation] = useState(photo.orientation_degrees);
+  const [scaleHint, setScaleHint] = useState(photo.scale_hint?.toString() ?? "");
+  const [crop, setCrop] = useState({
+    x: photo.crop_x?.toString() ?? "",
+    y: photo.crop_y?.toString() ?? "",
+    width: photo.crop_width?.toString() ?? "",
+    height: photo.crop_height?.toString() ?? "",
+  });
+  const [saving, setSaving] = useState(false);
+
+  async function save() {
+    setSaving(true);
+    try {
+      await updateInstallationPhoto(photo, {
+        name,
+        viewpoint,
+        orientation_degrees: orientation,
+        crop_x: crop.x ? Number(crop.x) : null,
+        crop_y: crop.y ? Number(crop.y) : null,
+        crop_width: crop.width ? Number(crop.width) : null,
+        crop_height: crop.height ? Number(crop.height) : null,
+        scale_hint: scaleHint ? Number(scaleHint) : null,
+      });
+      await onRefresh();
+    } finally {
+      setSaving(false);
+    }
+
+
+  }
+
+  async function remove() {
+    setSaving(true);
+    try {
+      await deleteInstallationPhoto(photo);
+      await onRefresh();
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <article>
+      <img
+        alt={`${photo.name}, ${photo.viewpoint}`}
+        src={installationPhotoUrl(photo.id)}
+        style={{ transform: `rotate(${photo.orientation_degrees}deg)` }}
+      />
+      <strong>{photo.name}</strong>
+      <small>
+        {photo.viewpoint} · {(photo.size_bytes / 1_000_000).toFixed(1)} MB
+      </small>
+      {canEdit && (
+        <>
+          <input
+            aria-label={`Name for photo ${photo.name}`}
+            disabled={saving}
+            value={name}
+            onChange={(event) => setName(event.target.value)}
+          />
+          <input
+            aria-label={`Viewpoint for photo ${photo.name}`}
+            disabled={saving}
+            value={viewpoint}
+            onChange={(event) => setViewpoint(event.target.value)}
+          />
+          <select
+            aria-label={`Orientation for photo ${photo.name}`}
+            disabled={saving}
+            value={orientation}
+            onChange={(event) =>
+              setOrientation(Number(event.target.value) as 0 | 90 | 180 | 270)
+            }
+          >
+            {[0, 90, 180, 270].map((degrees) => (
+              <option key={degrees} value={degrees}>
+                {degrees}°
+              </option>
+            ))}
+          </select>
+          <input
+            aria-label={`Scale hint for photo ${photo.name}`}
+            disabled={saving}
+            min="0.001"
+            placeholder="Pixels per meter"
+            step="any"
+            type="number"
+            value={scaleHint}
+            onChange={(event) => setScaleHint(event.target.value)}
+          />
+          {(["x", "y", "width", "height"] as const).map((field) => (
+            <input
+              key={field}
+              aria-label={`Crop ${field} for photo ${photo.name}`}
+              disabled={saving}
+              max="1"
+              min={field === "width" || field === "height" ? "0.001" : "0"}
+              placeholder={`Crop ${field} (0–1)`}
+              step="0.001"
+              type="number"
+              value={crop[field]}
+              onChange={(event) =>
+                setCrop((current) => ({ ...current, [field]: event.target.value }))
+              }
+            />
+          ))}
+          <button disabled={saving || !name.trim() || !viewpoint.trim()} onClick={() => void save()}>
+            Save photo
+          </button>
+          <button className="danger-button" disabled={saving} onClick={() => void remove()}>
+            Remove photo
+          </button>
+        </>
+      )}
+    </article>
+  );
+}
+
+const GEOMETRY_KINDS: InstallationGeometryKind[] = [
+  "output",
+  "pixel_segment",
+  "fixture",
+  "path",
+  "projector_surface",
+  "mask",
+  "audience_zone",
+  "safety_zone",
+];
+
+function GeometryMapper({
+  installationId,
+  projectorResources,
+  photos,
+  geometry,
+  imageAssets,
+  overlaps,
+  suggestions,
+  stageCoverage,
+  canEdit,
+  canPreview,
+  onRefresh,
+}: {
+  installationId: string;
+  projectorResources: string[];
+  photos: InstallationPhoto[];
+  geometry: InstallationGeometry[];
+  imageAssets: AssetRecord[];
+  overlaps: ProjectorOverlap[];
+  suggestions: GeometrySuggestion[];
+  stageCoverage: StageCoverage | null;
+  canEdit: boolean;
+  canPreview: boolean;
+  onRefresh: () => Promise<void>;
+}) {
+  const [photoId, setPhotoId] = useState(photos[0]?.id ?? "");
+  const [kind, setKind] = useState<InstallationGeometryKind>("projector_surface");
+  const [name, setName] = useState("");
+  const [points, setPoints] = useState<{ x: number; y: number }[]>([]);
+  const [editing, setEditing] = useState<InstallationGeometry | undefined>();
+  const [linkedSemanticId, setLinkedSemanticId] = useState<string | null>(null);
+  const [color, setColor] = useState("#6ee7ff");
+  const [labelVisible, setLabelVisible] = useState(true);
+  const [locked, setLocked] = useState(false);
+  const [hidden, setHidden] = useState(false);
+  const [zIndex, setZIndex] = useState(0);
+  const [direction, setDirection] = useState<"forward" | "reverse">("forward");
+  const [startIndex, setStartIndex] = useState("");
+  const [pixelCount, setPixelCount] = useState("");
+  const [stagePoints, setStagePoints] = useState("");
+  const [traversalPreview, setTraversalPreview] = useState(false);
+  const [pixelGenerator, setPixelGenerator] = useState<
+    "row" | "grid" | "ring" | "outline" | "individual" | "import"
+  >("row");
+  const [generatorRows, setGeneratorRows] = useState(4);
+  const [generatorColumns, setGeneratorColumns] = useState(10);
+  const [importedPoints, setImportedPoints] = useState("");
+  const [timingSession, setTimingSession] =
+    useState<TimingCalibrationSession | null>(null);
+  const [timingView, setTimingView] = useState<"baseline" | "proposed">("proposed");
+  const [acceptedCalibrations, setAcceptedCalibrations] = useState<
+    AcceptedCalibration[]
+  >([]);
+  const [calibrationProvenance, setCalibrationProvenance] = useState({
+    test_asset_id: "",
+    test_asset_version: "",
+    observed_variability_ms: "",
+    notes: "",
+    hardware: "",
+    routing: "",
+    display_mode: "",
+    media_settings: "",
+    environment: "",
+  });
+  const [overlapSecondId, setOverlapSecondId] = useState("");
+  const [overlapPreviewMode, setOverlapPreviewMode] =
+    useState<"native" | "mapped">("mapped");
+  const [overlapValues, setOverlapValues] = useState({
+    stage_points: [
+      [0, 0],
+      [1, 0],
+      [1, 1],
+      [0, 1],
+    ] as [number, number][],
+    ramp_width: 0.2,
+    overlap_gamma: 1,
+    first_brightness: 1,
+    second_brightness: 1,
+    first_white: [1, 1, 1] as [number, number, number],
+    second_white: [1, 1, 1] as [number, number, number],
+    first_color_matrix: [1, 0, 0, 0, 1, 0, 0, 0, 1],
+    second_color_matrix: [1, 0, 0, 0, 1, 0, 0, 0, 1],
+    first_black_level: 0,
+    second_black_level: 0,
+  });
+  const selectedOverlap = overlaps.find(
+    (item) =>
+      item.first_geometry_id === editing?.id &&
+      item.second_geometry_id === overlapSecondId,
+  );
+  const [snap, setSnap] = useState(true);
+  const [zoom, setZoom] = useState(1);
+  const [panX, setPanX] = useState(0);
+  const [panY, setPanY] = useState(0);
+  const [mapping, setMapping] = useState<ProjectorMapping | undefined>();
+  const [lightingSurface, setLightingSurface] = useState<LightingSurface | undefined>();
+  const [dragIndex, setDragIndex] = useState<number | null>(null);
+  const [alignmentPreview, setAlignmentPreview] = useState<MaintenancePreview | null>(null);
+  const [previewError, setPreviewError] = useState<string | null>(null);
+  const suppressClick = useRef(false);
+  const [mappingValues, setMappingValues] = useState({
+    resource: projectorResources[0] ?? "",
+    native_width: 1920,
+    native_height: 1080,
+    stage_x: 0,
+    stage_y: 0,
+    stage_width: 4,
+    stage_height: 2.25,
+    crop_x: 0,
+    crop_y: 0,
+    crop_width: 1,
+    crop_height: 1,
+    content_asset_id: null as string | null,
+    surface_model: "planar" as "planar" | "subdivided",
+    fit_mode: "preserve" as "preserve" | "stretch",
+    overscan: false,
+    brightness_limit: 1,
+    media_start_delay_ms: 0,
+    media_release_delay_ms: 0,
+    orientation_degrees: 0 as 0 | 90 | 180 | 270,
+    mirror_x: false,
+    mirror_y: false,
+    mask_semantic_ids: [] as string[],
+  });
+  const [lightingValues, setLightingValues] = useState({
+    resource: "wled-001",
+    local_width: 1,
+    local_height: 1,
+    local_points: [[0, 0], [1, 1]] as [number, number][],
+    stage_matrix: [1, 0, 0, 1, 0, 0] as [
+      number,
+      number,
+      number,
+      number,
+      number,
+      number,
+    ],
+    fixture_id: "",
+    group_id: "",
+    path_id: "",
+    strand_id: "",
+    calibration_id: "",
+    pixel_footprint_width: 0.01,
+    pixel_footprint_height: 0.01,
+    brightness_limit: 1,
+    timing_offset_ms: 0,
+    release_offset_ms: 0,
+  });
+  const photo = photos.find((candidate) => candidate.id === photoId) ?? photos[0];
+  const visible = geometry
+    .filter((item) => item.photo_id === photo?.id && !item.hidden)
+    .sort((left, right) => left.z_index - right.z_index);
+  const visibleSuggestions = suggestions.filter(
+    (suggestion) =>
+      suggestion.photo_id === photo?.id && suggestion.state === "pending",
+  );
+  const closed = ["output", "projector_surface", "mask", "audience_zone", "safety_zone"].includes(
+    kind,
+  );
+  const wiringDiagnostics = geometryDiagnostics(visible);
+
+  async function beginEdit(item: InstallationGeometry) {
+    setEditing(item);
+    setPhotoId(item.photo_id);
+    setKind(item.kind);
+    setName(item.name);
+    setPoints(item.points);
+    setLinkedSemanticId(item.semantic_id);
+    setColor(item.color);
+    setLabelVisible(item.label_visible);
+    setLocked(item.locked);
+    setHidden(item.hidden);
+    setZIndex(item.z_index);
+    setDirection(item.direction);
+    setStartIndex(item.start_index?.toString() ?? "");
+    setPixelCount(item.pixel_count?.toString() ?? "");
+    setStagePoints(
+      item.stage_points?.map(([x, y]) => `${x},${y}`).join("\n") ?? "",
+    );
+    setMapping(undefined);
+    setLinkedSemanticId(null);
+    setColor("#6ee7ff");
+    setLabelVisible(true);
+    setLocked(false);
+    setHidden(false);
+    setZIndex(0);
+    setDirection("forward");
+    setStartIndex("");
+    setPixelCount("");
+    setStagePoints("");
+    if (item.kind === "projector_surface") {
+      try {
+        const loaded = await getProjectorMapping(item.id);
+        setMapping(loaded);
+        setMappingValues({
+          resource: loaded.resource,
+          native_width: loaded.native_width,
+          native_height: loaded.native_height,
+          stage_x: loaded.stage_x,
+          stage_y: loaded.stage_y,
+          stage_width: loaded.stage_width,
+          stage_height: loaded.stage_height,
+          crop_x: loaded.crop_x,
+          crop_y: loaded.crop_y,
+          crop_width: loaded.crop_width,
+          crop_height: loaded.crop_height,
+          content_asset_id: loaded.content_asset_id,
+          surface_model: loaded.surface_model,
+          fit_mode: loaded.fit_mode,
+          overscan: loaded.overscan,
+          brightness_limit: loaded.brightness_limit,
+          media_start_delay_ms: loaded.media_start_delay_ms,
+          media_release_delay_ms: loaded.media_release_delay_ms,
+          orientation_degrees: loaded.orientation_degrees,
+          mirror_x: loaded.mirror_x,
+          mirror_y: loaded.mirror_y,
+          mask_semantic_ids: loaded.mask_semantic_ids,
+        });
+      } catch {
+        setMapping(undefined);
+      }
+    }
+    if (item.kind === "pixel_segment") {
+      try {
+        const loaded = await getLightingSurface(item.id);
+        setLightingSurface(loaded);
+        setLightingValues({
+          resource: loaded.resource,
+          local_width: loaded.local_width,
+          local_height: loaded.local_height,
+          local_points: loaded.local_points,
+          stage_matrix: loaded.stage_matrix,
+          fixture_id: loaded.fixture_id ?? "",
+          group_id: loaded.group_id ?? "",
+          path_id: loaded.path_id ?? "",
+          strand_id: loaded.strand_id ?? "",
+          calibration_id: loaded.calibration_id ?? "",
+          pixel_footprint_width: loaded.pixel_footprint_width,
+          pixel_footprint_height: loaded.pixel_footprint_height,
+          brightness_limit: loaded.brightness_limit,
+          timing_offset_ms: loaded.timing_offset_ms,
+          release_offset_ms: loaded.release_offset_ms,
+        });
+      } catch {
+        setLightingSurface(undefined);
+      }
+    }
+    if (item.kind === "projector_surface" || item.kind === "pixel_segment") {
+      setAcceptedCalibrations(
+        await reviewAcceptedCalibrations(
+          item.kind === "projector_surface"
+            ? "projector_mapping"
+            : "lighting_surface",
+          item.id,
+          calibrationContext(),
+        ),
+      );
+    }
+  }
+
+  function reset() {
+    setEditing(undefined);
+    setName("");
+    setPoints([]);
+    setMapping(undefined);
+    setLightingSurface(undefined);
+  }
+
+  async function loadSuggestion(suggestion: GeometrySuggestion) {
+    await reviewGeometrySuggestion(suggestion.id, "review");
+    setKind(suggestion.kind);
+    setName(suggestion.name);
+    setPoints(suggestion.points);
+    setEditing(undefined);
+    setLinkedSemanticId(null);
+    await onRefresh();
+  }
+
+  async function rejectSuggestion(suggestion: GeometrySuggestion) {
+    await reviewGeometrySuggestion(suggestion.id, "reject");
+    await onRefresh();
+  }
+
+  async function save() {
+    if (!photo || !name.trim()) {
+      return;
+    }
+    const saved = await saveInstallationGeometry(
+      installationId,
+      {
+        photo_id: photo.id,
+        kind,
+        name,
+        points,
+        closed,
+        semantic_id: editing ? editing.semantic_id : linkedSemanticId,
+        color,
+        label_visible: labelVisible,
+        locked,
+        hidden,
+        z_index: zIndex,
+        direction,
+        start_index: kind === "pixel_segment" ? Number(startIndex) : null,
+        pixel_count: kind === "pixel_segment" ? Number(pixelCount) : null,
+        stage_points: stagePoints.trim()
+          ? stagePoints
+              .split("\n")
+              .map((line) => line.split(",").map(Number))
+              .filter(
+                (point): point is [number, number] =>
+                  point.length === 2 && point.every(Number.isFinite),
+              )
+          : null,
+      },
+      editing,
+    );
+    if (
+      kind === "projector_surface" &&
+      (mappingValues.surface_model === "planar" ? points.length === 4 : points.length >= 5)
+    ) {
+      await saveProjectorMapping(saved.id, mappingValues, mapping?.revision);
+    }
+    if (kind === "pixel_segment") {
+      const localPoints =
+        lightingSurface?.local_points ??
+        points.map(
+          (point) =>
+            [
+              point.x * lightingValues.local_width,
+              point.y * lightingValues.local_height,
+            ] as [number, number],
+        );
+      await saveLightingSurface(
+        saved.id,
+        {
+          ...lightingValues,
+          local_points: localPoints,
+          fixture_id: lightingValues.fixture_id || null,
+          group_id: lightingValues.group_id || null,
+          path_id: lightingValues.path_id || null,
+          strand_id: lightingValues.strand_id || null,
+          calibration_id: lightingValues.calibration_id || null,
+        },
+        lightingSurface?.revision,
+      );
+    }
+    reset();
+    await onRefresh();
+  }
+
+  function generatePixelLayout() {
+    const generated = generateNormalizedPixelLayout(
+      pixelGenerator,
+      generatorRows,
+      generatorColumns,
+      importedPoints,
+    );
+    setKind("pixel_segment");
+    setPoints(generated);
+    const count =
+      pixelGenerator === "grid"
+        ? generatorRows * generatorColumns
+        : pixelGenerator === "individual"
+          ? 1
+          : Math.max(1, generatorColumns);
+    setPixelCount(String(count));
+    setLightingSurface(undefined);
+    setLightingValues((current) => ({
+      ...current,
+      local_points: generated.map(
+        (point) =>
+          [
+            point.x * current.local_width,
+            point.y * current.local_height,
+          ] as [number, number],
+      ),
+    }));
+  }
+
+  function calibrationContext(): Record<string, unknown> {
+    return {
+      hardware: calibrationProvenance.hardware,
+      routing: calibrationProvenance.routing,
+      display_mode: calibrationProvenance.display_mode,
+      media_settings: calibrationProvenance.media_settings,
+      environment: calibrationProvenance.environment,
+    };
+  }
+
+  async function beginTiming(adjustmentKind: "onset" | "release") {
+    if (!editing) {
+      return;
+    }
+    setTimingSession(
+      await startTimingCalibration(
+        editing.kind === "projector_surface"
+          ? "projector_mapping"
+          : "lighting_surface",
+        editing.id,
+        adjustmentKind,
+        {
+          test_asset_id: calibrationProvenance.test_asset_id || null,
+          test_asset_version: calibrationProvenance.test_asset_version || null,
+          observed_variability_ms: calibrationProvenance.observed_variability_ms
+            ? Number(calibrationProvenance.observed_variability_ms)
+            : null,
+          notes: calibrationProvenance.notes || null,
+          context: calibrationContext(),
+        },
+      ),
+    );
+    setTimingView("proposed");
+  }
+
+  async function nudgeTiming(delta: number) {
+    if (!timingSession) {
+      return;
+    }
+    const proposed = Math.max(
+      -5000,
+      Math.min(5000, timingSession.proposed_ms + delta),
+    );
+    setTimingSession(await adjustTimingCalibration(timingSession, proposed));
+    setTimingView("proposed");
+  }
+
+  async function finishTiming(action: "accept" | "cancel") {
+    if (!timingSession) {
+      return;
+    }
+    setTimingSession(await finishTimingCalibration(timingSession, action));
+    if (action === "accept") {
+      if (editing?.kind === "projector_surface") {
+        setMapping(await getProjectorMapping(editing.id));
+      } else if (editing?.kind === "pixel_segment") {
+        setLightingSurface(await getLightingSurface(editing.id));
+      }
+      if (editing) {
+        setAcceptedCalibrations(
+          await reviewAcceptedCalibrations(
+            editing.kind === "projector_surface"
+              ? "projector_mapping"
+              : "lighting_surface",
+            editing.id,
+            calibrationContext(),
+          ),
+        );
+      }
+    }
+  }
+
+  async function saveOverlap() {
+    if (!editing || editing.kind !== "projector_surface" || !overlapSecondId) {
+      return;
+    }
+    const existing = overlaps.find(
+      (item) =>
+        item.first_geometry_id === editing.id &&
+        item.second_geometry_id === overlapSecondId,
+    );
+    await saveProjectorOverlap(
+      installationId,
+      {
+        id: existing?.id,
+        first_geometry_id: editing.id,
+        second_geometry_id: overlapSecondId,
+        ...overlapValues,
+      },
+      existing?.revision,
+    );
+    await onRefresh();
+  }
+
+  function selectOverlap(secondId: string) {
+    setOverlapSecondId(secondId);
+    const existing = overlaps.find(
+      (item) =>
+        item.first_geometry_id === editing?.id &&
+        item.second_geometry_id === secondId,
+    );
+    if (existing) {
+      setOverlapValues({
+        stage_points: existing.stage_points,
+        ramp_width: existing.ramp_width,
+        overlap_gamma: existing.overlap_gamma,
+        first_brightness: existing.first_brightness,
+        second_brightness: existing.second_brightness,
+        first_white: existing.first_white,
+        second_white: existing.second_white,
+        first_color_matrix: existing.first_color_matrix,
+        second_color_matrix: existing.second_color_matrix,
+        first_black_level: existing.first_black_level,
+        second_black_level: existing.second_black_level,
+      });
+    }
+  }
+
+  return (
+    <section className="geometry-mapper">
+      <div className="geometry-mapper__tools">
+        <strong>Visual Mapper</strong>
+        <select value={photo?.id} onChange={(event) => setPhotoId(event.target.value)}>
+          {photos.map((candidate) => (
+            <option key={candidate.id} value={candidate.id}>
+              {candidate.viewpoint} · {candidate.name}
+            </option>
+          ))}
+        </select>
+        {canEdit && (
+          <>
+            <select
+              value={kind}
+              onChange={(event) => setKind(event.target.value as InstallationGeometryKind)}
+            >
+              {GEOMETRY_KINDS.map((value) => (
+                <option key={value} value={value}>
+                  {value.replaceAll("_", " ")}
+                </option>
+              ))}
+            </select>
+            <select
+              aria-label="Pixel layout generator"
+              value={pixelGenerator}
+              onChange={(event) =>
+                setPixelGenerator(
+                  event.target.value as typeof pixelGenerator,
+                )
+              }
+            >
+              <option value="row">Pixel row</option>
+              <option value="grid">Serpentine grid</option>
+              <option value="ring">Pixel ring</option>
+              <option value="outline">Rectangle outline</option>
+              <option value="individual">Individual pixel</option>
+              <option value="import">Import coordinates</option>
+            </select>
+            {pixelGenerator === "grid" && (
+              <input
+                aria-label="Pixel rows"
+                min="2"
+                type="number"
+                value={generatorRows}
+                onChange={(event) => setGeneratorRows(Number(event.target.value))}
+              />
+            )}
+            {!["individual", "import"].includes(pixelGenerator) && (
+              <input
+                aria-label="Generated pixel count"
+                min="2"
+                type="number"
+                value={generatorColumns}
+                onChange={(event) => setGeneratorColumns(Number(event.target.value))}
+              />
+            )}
+            {pixelGenerator === "import" && (
+              <textarea
+                aria-label="Imported normalized coordinates"
+                placeholder={"0.1,0.1\n0.9,0.9"}
+                rows={2}
+                value={importedPoints}
+                onChange={(event) => setImportedPoints(event.target.value)}
+              />
+            )}
+            <button onClick={generatePixelLayout}>Generate pixel layout</button>
+            <input
+              aria-label="Geometry name"
+              placeholder="Geometry name"
+              value={name}
+              onChange={(event) => setName(event.target.value)}
+            />
+            <textarea
+              aria-label="Shared stage points"
+              placeholder={"Stage x,y per line\n0,0\n1,0"}
+              rows={2}
+              value={stagePoints}
+              onChange={(event) => setStagePoints(event.target.value)}
+            />
+            <input
+              aria-label="Geometry color"
+              type="color"
+              value={color}
+              onChange={(event) => setColor(event.target.value)}
+            />
+            <label><input type="checkbox" checked={labelVisible} onChange={(event) => setLabelVisible(event.target.checked)} />Labels</label>
+            <label><input type="checkbox" checked={locked} onChange={(event) => setLocked(event.target.checked)} />Locked</label>
+            <label><input type="checkbox" checked={hidden} onChange={(event) => setHidden(event.target.checked)} />Hidden</label>
+            <input aria-label="Layer order" type="number" value={zIndex} onChange={(event) => setZIndex(Number(event.target.value))} />
+            <label><input type="checkbox" checked={snap} onChange={(event) => setSnap(event.target.checked)} />Snap to 1% grid</label>
+            <label>Zoom <input type="range" min="1" max="4" step="0.25" value={zoom} onChange={(event) => setZoom(Number(event.target.value))} /></label>
+            <label>Pan X <input type="range" min="-500" max="500" value={panX} onChange={(event) => setPanX(Number(event.target.value))} /></label>
+            <label>Pan Y <input type="range" min="-300" max="300" value={panY} onChange={(event) => setPanY(Number(event.target.value))} /></label>
+            {(kind === "pixel_segment" || kind === "path") && (
+              <select value={direction} onChange={(event) => setDirection(event.target.value as "forward" | "reverse")}>
+                <option value="forward">Forward direction</option>
+                <option value="reverse">Reverse direction</option>
+              </select>
+            )}
+            {kind === "pixel_segment" && (
+              <>
+                <input aria-label="Pixel start index" min="0" type="number" value={startIndex} onChange={(event) => setStartIndex(event.target.value)} />
+                <input aria-label="Pixel count" min="1" type="number" value={pixelCount} onChange={(event) => setPixelCount(event.target.value)} />
+              </>
+            )}
+            <button onClick={() => setTraversalPreview((current) => !current)}>
+              {traversalPreview ? "Stop traversal preview" : "Preview traversal"}
+            </button>
+            {!editing && (
+              <select
+                aria-label="Link geometry across viewpoints"
+                value={linkedSemanticId ?? ""}
+                onChange={(event) => setLinkedSemanticId(event.target.value || null)}
+              >
+                <option value="">Create new semantic object</option>
+                {geometry
+                  .filter(
+                    (item, index, all) =>
+                      item.kind === kind &&
+                      item.photo_id !== photo?.id &&
+                      all.findIndex(
+                        (candidate) => candidate.semantic_id === item.semantic_id,
+                      ) === index,
+                  )
+                  .map((item) => (
+                    <option key={item.semantic_id} value={item.semantic_id}>
+                      Link to {item.name}
+                    </option>
+                  ))}
+              </select>
+            )}
+            <button
+              disabled={
+                !name.trim() ||
+                !points.length ||
+                (kind === "projector_surface" &&
+                  (!mappingValues.resource ||
+                    (mappingValues.surface_model === "planar"
+                      ? points.length !== 4
+                      : points.length < 5))) ||
+                (kind === "pixel_segment" &&
+                  (!startIndex || !pixelCount || Number(pixelCount) < 1))
+              }
+              onClick={() => void save()}
+            >
+              {editing ? "Update geometry" : "Save geometry"}
+            </button>
+            <button onClick={reset}>Clear points</button>
+            <button
+              disabled={!points.length}
+              onClick={() => setPoints((current) => current.slice(0, -1))}
+            >
+              Undo point
+            </button>
+          </>
+        )}
+      </div>
+      {canEdit && kind === "projector_surface" && (
+        <div className="projector-mapping-controls">
+          <label>
+            Projector resource
+            <select
+              value={mappingValues.resource}
+              onChange={(event) =>
+                setMappingValues((current) => ({ ...current, resource: event.target.value }))
+              }
+            >
+              {projectorResources.map((resource) => (
+                <option key={resource} value={resource}>{resource}</option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Calibration content
+            <select
+              value={mappingValues.content_asset_id ?? ""}
+              onChange={(event) =>
+                setMappingValues((current) => ({
+                  ...current,
+                  content_asset_id: event.target.value || null,
+                }))
+              }
+            >
+              <option value="">Generated calibration grid</option>
+              {imageAssets.map((asset) => (
+                <option key={asset.id} value={asset.id}>{asset.name}</option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Surface model
+            <select
+              value={mappingValues.surface_model}
+              onChange={(event) =>
+                setMappingValues((current) => ({
+                  ...current,
+                  surface_model: event.target.value as "planar" | "subdivided",
+                }))
+              }
+            >
+              <option value="planar">Planar four-corner</option>
+              <option value="subdivided">Subdivided / non-planar</option>
+            </select>
+          </label>
+          <label>
+            Content fit
+            <select
+              value={mappingValues.fit_mode}
+              onChange={(event) =>
+                setMappingValues((current) => ({
+                  ...current,
+                  fit_mode: event.target.value as "preserve" | "stretch",
+                }))
+              }
+            >
+              <option value="preserve">Preserve aspect ratio</option>
+              <option value="stretch">Stretch to surface</option>
+            </select>
+          </label>
+          <label>
+            Native orientation
+            <select
+              value={mappingValues.orientation_degrees}
+              onChange={(event) =>
+                setMappingValues((current) => ({
+                  ...current,
+                  orientation_degrees: Number(event.target.value) as
+                    | 0
+                    | 90
+                    | 180
+                    | 270,
+                }))
+              }
+            >
+              {[0, 90, 180, 270].map((degrees) => (
+                <option key={degrees} value={degrees}>{degrees}°</option>
+              ))}
+            </select>
+          </label>
+          <label>
+            <input
+              checked={mappingValues.mirror_x}
+              type="checkbox"
+              onChange={(event) =>
+                setMappingValues((current) => ({
+                  ...current,
+                  mirror_x: event.target.checked,
+                }))
+              }
+            />
+            Mirror horizontally
+          </label>
+          <label>
+            <input
+              checked={mappingValues.mirror_y}
+              type="checkbox"
+              onChange={(event) =>
+                setMappingValues((current) => ({
+                  ...current,
+                  mirror_y: event.target.checked,
+                }))
+              }
+            />
+            Mirror vertically
+          </label>
+          <label>
+            Linked masks
+            <select
+              multiple
+              value={mappingValues.mask_semantic_ids}
+              onChange={(event) =>
+                setMappingValues((current) => ({
+                  ...current,
+                  mask_semantic_ids: Array.from(
+                    event.target.selectedOptions,
+                    (option) => option.value,
+                  ),
+                }))
+              }
+            >
+              {geometry
+                .filter(
+                  (item, index, all) =>
+                    item.kind === "mask" &&
+                    all.findIndex(
+                      (candidate) =>
+                        candidate.semantic_id === item.semantic_id,
+                    ) === index,
+                )
+                .map((item) => (
+                  <option key={item.semantic_id} value={item.semantic_id}>
+                    {item.name}
+                  </option>
+                ))}
+            </select>
+          </label>
+          <label>
+            <input
+              checked={mappingValues.overscan}
+              type="checkbox"
+              onChange={(event) =>
+                setMappingValues((current) => ({
+                  ...current,
+                  overscan: event.target.checked,
+                }))
+              }
+            />
+            Allow overscan
+          </label>
+          {(
+            [
+              ["native_width", "Native width"],
+              ["native_height", "Native height"],
+              ["stage_x", "Stage X"],
+              ["stage_y", "Stage Y"],
+              ["stage_width", "Stage width"],
+              ["stage_height", "Stage height"],
+              ["crop_x", "Crop X"],
+              ["crop_y", "Crop Y"],
+              ["crop_width", "Crop width"],
+              ["crop_height", "Crop height"],
+              ["brightness_limit", "Brightness limit (0–1)"],
+              ["media_start_delay_ms", "Media start delay (ms)"],
+            ] as const
+          ).map(([field, label]) => (
+            <label key={field}>
+              {label}
+              <input
+                type="number"
+                step="any"
+                value={mappingValues[field]}
+                onChange={(event) =>
+                  setMappingValues((current) => ({
+                    ...current,
+                    [field]: Number(event.target.value),
+                  }))
+                }
+              />
+            </label>
+          ))}
+          <label className="asset-governance__wide">
+            Surface-local control points
+            <textarea
+              rows={3}
+              value={lightingValues.local_points
+                .map(([x, y]) => `${x},${y}`)
+                .join("\n")}
+              onChange={(event) =>
+                setLightingValues((current) => ({
+                  ...current,
+                  local_points: event.target.value
+                    .split("\n")
+                    .map((line) => line.split(",").map(Number))
+                    .filter(
+                      (point): point is [number, number] =>
+                        point.length === 2 && point.every(Number.isFinite),
+                    ),
+                }))
+              }
+            />
+          </label>
+          <small>
+            {mapping
+              ? mapping.diagnostic ??
+                `Homography: ${mapping.homography?.map((value) => value.toFixed(5)).join(", ")}`
+              : mappingValues.surface_model === "planar"
+                ? "Draw exactly four corners to create the projective transform."
+                : "Add five or more control points. A single homography will be disabled."}
+          </small>
+          {mapping?.photo_views.map((view) => (
+            <small key={view.geometry_id}>
+              Photo view {view.photo_id}:{" "}
+              {view.homography
+                ? `homography ${view.homography.map((value) => value.toFixed(4)).join(", ")}`
+                : "no single homography"}
+            </small>
+          ))}
+          {mappingValues.content_asset_id ? (
+            <img
+              className="projector-content-preview"
+              alt="Selected projector mapping content"
+              src={assetArtifactUrl(mappingValues.content_asset_id, "review")}
+            />
+          ) : (
+            <div className="projector-grid-preview" aria-label="Generated calibration grid" />
+          )}
+          {canPreview && (
+            <button
+              disabled={!mappingValues.resource}
+              onClick={async () => {
+                setPreviewError(null);
+                try {
+                  setAlignmentPreview(
+                    await startMaintenancePreview(mappingValues.resource, 15),
+                  );
+                } catch {
+                  setPreviewError(
+                    "Preview requires maintenance mode, idle playback, and a configured projector.",
+                  );
+                }
+              }}
+            >
+              Preview alignment grid for 15 seconds
+            </button>
+          )}
+          {alignmentPreview && (
+            <small role="status">
+              Simulation preview recorded until{" "}
+              {new Date(alignmentPreview.expires_at).toLocaleTimeString()}; no hardware command was sent.
+            </small>
+          )}
+          {mapping?.fit_diagnostics.map((diagnostic) => (
+            <small className="asset-diagnostic--warning" key={diagnostic}>
+              {diagnostic}
+            </small>
+          ))}
+          {previewError && <small role="alert">{previewError}</small>}
+        </div>
+      )}
+      {canEdit &&
+        editing?.kind === "projector_surface" &&
+        geometry.some(
+          (item) =>
+            item.kind === "projector_surface" && item.id !== editing.id,
+        ) && (
+          <div className="projector-mapping-controls overlap-calibration">
+            <strong>Projector overlap calibration</strong>
+            <label>
+              Paired projector surface
+              <select
+                value={overlapSecondId}
+                onChange={(event) => selectOverlap(event.target.value)}
+              >
+                <option value="">Select surface</option>
+                {geometry
+                  .filter(
+                    (item) =>
+                      item.kind === "projector_surface" &&
+                      item.id !== editing.id,
+                  )
+                  .map((item) => (
+                    <option key={item.id} value={item.id}>
+                      {item.name}
+                    </option>
+                  ))}
+              </select>
+            </label>
+            {(
+              [
+                ["ramp_width", "Blend ramp width"],
+                ["overlap_gamma", "Overlap gamma"],
+                ["first_brightness", "First brightness"],
+                ["second_brightness", "Second brightness"],
+                ["first_black_level", "First black level"],
+                ["second_black_level", "Second black level"],
+              ] as const
+            ).map(([field, label]) => (
+              <label key={field}>
+                {label}
+                <input
+                  min="0"
+                  max={field === "overlap_gamma" ? "5" : "1"}
+                  step="0.01"
+                  type="number"
+                  value={overlapValues[field]}
+                  onChange={(event) =>
+                    setOverlapValues((current) => ({
+                      ...current,
+                      [field]: Number(event.target.value),
+                    }))
+                  }
+                />
+              </label>
+            ))}
+            {(
+              [
+                ["stage_points", "Stage overlap polygon"],
+                ["first_white", "First white RGB"],
+                ["second_white", "Second white RGB"],
+                ["first_color_matrix", "First 3×3 color matrix"],
+                ["second_color_matrix", "Second 3×3 color matrix"],
+              ] as const
+            ).map(([field, label]) => (
+              <label className="asset-governance__wide" key={field}>
+                {label}
+                <textarea
+                  rows={2}
+                  value={
+                    field === "stage_points"
+                      ? overlapValues[field]
+                          .map(([x, y]) => `${x},${y}`)
+                          .join("\n")
+                      : overlapValues[field].join(",")
+                  }
+                  onChange={(event) => {
+                    const values = event.target.value
+                      .split(field === "stage_points" ? "\n" : ",")
+                      .map((part) =>
+                        field === "stage_points"
+                          ? part.split(",").map(Number)
+                          : Number(part),
+                      );
+                    setOverlapValues((current) => ({
+                      ...current,
+                      [field]: values,
+                    }) as typeof current);
+                  }}
+                />
+              </label>
+            ))}
+            <button disabled={!overlapSecondId} onClick={() => void saveOverlap()}>
+              Save overlap calibration
+            </button>
+            <button onClick={() => setOverlapPreviewMode("native")}>
+              Native preview
+            </button>
+            <button onClick={() => setOverlapPreviewMode("mapped")}>
+              Mapped preview
+            </button>
+            {selectedOverlap?.diagnostics.map((diagnostic) => (
+              <small className="asset-diagnostic--warning" key={diagnostic}>
+                {diagnostic}
+              </small>
+            ))}
+            <div
+              className={`overlap-calibration-preview overlap-calibration-preview--${overlapPreviewMode}`}
+              style={{
+                "--overlap-ramp": `${overlapValues.ramp_width * 100}%`,
+                "--first-brightness": overlapValues.first_brightness,
+                "--second-brightness": overlapValues.second_brightness,
+                "--overlap-gamma": overlapValues.overlap_gamma,
+              } as CSSProperties}
+              aria-label="Non-destructive overlap calibration preview"
+            />
+          </div>
+        )}
+      {canEdit && kind === "pixel_segment" && (
+            <div className="projector-mapping-controls">
+              {(
+                [
+                  ["resource", "Output resource"],
+                  ["fixture_id", "Fixture ID"],
+                  ["group_id", "Group ID"],
+                  ["path_id", "Ordered path ID"],
+                  ["strand_id", "Strand ID"],
+                  ["calibration_id", "Calibration ID"],
+                ] as const
+              ).map(([field, label]) => (
+                <label key={field}>
+                  {label}
+                  <input
+                    value={lightingValues[field]}
+                    onChange={(event) =>
+                      setLightingValues((current) => ({
+                        ...current,
+                        [field]: event.target.value,
+                      }))
+                    }
+                  />
+                </label>
+              ))}
+              {(
+                [
+                  ["local_width", "Local width"],
+                  ["local_height", "Local height"],
+                  ["pixel_footprint_width", "Pixel footprint width"],
+                  ["pixel_footprint_height", "Pixel footprint height"],
+                  ["brightness_limit", "Brightness limit (0–1)"],
+                  ["timing_offset_ms", "Lighting timing offset (ms)"],
+                ] as const
+              ).map(([field, label]) => (
+                <label key={field}>
+                  {label}
+                  <input
+                    min="0.0001"
+                    step="any"
+                    type="number"
+                    value={lightingValues[field]}
+                    onChange={(event) =>
+                      setLightingValues((current) => ({
+                        ...current,
+                        [field]: Number(event.target.value),
+                      }))
+                    }
+                  />
+                </label>
+              ))}
+              {(["a", "b", "c", "d", "tx", "ty"] as const).map((label, index) => (
+                <label key={label}>
+                  Stage {label}
+                  <input
+                    step="any"
+                    type="number"
+                    value={lightingValues.stage_matrix[index]}
+                    onChange={(event) =>
+                      setLightingValues((current) => {
+                        const matrix = [...current.stage_matrix] as typeof current.stage_matrix;
+                        matrix[index] = Number(event.target.value);
+                        return { ...current, stage_matrix: matrix };
+                      })
+                    }
+                  />
+                </label>
+              ))}
+              {lightingSurface && (
+                <small>
+                  {lightingSurface.pixels.length} pixels mapped from output index{" "}
+                  {lightingSurface.pixels[0]?.output_index} to{" "}
+                  {lightingSurface.pixels.at(-1)?.output_index}.
+                </small>
+              )}
+              {canPreview && (
+                <button
+                  disabled={!lightingValues.resource}
+                  onClick={async () => {
+                    setPreviewError(null);
+                    try {
+                      setAlignmentPreview(
+                        await startMaintenancePreview(lightingValues.resource, 15),
+                      );
+                    } catch {
+                      setPreviewError(
+                        "Index chase requires maintenance mode, idle playback, and a configured pixel output.",
+                      );
+                    }
+                  }}
+                >
+                  Preview pixel index chase for 15 seconds
+                </button>
+              )}
+            </div>
+          )}
+      {canPreview &&
+        editing &&
+        (editing.kind === "projector_surface" ||
+          editing.kind === "pixel_segment") && (
+          <div
+            className="timing-calibration-panel"
+            tabIndex={timingSession?.state === "active" ? 0 : -1}
+            onKeyDown={(event) => {
+              if (timingSession?.state !== "active") {
+                return;
+              }
+              if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+                event.preventDefault();
+                const direction = event.key === "ArrowLeft" ? -1 : 1;
+                void nudgeTiming(direction * (event.shiftKey ? 100 : 10));
+              }
+            }}
+          >
+            <strong>Temporary timing calibration</strong>
+            {(
+              [
+                ["test_asset_id", "Test asset ID"],
+                ["test_asset_version", "Test asset version"],
+                ["observed_variability_ms", "Observed variability (ms)"],
+                ["hardware", "Hardware identity/context"],
+                ["routing", "Routing"],
+                ["display_mode", "Display mode"],
+                ["media_settings", "Media settings"],
+                ["environment", "Environment"],
+              ] as const
+            ).map(([field, label]) => (
+              <label key={field}>
+                {label}
+                <input
+                  value={calibrationProvenance[field]}
+                  onChange={(event) =>
+                    setCalibrationProvenance((current) => ({
+                      ...current,
+                      [field]: event.target.value,
+                    }))
+                  }
+                />
+              </label>
+            ))}
+            <label className="asset-governance__wide">
+              Calibration notes
+              <textarea
+                rows={2}
+                value={calibrationProvenance.notes}
+                onChange={(event) =>
+                  setCalibrationProvenance((current) => ({
+                    ...current,
+                    notes: event.target.value,
+                  }))
+                }
+              />
+            </label>
+            {!timingSession || timingSession.state !== "active" ? (
+              <>
+                <button onClick={() => void beginTiming("onset")}>
+                  Calibrate onset
+                </button>
+                <button onClick={() => void beginTiming("release")}>
+                  Calibrate release
+                </button>
+              </>
+            ) : (
+              <>
+                <span>
+                  {timingSession.adjustment_kind} · baseline{" "}
+                  {timingSession.baseline_ms} ms · proposed{" "}
+                  {timingSession.proposed_ms} ms
+                </span>
+                {[-100, -10, 10, 100].map((delta) => (
+                  <button key={delta} onClick={() => void nudgeTiming(delta)}>
+                    {delta > 0 ? "+" : ""}
+                    {delta} ms
+                  </button>
+                ))}
+                <button
+                  onClick={() =>
+                    void nudgeTiming(
+                      timingSession.baseline_ms - timingSession.proposed_ms,
+                    )
+                  }
+                >
+                  Reset
+                </button>
+                <button
+                  onClick={() =>
+                    setTimingView((current) =>
+                      current === "baseline" ? "proposed" : "baseline",
+                    )
+                  }
+                >
+                  A/B: {timingView}
+                </button>
+                <button onClick={() => void finishTiming("accept")}>Accept</button>
+                <button onClick={() => void finishTiming("cancel")}>Cancel</button>
+                <small>
+                  Negative triggers earlier; positive triggers later. This
+                  session is simulation-only and expires at{" "}
+                  {new Date(timingSession.expires_at).toLocaleTimeString()}.
+                </small>
+              </>
+            )}
+            {timingSession && timingSession.state !== "active" && (
+              <small role="status">
+                Session {timingSession.state}; persisted values change only
+                after Accept.
+              </small>
+            )}
+            {acceptedCalibrations.map((calibration) => (
+              <div className="accepted-calibration" key={calibration.id}>
+                <strong>
+                  {calibration.adjustment_kind} {calibration.accepted_ms} ms
+                </strong>
+                <small>
+                  {calibration.resource} · {calibration.software_version ?? "firmware unavailable"} ·{" "}
+                  {new Date(calibration.accepted_at).toLocaleString()} · {calibration.actor}
+                </small>
+                <small>
+                  Test {calibration.test_asset_id ?? "not recorded"}{" "}
+                  {calibration.test_asset_version ?? ""}
+                  {calibration.observed_variability_ms === null
+                    ? ""
+                    : ` · variability ${calibration.observed_variability_ms} ms`}
+                </small>
+                {calibration.notes && <small>{calibration.notes}</small>}
+                {calibration.stale_reasons.map((reason) => (
+                  <small className="asset-diagnostic--warning" key={reason}>
+                    {reason}
+                  </small>
+                ))}
+              </div>
+            ))}
+          </div>
+        )}
+      {stageCoverage && stageCoverage.regions.length > 0 && (
+        <section className="stage-coverage">
+          <strong>Shared stage coverage</strong>
+          <small>
+            {(["covered", "overlap", "occluded", "uncovered"] as const)
+              .map(
+                (kind) =>
+                  `${kind}: ${
+                    stageCoverage.regions.filter((region) => region.kind === kind)
+                      .length
+                  }`,
+              )
+              .join(" · ")}
+          </small>
+          <svg
+            aria-label="Shared stage coverage preview"
+            viewBox="0 0 600 300"
+            role="img"
+          >
+            {stageCoverage.regions.map((region, index) => {
+              const width =
+                stageCoverage.maximum_x - stageCoverage.minimum_x || 1;
+              const height =
+                stageCoverage.maximum_y - stageCoverage.minimum_y || 1;
+              return (
+                <polygon
+                  key={`${region.kind}:${index}`}
+                  className={`stage-region stage-region--${region.kind}`}
+                  points={region.points
+                    .map(
+                      ([x, y]) =>
+                        `${((x - stageCoverage.minimum_x) / width) * 600},${
+                          ((y - stageCoverage.minimum_y) / height) * 300
+                        }`,
+                    )
+                    .join(" ")}
+                >
+                  <title>
+                    {region.kind}: {region.resources.join(", ") || "none"}
+                  </title>
+                </polygon>
+              );
+            })}
+          </svg>
+        </section>
+      )}
+      {photo && (
+        <svg
+          aria-label={`Geometry editor for ${photo.name}`}
+          className={`geometry-canvas${traversalPreview ? " geometry-canvas--traversal" : ""}`}
+          role="img"
+          viewBox={`${panX} ${panY} ${1000 / zoom} ${600 / zoom}`}
+          onClick={(event) => {
+            if (!canEdit) {
+              return;
+            }
+            if (suppressClick.current) {
+              suppressClick.current = false;
+              return;
+            }
+            const maximum =
+              kind === "fixture"
+                ? 1
+                : kind === "projector_surface" && mappingValues.surface_model === "planar"
+                  ? 4
+                  : Infinity;
+            if (points.length >= maximum) {
+              return;
+            }
+            const bounds = event.currentTarget.getBoundingClientRect();
+            setPoints((current) => [
+              ...current,
+              {
+                x: Math.max(
+                  0,
+                  Math.min(
+                    1,
+                    Math.round(
+                      ((panX +
+                        ((event.clientX - bounds.left) / bounds.width) * (1000 / zoom)) /
+                        1000) *
+                        (snap ? 100 : 10000),
+                    ) / (snap ? 100 : 10000),
+                  ),
+                ),
+                y: Math.max(
+                  0,
+                  Math.min(
+                    1,
+                    Math.round(
+                      ((panY +
+                        ((event.clientY - bounds.top) / bounds.height) * (600 / zoom)) /
+                        600) *
+                        (snap ? 100 : 10000),
+                    ) / (snap ? 100 : 10000),
+                  ),
+                ),
+              },
+            ]);
+          }}
+          onPointerMove={(event) => {
+            if (dragIndex === null) {
+              return;
+            }
+            const bounds = event.currentTarget.getBoundingClientRect();
+            const next = {
+              x: Math.max(
+                0,
+                Math.min(
+                  1,
+                  (panX + ((event.clientX - bounds.left) / bounds.width) * (1000 / zoom)) /
+                    1000,
+                ),
+              ),
+              y: Math.max(
+                0,
+                Math.min(
+                  1,
+                  (panY + ((event.clientY - bounds.top) / bounds.height) * (600 / zoom)) /
+                    600,
+                ),
+              ),
+            };
+            if (snap) {
+              next.x = Math.round(next.x * 100) / 100;
+              next.y = Math.round(next.y * 100) / 100;
+            }
+            setPoints((current) =>
+              current.map((point, index) => (index === dragIndex ? next : point)),
+            );
+            suppressClick.current = true;
+          }}
+          onPointerUp={() => setDragIndex(null)}
+          onPointerLeave={() => setDragIndex(null)}
+        >
+          <image
+            width="1000"
+            height="600"
+            href={installationPhotoUrl(photo.id)}
+            preserveAspectRatio="xMidYMid meet"
+          />
+          {visible.map((item) => (
+            <GeometryShape key={item.id} geometry={item} />
+          ))}
+          {visibleSuggestions.map((suggestion) =>
+            suggestion.closed ? (
+              <polygon
+                key={suggestion.id}
+                className="geometry-suggestion-shape"
+                points={suggestion.points
+                  .map((point) => `${point.x * 1000},${point.y * 600}`)
+                  .join(" ")}
+              />
+            ) : (
+              <polyline
+                key={suggestion.id}
+                className="geometry-suggestion-shape"
+                points={suggestion.points
+                  .map((point) => `${point.x * 1000},${point.y * 600}`)
+                  .join(" ")}
+              />
+            ),
+          )}
+          {editing?.kind === "pixel_segment" &&
+            lightingSurface?.geometry_id === editing.id &&
+            photoPixelPoints(editing).map((pixel) => (
+              <g key={pixel.outputIndex}>
+                <circle
+                  className="geometry-pixel-footprint"
+                  cx={pixel.x * 1000}
+                  cy={pixel.y * 600}
+                  r="5"
+                />
+                <text
+                  className="geometry-pixel-label"
+                  x={pixel.x * 1000 + 7}
+                  y={pixel.y * 600 - 7}
+                >
+                  {pixel.outputIndex}
+                </text>
+              </g>
+            ))}
+          {points.length > 0 && (
+            <>
+            {closed && points.length >= 3 ? (
+              <polygon
+                className="geometry-shape geometry-shape--draft"
+                points={points.map((point) => `${point.x * 1000},${point.y * 600}`).join(" ")}
+              />
+            ) : (
+              <polyline
+              className="geometry-shape geometry-shape--draft"
+              points={points.map((point) => `${point.x * 1000},${point.y * 600}`).join(" ")}
+            />
+            )}
+            {points.map((point, index) => (
+              <g key={`${index}:${point.x}:${point.y}`}>
+                <circle
+                  className="geometry-corner-handle"
+                  cx={point.x * 1000}
+                  cy={point.y * 600}
+                  r="10"
+                  onPointerDown={(event) => {
+                    event.stopPropagation();
+                    setDragIndex(index);
+                  }}
+                />
+                {kind === "projector_surface" && (
+                  <text
+                    className="geometry-corner-label"
+                    x={point.x * 1000 + 14}
+                    y={point.y * 600 - 14}
+                  >
+                    {["TL", "TR", "BR", "BL"][index]}
+                  </text>
+                )}
+              </g>
+            ))}
+            </>
+          )}
+        </svg>
+      )}
+      {points.length >= 2 && (
+        <small>
+          Last segment:{" "}
+          {Math.hypot(
+            points.at(-1)!.x - points.at(-2)!.x,
+            points.at(-1)!.y - points.at(-2)!.y,
+          ).toFixed(4)}{" "}
+          normalized units
+        </small>
+      )}
+      {wiringDiagnostics.map((diagnostic) => (
+        <small className="asset-diagnostic--warning" key={diagnostic}>{diagnostic}</small>
+      ))}
+      {visibleSuggestions.length > 0 && (
+        <ul className="geometry-list geometry-suggestion-list">
+          {visibleSuggestions.map((suggestion) => (
+            <li key={suggestion.id}>
+              <span>
+                <strong>{suggestion.name}</strong>
+                <small>
+                  Suggested {suggestion.kind.replaceAll("_", " ")} · confidence{" "}
+                  {(suggestion.confidence * 100).toFixed(0)}% · {suggestion.evidence}
+                </small>
+              </span>
+              {canEdit && (
+                <>
+                  <button onClick={() => void loadSuggestion(suggestion)}>
+                    Load for manual edit
+                  </button>
+                  <button
+                    className="danger-button"
+                    onClick={() => void rejectSuggestion(suggestion)}
+                  >
+                    Reject
+                  </button>
+                </>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+      <ul className="geometry-list">
+        {visible.map((item) => (
+          <li key={item.id}>
+            <span>
+              <strong>{item.name}</strong>
+              <small>
+                {item.kind.replaceAll("_", " ")} · {item.points.length} points · semantic{" "}
+                {item.semantic_id.slice(0, 8)}
+                {item.start_index !== null && item.pixel_count !== null
+                  ? ` · pixels ${item.start_index}–${item.start_index + item.pixel_count - 1} ${item.direction}`
+                  : ` · ${item.direction}`}
+              </small>
+            </span>
+            {canEdit && (
+              <>
+                <button disabled={item.locked} onClick={() => void beginEdit(item)}>Edit</button>
+                <button
+                  className="danger-button"
+                  onClick={async () => {
+                    await deleteInstallationGeometry(item);
+                    await onRefresh();
+                  }}
+                >
+                  Remove
+                </button>
+              </>
+            )}
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+function GeometryShape({ geometry }: { geometry: InstallationGeometry }) {
+  const coordinates = geometry.points
+    .map((point) => `${point.x * 1000},${point.y * 600}`)
+    .join(" ");
+  if (geometry.kind === "fixture") {
+    const point = geometry.points[0];
+    if (!point) {
+      return null;
+    }
+
+    return (
+      <g>
+        <circle
+          className={`geometry-shape geometry-shape--${geometry.kind}`}
+          style={{ fill: geometry.color, stroke: geometry.color }}
+          cx={point.x * 1000}
+          cy={point.y * 600}
+          r="9"
+        />
+        {geometry.label_visible && (
+          <text
+            className="geometry-corner-label"
+            x={point.x * 1000 + 14}
+            y={point.y * 600 - 14}
+          >
+            {geometry.name}
+          </text>
+        )}
+      </g>
+    );
+  }
+  const shape = geometry.closed ? (
+    <polygon
+      className={`geometry-shape geometry-shape--${geometry.kind}`}
+      points={coordinates}
+      style={{ stroke: geometry.color }}
+    />
+  ) : (
+    <polyline
+      className={`geometry-shape geometry-shape--${geometry.kind}`}
+      points={coordinates}
+      style={{ stroke: geometry.color }}
+    />
+  );
+  if (!geometry.label_visible || !geometry.points.length) {
+    return shape;
+  }
+  const center = geometry.points.reduce(
+    (total, point) => ({ x: total.x + point.x, y: total.y + point.y }),
+    { x: 0, y: 0 },
+  );
+  return (
+    <g>
+      {shape}
+      <text
+        className="geometry-corner-label"
+        x={(center.x / geometry.points.length) * 1000}
+        y={(center.y / geometry.points.length) * 600}
+      >
+        {geometry.name}
+      </text>
+    </g>
+  );
+}
+
+function geometryDiagnostics(geometry: InstallationGeometry[]): string[] {
+  const diagnostics: string[] = [];
+  const segments = geometry
+    .filter(
+      (item) =>
+        item.kind === "pixel_segment" &&
+        item.start_index !== null &&
+        item.pixel_count !== null,
+    )
+    .sort((left, right) => left.start_index! - right.start_index!);
+  for (let index = 1; index < segments.length; index += 1) {
+    const previous = segments[index - 1];
+    const current = segments[index];
+    const previousEnd = previous.start_index! + previous.pixel_count!;
+    if (current.start_index! < previousEnd) {
+      diagnostics.push(`Pixel index overlap: ${previous.name} and ${current.name}.`);
+    } else if (current.start_index! > previousEnd) {
+      diagnostics.push(`Pixel index gap before ${current.name}.`);
+    }
+
+    const previousPoint =
+      previous.direction === "forward" ? previous.points.at(-1) : previous.points[0];
+    const currentPoint =
+      current.direction === "forward" ? current.points[0] : current.points.at(-1);
+    if (
+      previousPoint &&
+      currentPoint &&
+      Math.hypot(previousPoint.x - currentPoint.x, previousPoint.y - currentPoint.y) >
+        0.05
+    ) {
+      diagnostics.push(`Wiring discontinuity between ${previous.name} and ${current.name}.`);
+    }
+  }
+  for (let leftIndex = 0; leftIndex < geometry.length; leftIndex += 1) {
+    for (let rightIndex = leftIndex + 1; rightIndex < geometry.length; rightIndex += 1) {
+      const left = geometry[leftIndex];
+      const right = geometry[rightIndex];
+      if (left.points.length < 2 || right.points.length < 2) {
+        continue;
+      }
+      const bounds = (item: InstallationGeometry) => ({
+        minX: Math.min(...item.points.map((point) => point.x)),
+        maxX: Math.max(...item.points.map((point) => point.x)),
+        minY: Math.min(...item.points.map((point) => point.y)),
+        maxY: Math.max(...item.points.map((point) => point.y)),
+      });
+      const a = bounds(left);
+      const b = bounds(right);
+      if (a.minX < b.maxX && a.maxX > b.minX && a.minY < b.maxY && a.maxY > b.minY) {
+        const winner = left.z_index >= right.z_index ? left : right;
+        diagnostics.push(`Bounds overlap: ${winner.name} has draw precedence.`);
+      }
+    }
+  }
+  return [...new Set(diagnostics)];
+}
+
+function photoPixelPoints(
+  geometry: InstallationGeometry,
+): { outputIndex: number; x: number; y: number }[] {
+  if (
+    geometry.kind !== "pixel_segment" ||
+    geometry.start_index === null ||
+    geometry.pixel_count === null ||
+    geometry.points.length < 2
+  ) {
+    return [];
+  }
+  const ordered =
+    geometry.direction === "forward" ? geometry.points : [...geometry.points].reverse();
+  const lengths = ordered.slice(1).map((point, index) =>
+    Math.hypot(point.x - ordered[index].x, point.y - ordered[index].y),
+  );
+  const total = lengths.reduce((sum, value) => sum + value, 0);
+  const closed =
+    ordered[0].x === ordered.at(-1)?.x && ordered[0].y === ordered.at(-1)?.y;
+  return Array.from({ length: geometry.pixel_count }, (_, offset) => {
+    const denominator = closed
+      ? geometry.pixel_count!
+      : Math.max(geometry.pixel_count! - 1, 1);
+    const target = total * (offset / denominator);
+    let traversed = 0;
+    for (let index = 0; index < lengths.length; index += 1) {
+      const length = lengths[index];
+      if (traversed + length >= target || index === lengths.length - 1) {
+        const ratio = length ? (target - traversed) / length : 0;
+        return {
+          outputIndex: geometry.start_index! + offset,
+          x: ordered[index].x + (ordered[index + 1].x - ordered[index].x) * ratio,
+          y: ordered[index].y + (ordered[index + 1].y - ordered[index].y) * ratio,
+        };
+      }
+      traversed += length;
+    }
+    return { outputIndex: geometry.start_index! + offset, ...ordered[0] };
+  });
+}
+
+function generateNormalizedPixelLayout(
+  mode: "row" | "grid" | "ring" | "outline" | "individual" | "import",
+  rows: number,
+  columns: number,
+  imported: string,
+): { x: number; y: number }[] {
+  const safeRows = Math.max(2, Math.min(100, Math.floor(rows)));
+  const safeColumns = Math.max(2, Math.min(500, Math.floor(columns)));
+  if (mode === "individual") {
+    return [{ x: 0.5, y: 0.5 }];
+  }
+  if (mode === "import") {
+    return imported
+      .split("\n")
+      .map((line) => line.split(",").map(Number))
+      .filter(
+        (point): point is [number, number] =>
+          point.length === 2 &&
+          point.every(Number.isFinite) &&
+          point.every((value) => value >= 0 && value <= 1),
+      )
+      .map(([x, y]) => ({ x, y }));
+  }
+  if (mode === "row") {
+    return [
+      { x: 0.1, y: 0.5 },
+      { x: 0.9, y: 0.5 },
+    ];
+  }
+  if (mode === "ring") {
+    return Array.from({ length: safeColumns + 1 }, (_, index) => {
+      const angle = (index / safeColumns) * Math.PI * 2 - Math.PI / 2;
+      return { x: 0.5 + Math.cos(angle) * 0.4, y: 0.5 + Math.sin(angle) * 0.4 };
+    });
+  }
+  if (mode === "outline") {
+    return [
+      { x: 0.1, y: 0.1 },
+      { x: 0.9, y: 0.1 },
+      { x: 0.9, y: 0.9 },
+      { x: 0.1, y: 0.9 },
+      { x: 0.1, y: 0.1 },
+    ];
+  }
+  return Array.from({ length: safeRows }, (_, row) => {
+    const y = 0.1 + (row / (safeRows - 1)) * 0.8;
+    return row % 2 === 0
+      ? [{ x: 0.1, y }, { x: 0.9, y }]
+      : [{ x: 0.9, y }, { x: 0.1, y }];
+  }).flat();
 }
 
 function DeviceManagement({
@@ -607,11 +2730,42 @@ function capabilityTemplate(
               supports_pause: true,
               supports_seek: true,
             },
+            {
+              kind: "timing_calibration",
+              actuator_kinds: ["media", "audio"],
+              onset: {
+                minimum_ms: -5000,
+                maximum_ms: 5000,
+                resolution_ms: 5,
+                adjustable_while_active: true,
+              },
+              release: null,
+              safe_test_procedure: "maintenance_reference",
+              supports_ab_comparison: true,
+            },
           ]
         : [
             {
               kind: "downstream_control",
               operations: ["query_status"],
+            },
+            {
+              kind: "timing_calibration",
+              actuator_kinds: ["network_light", "smart_switch", "relay"],
+              onset: {
+                minimum_ms: -5000,
+                maximum_ms: 5000,
+                resolution_ms: 10,
+                adjustable_while_active: false,
+              },
+              release: {
+                minimum_ms: -5000,
+                maximum_ms: 5000,
+                resolution_ms: 10,
+                adjustable_while_active: false,
+              },
+              safe_test_procedure: "armed_trials",
+              supports_ab_comparison: true,
             },
           ],
   };
@@ -879,6 +3033,7 @@ function NodeCard({ node }: { node: TopologyNode }) {
   const connection = connectionStatus(node);
   const media = mediaCapability(node.capability_document);
   const cache = cacheCapability(node.capability_document);
+  const timing = timingCapability(node.capability_document);
   const Icon =
     node.kind === "controller"
       ? Server
@@ -964,6 +3119,28 @@ function NodeCard({ node }: { node: TopologyNode }) {
                 : "Not declared"
             }
           />
+          <Detail
+            label="Timing calibration"
+            value={
+              timing
+                ? `${timing.actuator_kinds.join(", ")} · ${humanize(
+                    timing.safe_test_procedure,
+                  )}`
+                : "Not declared"
+            }
+          />
+          {timing?.onset && (
+            <Detail
+              label="Onset adjustment"
+              value={formatTimingAdjustment(timing.onset)}
+            />
+          )}
+          {timing?.release && (
+            <Detail
+              label="Release adjustment"
+              value={formatTimingAdjustment(timing.release)}
+            />
+          )}
           <Detail
             label="Storage"
             value={
@@ -1151,6 +3328,25 @@ function cacheCapability(
   return capability && "total_bytes" in capability
     ? (capability as ArtifactCacheCapability)
     : null;
+}
+
+function timingCapability(
+  document: DeviceCapabilityDocument | null | undefined,
+): TimingCalibrationCapability | null {
+  const capability = document?.capabilities.find(
+    (candidate) => candidate.kind === "timing_calibration",
+  );
+  return capability && "actuator_kinds" in capability
+    ? (capability as TimingCalibrationCapability)
+    : null;
+}
+
+function formatTimingAdjustment(
+  adjustment: TimingAdjustment,
+): string {
+  return `${adjustment.minimum_ms} to ${adjustment.maximum_ms} ms · ${adjustment.resolution_ms} ms steps · ${
+    adjustment.adjustable_while_active ? "live adjustable" : "armed trials"
+  }`;
 }
 
 function formatBytes(value: number): string {

@@ -111,13 +111,13 @@ away from the current screen.
 | GUI-00 | 11 / 12 | In progress |
 | GUI-01 | 13 / 13 | Complete |
 | GUI-02 | 10 / 11 | In progress |
-| GUI-03 | 0 / 39 | Not started |
-| GUI-04 | 0 / 28 | Not started |
+| GUI-03 | 33 / 39 | In progress |
+| GUI-04 | 28 / 28 | Complete |
 | GUI-05 | 0 / 27 | Not started |
 | GUI-06 | 0 / 14 | Not started |
 | GUI-07 | 0 / 19 | Not started |
 | GUI-08 | 0 / 10 | Not started |
-| GUI-09 | 0 / 16 | Not started |
+| GUI-09 | 0 / 17 | Not started |
 | GUI-10 | 0 / 10 | Not started |
 | GUI-11 | 0 / 13 | Not started |
 
@@ -233,27 +233,27 @@ Map logical show geometry onto multiple location photographs.
 
 ### Scope
 
-- [ ] Add multiple photos per installation for wide views, close-ups, and
+- [x] Add multiple photos per installation for wide views, close-ups, and
   alternate angles.
-- [ ] Store photo metadata, orientation, crop, scale hints, and named viewpoints.
-- [ ] Draw and edit outputs, pixel segments, fixtures, ordered paths, projector
+- [x] Store photo metadata, orientation, crop, scale hints, and named viewpoints.
+- [x] Draw and edit outputs, pixel segments, fixtures, ordered paths, projector
   surfaces, masks, audience zones, and safety/no-output regions.
-- [ ] Model each projector's native content canvas, physical projection surface,
+- [x] Model each projector's native content canvas, physical projection surface,
   output crop/mask, and mapping into every relevant photo viewpoint. Keep the
   transform from content to physical surface distinct from the transform that
   places that surface into a particular photo.
-- [ ] Define a shared stage coordinate system spanning all mapped projection
+- [x] Define a shared stage coordinate system spanning all mapped projection
   surfaces. Each surface records its extent and transform in stage space;
   projector-native pixels and photo-view coordinates remain derived views.
   This gives animated elements one continuous logical space in which to move
   across projector boundaries.
-- [ ] Provide an easy projector-mapping mode in which the user drags the four
+- [x] Provide an easy projector-mapping mode in which the user drags the four
   corners of a selected still or asset frame onto the projected area in a
   location photo. Compute and store a projective transform so simulation can
   corner-pin any asset into that quadrilateral. Do not assume the projector is
   level or perpendicular to the surface: arbitrary roll, pitch, yaw,
   trapezoidal perspective, and mirrored mounting must be representable.
-- [ ] Allow additional control points, masks, and subdivided surfaces when one
+- [x] Allow additional control points, masks, and subdivided surfaces when one
   four-corner plane is insufficient. Clearly diagnose that a single homography
   cannot accurately model a curved, folded, or heavily occluded surface
   rather than silently presenting an incorrect simulation.
@@ -262,29 +262,34 @@ Map logical show geometry onto multiple location photographs.
   safe-area markers to the selected projector, then let the operator adjust
   corner pin, rotation/orientation, crop, and mask from the UI while observing
   the real surface. Changes remain temporary until explicitly accepted.
-- [ ] Update the selected photo-view overlay as live alignment controls move. If
+  **Partial:** the mapper can request the existing 15-second alignment-grid
+  preview with maintenance-mode and idle-runtime gates, and corner/crop edits
+  remain local until saved. The preview is intentionally simulation-only; live
+  device dispatch, temporary-session accept/cancel, and physical observation
+  remain.
+- [x] Update the selected photo-view overlay as live alignment controls move. If
   the operator supplies a fresh calibration photo, allow the final physical
   grid corners to be marked so the saved output warp and photo simulation
   transform describe the same projection.
-- [ ] Support multi-projector surfaces with explicit overlap regions. Add
+- [x] Support multi-projector surfaces with explicit overlap regions. Add
   calibration patterns and controls for edge-blend ramps, overlap gamma,
   per-projector brightness and white balance, color correction, and black-level
   compensation so adjacent projectors can present one visually continuous
   surface.
-- [ ] Preview seams, double-bright overlap, blend falloff, black-level mismatch,
+- [x] Preview seams, double-bright overlap, blend falloff, black-level mismatch,
   and color mismatch in native and mapped views. Store blend/color calibration
   per projector and surface with the same provenance and stale-calibration
   rules as geometry.
-- [ ] Preserve native asset aspect ratio by default, show stretch and
+- [x] Preserve native asset aspect ratio by default, show stretch and
   out-of-bounds warnings, and support overscan and intentionally masked
   content only through explicit settings.
-- [ ] Link the same semantic fixture across views using stable IDs and shared
+- [x] Link the same semantic fixture across views using stable IDs and shared
   landmarks.
-- [ ] Provide layer visibility, colors, labels, snapping, ordering, lock/hide,
+- [x] Provide layer visibility, colors, labels, snapping, ordering, lock/hide,
   zoom, pan, and measurement tools.
-- [ ] Add wiring-direction and pixel-index visualization, segment continuity
+- [x] Add wiring-direction and pixel-index visualization, segment continuity
   checks, overlap/precedence diagnostics, and path traversal previews.
-- [ ] Define logical lighting surfaces with local coordinates and a transform into
+- [x] Define logical lighting surfaces with local coordinates and a transform into
   shared stage space. Each addressable pixel maps its physical output/index to
   a point or footprint on a lighting surface while retaining fixture, group,
   ordered-path, strand, direction, and calibration membership.
@@ -292,12 +297,17 @@ Map logical show geometry onto multiple location photographs.
   along a polyline or grid, place individual pixels, generate rows/rings/
   outlines, and import coordinates. Provide live identify and index-chase
   workflows for correcting positions and verifying physical order.
-- [ ] Convert photo-assisted pixel placement into surface-local coordinates rather
+  **Partial:** the mapper generates rows, serpentine grids, rings, rectangular
+  outlines, individual pixels, and imported normalized coordinates; declared
+  pixels distribute along open or closed local paths without duplicating the
+  ring endpoint. A maintenance-gated 15-second index-chase preview is
+  integrated but remains simulation-only pending safe device dispatch.
+- [x] Convert photo-assisted pixel placement into surface-local coordinates rather
   than making one photo's raster coordinates authoritative. Support multiple
   planar surfaces now and leave arbitrary 3D geometry as a future extension.
-- [ ] Add calibration workflows for pixel identification, projector alignment,
+- [x] Add calibration workflows for pixel identification, projector alignment,
   output brightness limits, media start delay, and lighting timing offsets.
-- [ ] Define a generic timing-calibration capability for any enrolled output or
+- [x] Define a generic timing-calibration capability for any enrolled output or
   actuator that reports support for it, including media, audio, pixels,
   network-controlled lights, smart switches, relays, and future physical
   effects such as fog. A device profile declares which onset and release
@@ -309,52 +319,56 @@ Map logical show geometry onto multiple location photographs.
   operator adjust that device's command lead/lag while the test continues, or
   between explicitly armed trials when the device cannot be adjusted safely
   while active, so alignment can be judged immediately by eye and ear.
-- [ ] Provide coarse and fine delay controls, keyboard nudging, clear positive and
+  **Partial:** maintenance/idle-gated temporary sessions, bounded expiry,
+  baseline/proposed comparison, and explicit accept/cancel are implemented
+  simulation-only. Purpose-built flash/click playback and live actuator
+  triggering remain.
+- [x] Provide coarse and fine delay controls, keyboard nudging, clear positive and
   negative direction labels, reset, and A/B comparison. Apply adjustments as
   temporary calibration overrides until the operator explicitly accepts them;
   canceling must restore the prior values.
-- [ ] Measure activation and deactivation separately where a device behaves
+- [x] Measure activation and deactivation separately where a device behaves
   asymmetrically. Device profiles may require warm-up, cooldown, minimum
   on/off time, a maximum trial count, manual reset, ventilation, consumable
   confirmation, or an observer pressing a marker when the physical effect is
   first visible.
-- [ ] Require explicit arming, a bounded test pattern, visible device identity,
+- [x] Require explicit arming, a bounded test pattern, visible device identity,
   and an always-available device-appropriate stop before exercising physical
   outputs. Blackout is not assumed to make every actuator safe.
-- [ ] Store accepted calibration per resource with the test asset/version,
+- [x] Store accepted calibration per resource with the test asset/version,
   device/firmware identity, timestamp, operator, observed variability, and
   optional notes. Warn when hardware, routing, display mode, media settings,
   or environmental conditions differ from those under which calibration was
   recorded.
-- [ ] Preserve manual mapping as authoritative; optional computer-vision-assisted
+- [x] Preserve manual mapping as authoritative; optional computer-vision-assisted
   alignment may make reviewable suggestions only.
 
 ### Acceptance
 
-- [ ] A user can define one installation from a wide photo and two close-ups, edit
+- [x] A user can define one installation from a wide photo and two close-ups, edit
   a fixture in any view, and see the same logical object update in all views.
-- [ ] In easy mode, a user can corner-pin an asset onto a photographed projection
+- [x] In easy mode, a user can corner-pin an asset onto a photographed projection
   surface and preview other assets through the same mapping, including a
   projector installed at a non-level compound angle.
 - [ ] In advanced mode, an operator can project the labeled grid, adjust the live
   output warp by eye, compare it with the photo overlay, and explicitly save
   or discard the alignment without restarting the media client.
-- [ ] For an overlapping two-projector surface, an operator can align geometry,
+- [x] For an overlapping two-projector surface, an operator can align geometry,
   tune edge blending and color/brightness matching, and preview the combined
   result without destructively changing either projector's source artwork.
-- [ ] The saved projector model records native canvas, orientation, output warp,
+- [x] The saved projector model records native canvas, orientation, output warp,
   photo-view transforms, crop, and mask independently enough that simulation
   can place content accurately without baking the photographed perspective
   into authored media.
-- [ ] Two calibrated projector surfaces occupy one shared stage space with
+- [x] Two calibrated projector surfaces occupy one shared stage space with
   explicit covered, overlapping, occluded, and uncovered regions suitable for
   cross-projector animation.
-- [ ] The mapper exports valid installation resources, segments, fixtures, and
+- [x] The mapper exports valid installation resources, segments, fixtures, and
   paths without embedding photo coordinates in runtime geometry.
-- [ ] A mapped LED installation preserves verified physical output order while
+- [x] A mapped LED installation preserves verified physical output order while
   exposing stable surface-local/stage positions, fixtures, and paths to show
   creators; switching photo viewpoints does not move the logical pixels.
-- [ ] A user can preview pixel order and path direction before any live output is
+- [x] A user can preview pixel order and path direction before any live output is
   enabled.
 - [ ] In maintenance mode, an operator can select any calibration-capable enrolled
   device, run its declared safe test against the flash/click reference, change
@@ -364,9 +378,9 @@ Map logical show geometry onto multiple location photographs.
   turn-off latency. A non-repeatable or potentially hazardous device such as a
   fog machine cannot loop continuously and must obey its arming, cooldown,
   trial-limit, and emergency-stop requirements.
-- [ ] Saved offsets are included in validation and deployment; leaving or
+- [x] Saved offsets are included in validation and deployment; leaving or
   canceling calibration cannot leave transient offsets active.
-- [ ] Ambiguous, disconnected, out-of-range, or multiply assigned geometry blocks
+- [x] Ambiguous, disconnected, out-of-range, or multiply assigned geometry blocks
   publication with a direct link to the offending object.
 
 ## Milestone GUI-04: layered scene timeline MVP
@@ -376,98 +390,98 @@ Cueverge scene semantics.
 
 ### Scope
 
-- [ ] Add a scalable playhead, ruler, zoom, scroll, snapping, markers, regions,
+- [x] Add a scalable playhead, ruler, zoom, scroll, snapping, markers, regions,
   selection, copy/paste, duplicate, trim, split where semantically valid, and
   keyboard editing.
-- [ ] Organize tracks by media output, audio reference, lighting output, fixture,
+- [x] Organize tracks by media output, audio reference, lighting output, fixture,
   path, marker, and annotation.
-- [ ] Add a composition hierarchy rather than requiring every edit in the full
+- [x] Add a composition hierarchy rather than requiring every edit in the full
   installation/photo view. The root scene composition coordinates all
   resources; a creator can open a projector, media output, lighting output,
   fixture, path, or reusable subcomposition and edit only its relevant layers
   and properties.
-- [ ] Give each composition a logical editing space appropriate to its target. A
+- [x] Give each composition a logical editing space appropriate to its target. A
   projector composition uses its native pixel canvas and safe areas; a pixel
   output uses ordered pixels and semantic geometry; a device composition uses
   its declared channels and states. Photo perspective and physical output
   warp are preview transforms, not the coordinates in which source content
   must be authored.
-- [ ] Add a stage composition for elements that span projection surfaces. A layer
+- [x] Add a stage composition for elements that span projection surfaces. A layer
   can be authored in stage space, surface-local space, or projector-native
   space, with the active coordinate system always visible. Converting or
   parenting between spaces must preserve the evaluated transform at the
   current time.
-- [ ] Keep the global playhead synchronized while moving between composition
+- [x] Keep the global playhead synchronized while moving between composition
   levels. Provide breadcrumbs, open-in-context and isolated views, a clear
   indication of inherited scene time, and a one-action return to the parent or
   full installation preview.
-- [ ] Allow reusable compositions to be instantiated in scenes with explicit
+- [x] Allow reusable compositions to be instantiated in scenes with explicit
   start, duration, target binding, and supported parameter overrides. Define
   how local time maps to parent scene time, reject recursive composition
   references, and do not offer time stretching or remapping unless the runtime
   can represent it deterministically.
-- [ ] Add composition dependency management: show where each composition is used,
+- [x] Add composition dependency management: show where each composition is used,
   distinguish a linked instance from a duplicated independent copy, display
   instance overrides and stale bakes, preview the impact of an edit, and block
   deletion while referenced unless the user deliberately replaces or removes
   those references.
-- [ ] Make named timeline markers shared synchronization anchors. Visual, audio,
+- [x] Make named timeline markers shared synchronization anchors. Visual, audio,
   lighting, switch, and physical-effect cues may link to a marker with an
   explicit offset. Moving a marker moves linked cues atomically; creators can
   detach a cue without changing unrelated timing. Markers map predictably
   through nested composition time into explicit compiled timestamps.
-- [ ] Compile the composition graph into explicit runtime scene outputs and cues,
+- [x] Compile the composition graph into explicit runtime scene outputs and cues,
   or fail with a precise unsupported-composition diagnostic. Published
   packages must not require the runtime to interpret opaque editor state.
-- [ ] Represent each lighting cue as a movable and resizable layer with editable
+- [x] Represent each lighting cue as a movable and resizable layer with editable
   primitive, target, timing, color, brightness, blend mode, precedence, seed,
   and primitive-specific properties.
-- [ ] Show media thumbnails and audio waveforms for timing reference.
-- [ ] Add transform keyframes for 2D image, video, and nested-composition layers:
+- [x] Show media thumbnails and audio waveforms for timing reference.
+- [x] Add transform keyframes for 2D image, video, and nested-composition layers:
   position, independent X/Y scale, rotation, anchor point, opacity, and
   supported crop/reveal bounds. Support hold, linear, ease-in/ease-out, and
   temporal and spatial Bezier interpolation.
-- [ ] Display editable motion paths, handles, previous/next position ghosts, and
+- [x] Display editable motion paths, handles, previous/next position ghosts, and
   snapping to landmarks, surfaces, seams, and named markers. Warn when a path
   enters an uncovered, occluded, or insufficiently calibrated region.
-- [ ] Keyframes are authored once in their declared coordinate space. Do not
+- [x] Keyframes are authored once in their declared coordinate space. Do not
   require users to duplicate a moving layer or create manual handoff fades for
   each projector. Static installation calibration warps remain separate from
   scene animation and are not ordinary transform keyframes.
-- [ ] Add property keyframes only where the runtime or GUI-05 baking pipeline can
+- [x] Add property keyframes only where the runtime or GUI-05 baking pipeline can
   represent them deterministically; otherwise expose explicit boundaries
   rather than inventing preview-only behavior.
-- [ ] Add safe points, protected intervals, completion policy, request policy,
+- [x] Add safe points, protected intervals, completion policy, request policy,
   scene priority, resource claims, required/optional outputs, clock source,
   and calibration offsets.
-- [ ] Provide reusable cue presets and compound selection without making presets a
+- [x] Provide reusable cue presets and compound selection without making presets a
   hidden runtime dependency.
-- [ ] Validate continuously and explain errors in the timeline and property panel.
+- [x] Validate continuously and explain errors in the timeline and property panel.
 
 ### Acceptance
 
-- [ ] A creator can build a multi-output scene containing media, waveform
+- [x] A creator can build a multi-output scene containing media, waveform
   reference, baseline lighting, overlapping fixture cues, a path sweep,
   markers, and safe transition points without hand-editing JSON.
-- [ ] A creator can open one projector composition, edit against its native canvas
+- [x] A creator can open one projector composition, edit against its native canvas
   and focused timeline without displaying the location photo, then return to
   the root scene and see that output mapped onto every calibrated photo view.
-- [ ] Editing a reusable subcomposition updates its instances predictably;
+- [x] Editing a reusable subcomposition updates its instances predictably;
   instance overrides remain visible, composition cycles are rejected, and the
   compiled package contains explicit supported runtime data.
-- [ ] Usage inspection identifies every parent and scene affected by a
+- [x] Usage inspection identifies every parent and scene affected by a
   subcomposition edit, and a referenced composition cannot be silently
   deleted or converted from linked to independent.
-- [ ] A creator can align projection, audio, lighting, and device actions to one
+- [x] A creator can align projection, audio, lighting, and device actions to one
   named marker, move that marker once, and verify all linked compiled
   timestamps and intentional per-cue offsets.
-- [ ] A creator can animate one semi-transparent 2D layer along a curved stage-space
+- [x] A creator can animate one semi-transparent 2D layer along a curved stage-space
   path from one projector surface, through their calibrated overlap, and onto
   a second surface without duplicating the layer or editing projector-native
   handoff keyframes.
-- [ ] Scrubbing to the same timestamp repeatedly produces the same cue state.
-- [ ] Save, reload, undo, redo, and compile preserve exact cue timing and ordering.
-- [ ] Unsupported operations are disabled or produce explicit schema-gap
+- [x] Scrubbing to the same timestamp repeatedly produces the same cue state.
+- [x] Save, reload, undo, redo, and compile preserve exact cue timing and ordering.
+- [x] Unsupported operations are disabled or produce explicit schema-gap
   diagnostics rather than lossy output.
 
 ## Milestone GUI-05: advanced projector imaging and media baking
@@ -771,6 +785,17 @@ Turn an edited project into a controlled deployed artifact.
   package until the replacement has activated successfully.
 - [ ] Add rehearsal mode with explicit target selection, preflight checklist,
   countdown, stop, blackout, and post-run diagnostics.
+- [ ] Maintain a deploy-time dependency inventory that drives the controller
+  Dockerfile and image preflight. Pin and report required native tool versions,
+  install `ffmpeg`/`ffprobe` for asset processing and rendering, explicitly
+  configure optional ClamAV plus definition updates, keep frontend tooling in
+  the build stage, and keep host display/audio dependencies such as `mpv` on
+  media agents rather than in the headless controller image.
+  **Partial:** `deploy/controller-native-dependencies.json` now records runtime
+  packages, required ffmpeg encoders/filters/probe features, optional ClamAV
+  update policy, frontend build tooling, persistent paths, preflight commands,
+  and explicit controller-image exclusions. Dockerfile consumption, pinned
+  image/package versions, and executable startup preflight remain.
 - [ ] Add backup/restore and disaster-recovery documentation for projects, assets,
   enrollment identities, and published packages.
 

@@ -42,6 +42,8 @@ function VisualReviewFixture() {
             installationError={false}
             topologyError={false}
             loading={false}
+            session={demoSession}
+            onRefresh={() => undefined}
           />
         ) : workspace === "operate" ? (
           <OperatePage

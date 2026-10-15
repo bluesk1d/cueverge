@@ -9,6 +9,7 @@ import {
   archiveProject,
   createInstallation,
   createProjectFromActive,
+  createOutputArm,
   createScenePreset,
   deleteInstallation,
   duplicateProject,
@@ -33,6 +34,7 @@ import {
   organizeScene,
   placeAsset,
   OperateAction,
+  OutputArm,
   ProjectSummary,
   ProjectDraftRecord,
   ProjectExportDocument,
@@ -41,9 +43,11 @@ import {
   RuntimeStatus,
   Session,
   startMaintenancePreview,
+  stopOutputArm,
   Topology,
   updateInstallation,
   updateAssetMetadata,
+  updateProjectDraft,
   uploadAsset,
 } from "./api";
 import { AppShell, Workspace } from "./components/AppShell";
@@ -57,6 +61,7 @@ import {
 } from "./components/ui";
 import { OverviewPage } from "./pages/OverviewPage";
 import { InstallationPage } from "./pages/InstallationPage";
+import { TimelineEditor } from "./pages/TimelineEditor";
 
 export function App() {
   const [session, setSession] = useState<Session | null>(null);
@@ -741,12 +746,24 @@ function ProjectCard({
         )}
       </div>
       {draft && (
-        <ScenePresetOrganizer
-          canEdit={canAuthor && !project.archived_at}
-          draft={draft}
-          projectId={project.id}
-          onUpdated={setDraft}
-        />
+        <>
+          <ScenePresetOrganizer
+            canEdit={canAuthor && !project.archived_at}
+            draft={draft}
+            projectId={project.id}
+            onUpdated={setDraft}
+          />
+          <TimelineEditor
+            assets={assets ?? []}
+            canEdit={canAuthor && !project.archived_at}
+            draft={draft}
+            onSave={async (document) => {
+              setDraft(
+                await updateProjectDraft(project.id, draft.revision, document),
+              );
+            }}
+          />
+        </>
       )}
     </article>
   );
@@ -1423,6 +1440,8 @@ export function OperatePage({
   const [previewResource, setPreviewResource] = useState("");
   const [previewDuration, setPreviewDuration] = useState(15);
   const [preview, setPreview] = useState<MaintenancePreview | null>(null);
+  const [armConfirmation, setArmConfirmation] = useState("");
+  const [outputArm, setOutputArm] = useState<OutputArm | null>(null);
   const [previewNow, setPreviewNow] = useState(Date.now());
   const canOperate = session.role === "operator" || session.role === "administrator";
   const unavailableRequiredDevice =
@@ -1482,6 +1501,33 @@ export function OperatePage({
         "Preview requires maintenance mode, idle playback, and a configured resource.",
       );
     }
+  }
+
+  async function armPreview() {
+    if (!previewResource) {
+      return;
+    }
+    setOperationError(null);
+    try {
+      setOutputArm(
+        await createOutputArm(
+          previewResource,
+          armConfirmation,
+          previewDuration,
+        ),
+      );
+    } catch {
+      setOperationError(
+        "Arming requires idle maintenance mode and exact resource confirmation.",
+      );
+    }
+  }
+
+  async function stopArm() {
+    if (!outputArm) {
+      return;
+    }
+    setOutputArm(await stopOutputArm(outputArm.id));
   }
 
   return (
@@ -1686,6 +1732,26 @@ export function OperatePage({
               <option value={30}>30 seconds</option>
             </select>
           </label>
+          <label>
+            Type resource name to arm
+            <input
+              value={armConfirmation}
+              onChange={(event) => setArmConfirmation(event.target.value)}
+            />
+          </label>
+          <button
+            disabled={
+              !canOperate ||
+              !maintenanceMode ||
+              active ||
+              !previewResource ||
+              armConfirmation !== previewResource ||
+              outputArm?.state === "active"
+            }
+            onClick={() => void armPreview()}
+          >
+            Arm selected output
+          </button>
           <button
             className="primary-button"
             disabled={
@@ -1693,6 +1759,7 @@ export function OperatePage({
               !maintenanceMode ||
               active ||
               !previewResource ||
+              outputArm?.state !== "active" ||
               preview !== null
             }
             onClick={() => void runPreview()}
@@ -1700,6 +1767,22 @@ export function OperatePage({
             Start simulated pattern
           </button>
         </div>
+        {outputArm && (
+          <div className="notice notice--warning" role="status">
+            <strong>
+              Armed: {outputArm.resource} · {outputArm.device_identity}
+            </strong>
+            <p>
+              Expires {new Date(outputArm.expires_at).toLocaleTimeString()} ·
+              Stop action: {outputArm.stop_action}. Blackout is not assumed safe.
+            </p>
+            {outputArm.state === "active" && (
+              <button onClick={() => void stopArm()}>
+                Stop/disarm selected output
+              </button>
+            )}
+          </div>
+        )}
         {!maintenanceMode && (
           <p className="control-note">Enter maintenance mode to arm simulated patterns.</p>
         )}

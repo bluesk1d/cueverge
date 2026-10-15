@@ -5,13 +5,23 @@ import shutil
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from cueverge.core.loader import ShowPackageError, load_show_package
 from cueverge.gui.contracts import DraftProject
 
 
 class CompilationError(ValueError):
-    pass
+    def __init__(self, message: str, diagnostics: tuple["CompilationDiagnostic", ...] = ()) -> None:
+        super().__init__(message)
+        self.diagnostics = diagnostics
+
+
+@dataclass(frozen=True)
+class CompilationDiagnostic:
+    code: str
+    message: str
+    object_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -41,6 +51,12 @@ class DraftCompiler:
             _write_json(
                 temporary_root / "installation.json",
                 draft.installation.model_dump(mode="json"),
+            )
+            runtime_root = temporary_root / "runtime"
+            runtime_root.mkdir()
+            _write_json(
+                runtime_root / "composition-graph.json",
+                _compile_composition_graph(draft),
             )
             for index, scene in enumerate(draft.scenes):
                 _write_json(
@@ -87,3 +103,468 @@ def _package_digest(root: Path, files: tuple[str, ...]) -> str:
         digest.update((root / relative_path).read_bytes())
         digest.update(b"\0")
     return digest.hexdigest()
+
+
+def _compile_composition_graph(draft: DraftProject) -> dict[str, object]:
+    metadata = draft.editor_metadata
+    compositions = _object_map(metadata.get("compositions"))
+    scene_roots = _list_map(metadata.get("scene_compositions"))
+    instances = _list_map(metadata.get("composition_instances"))
+    marker_map = _list_map(metadata.get("timeline_markers"))
+    cue_map = _list_map(metadata.get("timeline_cues"))
+    track_map = _list_map(metadata.get("timeline_tracks"))
+    transform_map = _list_map(metadata.get("timeline_transform_layers"))
+    diagnostics: list[CompilationDiagnostic] = []
+    compiled_scenes: list[dict[str, object]] = []
+
+    for scene in draft.scenes:
+        scene_tracks = _scene_tracks(scene.model_dump(mode="json"))
+        contexts: list[dict[str, object]] = []
+        _append_context(
+            contexts,
+            scene_id=scene.id,
+            context_id=f"scene:{scene.id}",
+            editing_space_id=scene.id,
+            offset_ms=0,
+            time_scale=1.0,
+            placement={"x": 0.0, "y": 0.0},
+            parameter_overrides={},
+        )
+        for root_id in _string_items(scene_roots.get(scene.id)):
+            root = compositions.get(root_id)
+            if root is not None:
+                _walk_composition_contexts(
+                    contexts,
+                    compositions,
+                    scene.id,
+                    root_id,
+                    f"scene:{scene.id}>{root_id}",
+                    _integer(root.get("local_time_offset_ms"), 0),
+                    1.0,
+                    {"x": 0.0, "y": 0.0},
+                    {},
+                    set(),
+                )
+        for value in instances.get(scene.id, []):
+            instance = _object(value)
+            composition_id = instance.get("composition_id")
+            if not isinstance(composition_id, str) or composition_id not in compositions:
+                continue
+            overrides = _object(instance.get("parameter_overrides"))
+            if overrides:
+                diagnostics.append(
+                    CompilationDiagnostic(
+                        code="unsupported_composition_parameter_override",
+                        message=(
+                            f"composition instance {instance.get('id')} has parameter overrides "
+                            "that cannot yet be represented by the runtime package"
+                        ),
+                        object_ids=(str(instance.get("id")), composition_id),
+                    )
+                )
+            placement = _object(instance.get("placement"))
+            instance_id = str(instance.get("id"))
+            _walk_composition_contexts(
+                contexts,
+                compositions,
+                scene.id,
+                composition_id,
+                f"instance:{instance_id}",
+                _integer(instance.get("start_offset_ms"), 0),
+                _number(instance.get("time_scale"), 1.0),
+                {
+                    "x": _number(placement.get("x"), 0.0),
+                    "y": _number(placement.get("y"), 0.0),
+                },
+                overrides,
+                set(),
+            )
+
+        outputs: dict[str, dict[str, object]] = {}
+        cues: list[dict[str, object]] = []
+        transform_layers: list[dict[str, object]] = []
+        for context in contexts:
+            space_id = str(context["editing_space_id"])
+            markers = {
+                str(marker.get("id")): marker
+                for marker in (_object(value) for value in marker_map.get(space_id, []))
+                if isinstance(marker.get("id"), str)
+            }
+            tracks = {
+                **(scene_tracks if space_id == scene.id else {}),
+                **{
+                    str(track.get("id")): track
+                    for track in (_object(value) for value in track_map.get(space_id, []))
+                    if isinstance(track.get("id"), str)
+                },
+            }
+            for value in cue_map.get(space_id, []):
+                cue = _object(value)
+                cue_id = str(cue.get("id"))
+                track_id = cue.get("track_id")
+                track = tracks.get(str(track_id))
+                if track is None:
+                    diagnostics.append(
+                        CompilationDiagnostic(
+                            code="unsupported_composition_track",
+                            message=(
+                                f"timeline cue {cue_id} references track {track_id!s}, "
+                                "which has no runtime output binding"
+                            ),
+                            object_ids=(cue_id, str(track_id)),
+                        )
+                    )
+                    continue
+                local_time = _cue_time(cue, markers)
+                scene_time = round(
+                    _number(context["offset_ms"], 0.0)
+                    + local_time * _number(context["time_scale"], 1.0)
+                )
+                lighting = _object(cue.get("lighting"))
+                compiled_duration = (
+                    round(
+                        _integer(lighting.get("duration_ms"), 0)
+                        * _number(context["time_scale"], 1.0)
+                    )
+                    if lighting
+                    else 0
+                )
+                if (
+                    scene_time < 0
+                    or scene_time > scene.duration_ms
+                    or scene_time + compiled_duration > scene.duration_ms
+                ):
+                    diagnostics.append(
+                        CompilationDiagnostic(
+                            code="composition_cue_outside_scene",
+                            message=(
+                                f"timeline cue {cue_id} resolves to interval "
+                                f"{scene_time}..{scene_time + compiled_duration} ms outside "
+                                f"scene {scene.id} duration {scene.duration_ms} ms"
+                            ),
+                            object_ids=(scene.id, cue_id, str(context["context_id"])),
+                        )
+                    )
+                    continue
+                output_id = f"{context['context_id']}|{track_id!s}"
+                outputs[output_id] = {
+                    "id": output_id,
+                    "context_id": context["context_id"],
+                    "track_id": track_id,
+                    "track_kind": track.get("kind"),
+                    "resource_binding": track.get("resource_binding"),
+                }
+                marker_id = cue.get("marker_id")
+                marker = markers.get(marker_id) if isinstance(marker_id, str) else None
+                compiled_lighting = (
+                    {
+                        **lighting,
+                        "duration_ms": compiled_duration,
+                    }
+                    if lighting
+                    else None
+                )
+                cues.append(
+                    {
+                        "id": f"{context['context_id']}|{cue_id}",
+                        "source_cue_id": cue_id,
+                        "name": cue.get("name"),
+                        "kind": cue.get("kind"),
+                        "output_id": output_id,
+                        "timestamp_ms": scene_time,
+                        "local_time_ms": local_time,
+                        "marker_id": marker_id,
+                        "marker_name": marker.get("name") if marker else None,
+                        "marker_offset_ms": cue.get("marker_offset_ms", 0),
+                        "editing_space_id": space_id,
+                        "context_id": context["context_id"],
+                        "lighting": compiled_lighting,
+                    }
+                )
+            for value in transform_map.get(space_id, []):
+                layer = _object(value)
+                layer_id = str(layer.get("id"))
+                track_id = layer.get("track_id")
+                track = tracks.get(str(track_id))
+                if track is None:
+                    diagnostics.append(
+                        CompilationDiagnostic(
+                            code="unsupported_transform_track",
+                            message=(
+                                f"transform layer {layer_id} references track "
+                                f"{track_id!s}, which has no runtime output binding"
+                            ),
+                            object_ids=(layer_id, str(track_id)),
+                        )
+                    )
+                    continue
+                time_scale = _number(context["time_scale"], 1.0)
+                start_ms = round(
+                    _number(context["offset_ms"], 0.0)
+                    + _integer(layer.get("start_ms"), 0) * time_scale
+                )
+                duration_ms = round(_integer(layer.get("duration_ms"), 0) * time_scale)
+                if start_ms < 0 or start_ms + duration_ms > scene.duration_ms:
+                    diagnostics.append(
+                        CompilationDiagnostic(
+                            code="transform_layer_outside_scene",
+                            message=(
+                                f"transform layer {layer_id} resolves to interval "
+                                f"{start_ms}..{start_ms + duration_ms} ms outside "
+                                f"scene {scene.id} duration {scene.duration_ms} ms"
+                            ),
+                            object_ids=(scene.id, layer_id, str(context["context_id"])),
+                        )
+                    )
+                    continue
+                output_id = f"{context['context_id']}|{track_id!s}"
+                outputs[output_id] = {
+                    "id": output_id,
+                    "context_id": context["context_id"],
+                    "track_id": track_id,
+                    "track_kind": track.get("kind"),
+                    "resource_binding": track.get("resource_binding"),
+                }
+                transform_layers.append(
+                    {
+                        "id": f"{context['context_id']}|{layer_id}",
+                        "source_layer_id": layer_id,
+                        "name": layer.get("name"),
+                        "kind": layer.get("kind"),
+                        "source_id": layer.get("source_id"),
+                        "output_id": output_id,
+                        "editing_space_id": space_id,
+                        "context_id": context["context_id"],
+                        "coordinate_space": _coordinate_space(
+                            space_id,
+                            compositions.get(space_id),
+                        ),
+                        "calibration_policy": {
+                            "static_installation_calibration": "runtime",
+                            "projector_handoff_keyframes": False,
+                        },
+                        "keyframed_properties": [
+                            "position",
+                            "scale_x",
+                            "scale_y",
+                            "rotation",
+                            "anchor",
+                            "opacity",
+                            "crop",
+                        ],
+                        "property_animation_policy": {
+                            "transform": "runtime",
+                            "lighting": "static_cue",
+                            "unsupported": "reject",
+                        },
+                        "start_ms": start_ms,
+                        "duration_ms": duration_ms,
+                        "keyframes": [
+                            {
+                                **_object(keyframe),
+                                "timestamp_ms": start_ms
+                                + round(
+                                    _integer(
+                                        _object(keyframe).get("time_ms"),
+                                        0,
+                                    )
+                                    * time_scale
+                                ),
+                            }
+                            for keyframe in layer.get("keyframes", [])
+                            if isinstance(keyframe, dict)
+                        ],
+                    }
+                )
+        compiled_scenes.append(
+            {
+                "scene_id": scene.id,
+                "contexts": contexts,
+                "outputs": sorted(outputs.values(), key=lambda value: str(value["id"])),
+                "cues": sorted(
+                    cues,
+                    key=lambda value: (
+                        _integer(value["timestamp_ms"], 0),
+                        str(value["id"]),
+                    ),
+                ),
+                "transform_layers": sorted(
+                    transform_layers,
+                    key=lambda value: (
+                        _integer(value["start_ms"], 0),
+                        str(value["id"]),
+                    ),
+                ),
+            }
+        )
+    if diagnostics:
+        raise CompilationError(
+            "composition graph contains unsupported or invalid runtime constructs",
+            tuple(diagnostics),
+        )
+    return {"schema_version": 1, "scenes": compiled_scenes}
+
+
+def _append_context(
+    contexts: list[dict[str, object]],
+    *,
+    scene_id: str,
+    context_id: str,
+    editing_space_id: str,
+    offset_ms: int,
+    time_scale: float,
+    placement: dict[str, float],
+    parameter_overrides: dict[str, Any],
+) -> None:
+    contexts.append(
+        {
+            "scene_id": scene_id,
+            "context_id": context_id,
+            "editing_space_id": editing_space_id,
+            "offset_ms": offset_ms,
+            "time_scale": time_scale,
+            "placement": placement,
+            "parameter_overrides": parameter_overrides,
+        }
+    )
+
+
+def _coordinate_space(
+    space_id: str,
+    composition: dict[str, Any] | None,
+) -> dict[str, object]:
+    if composition is None:
+        return {
+            "kind": "scene",
+            "target_id": space_id,
+            "width": None,
+            "height": None,
+        }
+    return {
+        "kind": composition.get("space_kind"),
+        "target_id": composition.get("target_id"),
+        "width": composition.get("width"),
+        "height": composition.get("height"),
+    }
+
+
+def _walk_composition_contexts(
+    contexts: list[dict[str, object]],
+    compositions: dict[str, dict[str, Any]],
+    scene_id: str,
+    composition_id: str,
+    context_id: str,
+    offset_ms: int,
+    time_scale: float,
+    placement: dict[str, float],
+    parameter_overrides: dict[str, Any],
+    path: set[str],
+) -> None:
+    if composition_id in path:
+        return
+    composition = compositions.get(composition_id)
+    if composition is None:
+        return
+    _append_context(
+        contexts,
+        scene_id=scene_id,
+        context_id=context_id,
+        editing_space_id=composition_id,
+        offset_ms=offset_ms,
+        time_scale=time_scale,
+        placement=placement,
+        parameter_overrides=parameter_overrides,
+    )
+    next_path = {*path, composition_id}
+    for child_id in _string_items(composition.get("children")):
+        child = compositions.get(child_id)
+        if child is not None:
+            _walk_composition_contexts(
+                contexts,
+                compositions,
+                scene_id,
+                child_id,
+                f"{context_id}>{child_id}",
+                offset_ms + round(_integer(child.get("local_time_offset_ms"), 0) * time_scale),
+                time_scale,
+                placement,
+                parameter_overrides,
+                next_path,
+            )
+
+
+def _scene_tracks(scene: dict[str, Any]) -> dict[str, dict[str, object]]:
+    if scene.get("schema_version") == 2:
+        tracks = {
+            f"media:{output['id']}": {
+                "id": f"media:{output['id']}",
+                "kind": "media_output",
+                "resource_binding": output["resource"],
+            }
+            for output in scene.get("media", [])
+        }
+        tracks.update(
+            {
+                f"lighting:{output['id']}": {
+                    "id": f"lighting:{output['id']}",
+                    "kind": "lighting_output",
+                    "resource_binding": output["resource"],
+                }
+                for output in scene.get("lighting", [])
+            }
+        )
+        return tracks
+    scene_id = str(scene["id"])
+    return {
+        f"media:{scene_id}": {
+            "id": f"media:{scene_id}",
+            "kind": "media_output",
+            "resource_binding": _object(scene.get("media")).get("resource"),
+        },
+        f"lighting:{scene_id}": {
+            "id": f"lighting:{scene_id}",
+            "kind": "lighting_output",
+            "resource_binding": _object(scene.get("lighting")).get("resource"),
+        },
+    }
+
+
+def _cue_time(
+    cue: dict[str, Any],
+    markers: dict[str, dict[str, Any]],
+) -> int:
+    marker_id = cue.get("marker_id")
+    if isinstance(marker_id, str):
+        marker = markers[marker_id]
+        return _integer(marker.get("time_ms"), 0) + _integer(cue.get("marker_offset_ms"), 0)
+    return _integer(cue.get("time_ms"), 0)
+
+
+def _object_map(value: object) -> dict[str, dict[str, Any]]:
+    return {
+        str(key): _object(item) for key, item in _object(value).items() if isinstance(item, dict)
+    }
+
+
+def _list_map(value: object) -> dict[str, list[Any]]:
+    return {str(key): item for key, item in _object(value).items() if isinstance(item, list)}
+
+
+def _object(value: object) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _string_items(value: object) -> tuple[str, ...]:
+    return tuple(item for item in value if isinstance(item, str)) if isinstance(value, list) else ()
+
+
+def _integer(value: object, fallback: int) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) else fallback
+
+
+def _number(value: object, fallback: float) -> float:
+    return (
+        float(value)
+        if isinstance(value, (int, float)) and not isinstance(value, bool)
+        else fallback
+    )

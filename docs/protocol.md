@@ -1,7 +1,7 @@
 # Device protocol v2
 
 Cueverge devices connect only to the controller's dedicated mTLS listener,
-normally on port 8443. The installation CA authenticates a per-device
+normally on port 7443. The installation CA authenticates a per-device
 certificate whose URI subject alternative name contains the controller-issued
 device UUID. IP addresses, hostnames, and caller-selected agent IDs do not
 establish identity.
@@ -12,6 +12,14 @@ The controller authorizes the active certificate, verifies the capability
 document, resolves the device's durable logical-resource assignment, and
 returns `device.welcome` with the controller epoch, heartbeat timing, and a
 reconciliation action.
+
+Devices may declare the generic `timing_calibration` capability independently
+of their media, pixel, downstream-control, or future actuator capabilities. It
+lists actuator kinds, separate optional onset and release adjustment ranges,
+resolution, whether adjustment is safe while active, the required safe-test
+procedure (`maintenance_reference`, `armed_trials`, or `simulation_only`), and
+A/B comparison support. At least one of onset or release must be adjustable,
+and ranges must divide exactly by their declared resolution.
 
 The same authenticated socket carries:
 

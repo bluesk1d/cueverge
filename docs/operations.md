@@ -46,6 +46,44 @@ Health reporting is capability-aware:
 Cueverge does not report undetectable devices as healthy. Downstream electrical
 provisioning and device-local safety remain installation responsibilities.
 
+## Deployment dependency inventory
+
+The machine-readable source for controller image construction and preflight is
+[`deploy/controller-native-dependencies.json`](../deploy/controller-native-dependencies.json).
+Update that manifest in the same change whenever controller code adds a native
+executable, codec, filter, system library, build tool, or persistent path. This
+section explains the policy; the eventual Dockerfile and image-preflight test
+must consume or validate the manifest rather than maintaining an independent
+list.
+
+The eventual controller Dockerfile must install and version the non-Python
+tools used by enabled features. Keep this inventory synchronized with runtime
+subprocess calls and verify required executables during image build and
+container startup rather than discovering omissions after an upload:
+
+| Tool | Image role | Requirement |
+| --- | --- | --- |
+| Python 3.12+ and the locked `pyproject.toml`/`uv.lock` environment | Controller runtime | Required |
+| `ffmpeg` and `ffprobe` (normally supplied by the distribution's `ffmpeg` package) | Asset metadata, loudness analysis, thumbnails, review proxies, and waveforms; future render jobs | Required when the asset workspace is enabled |
+| `clamscan` and current ClamAV definitions | Uploaded-asset malware scanning | Optional, but production deployments that require malware scanning must install both and arrange definition updates |
+| Node.js and npm | Building the React/Vite application | Build-stage only; do not retain them in the final controller image |
+| CA certificates | TLS connections to external services and devices | Required in the runtime image |
+
+Pin the base image and package versions or digests where practical, record
+`ffmpeg -version`, `ffprobe -version`, and scanner/version information in build
+provenance, and test the codecs and filters used by the generated artifacts.
+The Dockerfile must also create writable persistent mounts for GUI data,
+original assets, derived artifacts, logs, and other configured state; these
+must not live only in the container layer.
+
+`mpv` is a media-agent dependency, not a headless controller-image dependency.
+It needs access to the host display, audio devices, GPU/decoder stack, and IPC,
+so install and validate it on each Windows or Linux media host as described in
+the media-agent setup guides. If controller-side rendering later introduces
+fonts, color profiles, GPU runtimes, or additional codecs and filters, add them
+to this inventory and to reproducibility/preflight checks before relying on
+them.
+
 ## Accelerated simulation
 
 `cueverge.simulation.ShowSimulation` runs a loaded `SceneCatalog` with:
