@@ -1,0 +1,23 @@
+services:
+  controller:
+    build:
+      context: .
+      args:
+        INSTALL_CLAMAV: ${CUEVERGE_INSTALL_CLAMAV:-false}
+    image: cueverge-controller:local
+    restart: "no"
+    init: true
+    ports:
+      - "${CUEVERGE_HTTP_PORT:-7000}:8000"
+    environment:
+      CUEVERGE_GUI_ENABLED: ${CUEVERGE_GUI_ENABLED:-false}
+      CUEVERGE_GUI_ADMIN_USERNAME: ${CUEVERGE_GUI_ADMIN_USERNAME:-admin}
+      CUEVERGE_GUI_ADMIN_PASSWORD_HASH: ${CUEVERGE_GUI_ADMIN_PASSWORD_HASH:-}
+      CUEVERGE_GUI_ALLOWED_ORIGINS: ${CUEVERGE_GUI_ALLOWED_ORIGINS:-http://localhost:7000}
+      CUEVERGE_GUI_SECURE_COOKIES: ${CUEVERGE_GUI_SECURE_COOKIES:-false}
+      CUEVERGE_CLAMAV_REQUIRED: ${CUEVERGE_CLAMAV_REQUIRED:-false}
+    volumes:
+      - cueverge-data:/var/lib/cueverge
+
+volumes:
+  cueverge-data:

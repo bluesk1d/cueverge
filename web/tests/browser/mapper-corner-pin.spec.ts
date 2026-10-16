@@ -41,6 +41,13 @@ test("compound-angle mapping reuses one homography for multiple assets", async (
       selectedAssetId = request.postDataJSON().content_asset_id;
       return route.fulfill({ json: mapping() });
     }
+    if (url.pathname.endsWith(`/${geometryId}/projector-simulation-overlay`)) {
+      expect(url.searchParams.get("photo_id")).toBe(photoId);
+      return route.fulfill({
+        contentType: "image/svg+xml",
+        body: '<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="600"><path d="M150 120 L860 48 L920 504 L80 450 Z" fill="#7c3aed"/></svg>',
+      });
+    }
     if (
       url.pathname.endsWith(`/installation-geometry/${geometryId}`) &&
       request.method() === "PUT"
@@ -100,6 +107,15 @@ test("compound-angle mapping reuses one homography for multiple assets", async (
   await expect(mapper.getByText(/Homography:/)).toContainText("0.00037");
   await expect(
     mapper.getByText(/Installation warp · unverified estimate · revision 1/),
+  ).toBeVisible();
+
+  await mapper.getByRole("button", { name: "Show simulation overlay" }).click();
+  await expect(mapper.locator(".projector-simulation-overlay")).toHaveAttribute(
+    "href",
+    `/api/gui/v1/installation-geometry/${geometryId}/projector-simulation-overlay?photo_id=${photoId}`,
+  );
+  await expect(
+    mapper.getByText(/projection calibration is an unverified estimate/),
   ).toBeVisible();
 
   await content.selectOption("asset-still-b");
@@ -186,6 +202,10 @@ function mapping() {
     mirror_x: false,
     mirror_y: false,
     mask_semantic_ids: [],
+    calibration_source: "unverified_estimate",
+    calibration_revision: 1,
+    mesh_vertices: [],
+    mesh_triangles: [],
     homography,
     diagnostic: null,
     fit_diagnostics: [],

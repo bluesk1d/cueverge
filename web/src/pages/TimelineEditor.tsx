@@ -7,19 +7,37 @@ import {
   compositionPreviewFrameUrl,
   createRenderJob,
   deployRenderArtifact,
+  getInstallationGeometry,
   getInstallationMapperExport,
+  getInstallationPhotos,
   getLightingPreview,
+  getPreviewEvaluation,
   getRenderJobs,
+  getSimulationScenarios,
+  getStageLightingPreview,
   getStageCoverage,
   InstallationMapperExport,
+  InstallationGeometry,
+  InstallationPhoto,
+  installationPhotoUrl,
   LightingPreview,
+  PreviewEvaluation,
+  projectorSimulationOverlayUrl,
   ProjectDraftRecord,
   RenderJob,
+  renderArtifactPreviewFrameUrl,
+  runSimulationScenario,
+  saveSimulationScenario,
+  SimulationRun,
+  SimulationScenario,
+  SimulationStep,
   evaluateSyncAdmission,
   recordSyncRehearsal,
   SyncAdmission,
   StageCoverage,
+  StageLightingPreview,
 } from "../api";
+import { VirtualizedList } from "../components/VirtualizedList";
 
 type TrackKind =
   | "media_output"
@@ -188,6 +206,20 @@ type TransformLayer = {
   keyframes: TransformKeyframe[];
 };
 
+type EditorialAudioSource = {
+  id: string;
+  name: string;
+  asset: AssetRecord;
+  start_ms: number;
+  duration_ms: number;
+  in_point_ms: number;
+  gain_db: number;
+  mute: boolean;
+  solo: boolean;
+  fade_in_ms: number;
+  fade_out_ms: number;
+};
+
 type SceneOperationalPolicy = {
   priority: number;
   completion_policy: "loop" | "select_next" | "transition_to" | "hold" | "stop";
@@ -282,13 +314,16 @@ export function TimelineEditor({
   canEdit,
   projectId,
   onSave,
+  initiallyOpen = false,
 }: {
   draft: ProjectDraftRecord;
   assets: AssetRecord[];
   canEdit: boolean;
   projectId: string;
   onSave: (draft: ProjectDraftRecord["draft"]) => Promise<void>;
+  initiallyOpen?: boolean;
 }) {
+  const [editorOpen, setEditorOpen] = useState(initiallyOpen);
   const [sceneId, setSceneId] = useState(draft.draft.scenes[0]?.id ?? "");
   const scene =
     draft.draft.scenes.find((candidate) => candidate.id === sceneId) ??
@@ -332,6 +367,13 @@ export function TimelineEditor({
   const [zoom, setZoom] = useState(80);
   const [snapMs, setSnapMs] = useState(100);
   const [playhead, setPlayhead] = useState(0);
+  const [isPreviewPlaying, setIsPreviewPlaying] = useState(false);
+  const [previewPlaybackRate, setPreviewPlaybackRate] = useState(1);
+  const [previewEvaluation, setPreviewEvaluation] =
+    useState<PreviewEvaluation | null>(null);
+  const [previewEvaluationError, setPreviewEvaluationError] =
+    useState<string | null>(null);
+  const playbackFrameRef = useRef<number | null>(null);
   const [safePoints, setSafePoints] = useState<number[]>([]);
   const [regions, setRegions] = useState<{ start_ms: number; end_ms: number }[]>([]);
   const [regionStart, setRegionStart] = useState(0);
@@ -387,6 +429,26 @@ export function TimelineEditor({
   const [historyVersion, setHistoryVersion] = useState(0);
   const [renderJobs, setRenderJobs] = useState<RenderJob[]>([]);
   const [renderJobError, setRenderJobError] = useState<string | null>(null);
+  const [selectedArtifactId, setSelectedArtifactId] = useState("");
+  const [renderPreviewMode, setRenderPreviewMode] = useState<
+    "source" | "baked" | "side_by_side" | "difference"
+  >("source");
+  const [simulationScenarios, setSimulationScenarios] = useState<
+    SimulationScenario[]
+  >([]);
+  const [simulationScenarioName, setSimulationScenarioName] =
+    useState("Rehearsal scenario");
+  const [simulationSteps, setSimulationSteps] = useState<SimulationStep[]>([]);
+  const [simulationExpected, setSimulationExpected] = useState("{}");
+  const [simulationAdvanceMs, setSimulationAdvanceMs] = useState(1000);
+  const [simulationEventType, setSimulationEventType] =
+    useState("synthetic.observation");
+  const [simulationEventAttributes, setSimulationEventAttributes] =
+    useState("{}");
+  const [simulationOutputResource, setSimulationOutputResource] = useState("");
+  const [simulationSceneId, setSimulationSceneId] = useState(scene?.id ?? "");
+  const [simulationRun, setSimulationRun] = useState<SimulationRun | null>(null);
+  const [simulationError, setSimulationError] = useState<string | null>(null);
   const [syncAdmission, setSyncAdmission] = useState<SyncAdmission | null>(null);
   const [rehearsalStartError, setRehearsalStartError] = useState(0);
   const [rehearsalDrift, setRehearsalDrift] = useState(0);
@@ -440,6 +502,26 @@ export function TimelineEditor({
         : [];
     },
   );
+  const completedRenderJobs = renderJobs.filter(
+    (job) =>
+      job.composition_id === composition?.id &&
+      job.state === "completed" &&
+      job.artifact_id,
+  );
+  const selectedArtifactJob = completedRenderJobs.find(
+    (job) => job.artifact_id === selectedArtifactId,
+  );
+  const frameDurationMs = composition
+    ? (1000 * composition.render_settings.frame_rate_denominator) /
+      composition.render_settings.frame_rate_numerator
+    : 1000 / 30;
+  const evaluationTimestampMs = Math.min(
+    duration,
+    Math.max(
+      0,
+      Math.floor(localPlayhead / frameDurationMs) * frameDurationMs,
+    ),
+  );
 
   useEffect(() => {
     if (!installationId) {
@@ -458,6 +540,87 @@ export function TimelineEditor({
         setMapperExport(null);
       });
   }, [installationId]);
+
+  useEffect(() => {
+    let active = true;
+    getPreviewEvaluation(
+      projectId,
+      editingSpaceId,
+      Math.round(evaluationTimestampMs),
+    )
+      .then((evaluation) => {
+        if (active) {
+          setPreviewEvaluation(evaluation);
+          setPreviewEvaluationError(null);
+        }
+      })
+      .catch((error) => {
+        if (active) {
+          setPreviewEvaluation(null);
+          setPreviewEvaluationError(
+            error instanceof Error
+              ? error.message
+              : "Backend preview evaluation is unavailable.",
+          );
+        }
+      });
+    return () => {
+      active = false;
+    };
+  }, [editingSpaceId, evaluationTimestampMs, projectId]);
+
+  useEffect(() => {
+    if (
+      selectedArtifactId &&
+      completedRenderJobs.some((job) => job.artifact_id === selectedArtifactId)
+    ) {
+      return;
+    }
+    setSelectedArtifactId(completedRenderJobs[0]?.artifact_id ?? "");
+    if (!completedRenderJobs.length) {
+      setRenderPreviewMode("source");
+    }
+  }, [completedRenderJobs, selectedArtifactId]);
+
+  useEffect(() => {
+    let active = true;
+    getSimulationScenarios(projectId)
+      .then((scenarios) => {
+        if (active) {
+          setSimulationScenarios(scenarios);
+          setSimulationError(null);
+        }
+      })
+      .catch((error) => {
+        if (active) {
+          setSimulationError(
+            error instanceof Error
+              ? error.message
+              : "Simulation scenarios are unavailable.",
+          );
+        }
+      });
+    return () => {
+      active = false;
+    };
+  }, [projectId]);
+
+  useEffect(() => {
+    setSimulationSceneId(scene?.id ?? "");
+  }, [scene?.id]);
+
+  useEffect(() => {
+    setSimulationOutputResource((current) =>
+      current &&
+      mapperExport?.resources.some(
+        (resource) => resource.resource === current,
+      )
+        ? current
+        : mapperExport?.resources.find(
+              (resource) => resource.kind === "pixel_output",
+            )?.resource ?? "",
+    );
+  }, [mapperExport]);
 
   useEffect(() => {
     let active = true;
@@ -541,10 +704,10 @@ export function TimelineEditor({
     setSelectedTransformKeyframeId("");
     setCompoundSelection([]);
     setSelectedLightingLayerId("");
+    setIsPreviewPlaying(false);
   }, [
     composition?.id,
     composition?.duration_ms,
-    composition?.local_time_offset_ms,
     editingSpaceId,
     scene?.id,
     scene?.duration_ms,
@@ -557,6 +720,55 @@ export function TimelineEditor({
     setSelectedTransformLayerId(firstLayer?.id ?? "");
     setSelectedTransformKeyframeId(firstLayer?.keyframes[0]?.id ?? "");
   }, [editingSpaceId]);
+
+  useEffect(() => {
+    if (!isPreviewPlaying) {
+      if (playbackFrameRef.current !== null) {
+        cancelAnimationFrame(playbackFrameRef.current);
+        playbackFrameRef.current = null;
+      }
+      return;
+    }
+    let previous = performance.now();
+    const tick = (now: number) => {
+      const elapsed = now - previous;
+      previous = now;
+      setPlayhead((current) => {
+        const local = Math.max(0, current - localOffset);
+        const effectiveLoopStart = Math.max(0, Math.min(loopStart, duration));
+        const effectiveLoopEnd = Math.max(
+          effectiveLoopStart + 1,
+          Math.min(loopEnd, duration),
+        );
+        const next = local + elapsed * previewPlaybackRate;
+        if (next < effectiveLoopEnd) {
+          return localOffset + Math.round(next);
+        }
+        const loopDuration = effectiveLoopEnd - effectiveLoopStart;
+        return (
+          localOffset +
+          Math.round(
+            effectiveLoopStart + ((next - effectiveLoopEnd) % loopDuration),
+          )
+        );
+      });
+      playbackFrameRef.current = requestAnimationFrame(tick);
+    };
+    playbackFrameRef.current = requestAnimationFrame(tick);
+    return () => {
+      if (playbackFrameRef.current !== null) {
+        cancelAnimationFrame(playbackFrameRef.current);
+        playbackFrameRef.current = null;
+      }
+    };
+  }, [
+    duration,
+    isPreviewPlaying,
+    localOffset,
+    loopEnd,
+    loopStart,
+    previewPlaybackRate,
+  ]);
 
   useEffect(() => {
     setScenePolicy(readSceneOperationalPolicy(scene));
@@ -660,7 +872,40 @@ export function TimelineEditor({
   const parsedInstanceOverrides = parseObject(instanceOverrides);
   const markers = syncMarkers[editingSpaceId] ?? [];
   const cues = syncCues[editingSpaceId] ?? [];
+  const renderedMarkers = useMemo(
+    () =>
+      markers.length <= 500
+        ? markers
+        : [...markers]
+            .sort(
+              (left, right) =>
+                Math.abs(left.time_ms - (playhead - localOffset)) -
+                Math.abs(right.time_ms - (playhead - localOffset)),
+            )
+            .slice(0, 500)
+            .sort((left, right) => left.time_ms - right.time_ms),
+    [localOffset, markers, playhead],
+  );
+  const selectableMarkers = useMemo(() => {
+    const selected = markers.find((marker) => marker.id === newCueMarkerId);
+    const nearest = renderedMarkers.slice(0, 500);
+    return selected && !nearest.some((marker) => marker.id === selected.id)
+      ? [selected, ...nearest]
+      : nearest;
+  }, [markers, newCueMarkerId, renderedMarkers]);
   const spaceTransformLayers = transformLayers[editingSpaceId] ?? [];
+  const editorialAudioSources = useMemo(
+    () =>
+      collectEditorialAudioSources(
+        scene,
+        composition,
+        tracks,
+        spaceTransformLayers,
+        assets,
+        duration,
+      ),
+    [assets, composition, duration, scene, spaceTransformLayers, tracks],
+  );
   const selectedTransformLayer = spaceTransformLayers.find(
     (layer) => layer.id === selectedTransformLayerId,
   );
@@ -957,8 +1202,14 @@ export function TimelineEditor({
   }
 
   return (
-    <details className="timeline-editor">
+    <details
+      className="timeline-editor"
+      open={editorOpen}
+      onToggle={(event) => setEditorOpen(event.currentTarget.open)}
+    >
       <summary>Timeline editor</summary>
+      {editorOpen && (
+        <>
       <div className="timeline-toolbar">
         <label>
           Scene
@@ -1007,6 +1258,60 @@ export function TimelineEditor({
             {[1, 10, 100, 250, 500, 1000].map((value) => (
               <option key={value} value={value}>
                 {value} ms
+              </option>
+            ))}
+          </select>
+        </label>
+        <button
+          aria-label={isPreviewPlaying ? "Pause editorial preview" : "Play editorial preview"}
+          onClick={() => setIsPreviewPlaying((current) => !current)}
+        >
+          {isPreviewPlaying ? "Pause preview" : "Play preview"}
+        </button>
+        <button
+          aria-label="Stop editorial preview"
+          onClick={() => {
+            setIsPreviewPlaying(false);
+            setPlayhead(localOffset + loopStart);
+          }}
+        >
+          Stop preview
+        </button>
+        <button
+          aria-label="Previous preview frame"
+          onClick={() => {
+            setIsPreviewPlaying(false);
+            setPlayhead(
+              localOffset + Math.max(0, localPlayhead - frameDurationMs),
+            );
+          }}
+        >
+          Previous frame
+        </button>
+        <button
+          aria-label="Next preview frame"
+          onClick={() => {
+            setIsPreviewPlaying(false);
+            setPlayhead(
+              localOffset +
+                Math.min(duration, localPlayhead + frameDurationMs),
+            );
+          }}
+        >
+          Next frame
+        </button>
+        <label>
+          Preview speed
+          <select
+            aria-label="Preview speed"
+            value={previewPlaybackRate}
+            onChange={(event) =>
+              setPreviewPlaybackRate(Number(event.target.value))
+            }
+          >
+            {[0.25, 0.5, 1, 2, 4].map((rate) => (
+              <option key={rate} value={rate}>
+                {rate}×
               </option>
             ))}
           </select>
@@ -1064,9 +1369,351 @@ export function TimelineEditor({
           </>
         )}
       </div>
+      <EditorialAudioPreview
+        isPlaying={isPreviewPlaying}
+        playheadMs={localPlayhead}
+        sources={editorialAudioSources}
+      />
       <output className="timeline-evaluated-state" aria-label="Timeline evaluated state">
         {JSON.stringify(evaluatedTimelineState)}
       </output>
+      <section
+        className="timeline-preview-diagnostics"
+        aria-label="Backend preview diagnostics"
+      >
+        <strong>Backend deterministic scene evaluation</strong>
+        {previewEvaluation ? (
+          <>
+            <span>
+              {previewEvaluation.frame_rate.numerator}/
+              {previewEvaluation.frame_rate.denominator} fps · frame{" "}
+              {previewEvaluation.frame_index} · controller time{" "}
+              {previewEvaluation.frame_timestamp_ms.toFixed(3)} ms
+            </span>
+            <span>
+              Timing quantization error{" "}
+              {previewEvaluation.timing_error_ms.toFixed(3)} ms · source revision{" "}
+              {previewEvaluation.source_revision}
+            </span>
+            <span>
+              Resources: {previewEvaluation.resources.join(", ") || "none"}
+            </span>
+            <span>
+              {previewEvaluation.degraded_resources.length
+                ? `Degraded resources: ${previewEvaluation.degraded_resources
+                    .map(
+                      (resource) =>
+                        `${resource.source_id} (${resource.reason})`,
+                    )
+                    .join(", ")}`
+                : "Degraded resources: none"}
+            </span>
+            <small>
+              Deterministic backend evaluation only; hardware commands sent: no.
+            </small>
+          </>
+        ) : (
+          <small role={previewEvaluationError ? "alert" : undefined}>
+            {previewEvaluationError ?? "Evaluating controller scene time…"}
+          </small>
+        )}
+      </section>
+      <section
+        className="timeline-simulation-scenarios"
+        aria-label="Repeatable simulation scenarios"
+      >
+        <strong>Repeatable no-hardware simulation scenarios</strong>
+        <small>
+          Runs the compiled controller with fake media clients, in-memory lighting
+          sinks, synthetic observations, and accelerated time. Hardware adapters
+          and enrolled clients are never opened.
+        </small>
+        <label>
+          Scenario name
+          <input
+            aria-label="Simulation scenario name"
+            value={simulationScenarioName}
+            onChange={(event) => setSimulationScenarioName(event.target.value)}
+          />
+        </label>
+        <label>
+          Accelerated advance milliseconds
+          <input
+            aria-label="Simulation advance milliseconds"
+            min="0"
+            type="number"
+            value={simulationAdvanceMs}
+            onChange={(event) => setSimulationAdvanceMs(Number(event.target.value))}
+          />
+        </label>
+        <button
+          onClick={() =>
+            setSimulationSteps((current) => [
+              ...current,
+              { kind: "advance", delta_ms: simulationAdvanceMs },
+            ])
+          }
+        >
+          Add accelerated advance
+        </button>
+        <label>
+          Synthetic event type
+          <input
+            aria-label="Synthetic event type"
+            value={simulationEventType}
+            onChange={(event) => setSimulationEventType(event.target.value)}
+          />
+        </label>
+        <label>
+          Synthetic event attributes
+          <textarea
+            aria-label="Synthetic event attributes"
+            value={simulationEventAttributes}
+            onChange={(event) =>
+              setSimulationEventAttributes(event.target.value)
+            }
+          />
+        </label>
+        <button
+          onClick={() => {
+            try {
+              const parsed = JSON.parse(simulationEventAttributes);
+              if (
+                typeof parsed !== "object" ||
+                parsed === null ||
+                Array.isArray(parsed)
+              ) {
+                throw new Error("Synthetic event attributes must be an object.");
+              }
+              setSimulationSteps((current) => [
+                ...current,
+                {
+                  kind: "observe",
+                  event_type: simulationEventType,
+                  attributes: parsed as Record<
+                    string,
+                    string | number | boolean
+                  >,
+                },
+              ]);
+              setSimulationError(null);
+            } catch (error) {
+              setSimulationError(
+                error instanceof Error
+                  ? error.message
+                  : "Synthetic event attributes are invalid.",
+              );
+            }
+          }}
+        >
+          Add synthetic observation
+        </button>
+        <label>
+          Operator scene override
+          <select
+            aria-label="Simulation operator scene"
+            value={simulationSceneId}
+            onChange={(event) => setSimulationSceneId(event.target.value)}
+          >
+            {draft.draft.scenes.map((candidate) => (
+              <option key={candidate.id} value={candidate.id}>
+                {candidate.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <button
+          disabled={!simulationSceneId}
+          onClick={() =>
+            setSimulationSteps((current) => [
+              ...current,
+              { kind: "operator_start", scene_id: simulationSceneId },
+            ])
+          }
+        >
+          Add operator override
+        </button>
+        <button
+          onClick={() =>
+            setSimulationSteps((current) => [
+              ...current,
+              { kind: "disconnect" },
+            ])
+          }
+        >
+          Add client disconnect
+        </button>
+        <button
+          onClick={() =>
+            setSimulationSteps((current) => [
+              ...current,
+              { kind: "reconnect" },
+            ])
+          }
+        >
+          Add client reconnect
+        </button>
+        <label>
+          Simulated lighting output
+          <select
+            aria-label="Simulated lighting output"
+            value={simulationOutputResource}
+            onChange={(event) =>
+              setSimulationOutputResource(event.target.value)
+            }
+          >
+            <option value="">Select output</option>
+            {(mapperExport?.resources ?? [])
+              .filter((resource) => resource.kind === "pixel_output")
+              .map((resource) => (
+                <option key={resource.resource} value={resource.resource}>
+                  {resource.resource}
+                </option>
+              ))}
+          </select>
+        </label>
+        <button
+          disabled={!simulationOutputResource}
+          onClick={() =>
+            setSimulationSteps((current) => [
+              ...current,
+              {
+                kind: "output_failure",
+                resource: simulationOutputResource,
+                failed: true,
+              },
+            ])
+          }
+        >
+          Add output failure
+        </button>
+        <button
+          disabled={!simulationOutputResource}
+          onClick={() =>
+            setSimulationSteps((current) => [
+              ...current,
+              {
+                kind: "output_failure",
+                resource: simulationOutputResource,
+                failed: false,
+              },
+            ])
+          }
+        >
+          Add output recovery
+        </button>
+        <ol aria-label="Simulation scenario steps">
+          {simulationSteps.map((step, index) => (
+            <li key={`${index}:${step.kind}`}>
+              <code>{JSON.stringify(step)}</code>
+              <button
+                aria-label={`Remove simulation step ${index + 1}`}
+                onClick={() =>
+                  setSimulationSteps((current) =>
+                    current.filter((_, candidate) => candidate !== index),
+                  )
+                }
+              >
+                Remove
+              </button>
+            </li>
+          ))}
+        </ol>
+        <label>
+          Expected deterministic outcome
+          <textarea
+            aria-label="Simulation expected outcome"
+            value={simulationExpected}
+            onChange={(event) => setSimulationExpected(event.target.value)}
+          />
+        </label>
+        <button
+          disabled={
+            !canEdit ||
+            !simulationScenarioName.trim() ||
+            simulationSteps.length === 0
+          }
+          onClick={async () => {
+            try {
+              const expected = JSON.parse(simulationExpected);
+              if (
+                typeof expected !== "object" ||
+                expected === null ||
+                Array.isArray(expected)
+              ) {
+                throw new Error("Expected outcome must be a JSON object.");
+              }
+              const saved = await saveSimulationScenario(projectId, {
+                name: simulationScenarioName,
+                steps: simulationSteps,
+                expected: expected as Record<string, unknown>,
+              });
+              setSimulationScenarios((current) => [
+                saved,
+                ...current.filter((candidate) => candidate.id !== saved.id),
+              ]);
+              setSimulationError(null);
+            } catch (error) {
+              setSimulationError(
+                error instanceof Error
+                  ? error.message
+                  : "Simulation scenario could not be saved.",
+              );
+            }
+          }}
+        >
+          Save simulation scenario
+        </button>
+        <div className="timeline-simulation-saved">
+          {simulationScenarios.map((scenario) => (
+            <div key={scenario.id}>
+              <span>
+                <strong>{scenario.name}</strong> · revision{" "}
+                {scenario.source_revision} · {scenario.steps.length} steps
+              </span>
+              <small>
+                {scenario.source_revision === draft.revision
+                  ? "Matches current draft"
+                  : `Reproducible against stored revision ${scenario.source_revision}; current draft is ${draft.revision}`}
+              </small>
+              <button
+                disabled={!canEdit}
+                onClick={async () => {
+                  try {
+                    setSimulationRun(
+                      await runSimulationScenario(projectId, scenario.id),
+                    );
+                    setSimulationError(null);
+                  } catch (error) {
+                    setSimulationError(
+                      error instanceof Error
+                        ? error.message
+                        : "Simulation scenario failed to run.",
+                    );
+                  }
+                }}
+              >
+                Run saved scenario
+              </button>
+            </div>
+          ))}
+        </div>
+        {simulationRun && (
+          <output aria-label="Simulation scenario result">
+            <strong>
+              {simulationRun.passed ? "Expected outcome matched" : "Outcome mismatch"}
+            </strong>
+            <span>
+              Hardware adapters opened: no · hardware commands sent: no
+            </span>
+            <code>{JSON.stringify(simulationRun.actual)}</code>
+            {simulationRun.mismatches.length > 0 && (
+              <code>{JSON.stringify(simulationRun.mismatches)}</code>
+            )}
+          </output>
+        )}
+        {simulationError && <small role="alert">{simulationError}</small>}
+      </section>
       <section
         className={`timeline-diagnostics${
           timelineDiagnostics.length ? " timeline-diagnostics--invalid" : ""
@@ -1101,16 +1748,23 @@ export function TimelineEditor({
           </span>
         ))}
       </nav>
-      {composition?.space_kind === "stage" && stageCoverage && mapperExport && (
+      {composition?.space_kind === "stage" &&
+        stageCoverage &&
+        mapperExport &&
+        installationId && (
         <StageCompositionPreview
           composition={composition}
+          compositions={compositions}
           coverage={stageCoverage}
+          installationId={installationId}
           mapperExport={mapperExport}
+          projectId={projectId}
           selectedKeyframe={selectedTransformKeyframe}
           selectedLayer={selectedTransformLayer}
           canEdit={canEdit}
           snapMode={spatialSnapMode}
           onSnapModeChange={setSpatialSnapMode}
+          timestampMs={Math.min(localPlayhead, composition.duration_ms - 1)}
           onMoveKeyframe={(position) => {
             if (selectedTransformLayer && selectedTransformKeyframe) {
               updateTransformKeyframe(
@@ -1308,7 +1962,7 @@ export function TimelineEditor({
               </div>
             );
           })}
-          {markers.map((marker) => (
+          {renderedMarkers.map((marker) => (
             <button
               aria-label={`${marker.name} sync marker at ${marker.time_ms} milliseconds`}
               className="timeline-sync-marker"
@@ -1651,12 +2305,18 @@ export function TimelineEditor({
           Named markers move linked cues atomically. Cue offsets remain explicit,
           and detached cues keep their evaluated local time.
         </small>
-        {markers.map((marker) => {
-          const linkedCount = cues.filter(
-            (cue) => cue.marker_id === marker.id,
-          ).length;
-          const bounds = markerMoveBounds(marker.id, cues, duration);
-          return (
+        {markers.length > 0 && (
+          <VirtualizedList
+            ariaLabel="Synchronization markers"
+            estimateSize={52}
+            items={markers}
+            keyFor={(marker) => marker.id}
+            renderItem={(marker) => {
+              const linkedCount = cues.filter(
+                (cue) => cue.marker_id === marker.id,
+              ).length;
+              const bounds = markerMoveBounds(marker.id, cues, duration);
+              return (
             <div className="timeline-sync-marker-row" key={marker.id}>
               <input
                 aria-label={`Sync marker name ${marker.name}`}
@@ -1718,8 +2378,10 @@ export function TimelineEditor({
                 </button>
               )}
             </div>
-          );
-        })}
+              );
+            }}
+          />
+        )}
         {canEdit && (
           <div className="timeline-sync-create">
             <input
@@ -2136,7 +2798,7 @@ export function TimelineEditor({
               onChange={(event) => setNewCueMarkerId(event.target.value)}
             >
               <option value="">Detached at playhead</option>
-              {markers.map((marker) => (
+              {selectableMarkers.map((marker) => (
                 <option key={marker.id} value={marker.id}>
                   {marker.name}
                 </option>
@@ -2933,11 +3595,73 @@ export function TimelineEditor({
                 ))}
               {renderJobError && <small role="alert">{renderJobError}</small>}
             </div>
+            <div
+              className="timeline-preview-inspection"
+              aria-label="Controller preview inspection"
+            >
+              <strong>Controller preview inspection</strong>
+              <label>
+                Checksummed bake
+                <select
+                  aria-label="Checksummed bake"
+                  value={selectedArtifactId}
+                  onChange={(event) => setSelectedArtifactId(event.target.value)}
+                >
+                  <option value="">No completed bake</option>
+                  {completedRenderJobs.map((job) => (
+                    <option key={job.artifact_id!} value={job.artifact_id!}>
+                      {job.artifact_id!.slice(0, 12)} · revision {job.source_revision}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                Inspection mode
+                <select
+                  aria-label="Preview inspection mode"
+                  disabled={!selectedArtifactId}
+                  value={renderPreviewMode}
+                  onChange={(event) =>
+                    setRenderPreviewMode(
+                      event.target.value as typeof renderPreviewMode,
+                    )
+                  }
+                >
+                  <option value="source">Editable source</option>
+                  <option value="baked">Selected bake</option>
+                  <option value="side_by_side">Before / after</option>
+                  <option value="difference">Frame difference</option>
+                </select>
+              </label>
+              <small>
+                {selectedArtifactJob
+                  ? selectedArtifactJob.source_revision === draft.revision
+                    ? `Checksummed bake ${selectedArtifactId} matches draft revision ${draft.revision}.`
+                    : `Stale bake warning: artifact revision ${selectedArtifactJob.source_revision} differs from draft revision ${draft.revision}.`
+                  : "Editable source preview; no checksummed bake is selected."}
+              </small>
+              <small>
+                Source and bake use the same controller composition, alpha, warp,
+                mask, and audio-mix pipeline semantics.
+              </small>
+            </div>
             {composition.space_kind === "projector_native" && (
-              <img
-                alt={`Controller render preview for ${composition.name}`}
-                className="timeline-render-preview"
-                src={compositionPreviewFrameUrl(
+              <CompositionPreviewInspection
+                bakedUrl={
+                  selectedArtifactId
+                    ? renderArtifactPreviewFrameUrl(
+                        selectedArtifactId,
+                        composition.target_id,
+                        Math.min(
+                          composition.duration_ms - 1,
+                          Math.max(0, localPlayhead),
+                        ),
+                      )
+                    : null
+                }
+                label={`Controller render preview for ${composition.name}`}
+                mode={renderPreviewMode}
+                sourceUrl={compositionPreviewFrameUrl(
                   projectId,
                   composition.id,
                   Math.min(
@@ -2955,11 +3679,23 @@ export function TimelineEditor({
                     ? projector.resource
                     : "";
                 return resource ? (
-                  <img
-                    alt={`Controller render preview for ${composition.name} · ${resource}`}
-                    className="timeline-render-preview"
+                  <CompositionPreviewInspection
+                    bakedUrl={
+                      selectedArtifactId
+                        ? renderArtifactPreviewFrameUrl(
+                            selectedArtifactId,
+                            resource,
+                            Math.min(
+                              composition.duration_ms - 1,
+                              Math.max(0, localPlayhead),
+                            ),
+                          )
+                        : null
+                    }
                     key={resource}
-                    src={compositionPreviewFrameUrl(
+                    label={`Controller render preview for ${composition.name} · ${resource}`}
+                    mode={renderPreviewMode}
+                    sourceUrl={compositionPreviewFrameUrl(
                       projectId,
                       composition.id,
                       Math.min(
@@ -4477,7 +5213,284 @@ export function TimelineEditor({
           </div>
         )}
       </div>
+        </>
+      )}
     </details>
+  );
+}
+
+function CompositionPreviewInspection({
+  bakedUrl,
+  label,
+  mode,
+  sourceUrl,
+}: {
+  bakedUrl: string | null;
+  label: string;
+  mode: "source" | "baked" | "side_by_side" | "difference";
+  sourceUrl: string;
+}) {
+  if (!bakedUrl || mode === "source") {
+    return (
+      <img
+        alt={label}
+        className="timeline-render-preview"
+        src={sourceUrl}
+      />
+    );
+  }
+  if (mode === "baked") {
+    return (
+      <img
+        alt={`${label} · selected bake`}
+        className="timeline-render-preview"
+        src={bakedUrl}
+      />
+    );
+  }
+  return (
+    <figure
+      aria-label={`${label} · ${mode === "difference" ? "frame difference" : "before and after"}`}
+      className={`timeline-preview-comparison timeline-preview-comparison--${mode}`}
+    >
+      <div>
+        <img alt={`${label} · editable source`} src={sourceUrl} />
+        <small>Editable source</small>
+      </div>
+      <div>
+        <img alt={`${label} · selected bake`} src={bakedUrl} />
+        <small>Selected checksummed bake</small>
+      </div>
+    </figure>
+  );
+}
+
+function EditorialAudioPreview({
+  sources,
+  playheadMs,
+  isPlaying,
+}: {
+  sources: EditorialAudioSource[];
+  playheadMs: number;
+  isPlaying: boolean;
+}) {
+  const anySolo = sources.some((source) => source.solo);
+  return (
+    <section className="editorial-audio-preview" aria-label="Browser editorial audio">
+      <div>
+        <strong>Browser editorial audio</strong>
+        <small>
+          Proxy playback and meters are for editing only; they do not represent
+          venue output or hardware synchronization.
+        </small>
+      </div>
+      {sources.length ? (
+        <div className="editorial-audio-preview__channels">
+          {sources.map((source) => (
+            <EditorialAudioChannel
+              anySolo={anySolo}
+              isPlaying={isPlaying}
+              key={source.id}
+              playheadMs={playheadMs}
+              source={source}
+            />
+          ))}
+        </div>
+      ) : (
+        <small>No playable managed audio proxy is bound to this editing space.</small>
+      )}
+    </section>
+  );
+}
+
+function EditorialAudioChannel({
+  source,
+  playheadMs,
+  isPlaying,
+  anySolo,
+}: {
+  source: EditorialAudioSource;
+  playheadMs: number;
+  isPlaying: boolean;
+  anySolo: boolean;
+}) {
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const contextRef = useRef<AudioContext | null>(null);
+  const gainRef = useRef<GainNode | null>(null);
+  const analyserRef = useRef<AnalyserNode | null>(null);
+  const meterFrameRef = useRef<number | null>(null);
+  const [level, setLevel] = useState(0);
+  const [error, setError] = useState<string | null>(null);
+  const active =
+    playheadMs >= source.start_ms &&
+    playheadMs < source.start_ms + source.duration_ms;
+  const muted = source.mute || (anySolo && !source.solo);
+  const progress = active
+    ? Math.max(
+        0,
+        Math.min(1, (playheadMs - source.start_ms) / source.duration_ms),
+      )
+    : playheadMs < source.start_ms
+      ? 0
+      : 1;
+
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio) {
+      return;
+    }
+    let cancelled = false;
+    const stopMeter = () => {
+      if (meterFrameRef.current !== null) {
+        cancelAnimationFrame(meterFrameRef.current);
+        meterFrameRef.current = null;
+      }
+      setLevel(0);
+    };
+    const startMeter = (analyser: AnalyserNode) => {
+      if (meterFrameRef.current !== null) {
+        return;
+      }
+      const samples = new Uint8Array(analyser.fftSize);
+      const measure = () => {
+        analyser.getByteTimeDomainData(samples);
+        const rms = Math.sqrt(
+          samples.reduce((sum, sample) => {
+            const normalized = (sample - 128) / 128;
+            return sum + normalized * normalized;
+          }, 0) / samples.length,
+        );
+        setLevel(Math.min(1, rms * 4));
+        meterFrameRef.current = requestAnimationFrame(measure);
+      };
+      meterFrameRef.current = requestAnimationFrame(measure);
+    };
+    const synchronize = async () => {
+      if (!active) {
+        audio.pause();
+        stopMeter();
+        return;
+      }
+      const targetSeconds =
+        (source.in_point_ms + playheadMs - source.start_ms) / 1000;
+      if (Math.abs(audio.currentTime - targetSeconds) > 0.25) {
+        audio.currentTime = targetSeconds;
+      }
+      if (!isPlaying) {
+        if (!audio.paused) {
+          audio.pause();
+        }
+        stopMeter();
+        return;
+      }
+      if (typeof AudioContext === "undefined") {
+        audio.pause();
+        stopMeter();
+        setError("This browser does not provide Web Audio preview support.");
+        return;
+      }
+      if (!contextRef.current) {
+        const context = new AudioContext();
+        const media = context.createMediaElementSource(audio);
+        const gain = context.createGain();
+        const analyser = context.createAnalyser();
+        analyser.fftSize = 256;
+        media.connect(gain);
+        gain.connect(analyser);
+        analyser.connect(context.destination);
+        contextRef.current = context;
+        gainRef.current = gain;
+        analyserRef.current = analyser;
+      }
+      const elapsed = playheadMs - source.start_ms;
+      const remaining = source.duration_ms - elapsed;
+      const fadeIn = source.fade_in_ms > 0 ? Math.min(1, elapsed / source.fade_in_ms) : 1;
+      const fadeOut =
+        source.fade_out_ms > 0 ? Math.min(1, remaining / source.fade_out_ms) : 1;
+      gainRef.current!.gain.value =
+        muted ? 0 : 10 ** (source.gain_db / 20) * Math.min(fadeIn, fadeOut);
+      try {
+        await contextRef.current.resume();
+        await audio.play();
+        if (!cancelled && analyserRef.current) {
+          setError(null);
+          startMeter(analyserRef.current);
+        }
+      } catch (playbackError) {
+        if (!cancelled) {
+          audio.pause();
+          stopMeter();
+          setError(
+            playbackError instanceof Error
+              ? playbackError.message
+              : "Browser audio playback failed.",
+          );
+        }
+      }
+    };
+    void synchronize();
+    return () => {
+      cancelled = true;
+      if (!isPlaying || !active) {
+        stopMeter();
+      }
+    };
+  }, [active, anySolo, isPlaying, muted, playheadMs, source]);
+
+  useEffect(
+    () => () => {
+      if (meterFrameRef.current !== null) {
+        cancelAnimationFrame(meterFrameRef.current);
+      }
+      audioRef.current?.pause();
+      void contextRef.current?.close();
+    },
+    [],
+  );
+
+  return (
+    <article className="editorial-audio-channel">
+      <audio
+        aria-label={`Editorial audio proxy for ${source.name}`}
+        preload="auto"
+        ref={audioRef}
+        src={assetArtifactUrl(source.asset.id, "review")}
+      />
+      <div>
+        <strong>{source.name}</strong>
+        <small>
+          {muted ? "Muted" : `${source.gain_db.toFixed(1)} dB`}
+          {source.solo ? " · Solo" : ""}
+        </small>
+      </div>
+      <div className="editorial-audio-channel__waveform">
+        {hasAssetArtifact(source.asset, "waveform") ? (
+          <img
+            alt={`Editorial waveform for ${source.asset.name}`}
+            src={assetArtifactUrl(source.asset.id, "waveform")}
+          />
+        ) : (
+          <small>Waveform unavailable</small>
+        )}
+        <span
+          aria-label={`${source.name} waveform position`}
+          className="editorial-audio-channel__position"
+          style={{ left: `${progress * 100}%` }}
+        />
+      </div>
+      <label>
+        Level
+        <meter
+          aria-label={`${source.name} audio level`}
+          low={0.2}
+          max={1}
+          optimum={0.65}
+          high={0.85}
+          value={muted ? 0 : level}
+        />
+      </label>
+      {error && <small role="alert">{error}</small>}
+    </article>
   );
 }
 
@@ -5068,25 +6081,148 @@ function LightingSurfaceCompositionPreview({
 
 function StageCompositionPreview({
   composition,
+  compositions,
   coverage,
+  installationId,
   mapperExport,
+  projectId,
   selectedLayer,
   selectedKeyframe,
   canEdit,
   snapMode,
   onSnapModeChange,
   onMoveKeyframe,
+  timestampMs,
 }: {
   composition: Composition;
+  compositions: Record<string, Composition>;
   coverage: StageCoverage;
+  installationId: string;
   mapperExport: InstallationMapperExport;
+  projectId: string;
   selectedLayer: TransformLayer | undefined;
   selectedKeyframe: TransformKeyframe | undefined;
   canEdit: boolean;
   snapMode: "none" | "landmarks" | "surfaces" | "all";
   onSnapModeChange: (mode: "none" | "landmarks" | "surfaces" | "all") => void;
   onMoveKeyframe: (position: [number, number]) => void;
+  timestampMs: number;
 }) {
+  const [lightingPreviews, setLightingPreviews] = useState<
+    Record<string, LightingPreview>
+  >({});
+  const [lightingPreviewError, setLightingPreviewError] = useState<string | null>(
+    null,
+  );
+  const [stageLightingPreview, setStageLightingPreview] =
+    useState<StageLightingPreview | null>(null);
+  const [photos, setPhotos] = useState<InstallationPhoto[]>([]);
+  const [photoGeometry, setPhotoGeometry] = useState<InstallationGeometry[]>([]);
+  const lightingCompositions = useMemo(
+    () =>
+      Object.values(compositions).filter(
+        (candidate) => candidate.space_kind === "lighting_surface",
+      ),
+    [compositions],
+  );
+  useEffect(() => {
+    let active = true;
+    Promise.allSettled(
+      lightingCompositions.map(async (candidate) => [
+        candidate.id,
+        await getLightingPreview(
+          projectId,
+          candidate.id,
+          Math.min(timestampMs, candidate.duration_ms - 1),
+        ),
+      ] as const),
+    ).then((results) => {
+      if (!active) {
+        return;
+      }
+      const previews: Record<string, LightingPreview> = {};
+      const errors: string[] = [];
+      results.forEach((result, index) => {
+        if (result.status === "fulfilled") {
+          previews[result.value[0]] = result.value[1];
+        } else {
+          errors.push(
+            `${lightingCompositions[index].name}: ${
+              result.reason instanceof Error
+                ? result.reason.message
+                : "preview unavailable"
+            }`,
+          );
+        }
+      });
+      setLightingPreviews(previews);
+      setLightingPreviewError(errors.length ? errors.join("; ") : null);
+    });
+    return () => {
+      active = false;
+    };
+  }, [lightingCompositions, projectId, timestampMs]);
+  useEffect(() => {
+    let active = true;
+    getStageLightingPreview(projectId, composition.id, timestampMs)
+      .then((preview) => {
+        if (active) {
+          setStageLightingPreview(preview);
+        }
+      })
+      .catch((error) => {
+        if (active) {
+          setStageLightingPreview(null);
+          setLightingPreviewError(
+            error instanceof Error
+              ? error.message
+              : "Shared stage lighting sampling is unavailable.",
+          );
+        }
+      });
+    return () => {
+      active = false;
+    };
+  }, [composition.id, projectId, timestampMs]);
+  useEffect(() => {
+    let active = true;
+    Promise.all([
+      getInstallationPhotos(installationId),
+      getInstallationGeometry(installationId),
+    ])
+      .then(([loadedPhotos, geometry]) => {
+        if (active) {
+          setPhotos(loadedPhotos);
+          setPhotoGeometry(geometry);
+        }
+      })
+      .catch((error) => {
+        if (active) {
+          setLightingPreviewError(
+            error instanceof Error
+              ? error.message
+              : "Installation photo geometry is unavailable.",
+          );
+        }
+      });
+    return () => {
+      active = false;
+    };
+  }, [installationId]);
+
+  const previewBySurface = new Map<
+    string,
+    LightingPreview | StageLightingPreview["surfaces"][number]
+  >(
+    Object.values(lightingPreviews).flatMap((preview) => [
+      [preview.surface_semantic_id, preview] as const,
+      [preview.surface_resource, preview] as const,
+    ]),
+  );
+  for (const surface of stageLightingPreview?.surfaces ?? []) {
+    previewBySurface.set(surface.surface_semantic_id, surface);
+    previewBySurface.set(surface.surface_resource, surface);
+  }
   const minimumX = coverage.minimum_x;
   const minimumY = coverage.minimum_y;
   const width = coverage.maximum_x - minimumX || composition.width;
@@ -5199,21 +6335,78 @@ function StageCompositionPreview({
             <title>{zone.name}</title>
           </polygon>
         ))}
-        {mapperExport.lighting_surfaces.flatMap((surface) =>
-          (surface.pixels ?? []).map((pixel) => (
-            <circle
-              key={`${surface.semantic_id}:${pixel.output_index}`}
-              className="stage-composition-pixel"
-              cx={((pixel.stage_x - minimumX) / width) * 800}
-              cy={((pixel.stage_y - minimumY) / height) * 400}
-              r="3"
+        {mapperExport.paths.map((path) => (
+          <polyline
+            className="stage-composition-lighting-path"
+            key={path.semantic_id}
+            points={path.stage_points.map(point).join(" ")}
+          >
+            <title>{path.name} lighting path</title>
+          </polyline>
+        ))}
+        {mapperExport.fixtures.flatMap((fixture) =>
+          fixture.stage_points.map((position, index) => (
+            <rect
+              className="stage-composition-fixture"
+              height="10"
+              key={`${fixture.semantic_id}:${index}`}
+              width="10"
+              x={screenPoint(position)[0] - 5}
+              y={screenPoint(position)[1] - 5}
             >
-              <title>
-                {surface.resource} pixel {pixel.output_index}
-              </title>
-            </circle>
+              <title>{fixture.name} fixture</title>
+            </rect>
           )),
         )}
+        {mapperExport.lighting_surfaces.flatMap((surface) => {
+          const preview =
+            previewBySurface.get(surface.semantic_id) ??
+            previewBySurface.get(surface.resource);
+          const samples = new Map(
+            (preview?.samples ?? []).map((sample) => [
+              sample.output_index,
+              sample.color,
+            ]),
+          );
+          return (surface.pixels ?? []).map((pixel) => {
+            const color = samples.get(pixel.output_index);
+            const center = screenPoint([pixel.stage_x, pixel.stage_y]);
+            return (
+              <g key={`${surface.semantic_id}:${pixel.output_index}`}>
+                <ellipse
+                  className="stage-composition-pixel-footprint"
+                  cx={center[0]}
+                  cy={center[1]}
+                  rx={Math.max(4, (pixel.footprint_width / width) * 400)}
+                  ry={Math.max(4, (pixel.footprint_height / height) * 200)}
+                />
+                <circle
+                  className="stage-composition-pixel"
+                  cx={center[0]}
+                  cy={center[1]}
+                  r="4"
+                  style={
+                    color
+                      ? { fill: `rgb(${color[0]} ${color[1]} ${color[2]})` }
+                      : undefined
+                  }
+                >
+                  <title>
+                    {surface.resource} physical output {pixel.output_index}
+                    {color ? ` · RGB ${color.join(", ")}` : ""}
+                  </title>
+                </circle>
+                <text
+                  className="stage-composition-output-order"
+                  x={center[0] + 6}
+                  y={center[1] - 6}
+                >
+                  {pixel.output_index}
+                </text>
+              </g>
+            );
+          });
+        })}
         {motionPath && (
           <path className="stage-motion-path" d={motionPath}>
             <title>{selectedLayer?.name} motion path</title>
@@ -5280,9 +6473,18 @@ function StageCompositionPreview({
         )}
       </svg>
       <small>
-        Projector coverage · lighting pixels · audience zones · safety/no-output
-        zones
+        Projector coverage · evaluated lighting canvas samples and footprints ·
+        physical output order · fixtures · paths · audience zones ·
+        safety/no-output zones
       </small>
+      {stageLightingPreview && (
+        <small aria-label="Shared stage lighting sampling">
+          Shared stage visual sampled onto calibrated LEDs at{" "}
+          {stageLightingPreview.timestamp_ms} ms · mapped and device power limits
+          applied · hardware commands sent: no
+        </small>
+      )}
+      {lightingPreviewError && <small role="alert">{lightingPreviewError}</small>}
       {warnings.length > 0 && (
         <ul className="stage-motion-warnings" aria-label="Motion path warnings">
           {warnings.map((warning) => (
@@ -5290,8 +6492,204 @@ function StageCompositionPreview({
           ))}
         </ul>
       )}
+      <IntegratedPhotoPreview
+        geometry={photoGeometry}
+        mapperExport={mapperExport}
+        photos={photos}
+        previewBySurface={previewBySurface}
+      />
     </section>
   );
+}
+
+function IntegratedPhotoPreview({
+  geometry,
+  mapperExport,
+  photos,
+  previewBySurface,
+}: {
+  geometry: InstallationGeometry[];
+  mapperExport: InstallationMapperExport;
+  photos: InstallationPhoto[];
+  previewBySurface: Map<
+    string,
+    LightingPreview | StageLightingPreview["surfaces"][number]
+  >;
+}) {
+  if (!photos.length) {
+    return (
+      <small>
+        No calibrated installation photo is available for the integrated preview.
+      </small>
+    );
+  }
+  return (
+    <div
+      className="timeline-integrated-photo-grid"
+      aria-label="Integrated projector and lighting photo previews"
+    >
+      {photos.map((photo) => {
+        const photoGeometry = geometry.filter(
+          (candidate) => candidate.photo_id === photo.id && !candidate.hidden,
+        );
+        return (
+          <figure key={photo.id}>
+            <strong>{photo.name}</strong>
+            <svg
+              aria-label={`Integrated simulation on ${photo.name}`}
+              role="img"
+              viewBox="0 0 1000 600"
+            >
+              <image
+                height="600"
+                href={installationPhotoUrl(photo.id)}
+                preserveAspectRatio="xMidYMid slice"
+                width="1000"
+              />
+              {photoGeometry
+                .filter((item) => item.kind === "projector_surface")
+                .map((item) => (
+                  <image
+                    className="projector-simulation-overlay"
+                    height="600"
+                    href={projectorSimulationOverlayUrl(item.id, photo.id)}
+                    key={item.id}
+                    preserveAspectRatio="none"
+                    width="1000"
+                  >
+                    <title>Projector review proxy on {item.name}</title>
+                  </image>
+                ))}
+              {photoGeometry
+                .filter((item) => item.kind === "path" && item.points.length >= 2)
+                .map((item) => (
+                  <polyline
+                    className="stage-composition-lighting-path"
+                    key={item.id}
+                    points={item.points
+                      .map((point) => `${point.x * 1000},${point.y * 600}`)
+                      .join(" ")}
+                  >
+                    <title>{item.name} lighting path</title>
+                  </polyline>
+                ))}
+              {photoGeometry
+                .filter((item) => item.kind === "fixture")
+                .flatMap((item) =>
+                  item.points.map((position, index) => (
+                    <rect
+                      className="stage-composition-fixture"
+                      height="12"
+                      key={`${item.id}:${index}`}
+                      width="12"
+                      x={position.x * 1000 - 6}
+                      y={position.y * 600 - 6}
+                    >
+                      <title>{item.name} fixture</title>
+                    </rect>
+                  )),
+                )}
+              {mapperExport.lighting_surfaces.flatMap((surface) => {
+                const boundary = photoGeometry.find(
+                  (item) =>
+                    item.semantic_id === surface.semantic_id &&
+                    item.points.length >= 3,
+                );
+                if (!boundary) {
+                  return [];
+                }
+                const preview =
+                  previewBySurface.get(surface.semantic_id) ??
+                  previewBySurface.get(surface.resource);
+                const samples = new Map(
+                  (preview?.samples ?? []).map((sample) => [
+                    sample.output_index,
+                    sample.color,
+                  ]),
+                );
+                return (surface.pixels ?? []).map((pixel) => {
+                  const [x, y] = lightingPixelPhotoPoint(
+                    pixel.local_x / surface.local_width,
+                    pixel.local_y / surface.local_height,
+                    boundary.points,
+                  );
+                  const color = samples.get(pixel.output_index);
+                  return (
+                    <g key={`${surface.semantic_id}:${pixel.output_index}`}>
+                      <ellipse
+                        className="stage-composition-pixel-footprint"
+                        cx={x * 1000}
+                        cy={y * 600}
+                        rx={Math.max(
+                          4,
+                          (pixel.footprint_width / surface.local_width) * 40,
+                        )}
+                        ry={Math.max(
+                          4,
+                          (pixel.footprint_height / surface.local_height) * 24,
+                        )}
+                      />
+                      <circle
+                        className="stage-composition-pixel"
+                        cx={x * 1000}
+                        cy={y * 600}
+                        r="5"
+                        style={
+                          color
+                            ? {
+                                fill: `rgb(${color[0]} ${color[1]} ${color[2]})`,
+                              }
+                            : undefined
+                        }
+                      >
+                        <title>
+                          {surface.resource} physical output {pixel.output_index}
+                          {color ? ` · RGB ${color.join(", ")}` : ""}
+                        </title>
+                      </circle>
+                    </g>
+                  );
+                });
+              })}
+            </svg>
+            <small>
+              Approximate visual composite on calibrated photo geometry; sampled
+              colors include controller power limiting, but are not measured light
+              output. Hardware commands sent: no.
+            </small>
+          </figure>
+        );
+      })}
+    </div>
+  );
+}
+
+function lightingPixelPhotoPoint(
+  u: number,
+  v: number,
+  points: { x: number; y: number }[],
+): [number, number] {
+  if (points.length === 4) {
+    const [topLeft, topRight, bottomRight, bottomLeft] = points;
+    return [
+      (1 - u) * (1 - v) * topLeft.x +
+        u * (1 - v) * topRight.x +
+        u * v * bottomRight.x +
+        (1 - u) * v * bottomLeft.x,
+      (1 - u) * (1 - v) * topLeft.y +
+        u * (1 - v) * topRight.y +
+        u * v * bottomRight.y +
+        (1 - u) * v * bottomLeft.y,
+    ];
+  }
+  const xs = points.map((point) => point.x);
+  const ys = points.map((point) => point.y);
+  const minimumX = Math.min(...xs);
+  const minimumY = Math.min(...ys);
+  return [
+    minimumX + u * (Math.max(...xs) - minimumX),
+    minimumY + v * (Math.max(...ys) - minimumY),
+  ];
 }
 
 function transformMotionPath(
@@ -5688,6 +7086,89 @@ function numberTuple(value: unknown, length: number): number[] | null {
     value.every((item) => typeof item === "number")
     ? value
     : null;
+}
+
+function collectEditorialAudioSources(
+  scene: ProjectDraftRecord["draft"]["scenes"][number] | undefined,
+  composition: Composition | undefined,
+  tracks: TimelineTrack[],
+  layers: TransformLayer[],
+  assets: AssetRecord[],
+  durationMs: number,
+): EditorialAudioSource[] {
+  if (!scene) {
+    return [];
+  }
+  const layeredTrackIds = new Set<string>();
+  const sources = layers.flatMap((layer): EditorialAudioSource[] => {
+    if (layer.kind !== "audio" || !layer.audio) {
+      return [];
+    }
+    layeredTrackIds.add(layer.track_id);
+    const asset = assets.find((candidate) => candidate.id === layer.source_id);
+    if (!asset || !assetSupportsEditorialAudio(asset)) {
+      return [];
+    }
+    return [
+      {
+        id: `layer:${layer.id}`,
+        name: layer.name,
+        asset,
+        start_ms: layer.start_ms,
+        duration_ms: layer.duration_ms,
+        in_point_ms: layer.in_point_ms,
+        gain_db: layer.audio.gain_db,
+        mute: layer.audio.mute,
+        solo: layer.audio.solo,
+        fade_in_ms: layer.fade_in_ms,
+        fade_out_ms: layer.fade_out_ms,
+      },
+    ];
+  });
+  if (composition) {
+    return sources;
+  }
+  for (const track of tracks) {
+    if (
+      !["media_output", "audio_reference"].includes(track.kind) ||
+      layeredTrackIds.has(track.id)
+    ) {
+      continue;
+    }
+    const asset = timelineTrackAsset(scene, track, assets);
+    if (!asset || !assetSupportsEditorialAudio(asset)) {
+      continue;
+    }
+    const metadata = metadataRecord(asset.metadata);
+    sources.push({
+      id: `track:${track.id}`,
+      name: track.name,
+      asset,
+      start_ms: 0,
+      duration_ms: Math.min(
+        durationMs,
+        numberValue(metadata.duration_ms, durationMs),
+      ),
+      in_point_ms: 0,
+      gain_db: 0,
+      mute: false,
+      solo: false,
+      fade_in_ms: 0,
+      fade_out_ms: 0,
+    });
+  }
+  return sources;
+}
+
+function assetSupportsEditorialAudio(asset: AssetRecord): boolean {
+  if (!hasAssetArtifact(asset, "review")) {
+    return false;
+  }
+  if (asset.media_type?.startsWith("audio/")) {
+    return true;
+  }
+  const codecs = asset.metadata?.audio_codecs;
+  return Array.isArray(codecs) && codecs.length > 0;
 }
 
 function timelineTrackAsset(

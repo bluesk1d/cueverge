@@ -1,4 +1,4 @@
-import { StrictMode, useState } from "react";
+import { useState } from "react";
 import { createRoot } from "react-dom/client";
 
 import { AppShell, Workspace } from "../components/AppShell";
@@ -79,7 +79,5 @@ function VisualReviewFixture() {
 }
 
 createRoot(document.getElementById("root")!).render(
-  <StrictMode>
-    <VisualReviewFixture />
-  </StrictMode>,
+  <VisualReviewFixture />,
 );

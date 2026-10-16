@@ -23,6 +23,7 @@ import {
   getInstallationGeometry,
   getImageAssetLibrary,
   getProjectorMapping,
+  projectorSimulationOverlayUrl,
   getLightingSurface,
   getProjectorOverlaps,
   getGeometrySuggestions,
@@ -594,6 +595,10 @@ function GeometryMapper({
     useState<SimulationPreviewMode>("full_installation");
   const [simulationTarget, setSimulationTarget] = useState("");
   const [sideBySideSimulation, setSideBySideSimulation] = useState(false);
+  const [simulationMappings, setSimulationMappings] = useState<
+    Record<string, ProjectorMapping | null>
+  >({});
+  const [simulationMappingsLoading, setSimulationMappingsLoading] = useState(false);
   const [secondaryPhotoId, setSecondaryPhotoId] = useState(
     photos[1]?.id ?? photos[0]?.id ?? "",
   );
@@ -736,6 +741,30 @@ function GeometryMapper({
     simulationTarget,
     projectorResources,
   );
+  const secondarySimulationGeometry = secondaryPhoto
+    ? filterSimulationGeometry(
+        geometry
+          .filter(
+            (item) => item.photo_id === secondaryPhoto.id && !item.hidden,
+          )
+          .sort((left, right) => left.z_index - right.z_index),
+        simulationPreviewMode,
+        simulationTarget,
+        projectorResources,
+      )
+    : [];
+  const primarySimulationStatus = projectorSimulationStatus(
+    simulationGeometry,
+    photo,
+    simulationMappings,
+    simulationMappingsLoading,
+  );
+  const secondarySimulationStatus = projectorSimulationStatus(
+    secondarySimulationGeometry,
+    secondaryPhoto,
+    simulationMappings,
+    simulationMappingsLoading,
+  );
   const visibleSuggestions = suggestions.filter(
     (suggestion) =>
       suggestion.photo_id === photo?.id && suggestion.state === "pending",
@@ -744,6 +773,40 @@ function GeometryMapper({
     kind,
   );
   const wiringDiagnostics = geometryDiagnostics(visible);
+
+  useEffect(() => {
+    if (!simulationOverlay) {
+      setSimulationMappings({});
+      setSimulationMappingsLoading(false);
+      return;
+    }
+    const projectorIds = [
+      ...new Set(
+        geometry
+          .filter((item) => item.kind === "projector_surface" && !item.hidden)
+          .map((item) => item.id),
+      ),
+    ];
+    let cancelled = false;
+    setSimulationMappingsLoading(true);
+    void Promise.all(
+      projectorIds.map(async (geometryId) => {
+        try {
+          return [geometryId, await getProjectorMapping(geometryId)] as const;
+        } catch {
+          return [geometryId, null] as const;
+        }
+      }),
+    ).then((entries) => {
+      if (!cancelled) {
+        setSimulationMappings(Object.fromEntries(entries));
+        setSimulationMappingsLoading(false);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [geometry, simulationOverlay]);
 
   async function beginEdit(item: InstallationGeometry) {
     setEditing(item);
@@ -2290,10 +2353,23 @@ function GeometryMapper({
           }
         >
         {simulationOverlay && (
-          <small className="simulation-approximation" role="status">
-            Approximate photo simulation · no hardware adapters or enrolled
-            clients are active
-          </small>
+          <div className="simulation-diagnostics" role="status">
+            <strong className="simulation-approximation">
+              {primarySimulationStatus.approximate
+                ? "Approximate photo simulation"
+                : "Measured photo simulation"}{" "}
+              · no hardware adapters or enrolled clients are active
+            </strong>
+            {primarySimulationStatus.diagnostics.map((diagnostic) => (
+              <small key={`primary:${diagnostic}`}>{diagnostic}</small>
+            ))}
+            {sideBySideSimulation &&
+              secondarySimulationStatus.diagnostics.map((diagnostic) => (
+                <small key={`secondary:${diagnostic}`}>
+                  {secondaryPhoto?.name}: {diagnostic}
+                </small>
+              ))}
+          </div>
         )}
         <svg
           aria-label={`Geometry editor for ${photo.name}`}
@@ -2389,6 +2465,13 @@ function GeometryMapper({
             href={installationPhotoUrl(photo.id)}
             preserveAspectRatio="xMidYMid meet"
           />
+          {simulationOverlay && (
+            <ProjectorSimulationOverlays
+              photo={photo}
+              geometry={simulationGeometry}
+              mappings={simulationMappings}
+            />
+          )}
           {(simulationOverlay ? simulationGeometry : visible).map((item) => (
             <GeometryShape
               key={item.id}
@@ -2496,17 +2579,8 @@ function GeometryMapper({
         </svg>
         {simulationOverlay && sideBySideSimulation && secondaryPhoto && (
           <SimulationPhotoCanvas
-            geometry={filterSimulationGeometry(
-              geometry
-                .filter(
-                  (item) =>
-                    item.photo_id === secondaryPhoto.id && !item.hidden,
-                )
-                .sort((left, right) => left.z_index - right.z_index),
-              simulationPreviewMode,
-              simulationTarget,
-              projectorResources,
-            )}
+            geometry={secondarySimulationGeometry}
+            mappings={simulationMappings}
             photo={secondaryPhoto}
           />
         )}
@@ -2759,12 +2833,122 @@ function GeometryShape({
   );
 }
 
-function SimulationPhotoCanvas({
+function ProjectorSimulationOverlays({
   photo,
   geometry,
+  mappings,
 }: {
   photo: InstallationPhoto;
   geometry: InstallationGeometry[];
+  mappings: Record<string, ProjectorMapping | null>;
+}) {
+  return (
+    <>
+      {geometry
+        .filter((item) => item.kind === "projector_surface")
+        .map((item) => {
+          const mapping = mappings[item.id];
+          const photoView = mapping?.photo_views.find(
+            (view) => view.photo_id === photo.id,
+          );
+          const hasPlanarCalibration = photoView?.homography !== null;
+          const hasMeshCalibration =
+            mapping?.mesh_triangles.length &&
+            mapping.mesh_vertices.length === photoView?.points.length;
+          if (
+            !mapping?.content_asset_id ||
+            !photoView ||
+            (!hasPlanarCalibration && !hasMeshCalibration)
+          ) {
+            return null;
+          }
+          return (
+            <image
+              className="projector-simulation-overlay"
+              height="600"
+              href={projectorSimulationOverlayUrl(item.id, photo.id)}
+              key={item.id}
+              preserveAspectRatio="none"
+              width="1000"
+            >
+              <title>Review proxy on {item.name}</title>
+            </image>
+          );
+        })}
+    </>
+  );
+}
+
+function projectorSimulationStatus(
+  geometry: InstallationGeometry[],
+  photo: InstallationPhoto | undefined,
+  mappings: Record<string, ProjectorMapping | null>,
+  loading: boolean,
+): { approximate: boolean; diagnostics: string[] } {
+  const projectors = geometry.filter((item) => item.kind === "projector_surface");
+  if (loading) {
+    return {
+      approximate: true,
+      diagnostics: projectors.length ? ["Loading projector calibration and review proxies."] : [],
+    };
+  }
+  const diagnostics: string[] = [];
+  let approximate = false;
+  for (const projector of projectors) {
+    const mapping = mappings[projector.id];
+    if (!mapping) {
+      diagnostics.push(`${projector.name}: projector mapping is missing.`);
+      approximate = true;
+      continue;
+    }
+    if (!mapping.content_asset_id) {
+      diagnostics.push(`${projector.name}: no managed review proxy is selected.`);
+      approximate = true;
+    }
+    const photoView = mapping.photo_views.find((view) => view.photo_id === photo?.id);
+    if (!photoView) {
+      diagnostics.push(`${projector.name}: calibration is missing for this photo viewpoint.`);
+      approximate = true;
+    } else if (
+      photoView.homography === null &&
+      (!mapping.mesh_triangles.length ||
+        mapping.mesh_vertices.length !== photoView.points.length)
+    ) {
+      diagnostics.push(`${projector.name}: photo warp calibration is incomplete.`);
+      approximate = true;
+    }
+    if (mapping.calibration_source === "unverified_estimate") {
+      diagnostics.push(`${projector.name}: projection calibration is an unverified estimate.`);
+      approximate = true;
+    } else if (mapping.calibration_source === "easy_corner_pin") {
+      diagnostics.push(`${projector.name}: projection uses an unmeasured corner pin.`);
+      approximate = true;
+    }
+    if (Date.parse(projector.updated_at) > Date.parse(mapping.updated_at)) {
+      diagnostics.push(`${projector.name}: projection calibration is stale.`);
+      approximate = true;
+    }
+    if (mapping.diagnostic) {
+      diagnostics.push(`${projector.name}: ${mapping.diagnostic}`);
+      approximate = true;
+    }
+    diagnostics.push(
+      ...mapping.fit_diagnostics.map(
+        (diagnostic) => `${projector.name}: ${diagnostic}`,
+      ),
+    );
+  }
+  return { approximate, diagnostics };
+}
+
+function SimulationPhotoCanvas({
+  photo,
+  geometry,
+  mappings,
+}: {
+  photo: InstallationPhoto;
+  geometry: InstallationGeometry[];
+  mappings: Record<string, ProjectorMapping | null>;
 }) {
   return (
     <svg
@@ -2778,6 +2962,11 @@ function SimulationPhotoCanvas({
         height="600"
         href={installationPhotoUrl(photo.id)}
         preserveAspectRatio="xMidYMid meet"
+      />
+      <ProjectorSimulationOverlays
+        photo={photo}
+        geometry={geometry}
+        mappings={mappings}
       />
       {geometry.map((item) => (
         <GeometryShape geometry={item} key={item.id} simulation />

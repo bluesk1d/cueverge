@@ -8,6 +8,7 @@ import ssl
 import time
 import urllib.request
 from pathlib import Path
+from typing import Literal
 from uuid import UUID, uuid4
 
 from pydantic import AnyUrl, ValidationError
@@ -19,6 +20,8 @@ from cueverge.media_agent.device_enrollment import StoredDeviceIdentity
 from cueverge.protocol.device_v2 import (
     DeviceArtifactActivateAck,
     DeviceArtifactActivateCommand,
+    DeviceArtifactCleanupAck,
+    DeviceArtifactCleanupCommand,
     DeviceArtifactInventory,
     DeviceArtifactRecord,
     DeviceArtifactStageAck,
@@ -245,6 +248,22 @@ class DevicePresenceClient:
                     )
                 async with send_lock:
                     await websocket.send(activation_ack.model_dump_json())
+            elif message_type == "device.artifact.cleanup":
+                cleanup_command = DeviceArtifactCleanupCommand.model_validate(message)
+                _validate_deployment_command(cleanup_command, session_id, welcome)
+                removed, rejected = await asyncio.to_thread(
+                    self._cleanup_artifacts,
+                    cleanup_command,
+                )
+                cleanup_ack = DeviceArtifactCleanupAck(
+                    request_id=cleanup_command.request_id,
+                    device_session_id=session_id,
+                    controller_epoch=welcome.controller_epoch,
+                    removed_digests=removed,
+                    rejected_digests=rejected,
+                )
+                async with send_lock:
+                    await websocket.send(cleanup_ack.model_dump_json())
             else:
                 raise DevicePresenceError(f"unsupported controller message: {message_type}")
 
@@ -257,13 +276,29 @@ class DevicePresenceClient:
                 target.stat().st_size == command.size_bytes
                 and _sha256_file(target) == command.digest_sha256
             ):
+                _update_cache_state(
+                    asset_root,
+                    command.digest_sha256,
+                    protected_digests=command.protected_digests,
+                )
                 return
-            raise DevicePresenceError("existing cached artifact does not match digest")
+            target.unlink()
         partial = asset_root / f".{command.digest_sha256}.part"
         received = partial.stat().st_size if partial.exists() else 0
         if received > command.size_bytes:
             partial.unlink()
             received = 0
+        _ensure_cache_capacity(
+            asset_root,
+            required_bytes=command.size_bytes - received,
+            protected_digests=set(command.protected_digests) | {command.digest_sha256},
+        )
+        _set_transfer_state(
+            asset_root,
+            command.digest_sha256,
+            received,
+            command.size_bytes,
+        )
         headers = {"Range": f"bytes={received}-"} if received else {}
         request = urllib.request.Request(
             str(command.download_url),
@@ -281,6 +316,12 @@ class DevicePresenceClient:
             with partial.open(mode) as output:
                 while chunk := response.read(1024 * 1024):
                     output.write(chunk)
+                    _set_transfer_state(
+                        asset_root,
+                        command.digest_sha256,
+                        output.tell(),
+                        command.size_bytes,
+                    )
         if partial.stat().st_size != command.size_bytes:
             raise DevicePresenceError("staged artifact size does not match manifest")
         if _sha256_file(partial) != command.digest_sha256:
@@ -289,10 +330,19 @@ class DevicePresenceClient:
         _update_cache_state(
             asset_root,
             command.digest_sha256,
+            protected_digests=command.protected_digests,
         )
 
     def _activate_artifact(self, command: DeviceArtifactActivateCommand) -> None:
         asset_root = self.media_client.config.asset_root
+        pending = asset_root / ".cueverge-activation.pending.json"
+        previous = asset_root / ".cueverge-activation.previous.json"
+        active = asset_root / ".cueverge-activation.json"
+        if command.phase == "rollback":
+            pending.unlink(missing_ok=True)
+            if previous.exists():
+                os.replace(previous, active)
+            return
         target = asset_root / command.digest_sha256
         if not target.is_file() or _sha256_file(target) != command.digest_sha256:
             raise DevicePresenceError("activation artifact is not staged")
@@ -309,12 +359,55 @@ class DevicePresenceClient:
             "frame_time_origin_ms": command.frame_time_origin_ms,
             "activated_at_unix_ms": time.time_ns() // 1_000_000,
         }
+        if command.phase == "prepare":
+            state["activation_at_unix_ms"] = command.activation_at_unix_ms
+            pending.write_text(
+                json.dumps(state, sort_keys=True, separators=(",", ":")),
+                encoding="utf-8",
+            )
+            return
+        if command.activation_at_unix_ms is not None:
+            if not pending.exists():
+                raise DevicePresenceError("activation was not prepared")
+            prepared = json.loads(pending.read_text(encoding="utf-8"))
+            if (
+                not isinstance(prepared, dict)
+                or prepared.get("activation_identity") != str(command.activation_identity)
+                or prepared.get("digest_sha256") != command.digest_sha256
+                or prepared.get("activation_at_unix_ms") != command.activation_at_unix_ms
+            ):
+                raise DevicePresenceError("prepared activation does not match commit")
+            delay_ms = command.activation_at_unix_ms - time.time_ns() // 1_000_000
+            if delay_ms > 0:
+                time.sleep(delay_ms / 1000)
         temporary = asset_root / ".cueverge-activation.tmp"
         temporary.write_text(
             json.dumps(state, sort_keys=True, separators=(",", ":")),
             encoding="utf-8",
         )
-        os.replace(temporary, asset_root / ".cueverge-activation.json")
+        if active.exists():
+            shutil.copy2(active, previous)
+        os.replace(temporary, active)
+        pending.unlink(missing_ok=True)
+
+    def _cleanup_artifacts(
+        self,
+        command: DeviceArtifactCleanupCommand,
+    ) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        asset_root = self.media_client.config.asset_root
+        _, _, pinned, _, _ = _load_cache_state(asset_root)
+        active = _active_digest(asset_root)
+        removed: list[str] = []
+        rejected: list[str] = []
+        for digest in command.digests:
+            if digest in pinned or digest == active:
+                rejected.append(digest)
+                continue
+            path = asset_root / digest
+            if path.is_file():
+                path.unlink()
+                removed.append(digest)
+        return tuple(removed), tuple(rejected)
 
     async def _heartbeat_loop(
         self,
@@ -437,12 +530,17 @@ def scan_artifact_inventory(
         transfers,
         cache_faults,
     ) = _load_cache_state(asset_root)
-    artifacts: dict[str, int] = {}
+    artifacts: dict[str, tuple[int, Literal["verified", "corrupt"], int]] = {}
     unreadable = 0
     discovered = 0
     truncated = False
     for path in asset_root.rglob("*"):
-        if path.name == ".cueverge-cache-state.json" or path.is_symlink() or not path.is_file():
+        if (
+            path.name.startswith(".")
+            or path.name == ".cueverge-activation.json"
+            or path.is_symlink()
+            or not path.is_file()
+        ):
             continue
         discovered += 1
         if discovered > maximum_files:
@@ -455,7 +553,20 @@ def scan_artifact_inventory(
                 while chunk := source.read(1024 * 1024):
                     digest.update(chunk)
                     size_bytes += len(chunk)
-            artifacts.setdefault(digest.hexdigest(), size_bytes)
+            computed_digest = digest.hexdigest()
+            filename_is_digest = len(path.name) == 64 and all(
+                character in "0123456789abcdef" for character in path.name
+            )
+            inventory_digest = path.name if filename_is_digest else computed_digest
+            state: Literal["verified", "corrupt"] = (
+                "corrupt"
+                if filename_is_digest and computed_digest != inventory_digest
+                else "verified"
+            )
+            artifacts.setdefault(
+                inventory_digest,
+                (size_bytes, state, path.stat().st_mtime_ns // 1_000_000),
+            )
         except OSError:
             unreadable += 1
     faults = list(cache_faults)
@@ -474,10 +585,13 @@ def scan_artifact_inventory(
         tuple(
             DeviceArtifactRecord(
                 digest_sha256=digest,
-                size_bytes=size,
+                size_bytes=value[0],
                 pinned=digest in pinned_digests,
+                in_use=digest == _active_digest(asset_root),
+                state=value[1],
+                last_used_unix_ms=value[2],
             )
-            for digest, size in sorted(artifacts.items())
+            for digest, value in sorted(artifacts.items())
         ),
         transfers,
         tuple(faults),
@@ -531,7 +645,11 @@ def _sha256_file(path: Path) -> str:
 
 
 def _validate_deployment_command(
-    command: DeviceArtifactStageCommand | DeviceArtifactActivateCommand,
+    command: (
+        DeviceArtifactStageCommand
+        | DeviceArtifactActivateCommand
+        | DeviceArtifactCleanupCommand
+    ),
     session_id: UUID,
     welcome: DeviceWelcome,
 ) -> None:
@@ -541,7 +659,12 @@ def _validate_deployment_command(
         raise DevicePresenceError("artifact command controller epoch was fenced")
 
 
-def _update_cache_state(asset_root: Path, digest: str) -> None:
+def _update_cache_state(
+    asset_root: Path,
+    digest: str,
+    *,
+    protected_digests: tuple[str, ...] = (),
+) -> None:
     state_path = asset_root / ".cueverge-cache-state.json"
     value: dict[str, object] = {}
     if state_path.exists():
@@ -552,11 +675,16 @@ def _update_cache_state(asset_root: Path, digest: str) -> None:
     pins = value.get("pinned_digests", [])
     if not isinstance(pins, list) or not all(isinstance(item, str) for item in pins):
         raise DevicePresenceError("cache pin metadata is invalid")
+    active_digest = _active_digest(asset_root)
     value.update(
         {
             "supports_pinning": True,
             "supports_resumable_transfer": True,
-            "pinned_digests": sorted(set(pins) | {digest}),
+            "pinned_digests": sorted(
+                set(protected_digests)
+                | {digest}
+                | ({active_digest} if active_digest else set())
+            ),
             "transfers": [],
         }
     )
@@ -566,3 +694,87 @@ def _update_cache_state(asset_root: Path, digest: str) -> None:
         encoding="utf-8",
     )
     os.replace(temporary, state_path)
+
+
+def _set_transfer_state(
+    asset_root: Path,
+    digest: str,
+    received_bytes: int,
+    total_bytes: int,
+) -> None:
+    state_path = asset_root / ".cueverge-cache-state.json"
+    value: dict[str, object] = {}
+    if state_path.exists():
+        loaded = json.loads(state_path.read_text(encoding="utf-8"))
+        if not isinstance(loaded, dict):
+            raise DevicePresenceError("cache state metadata is invalid")
+        value = loaded
+    value.update(
+        {
+            "supports_pinning": True,
+            "supports_resumable_transfer": True,
+            "pinned_digests": value.get("pinned_digests", []),
+            "transfers": [
+                {
+                    "digest_sha256": digest,
+                    "received_bytes": received_bytes,
+                    "total_bytes": total_bytes,
+                    "state": "active",
+                    "fault": None,
+                }
+            ],
+        }
+    )
+    temporary = asset_root / ".cueverge-cache-state.tmp"
+    temporary.write_text(
+        json.dumps(value, sort_keys=True, separators=(",", ":")),
+        encoding="utf-8",
+    )
+    os.replace(temporary, state_path)
+
+
+def _ensure_cache_capacity(
+    asset_root: Path,
+    *,
+    required_bytes: int,
+    protected_digests: set[str],
+) -> None:
+    if required_bytes <= 0:
+        return
+    free = shutil.disk_usage(asset_root).free
+    if free >= required_bytes:
+        return
+    active_digest = _active_digest(asset_root)
+    protected = protected_digests | ({active_digest} if active_digest else set())
+    candidates = sorted(
+        (
+            path
+            for path in asset_root.iterdir()
+            if path.is_file()
+            and len(path.name) == 64
+            and path.name not in protected
+        ),
+        key=lambda path: (path.stat().st_mtime_ns, path.name),
+    )
+    reclaimed = 0
+    for path in candidates:
+        size = path.stat().st_size
+        path.unlink()
+        reclaimed += size
+        if free + reclaimed >= required_bytes:
+            return
+    raise DevicePresenceError(
+        "insufficient safe cache space; active, rollback, staged, and playing artifacts are pinned"
+    )
+
+
+def _active_digest(asset_root: Path) -> str:
+    path = asset_root / ".cueverge-activation.json"
+    if not path.exists():
+        return ""
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+        digest = value.get("digest_sha256") if isinstance(value, dict) else None
+        return digest if isinstance(digest, str) else ""
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return ""

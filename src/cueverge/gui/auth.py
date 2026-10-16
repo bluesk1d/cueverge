@@ -6,6 +6,7 @@ import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
+from cueverge.gui.collaboration import CollaborationStore
 from cueverge.gui.config import GuiConfig
 from cueverge.gui.contracts import Role
 from cueverge.gui.passwords import verify_password
@@ -31,19 +32,31 @@ class NewSession:
 
 
 class AuthService:
-    def __init__(self, config: GuiConfig, repository: GuiRepository) -> None:
+    def __init__(
+        self,
+        config: GuiConfig,
+        repository: GuiRepository,
+        collaboration: CollaborationStore,
+    ) -> None:
         self.config = config
         self.repository = repository
+        self.collaboration = collaboration
         self._attempts: dict[str, list[float]] = {}
         self._attempt_lock = threading.Lock()
 
     def login(self, username: str, password: str, *, remote_key: str) -> NewSession | None:
         self._check_rate_limit(remote_key)
         configured_hash = self.config.admin_password_hash.get_secret_value()
-        valid_username = hmac.compare_digest(username, self.config.admin_username)
-        valid_password = verify_password(password, configured_hash)
+        bootstrap_username = hmac.compare_digest(username, self.config.admin_username)
+        bootstrap_password = verify_password(password, configured_hash)
+        local_user = self.collaboration.get_user(username)
+        valid_local_user = (
+            local_user is not None
+            and not local_user.disabled
+            and verify_password(password, local_user.password_hash)
+        )
         occurred_at = _now_iso()
-        if not (valid_username and valid_password):
+        if not ((bootstrap_username and bootstrap_password) or valid_local_user):
             self.repository.append_audit(
                 actor=username,
                 action="auth.login",
@@ -53,12 +66,19 @@ class AuthService:
                 authorization_context={"remote_key": remote_key},
             )
             return None
+        role = (
+            self.config.admin_role
+            if bootstrap_username and bootstrap_password
+            else local_user.role
+            if local_user is not None
+            else Role.VIEWER
+        )
         token = secrets.token_urlsafe(32)
         csrf_token = secrets.token_urlsafe(32)
         expires_at = int(time.time()) + self.config.session_ttl_seconds
         identity = AuthenticatedSession(
-            username=self.config.admin_username,
-            role=self.config.admin_role,
+            username=username,
+            role=role,
             csrf_hash=_digest(csrf_token),
         )
         self.repository.create_session(
@@ -85,7 +105,16 @@ class AuthService:
         stored: StoredSession | None = self.repository.get_session(token, now=int(time.time()))
         if stored is None:
             return None
-        return AuthenticatedSession(stored.username, stored.role, stored.csrf_hash)
+        if stored.username == self.config.admin_username:
+            return AuthenticatedSession(stored.username, stored.role, stored.csrf_hash)
+        local_user = self.collaboration.get_user(stored.username)
+        if local_user is None or local_user.disabled:
+            return None
+        return AuthenticatedSession(
+            stored.username,
+            local_user.role,
+            stored.csrf_hash,
+        )
 
     def verify_csrf(self, session: AuthenticatedSession, csrf_token: str | None) -> bool:
         if csrf_token is None:

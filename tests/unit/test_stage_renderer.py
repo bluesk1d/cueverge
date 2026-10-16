@@ -17,6 +17,7 @@ from cueverge.gui.render_verification import compare_rgb_frames
 from cueverge.gui.stage_coverage import StageCoverage, StageRegion
 from cueverge.gui.stage_renderer import (
     preview_stage_composition_member,
+    preview_stage_lighting_samples,
     render_stage_composition,
 )
 from cueverge.gui.sync_rehearsal import SyncAdmission
@@ -53,6 +54,27 @@ def test_stage_runner_creates_lockstep_projector_set_with_one_audio_owner(
         overlaps=overlaps,
         resource="projector.left",
         timestamp_ms=0,
+    )
+    right_preview = preview_stage_composition_member(
+        project_id="demo-project",
+        source_revision=2,
+        draft=draft,
+        composition_id="stage-composition",
+        assets=cast(AssetUploadService, assets),
+        mapper_export=mapper,
+        coverage=coverage,
+        overlaps=overlaps,
+        resource="projector.right",
+        timestamp_ms=0,
+    )
+    lighting_preview = preview_stage_lighting_samples(
+        project_id="demo-project",
+        draft=draft,
+        composition_id="stage-composition",
+        timestamp_ms=0,
+        assets=cast(AssetUploadService, assets),
+        mapper_export=mapper,
+        device_reported_scales={"lights": 0.5},
     )
     manifest = render_stage_composition(
         project_id="demo-project",
@@ -109,6 +131,16 @@ def test_stage_runner_creates_lockstep_projector_set_with_one_audio_owner(
         baked = next(container.decode(video=0)).to_ndarray(format="rgba")
     comparison = compare_rgb_frames(preview, baked)
     assert comparison.passed, comparison
+    assert np.count_nonzero(preview[..., :3]) > 0
+    assert np.count_nonzero(right_preview[..., :3]) > 0
+    assert np.count_nonzero(preview[..., :3]) < preview[..., :3].size
+    assert np.count_nonzero(right_preview[..., :3]) < right_preview[..., :3].size
+    samples = lighting_preview["surfaces"][0]["samples"]
+    assert any(samples[0]["requested_color"])
+    assert samples[0]["color"] == [
+        round(channel * 0.25) for channel in samples[0]["requested_color"]
+    ]
+    assert lighting_preview["hardware_command_sent"] is False
 
 
 class _FixtureAssets:
@@ -325,7 +357,27 @@ def _mapper_export() -> dict[str, object]:
                 "brightness_limit": 1,
                 "calibration_revision": 4,
             },
-        ]
+        ],
+        "lighting_surfaces": [
+            {
+                "semantic_id": "stage-pixels",
+                "resource": "lights",
+                "local_width": 8,
+                "local_height": 4,
+                "brightness_limit": 0.5,
+                "pixels": [
+                    {
+                        "output_index": 0,
+                        "local_x": 4,
+                        "local_y": 2,
+                        "footprint_width": 1,
+                        "footprint_height": 1,
+                        "stage_x": 4,
+                        "stage_y": 2,
+                    }
+                ],
+            }
+        ],
     }
 
 

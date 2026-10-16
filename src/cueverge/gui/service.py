@@ -12,6 +12,7 @@ from cueverge.core.models import SceneCatalog
 from cueverge.gui.artifact_deployment import ArtifactDeploymentService
 from cueverge.gui.asset_upload import AssetUploadService
 from cueverge.gui.auth import AuthService
+from cueverge.gui.collaboration import CollaborationStore
 from cueverge.gui.compiler import DraftCompiler
 from cueverge.gui.config import GuiConfig
 from cueverge.gui.device_ca import DeviceCertificateAuthority
@@ -23,11 +24,14 @@ from cueverge.gui.installation_geometry import InstallationGeometryService
 from cueverge.gui.installation_photos import InstallationPhotoService
 from cueverge.gui.lighting_surface import LightingSurfaceService
 from cueverge.gui.mapper_export import MapperExportService
+from cueverge.gui.observability import GuiObservability
 from cueverge.gui.output_arming import OutputArmService
 from cueverge.gui.projector_mapping import ProjectorMappingService
 from cueverge.gui.projector_overlap import ProjectorOverlapService
+from cueverge.gui.publication import PublicationService
 from cueverge.gui.render_jobs import RenderJobService
 from cueverge.gui.repository import GuiRepository
+from cueverge.gui.simulation_scenarios import SimulationScenarioService
 from cueverge.gui.stage_coverage import StageCoverageService
 from cueverge.gui.sync_rehearsal import SyncRehearsalService
 from cueverge.gui.timing_calibration import TimingCalibrationService
@@ -63,6 +67,7 @@ class GuiServices:
     config: GuiConfig
     repository: GuiRepository
     auth: AuthService
+    collaboration: CollaborationStore
     compiler: DraftCompiler
     runtime: RuntimeStatusSource
     device_enrollment: DeviceEnrollmentService | None
@@ -83,11 +88,16 @@ class GuiServices:
     render_jobs: RenderJobService
     sync_rehearsal: SyncRehearsalService
     artifact_deployment: ArtifactDeploymentService
+    publication: PublicationService
+    observability: GuiObservability
+    simulation_scenarios: SimulationScenarioService
 
     @classmethod
     def create(cls, config: GuiConfig, runtime: RuntimeStatusSource) -> "GuiServices":
         repository = GuiRepository(config.data_root / "gui.sqlite3")
         repository.migrate()
+        collaboration = CollaborationStore(repository.database_path)
+        collaboration.migrate()
         repository.ensure_runtime_installation(
             name=runtime.catalog.package_root.name,
             occurred_at=datetime.now(UTC).isoformat(),
@@ -108,11 +118,27 @@ class GuiServices:
         mapper_export = MapperExportService(repository, lighting_surface)
         sync_rehearsal = SyncRehearsalService(repository)
         device_sessions = DeviceSessionRegistry()
+        artifact_deployment = ArtifactDeploymentService(
+            config,
+            repository,
+            device_sessions,
+        )
+        compiler = DraftCompiler(config.data_root / "compiled")
+        render_jobs = RenderJobService(
+            repository,
+            asset_upload,
+            config.data_root / "renders",
+            mapper_export,
+            stage_coverage,
+            projector_overlap,
+            sync_rehearsal,
+        )
         return cls(
             config=config,
             repository=repository,
-            auth=AuthService(config, repository),
-            compiler=DraftCompiler(config.data_root / "compiled"),
+            auth=AuthService(config, repository, collaboration),
+            collaboration=collaboration,
+            compiler=compiler,
             runtime=runtime,
             device_enrollment=device_enrollment,
             device_sessions=device_sessions,
@@ -129,19 +155,19 @@ class GuiServices:
             output_arming=OutputArmService(repository),
             stage_coverage=stage_coverage,
             mapper_export=mapper_export,
-            render_jobs=RenderJobService(
-                repository,
-                asset_upload,
-                config.data_root / "renders",
-                mapper_export,
-                stage_coverage,
-                projector_overlap,
-                sync_rehearsal,
-            ),
+            render_jobs=render_jobs,
             sync_rehearsal=sync_rehearsal,
-            artifact_deployment=ArtifactDeploymentService(
-                config,
-                repository,
-                device_sessions,
+            artifact_deployment=artifact_deployment,
+            publication=PublicationService(
+                repository=repository,
+                compiler=compiler,
+                assets=asset_upload,
+                render_jobs=render_jobs,
+                deployment=artifact_deployment,
+                output_root=config.data_root / "published",
+            ),
+            observability=GuiObservability(repository, str(config.data_root)),
+            simulation_scenarios=SimulationScenarioService(
+                config.data_root / "simulation-scenarios"
             ),
         )

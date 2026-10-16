@@ -1,9 +1,18 @@
+import re
 from datetime import datetime
 from enum import StrEnum
 from typing import Annotated, Literal
 from uuid import UUID
 
-from pydantic import AnyUrl, BaseModel, ConfigDict, Field, SecretStr, model_validator
+from pydantic import (
+    AnyUrl,
+    BaseModel,
+    ConfigDict,
+    Field,
+    SecretStr,
+    field_validator,
+    model_validator,
+)
 
 from cueverge.protocol.models import Discontinuity, PlaybackState
 
@@ -350,6 +359,9 @@ class DeviceArtifactRecord(DeviceProtocolModel):
     digest_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     size_bytes: int = Field(ge=0)
     pinned: bool = False
+    in_use: bool = False
+    state: Literal["verified", "corrupt"] = "verified"
+    last_used_unix_ms: int = Field(default=0, ge=0)
 
 
 class DeviceArtifactTransferStatus(DeviceProtocolModel):
@@ -408,6 +420,17 @@ class DeviceArtifactStageCommand(DeviceProtocolModel):
     digest_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     size_bytes: int = Field(gt=0)
     download_url: AnyUrl
+    protected_digests: tuple[str, ...] = ()
+    eviction_policy: Literal["lru"] = "lru"
+
+    @field_validator("protected_digests")
+    @classmethod
+    def validate_protected_digests(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if len(value) != len(set(value)):
+            raise ValueError("protected artifact digests must be unique")
+        if any(re.fullmatch(r"[0-9a-f]{64}", digest) is None for digest in value):
+            raise ValueError("protected artifact digests must be SHA-256 values")
+        return value
 
 
 class DeviceArtifactStageAck(DeviceProtocolModel):
@@ -428,6 +451,34 @@ class DeviceArtifactStageAck(DeviceProtocolModel):
         return self
 
 
+class DeviceArtifactCleanupCommand(DeviceProtocolModel):
+    type: Literal["device.artifact.cleanup"] = "device.artifact.cleanup"
+    protocol_version: Literal[2] = DEVICE_PROTOCOL_VERSION
+    request_id: UUID
+    device_session_id: UUID
+    controller_epoch: UUID
+    digests: tuple[str, ...] = Field(min_length=1)
+
+    @field_validator("digests")
+    @classmethod
+    def validate_digests(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if len(value) != len(set(value)):
+            raise ValueError("cleanup artifact digests must be unique")
+        if any(re.fullmatch(r"[0-9a-f]{64}", digest) is None for digest in value):
+            raise ValueError("cleanup artifact digests must be SHA-256 values")
+        return value
+
+
+class DeviceArtifactCleanupAck(DeviceProtocolModel):
+    type: Literal["device.artifact.cleanup.ack"] = "device.artifact.cleanup.ack"
+    protocol_version: Literal[2] = DEVICE_PROTOCOL_VERSION
+    request_id: UUID
+    device_session_id: UUID
+    controller_epoch: UUID
+    removed_digests: tuple[str, ...]
+    rejected_digests: tuple[str, ...]
+
+
 class DeviceArtifactActivateCommand(DeviceProtocolModel):
     type: Literal["device.artifact.activate"] = "device.artifact.activate"
     protocol_version: Literal[2] = DEVICE_PROTOCOL_VERSION
@@ -442,6 +493,18 @@ class DeviceArtifactActivateCommand(DeviceProtocolModel):
     frame_rate_numerator: int = Field(gt=0)
     frame_rate_denominator: int = Field(gt=0)
     frame_time_origin_ms: int = Field(ge=0)
+    phase: Literal["prepare", "commit", "rollback"] = "commit"
+    activation_at_unix_ms: int | None = Field(default=None, ge=0)
+
+    @model_validator(mode="after")
+    def validate_activation_phase(self) -> "DeviceArtifactActivateCommand":
+        if self.phase == "commit" and self.activation_at_unix_ms is None:
+            return self
+        if self.phase == "prepare" and self.activation_at_unix_ms is None:
+            raise ValueError("prepared activation requires a shared activation timestamp")
+        if self.phase == "rollback" and self.activation_at_unix_ms is not None:
+            raise ValueError("rollback activation cannot define an activation timestamp")
+        return self
 
 
 class DeviceArtifactActivateAck(DeviceProtocolModel):

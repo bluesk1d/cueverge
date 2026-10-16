@@ -1,27 +1,37 @@
+import asyncio
 import hashlib
 import json
+import shutil
+import time
 from dataclasses import replace
+from io import BytesIO
 from pathlib import Path
-from typing import Any
+from types import SimpleNamespace
+from typing import Any, cast
+from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
+from PIL import Image
 from pydantic import SecretStr
 
 from cueverge.controller.app import create_app
 from cueverge.controller.runtime import ControllerRuntime
 from cueverge.core.loader import load_show_package
 from cueverge.gui.config import GuiConfig
-from cueverge.gui.contracts import Role
+from cueverge.gui.contracts import DraftProject, Role
 from cueverge.gui.endpoint_discovery import (
     DiscoveredController,
     EndpointDiscoveryService,
 )
 from cueverge.gui.mapper_export import MapperExportError
 from cueverge.gui.passwords import hash_password
+from cueverge.gui.publication import PublicationDiagnostic, PublicationError
+from cueverge.gui.repository import StoredDevice
 from cueverge.gui.service import GuiServices
 from cueverge.protocol.device_v2 import (
     ControllerDiscoveryDocument,
+    DeviceHello,
     DiscoveryProtocolRange,
 )
 
@@ -50,6 +60,328 @@ def test_gui_resources_require_authentication(tmp_path: Path) -> None:
     assert discovery.json()["capabilities"] == ["downstream_control"]
 
 
+def test_observability_reports_api_storage_and_browser_errors(tmp_path: Path) -> None:
+    runtime = ControllerRuntime()
+    services = _services(tmp_path, runtime)
+    client = TestClient(create_app(runtime, gui_services=services))
+    _login(client)
+
+    report = client.post(
+        "/api/gui/v1/browser-errors",
+        json={
+            "message": "render failed",
+            "source": "timeline",
+            "occurred_at": "2026-03-10T12:00:00+00:00",
+        },
+        headers=_mutation_headers(client),
+    )
+    assert report.status_code == 204
+
+    response = client.get("/api/gui/v1/observability")
+
+    assert response.status_code == 200
+    metrics = response.json()
+    assert metrics["api_latency"]["request_count"] >= 1
+    assert metrics["storage"]["total_bytes"] > 0
+    assert metrics["browser_errors"][-1] == {
+        "message": "render failed",
+        "source": "timeline",
+        "occurred_at": "2026-03-10T12:00:00+00:00",
+    }
+    assert any(
+        event.action == "browser.error"
+        and event.actor == "admin"
+        and event.target == "timeline"
+        for event in services.repository.list_audit_events()
+    )
+
+
+def test_data_root_backup_restores_projects_and_audit_history(tmp_path: Path) -> None:
+    source_root = tmp_path / "source"
+    runtime = ControllerRuntime()
+    source_client = TestClient(
+        create_app(runtime, gui_services=_services(source_root, runtime))
+    )
+    _login(source_client)
+    created = source_client.post(
+        "/api/gui/v1/projects",
+        json={"name": "Recovery fixture", "draft": _draft()},
+        headers=_mutation_headers(source_client),
+    )
+    assert created.status_code == 201
+
+    restored_root = tmp_path / "restored"
+    shutil.copytree(source_root, restored_root)
+    restored_runtime = ControllerRuntime()
+    restored_client = TestClient(
+        create_app(
+            restored_runtime,
+            gui_services=_services(restored_root, restored_runtime),
+        )
+    )
+    _login(restored_client)
+
+    projects = restored_client.get("/api/gui/v1/projects")
+    audit = restored_client.get("/api/gui/v1/audit")
+
+    assert projects.status_code == 200
+    assert [project["name"] for project in projects.json()] == ["Recovery fixture"]
+    assert audit.status_code == 200
+    assert any(event["action"] == "project.create" for event in audit.json())
+
+
+def test_compilation_meets_documented_maximum_scene_budget(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = ControllerRuntime()
+    services = _services(tmp_path, runtime)
+    draft_document = _draft()
+    template = draft_document["scenes"][0]
+    draft_document["scenes"] = [
+        {**template, "id": f"scene-{index:03}", "name": f"Scene {index:03}"}
+        for index in range(250)
+    ]
+    draft = DraftProject.model_validate(draft_document)
+
+    started = time.perf_counter()
+    compilation = services.compiler.compile(
+        project_id="scale-budget",
+        revision=1,
+        draft=draft,
+    )
+    elapsed_seconds = time.perf_counter() - started
+
+    assert len(compilation.scene_ids) == 250
+    assert elapsed_seconds < 5
+
+    stored = services.repository.create_project(
+        name="Scale publication",
+        draft=draft,
+        actor="admin",
+        role=Role.ADMINISTRATOR,
+        occurred_at="2026-10-16T12:00:00+00:00",
+    )
+    services.publication.update_release(
+        project_id=stored.project.id,
+        revision=stored.revision,
+        name="Scale publication",
+        summary="Maximum supported scene count.",
+        approval_state="approved",
+        actor="admin",
+        occurred_at="2026-10-16T12:01:00+00:00",
+    )
+    monkeypatch.setattr(services.publication, "validate", lambda *_: ())
+    publication_started = time.perf_counter()
+    package = services.publication.publish(
+        project_id=stored.project.id,
+        revision=stored.revision,
+        actor="admin",
+        occurred_at="2026-10-16T12:02:00+00:00",
+    )
+
+    assert package.revision == 1
+    assert time.perf_counter() - publication_started < 5
+
+
+def test_device_session_registry_meets_hundred_client_budget(tmp_path: Path) -> None:
+    services = _services(tmp_path, ControllerRuntime())
+    started = time.perf_counter()
+    for index in range(100):
+        device_id = uuid4()
+        session_id = uuid4()
+        capabilities = (f"capability-{index}",)
+        device = cast(
+            StoredDevice,
+            SimpleNamespace(id=str(device_id), capabilities=capabilities),
+        )
+        hello = cast(
+            DeviceHello,
+            SimpleNamespace(
+                device_id=device_id,
+                device_session_id=session_id,
+                capabilities=capabilities,
+            ),
+        )
+        services.device_sessions.connect(device, hello)
+
+    connected = services.device_sessions.connected_device_ids()
+    elapsed_seconds = time.perf_counter() - started
+
+    assert len(connected) == 100
+    assert elapsed_seconds < 2
+
+
+def test_hundred_step_simulation_meets_documented_budget(tmp_path: Path) -> None:
+    runtime = ControllerRuntime()
+    client = TestClient(create_app(runtime, gui_services=_services(tmp_path, runtime)))
+    _login(client)
+    project = client.post(
+        "/api/gui/v1/projects",
+        json={"name": "Simulation scale", "draft": _draft()},
+        headers=_mutation_headers(client),
+    ).json()
+    project_id = project["project"]["id"]
+    scenario = client.post(
+        f"/api/gui/v1/projects/{project_id}/simulation-scenarios",
+        json={
+            "name": "One hundred deterministic ticks",
+            "steps": [{"kind": "advance", "delta_ms": 10} for _ in range(100)],
+            "expected": {},
+        },
+        headers=_mutation_headers(client),
+    )
+    assert scenario.status_code == 201
+
+    started = time.perf_counter()
+    result = client.post(
+        f"/api/gui/v1/projects/{project_id}/simulation-scenarios/"
+        f"{scenario.json()['id']}/run",
+        headers=_mutation_headers(client),
+    )
+
+    assert result.status_code == 200
+    assert result.json()["hardware_adapters_opened"] is False
+    assert time.perf_counter() - started < 5
+
+
+def test_local_accounts_project_roles_collaboration_and_live_output(
+    tmp_path: Path,
+) -> None:
+    runtime = ControllerRuntime()
+    services = _services(tmp_path, runtime)
+    admin = TestClient(create_app(runtime, gui_services=services))
+    _login(admin)
+    created = admin.post(
+        "/api/gui/v1/projects",
+        json={"name": "Collaborative show", "draft": _draft()},
+        headers=_mutation_headers(admin),
+    )
+    project_id = created.json()["project"]["id"]
+
+    for username, role in (("reviewer", "viewer"), ("operator", "operator")):
+        response = admin.put(
+            f"/api/gui/v1/users/{username}",
+            json={
+                "username": username,
+                "password": f"{username}-password-2026",
+                "role": role,
+                "disabled": False,
+            },
+            headers=_mutation_headers(admin),
+        )
+        assert response.status_code == 200
+    reviewer_membership = admin.put(
+        f"/api/gui/v1/projects/{project_id}/members/reviewer",
+        json={"role": "viewer", "can_live_output": False},
+        headers=_mutation_headers(admin),
+    )
+    assert reviewer_membership.status_code == 200
+    admin.put(
+        f"/api/gui/v1/projects/{project_id}/members/operator",
+        json={"role": "operator", "can_live_output": False},
+        headers=_mutation_headers(admin),
+    )
+
+    reviewer = TestClient(create_app(runtime, gui_services=services))
+    reviewer_login = reviewer.post(
+        "/api/gui/v1/auth/login",
+        json={"username": "reviewer", "password": "reviewer-password-2026"},
+        headers={"Origin": ORIGIN},
+    )
+    assert reviewer_login.status_code == 200
+    assert [item["id"] for item in reviewer.get("/api/gui/v1/projects").json()] == [
+        project_id
+    ]
+    comment = reviewer.post(
+        f"/api/gui/v1/projects/{project_id}/comments",
+        json={"revision": 1, "object_id": "ambient", "body": "Raise the contrast."},
+        headers=_mutation_headers(reviewer),
+    )
+    assert comment.status_code == 201
+    comment_id = comment.json()["id"]
+    denied_resolution = reviewer.put(
+        f"/api/gui/v1/projects/{project_id}/comments/{comment_id}",
+        json={"state": "resolved"},
+        headers=_mutation_headers(reviewer),
+    )
+    assert denied_resolution.status_code == 403
+    denied_draft_update = reviewer.put(
+        f"/api/gui/v1/projects/{project_id}/draft",
+        json=_draft(),
+        headers=_mutation_headers(reviewer, if_match='"1"'),
+    )
+    assert denied_draft_update.status_code == 403
+
+    admin.put(
+        f"/api/gui/v1/projects/{project_id}/members/reviewer",
+        json={"role": "designer", "can_live_output": False},
+        headers=_mutation_headers(admin),
+    )
+    resolved = reviewer.put(
+        f"/api/gui/v1/projects/{project_id}/comments/{comment_id}",
+        json={"state": "resolved"},
+        headers=_mutation_headers(reviewer),
+    )
+    assert resolved.status_code == 200
+    allowed_draft_update = reviewer.put(
+        f"/api/gui/v1/projects/{project_id}/draft",
+        json=_draft(),
+        headers=_mutation_headers(reviewer, if_match='"1"'),
+    )
+    assert allowed_draft_update.status_code == 200
+    review_link = reviewer.post(
+        f"/api/gui/v1/projects/{project_id}/review-links",
+        json={"revision": 2, "expires_at": "2099-01-01T00:00:00+00:00"},
+        headers=_mutation_headers(reviewer),
+    )
+    assert review_link.status_code == 201
+    public_review = TestClient(create_app(runtime, gui_services=services)).get(
+        f"/api/gui/v1/review-links/{review_link.json()['token']}"
+    )
+    assert public_review.status_code == 200
+    assert public_review.json()["project_name"] == "Collaborative show"
+    assert (
+        reviewer.post(
+            f"/api/gui/v1/projects/{project_id}/presence",
+            json={"location": "timeline:ambient"},
+            headers=_mutation_headers(reviewer),
+        ).status_code
+        == 204
+    )
+    assert reviewer.get(f"/api/gui/v1/projects/{project_id}/presence").json()[0][
+        "location"
+    ] == "timeline:ambient"
+
+    operator = TestClient(create_app(runtime, gui_services=services))
+    assert (
+        operator.post(
+            "/api/gui/v1/auth/login",
+            json={"username": "operator", "password": "operator-password-2026"},
+            headers={"Origin": ORIGIN},
+        ).status_code
+        == 200
+    )
+    denied_live = operator.post(
+        "/api/gui/v1/operate/actions",
+        json={"action": "pause"},
+        headers=_mutation_headers(operator),
+    )
+    assert denied_live.status_code == 403
+    assert denied_live.json()["detail"]["code"] == "live_output_permission_required"
+    admin.put(
+        f"/api/gui/v1/projects/{project_id}/members/operator",
+        json={"role": "operator", "can_live_output": True},
+        headers=_mutation_headers(admin),
+    )
+    allowed_live = operator.post(
+        "/api/gui/v1/operate/actions",
+        json={"action": "pause"},
+        headers=_mutation_headers(operator),
+    )
+    assert allowed_live.status_code != 403
+
+
 def test_configured_web_build_is_served_without_shadowing_protected_api(
     tmp_path: Path,
 ) -> None:
@@ -69,6 +401,66 @@ def test_configured_web_build_is_served_without_shadowing_protected_api(
     assert "Cueverge test shell" in root.text
     assert client.get("/api/gui/v1/topology").status_code == 401
     assert client.get("/api/v1/status").status_code == 404
+
+
+def test_projector_simulation_overlay_warps_authenticated_review_proxy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = ControllerRuntime()
+    services = _services(tmp_path, runtime)
+    client = TestClient(create_app(runtime, gui_services=services))
+    _login(client)
+    review = tmp_path / "review.png"
+    Image.new("RGBA", (20, 10), (40, 120, 220, 255)).save(review)
+    mapping = SimpleNamespace(
+        content_asset_id="asset-review",
+        photo_views=(
+            SimpleNamespace(
+                photo_id="photo-front",
+                homography=(0.025, 0, 0.25, 0, 0.05, 0.25, 0, 0, 1),
+                points=((0.25, 0.25), (0.75, 0.25), (0.75, 0.75), (0.25, 0.75)),
+            ),
+        ),
+        native_width=20,
+        native_height=10,
+        mesh_vertices=(),
+        mesh_triangles=(),
+        orientation_degrees=0,
+        mirror_x=False,
+        mirror_y=False,
+        calibration_source="unverified_estimate",
+        calibration_revision=3,
+    )
+    monkeypatch.setattr(services.projector_mapping, "get", lambda _: mapping)
+    monkeypatch.setattr(
+        services.asset_upload,
+        "get_artifact",
+        lambda asset_id, kind: (review, "image/png"),
+    )
+
+    response = client.get(
+        "/api/gui/v1/installation-geometry/projector-front/"
+        "projector-simulation-overlay?photo_id=photo-front"
+    )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "image/png"
+    assert response.headers["x-cueverge-approximation"] == "true"
+    assert response.headers["x-cueverge-calibration-source"] == "unverified_estimate"
+    assert response.headers["x-cueverge-calibration-revision"] == "3"
+    overlay = Image.open(BytesIO(response.content)).convert("RGBA")
+    assert overlay.size == (1000, 600)
+    assert overlay.getpixel((500, 300)) == (40, 120, 220, 255)
+    assert overlay.getpixel((20, 20))[3] == 0
+
+    mapping.content_asset_id = None
+    missing = client.get(
+        "/api/gui/v1/installation-geometry/projector-front/"
+        "projector-simulation-overlay?photo_id=photo-front"
+    )
+    assert missing.status_code == 422
+    assert missing.json()["detail"]["code"] == "projector_simulation_overlay_invalid"
 
 
 def test_login_requires_allowed_origin_and_mutations_require_csrf(tmp_path: Path) -> None:
@@ -1552,11 +1944,77 @@ def test_compilation_round_trips_through_loader_without_runtime_side_effects(
     services = _services(tmp_path, runtime)
     client = TestClient(create_app(runtime, gui_services=services))
     _login(client)
+    draft = _draft(editor_metadata={"panel_layout": {"timeline_height": 320}})
+    draft.update(
+        {
+            "program": {
+                "schema_version": 1,
+                "initial_scene_id": "ambient",
+                "default_pool_id": "ambient",
+                "recent_history_size": 1,
+                "random_seed": 42,
+                "pools": [
+                    {
+                        "id": "ambient",
+                        "category": "ambient",
+                        "scenes": [
+                            {
+                                "scene_id": "ambient",
+                                "weight": 1,
+                                "cooldown_ms": 0,
+                                "available": True,
+                                "conditions": {},
+                            }
+                        ],
+                    }
+                ],
+            },
+            "audience": {
+                "schema_version": 1,
+                "labels": ["person"],
+                "cameras": ["camera.demo"],
+                "zones": [],
+                "observation_freshness_ms": 5000,
+                "arrival_confirmation_ms": 1000,
+                "absence_grace_ms": 5000,
+                "long_idle_ms": 300000,
+            },
+            "opportunities": {
+                "schema_version": 1,
+                "opportunities": [
+                    {
+                        "id": "welcome",
+                        "scene_id": "ambient",
+                        "trigger_event": "audience.arrived",
+                        "ttl_ms": 10000,
+                    }
+                ],
+            },
+            "encounter": {
+                "schema_version": 1,
+                "initial_state": "ambient",
+                "cooldown_state": "cooldown",
+                "ambient_scene_id": "ambient",
+                "encounter_timeout_ms": 30000,
+                "cooldown_ms": 5000,
+                "debounce_ms": 500,
+                "event_ttl_ms": 3000,
+                "transitions": [
+                    {
+                        "event_type": "audience.arrived",
+                        "from_states": ["ambient"],
+                        "to_state": "engaged",
+                        "scene_id": "ambient",
+                    }
+                ],
+            },
+        }
+    )
     created = client.post(
         "/api/gui/v1/projects",
         json={
             "name": "Compiler fixture",
-            "draft": _draft(editor_metadata={"panel_layout": {"timeline_height": 320}}),
+            "draft": draft,
         },
         headers=_mutation_headers(client),
     )
@@ -1572,7 +2030,16 @@ def test_compilation_round_trips_through_loader_without_runtime_side_effects(
     package_roots = list((tmp_path / "compiled" / project_id).glob("r1-*"))
     assert len(package_roots) == 1
     package_root = package_roots[0]
-    assert load_show_package(package_root).require("ambient").definition.name == "Ambient"
+    catalog = load_show_package(package_root)
+    assert catalog.require("ambient").definition.name == "Ambient"
+    assert catalog.program is not None
+    assert catalog.program.random_seed == 42
+    assert catalog.audience is not None
+    assert catalog.audience.cameras == ("camera.demo",)
+    assert catalog.opportunities is not None
+    assert catalog.opportunities.opportunities[0].id == "welcome"
+    assert catalog.encounter is not None
+    assert catalog.encounter.initial_state == "ambient"
     render_pipeline = json.loads(
         (package_root / "runtime" / "render-pipeline.json").read_text(encoding="utf-8")
     )
@@ -1605,13 +2072,90 @@ def test_compilation_round_trips_through_loader_without_runtime_side_effects(
     assert runtime.active_scene is None
     assert runtime.connected_agent_count == 0
     assert runtime.sink.frames == []
-
     status = client.get("/api/gui/v1/runtime/status")
     assert status.status_code == 200
     assert status.json()["source"] == "controller_runtime"
     assert runtime.active_scene is None
     assert runtime.sink.frames == []
 
+
+def test_publication_requires_approval_and_writes_reproducible_manifest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    services = _services(tmp_path, ControllerRuntime())
+    revision = services.repository.create_project(
+        name="Publication fixture",
+        draft=DraftProject.model_validate(_draft()),
+        actor="admin",
+        role=Role.ADMINISTRATOR,
+        occurred_at="2026-10-16T12:00:00Z",
+    )
+    diagnostics = services.publication.validate(
+        revision.project.id,
+        revision.revision,
+    )
+    assert "resource_unassigned" in {item.code for item in diagnostics}
+    with pytest.raises(PublicationError, match="approved"):
+        services.publication.publish(
+            project_id=revision.project.id,
+            revision=revision.revision,
+            actor="admin",
+            occurred_at="2026-10-16T12:01:00Z",
+        )
+
+    release = services.publication.update_release(
+        project_id=revision.project.id,
+        revision=revision.revision,
+        name="Opening night",
+        summary="Approved deterministic package.",
+        approval_state="approved",
+        actor="admin",
+        occurred_at="2026-10-16T12:02:00Z",
+    )
+    assert release.approved_by == "admin"
+    monkeypatch.setattr(
+        services.publication,
+        "validate",
+        lambda _project_id, _revision: (
+            PublicationDiagnostic(
+                "validation_complete",
+                "info",
+                "Fixture validation completed.",
+            ),
+        ),
+    )
+    package = services.publication.publish(
+        project_id=revision.project.id,
+        revision=revision.revision,
+        actor="admin",
+        occurred_at="2026-10-16T12:03:00Z",
+    )
+    manifest_path = (
+        tmp_path
+        / "published"
+        / revision.project.id
+        / package.digest_sha256
+        / "publication-manifest.json"
+    )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["source_revision"] == revision.revision
+    assert manifest["creator"] == "admin"
+    assert manifest["revision_name"] == "Opening night"
+    assert manifest["package_digest_sha256"] == package.digest_sha256
+
+    staged = asyncio.run(
+        services.publication.stage(package.id, "2026-10-16T12:04:00Z")
+    )
+    assert staged.state == "staged"
+    with pytest.raises(PublicationError, match="simulation mode"):
+        asyncio.run(
+            services.publication.activate(
+                package.id,
+                occurred_at="2026-10-16T12:05:00Z",
+                simulation_mode=True,
+            )
+        )
 
 def test_render_job_api_requires_auth_csrf_and_reports_invalid_composition(
     tmp_path: Path,

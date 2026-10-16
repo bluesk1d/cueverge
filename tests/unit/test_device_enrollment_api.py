@@ -213,7 +213,16 @@ def test_administrator_can_create_token_and_enroll_device_once(tmp_path: Path) -
     assert enrolled_node["artifact_count"] == 1
     artifacts = client.get(f"/api/gui/v1/devices/{credential['device_id']}/artifacts")
     assert artifacts.status_code == 200
-    assert artifacts.json() == [{"digest_sha256": "d" * 64, "size_bytes": 1234, "pinned": True}]
+    assert artifacts.json() == [
+        {
+            "digest_sha256": "d" * 64,
+            "size_bytes": 1234,
+            "pinned": True,
+            "in_use": False,
+            "state": "verified",
+            "last_used_unix_ms": 0,
+        }
+    ]
     transfers = client.get(f"/api/gui/v1/devices/{credential['device_id']}/transfers")
     assert transfers.status_code == 200
     assert transfers.json()[0]["state"] == "active"

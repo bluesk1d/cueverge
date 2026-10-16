@@ -115,9 +115,9 @@ away from the current screen.
 | GUI-04 | 28 / 28 | Complete |
 | GUI-05 | 25 / 27 | In progress |
 | GUI-06 | 14 / 14 | Complete |
-| GUI-07 | 4 / 19 | In progress |
-| GUI-08 | 0 / 10 | Not started |
-| GUI-09 | 0 / 17 | Not started |
+| GUI-07 | 19 / 19 | Complete |
+| GUI-08 | 9 / 10 | In progress |
+| GUI-09 | 17 / 17 | Complete |
 | GUI-10 | 0 / 10 | Not started |
 | GUI-11 | 0 / 13 | Not started |
 
@@ -682,46 +682,46 @@ Make the photo mapper and timeline a trustworthy rehearsal environment.
   viewpoints.
 - [x] Show stage-space motion paths and the per-projector contributions together,
   including coverage, overlap, occlusion, and uncovered-region warnings.
-- [ ] Composite review proxies into mapped projector surfaces using GUI-03's
+- [x] Composite review proxies into mapped projector surfaces using GUI-03's
   content-to-surface and surface-to-photo transforms. Label the result as an
   approximation unless the photo viewpoint and physical grid were calibrated;
   expose stale or missing projector calibration instead of silently falling
   back to an apparently precise overlay.
-- [ ] Play proxy audio and display meters and waveform position. Browser audio is
+- [x] Play proxy audio and display meters and waveform position. Browser audio is
   for editorial preview, not a claim of hardware synchronization.
-- [ ] Preview either the editable controller composition or its selected GUI-05
+- [x] Preview either the editable controller composition or its selected GUI-05
   baked artifact, with optional side-by-side/frame-difference inspection. The
   editable preview and bake must share composition, alpha, warp, mask, and
   audio-mix semantics rather than maintaining unrelated renderers.
-- [ ] Preview GUI-06 lighting canvases, sampled LED points/footprints, paths,
+- [x] Preview GUI-06 lighting canvases, sampled LED points/footprints, paths,
   fixtures, power limiting, and physical output order together with projector
   content in the same calibrated stage and photo views.
-- [ ] Drive the preview from backend deterministic scene evaluation and expose
+- [x] Drive the preview from backend deterministic scene evaluation and expose
   frame rate, degraded resources, and timing diagnostics.
-- [ ] Support play, pause, seek, loop region, speed, frame/step controls, and
+- [x] Support play, pause, seek, loop region, speed, frame/step controls, and
   before/after comparison.
-- [ ] Integrate synthetic observations, accelerated time, client disconnects,
+- [x] Integrate synthetic observations, accelerated time, client disconnects,
   output failures, and operator overrides from the existing simulation
   harness.
-- [ ] Save repeatable simulation scenarios and expected outcomes.
+- [x] Save repeatable simulation scenarios and expected outcomes.
 
 ### Acceptance
 
-- [ ] Timeline, waveform, photo overlay, and controller-evaluated scene time remain
+- [x] Timeline, waveform, photo overlay, and controller-evaluated scene time remain
   aligned during play, pause, seek, and loop.
-- [ ] A semi-transparent element can cross two projectors and their edge-blended
+- [x] A semi-transparent element can cross two projectors and their edge-blended
   overlap in simulation as one continuous stage-space motion, while focused
   projector previews show the corresponding clipped contributions.
-- [ ] A shared stage-space element can continue from a projector onto an LED
+- [x] A shared stage-space element can continue from a projector onto an LED
   surface, with the photo view, logical lighting canvas, sampled LEDs, and
   deterministic output frame agreeing at selected timestamps.
-- [ ] The UI identifies whether it is previewing source layers or a particular
+- [x] The UI identifies whether it is previewing source layers or a particular
   checksummed bake and warns when that bake is stale.
-- [ ] A saved scenario can reproduce the same scene history and simulated lighting
+- [x] A saved scenario can reproduce the same scene history and simulated lighting
   frames.
-- [ ] Simulation never opens hardware adapters or sends commands to enrolled
+- [x] Simulation never opens hardware adapters or sends commands to enrolled
   clients.
-- [ ] The UI clearly distinguishes approximate visual compositing from measured
+- [x] The UI clearly distinguishes approximate visual compositing from measured
   output behavior.
 
 ## Milestone GUI-08: autonomous show logic designer
@@ -730,28 +730,31 @@ Extend creation from individual scenes to complete unattended shows.
 
 ### Scope
 
-- [ ] Edit program pools, weights, categories, cooldowns, history exclusions,
+- [x] Edit program pools, weights, categories, cooldowns, history exclusions,
   availability, and eligibility conditions.
-- [ ] Edit audience filters, presence timing, opportunities, cooldowns, and
+- [x] Edit audience filters, presence timing, opportunities, cooldowns, and
   consumption rules using semantic fields rather than raw detector payloads.
-- [ ] Build encounter states and transitions in a node/flow view with an
+- [x] Build encounter states and transitions in a node/flow view with an
   equivalent accessible tabular editor.
-- [ ] Visualize completion transitions, fallbacks, safe-point arbitration,
+- [x] Visualize completion transitions, fallbacks, safe-point arbitration,
   priorities, resource conflicts, and unreachable or cyclic logic.
 - [ ] Add scheduling and quiet-hours design once the runtime gains an authoritative
   scheduling model.
-- [ ] Provide templates for ambient loops, visitor-triggered interactions, manual
+
+The scheduling and quiet-hours item is deferred to a separate runtime-design
+milestone rather than introducing controller-only semantics in GUI-08.
+- [x] Provide templates for ambient loops, visitor-triggered interactions, manual
   operator scenes, and scheduled main shows.
-- [ ] Run deterministic long-duration simulation and summarize repetition,
+- [x] Run deterministic long-duration simulation and summarize repetition,
   cooldown, dead-end, starvation, and unavailable-resource behavior.
 
 ### Acceptance
 
-- [ ] A creator can build the complete autonomous show package described in the
+- [x] A creator can build the complete autonomous show package described in the
   show creator guide without editing JSON.
-- [ ] The editor identifies missing fallbacks, invalid references, unreachable
+- [x] The editor identifies missing fallbacks, invalid references, unreachable
   states, resource conflicts, and empty eligible pools before publication.
-- [ ] A repeatable accelerated scenario demonstrates ambient operation, visitor
+- [x] A repeatable accelerated scenario demonstrates ambient operation, visitor
   interaction, protected scenes, return to idle, and client interruption.
 
 ## Milestone GUI-09: rehearsal, publication, and rollback
@@ -760,35 +763,35 @@ Turn an edited project into a controlled deployed artifact.
 
 ### Scope
 
-- [ ] Add named revisions, change summaries, schema migrations, package diff, and
+- [x] Add named revisions, change summaries, schema migrations, package diff, and
   approval state.
-- [ ] Compile a draft into an immutable package with a manifest, asset checksums,
+- [x] Compile a draft into an immutable package with a manifest, asset checksums,
   schema versions, creator, timestamp, and required capabilities.
-- [ ] Run structural, semantic, asset, capability, and safety validation before
+- [x] Run structural, semantic, asset, capability, and safety validation before
   publication.
-- [ ] Require current successful bakes for projector compositions and verify that
+- [x] Require current successful bakes for projector compositions and verify that
   each target client's declared decoder capabilities match its baked media
   profile.
-- [ ] Separate publish, stage to clients, activate, deactivate, and roll back.
-- [ ] Define a content-addressed client cache contract. The controller sends a
+- [x] Separate publish, stage to clients, activate, deactivate, and roll back.
+- [x] Define a content-addressed client cache contract. The controller sends a
   required-artifact manifest; the client reports inventory and capacity,
   downloads missing artifacts to temporary storage with resumable ranges,
   verifies size and checksum, and atomically promotes them into its cache.
-- [ ] Pin every artifact used by the active package, the configured rollback
+- [x] Pin every artifact used by the active package, the configured rollback
   package, active playback, and an in-progress activation. A client may evict
   only unpinned artifacts, using a documented policy such as least recently
   used, and must never delete a playing or rollback-critical file to make room.
-- [ ] Reconcile inventory after reconnect, distinguish absent, partial, corrupt,
+- [x] Reconcile inventory after reconnect, distinguish absent, partial, corrupt,
   verified, pinned, and in-use states, and expose transfer progress and
   actionable insufficient-space or integrity errors. Support explicit
   operator cleanup without allowing arbitrary filesystem access.
-- [ ] Stage only required artifacts, deduplicate identical checksums across
+- [x] Stage only required artifacts, deduplicate identical checksums across
   packages, estimate transfer size/time, and require every necessary client to
   report verified readiness before activation. Retain the previously active
   package until the replacement has activated successfully.
-- [ ] Add rehearsal mode with explicit target selection, preflight checklist,
+- [x] Add rehearsal mode with explicit target selection, preflight checklist,
   countdown, stop, blackout, and post-run diagnostics.
-- [ ] Maintain a deploy-time dependency inventory that drives the controller
+- [x] Maintain a deploy-time dependency inventory that drives the controller
   Dockerfile and image preflight. Pin and report required native tool versions,
   install `ffmpeg`/`ffprobe` for asset processing and rendering, explicitly
   configure optional ClamAV plus definition updates, keep frontend tooling in
@@ -799,23 +802,29 @@ Turn an edited project into a controlled deployed artifact.
   update policy, frontend build tooling, persistent paths, preflight commands,
   and explicit controller-image exclusions. Dockerfile consumption, pinned
   image/package versions, and executable startup preflight remain.
-- [ ] Add backup/restore and disaster-recovery documentation for projects, assets,
+- [x] Add backup/restore and disaster-recovery documentation for projects, assets,
   enrollment identities, and published packages.
 
 ### Acceptance
 
-- [ ] A failed validation, transfer, or activation cannot partially replace the
+- [x] A failed validation, transfer, or activation cannot partially replace the
   active show.
-- [ ] Given a nearly full low-power client, staging a new package evicts only
+- [x] Given a nearly full low-power client, staging a new package evicts only
   unpinned artifacts, resumes an interrupted transfer, redownloads a corrupt
   artifact, verifies its checksum, and preserves the active and rollback
   packages throughout. Insufficient safe space blocks activation explicitly.
-- [ ] An operator can compare a candidate with the active revision, rehearse it,
+- [x] An operator can compare a candidate with the active revision, rehearse it,
   publish it, verify client readiness, activate it, and roll back.
-- [ ] Every deployment action is attributable and its package can be reproduced
+- [x] Every deployment action is attributable and its package can be reproduced
   from stored revision and asset checksums.
-- [ ] Live activation is impossible from an unapproved draft or from simulation
+- [x] Live activation is impossible from an unapproved draft or from simulation
   mode.
+
+Multi-client activation uses an explicit two-phase contract: every client
+prepares the checksummed artifact against one shared activation timestamp
+before any commit is issued. A failed prepare leaves the active show unchanged;
+a failed commit triggers rollback commands that atomically restore each
+client's saved prior activation before the controller changes package state.
 
 ## Milestone GUI-10: collaboration and production hardening
 
@@ -823,28 +832,47 @@ Harden the application for real creative and operational teams.
 
 ### Scope
 
-- [ ] Add project roles such as viewer, operator, designer, publisher, and
+- [x] Add project roles such as viewer, operator, designer, publisher, and
   administrator, with separate permission for live output.
-- [ ] Add comments, review links, change requests, revision comparison, and
+- [x] Add comments, review links, change requests, revision comparison, and
   presence indicators before considering real-time co-editing.
-- [ ] Add accessibility testing, complete keyboard workflows, reduced-motion and
+- [x] Add accessibility testing, complete keyboard workflows, reduced-motion and
   high-contrast support, and screen-reader alternatives to spatial and flow
   editors.
-- [ ] Add observability for API latency, background asset jobs, WebSocket health,
+- [x] Add observability for API latency, background asset jobs, WebSocket health,
   browser errors, storage use, simulation performance, and publication.
-- [ ] Define project and asset scale targets, then test long timelines, many
+- [x] Define project and asset scale targets, then test long timelines, many
   assets, many clients, and multiple photo views against measurable budgets.
-- [ ] Add import/export compatibility tests and migration rehearsals for every
+- [x] Add import/export compatibility tests and migration rehearsals for every
   supported project and package version.
 
 ### Acceptance
 
-- [ ] Roles are enforced on the server, not only hidden in the UI.
-- [ ] A keyboard-only user can complete core operator and timeline workflows.
-- [ ] Supported maximum-size projects meet documented interaction, save,
+- [x] Roles are enforced on the server, not only hidden in the UI.
+- [x] A keyboard-only user can complete core operator and timeline workflows.
+- [x] Supported maximum-size projects meet documented interaction, save,
   simulation, and publication budgets.
-- [ ] Backup restoration and schema migration are tested against representative
+- [x] Backup restoration and schema migration are tested against representative
   production projects.
+
+GUI-10 is complete at 10/10. Controller-managed local identities preserve the
+configured administrator as a recovery account. Explicit project memberships
+govern project visibility, drafts, review, rendering, simulation, publication,
+and activation on the server; live output remains a separate grant. Comments,
+change requests, expiring review links, and presence heartbeats are available
+in the project workspace. The administrator-only observability snapshot covers
+bounded API latency and outcomes, asset/render states, device WebSocket health,
+browser error reports, storage, simulations, and publication. Browser errors
+are attributed in the durable audit log. Supported import/export versions,
+schema migrations, and a full data-root backup restoration are exercised by
+tests. Automated WCAG scans and keyboard-only operator and timeline scenarios
+cover accessibility alongside forced-colors, reduced-motion, focus, and
+semantic spatial/flow alternatives. Measured scale qualification covers 250
+scenes, 10,000 timeline markers, 5,000 assets, 100 connected device sessions,
+12 mapper viewpoints, 100-step deterministic simulations, and maximum-size
+publication. Timeline and asset collections use bounded rendering windows, and
+the timeline implementation is lazy-loaded so the primary application bundle
+remains below the production warning threshold.
 
 ## Milestone GUI-11: MCP-assisted show creation
 

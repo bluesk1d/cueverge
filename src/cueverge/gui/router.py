@@ -21,7 +21,12 @@ from PIL import Image
 from pydantic import JsonValue
 
 from cueverge.controller.runtime import ShowMode
+from cueverge.core.loader import load_show_package
 from cueverge.gui.artifact_deployment import ArtifactDeploymentError
+from cueverge.gui.artifact_preview import (
+    ArtifactPreviewError,
+    extract_artifact_preview_frame,
+)
 from cueverge.gui.asset_upload import (
     AssetMetadataConflictError,
     AssetMetadataLockedError,
@@ -37,6 +42,7 @@ from cueverge.gui.auth import (
 from cueverge.gui.compiler import CompilationError
 from cueverge.gui.contracts import (
     AcceptedCalibrationResponse,
+    ActivationRequest,
     ActivityEventResponse,
     ApplyScenePresetRequest,
     ArtifactDeploymentResponse,
@@ -46,9 +52,18 @@ from cueverge.gui.contracts import (
     AssetUploadResponse,
     AuditEventResponse,
     BeginAssetUploadRequest,
+    BrowserErrorRequest,
     CapabilityReviewIssue,
     CapabilityReviewRequest,
     CapabilityReviewResponse,
+    ChangeRequestCreate,
+    ChangeRequestResponse,
+    ChangeRequestState,
+    CleanupDeviceArtifactsRequest,
+    CleanupDeviceArtifactsResponse,
+    CommentRequest,
+    CommentResponse,
+    CommentStateRequest,
     CompilationResponse,
     ConnectionTestCheck,
     CreateInstallationRequest,
@@ -78,6 +93,8 @@ from cueverge.gui.contracts import (
     InstallationSummaryResponse,
     LightingSurfaceRequest,
     LightingSurfaceResponse,
+    LocalUserRequest,
+    LocalUserResponse,
     LoginRequest,
     MaintenancePreviewRequest,
     MaintenancePreviewResponse,
@@ -89,9 +106,13 @@ from cueverge.gui.contracts import (
     OutputArmResponse,
     PairingTokenResponse,
     PlaceAssetRequest,
+    PresenceHeartbeatRequest,
+    PresenceResponse,
     ProbeEndpointRequest,
     ProjectDraftResponse,
     ProjectExportDocument,
+    ProjectMembershipRequest,
+    ProjectMembershipResponse,
     ProjectMetadataConflictResponse,
     ProjectMetadataRequest,
     ProjectorMappingRequest,
@@ -100,19 +121,30 @@ from cueverge.gui.contracts import (
     ProjectorOverlapResponse,
     ProjectorPhotoViewResponse,
     ProjectSummary,
+    PublicationDiagnosticResponse,
+    PublicationValidationResponse,
+    PublishedPackageResponse,
     RecordSyncRehearsalRequest,
     RenderJobResponse,
     ResourceAssignmentConflictResponse,
     ResourceAssignmentResponse,
     ReviewCalibrationContextRequest,
+    ReviewLinkRequest,
+    ReviewLinkResponse,
+    ReviewLinkView,
     RevisionConflictResponse,
+    RevisionDiffResponse,
+    RevisionReleaseResponse,
     RevisionSummary,
     Role,
     RuntimeStatusResponse,
+    SaveSimulationScenarioRequest,
     SessionResponse,
     SetDeviceConnectionPolicyRequest,
     SetDeviceEnrollmentStateRequest,
     SetResourceAssignmentRequest,
+    SimulationRunResponse,
+    SimulationScenarioResponse,
     StageCoverageResponse,
     StageRegionResponse,
     StartTimingCalibrationRequest,
@@ -124,6 +156,7 @@ from cueverge.gui.contracts import (
     UpdateAssetMetadataRequest,
     UpdateInstallationPhotoRequest,
     UpdateInstallationRequest,
+    UpdateRevisionReleaseRequest,
     UpdateTimingCalibrationRequest,
 )
 from cueverge.gui.contracts import (
@@ -160,6 +193,11 @@ from cueverge.gui.lighting_surface import (
 )
 from cueverge.gui.mapper_export import MapperExportError
 from cueverge.gui.output_arming import OutputArmError, StoredOutputArm
+from cueverge.gui.passwords import hash_password
+from cueverge.gui.preview_evaluation import (
+    PreviewEvaluationError,
+    evaluate_preview_state,
+)
 from cueverge.gui.projector_mapping import (
     ProjectorMappingConflictError,
     ProjectorMappingError,
@@ -173,6 +211,11 @@ from cueverge.gui.projector_renderer import (
     ProjectorRenderError,
     preview_projector_composition,
 )
+from cueverge.gui.projector_simulation import (
+    ProjectorSimulationError,
+    warp_review_proxy,
+)
+from cueverge.gui.publication import PublicationError, PublishedPackage
 from cueverge.gui.render_jobs import RenderJobError, StoredRenderJob
 from cueverge.gui.repository import (
     ActiveInstallationDeleteError,
@@ -195,7 +238,14 @@ from cueverge.gui.repository import (
     StoredRevision,
 )
 from cueverge.gui.service import GuiServices
-from cueverge.gui.stage_renderer import preview_stage_composition_member
+from cueverge.gui.simulation_scenarios import (
+    SimulationScenarioError,
+    StoredSimulationScenario,
+)
+from cueverge.gui.stage_renderer import (
+    preview_stage_composition_member,
+    preview_stage_lighting_samples,
+)
 from cueverge.gui.sync_rehearsal import (
     StoredSyncRehearsal,
     SyncAdmission,
@@ -279,6 +329,75 @@ def create_gui_router(services: GuiServices) -> APIRouter:
     administrator_mutation = Depends(require_mutation_roles(Role.ADMINISTRATOR))
     operator_mutation = Depends(require_mutation_roles(Role.OPERATOR, Role.ADMINISTRATOR))
 
+    def live_output_session(
+        session: Annotated[AuthenticatedSession, Depends(mutation_session)],
+    ) -> AuthenticatedSession:
+        if session.role is Role.ADMINISTRATOR:
+            return session
+        if session.role is not Role.OPERATOR:
+            raise HTTPException(
+                status_code=403,
+                detail={"code": "insufficient_role"},
+            )
+        if not services.collaboration.has_live_output_permission(session.username):
+            raise HTTPException(
+                status_code=403,
+                detail={"code": "live_output_permission_required"},
+            )
+        return session
+
+    live_output_mutation = Depends(live_output_session)
+
+    def require_project_roles(
+        *allowed_roles: Role,
+    ) -> Callable[..., AuthenticatedSession]:
+        def dependency(
+            project_id: str,
+            session: Annotated[AuthenticatedSession, Depends(mutation_session)],
+        ) -> AuthenticatedSession:
+            if session.role is Role.ADMINISTRATOR:
+                return session
+            membership = services.collaboration.get_membership(project_id, session.username)
+            if membership is None or membership.role not in allowed_roles:
+                raise HTTPException(
+                    status_code=403,
+                    detail={"code": "insufficient_project_role"},
+                )
+            return session
+
+        return dependency
+
+    def project_reader_session(
+        project_id: str,
+        session: Annotated[AuthenticatedSession, Depends(current_session)],
+    ) -> AuthenticatedSession:
+        if session.role is Role.ADMINISTRATOR:
+            return session
+        if services.collaboration.get_membership(project_id, session.username) is None:
+            raise HTTPException(
+                status_code=403,
+                detail={"code": "project_membership_required"},
+            )
+        return session
+
+    project_reader = Depends(project_reader_session)
+    project_commenter = Depends(
+        require_project_roles(
+            Role.VIEWER,
+            Role.DESIGNER,
+            Role.OPERATOR,
+            Role.PUBLISHER,
+            Role.ADMINISTRATOR,
+        )
+    )
+    project_designer = Depends(
+        require_project_roles(Role.DESIGNER, Role.PUBLISHER, Role.ADMINISTRATOR)
+    )
+    project_publisher = Depends(
+        require_project_roles(Role.PUBLISHER, Role.ADMINISTRATOR)
+    )
+    project_administrator = Depends(require_project_roles(Role.ADMINISTRATOR))
+
     @router.post("/auth/login", response_model=SessionResponse)
     def login(body: LoginRequest, request: Request, response: Response) -> SessionResponse:
         _require_allowed_origin(request, services)
@@ -336,12 +455,381 @@ def create_gui_router(services: GuiServices) -> APIRouter:
         response.delete_cookie(CSRF_COOKIE, path="/")
 
     @router.get(
+        "/users",
+        response_model=list[LocalUserResponse],
+        dependencies=[administrator],
+    )
+    def users() -> list[LocalUserResponse]:
+        return [
+            LocalUserResponse(
+                username=user.username,
+                role=user.role,
+                disabled=user.disabled,
+                created_at=user.created_at,
+            )
+            for user in services.collaboration.list_users()
+        ]
+
+    @router.put("/users/{username}", response_model=LocalUserResponse)
+    def put_user(
+        username: str,
+        body: LocalUserRequest,
+        identity: Annotated[AuthenticatedSession, administrator_mutation],
+    ) -> LocalUserResponse:
+        if username != body.username or username == services.config.admin_username:
+            raise HTTPException(
+                status_code=409,
+                detail={"code": "reserved_or_mismatched_username"},
+            )
+        occurred_at = _now_iso()
+        user = services.collaboration.upsert_user(
+            username,
+            hash_password(body.password),
+            body.role,
+            body.disabled,
+            occurred_at,
+        )
+        services.repository.append_audit(
+            actor=identity.username,
+            action="user.upsert",
+            target=username,
+            result="success",
+            occurred_at=occurred_at,
+            authorization_context={"role": body.role.value, "disabled": body.disabled},
+        )
+        return LocalUserResponse(
+            username=user.username,
+            role=user.role,
+            disabled=user.disabled,
+            created_at=user.created_at,
+        )
+
+    @router.get(
         "/projects",
         response_model=list[ProjectSummary],
         dependencies=[reader],
     )
-    def projects() -> list[ProjectSummary]:
-        return [_project_summary(project) for project in services.repository.list_projects()]
+    def projects(
+        identity: Annotated[AuthenticatedSession, Depends(current_session)],
+    ) -> list[ProjectSummary]:
+        visible_ids = (
+            None
+            if identity.role is Role.ADMINISTRATOR
+            else services.collaboration.project_ids_for_user(identity.username)
+        )
+        return [
+            _project_summary(project)
+            for project in services.repository.list_projects()
+            if visible_ids is None or project.id in visible_ids
+        ]
+
+    @router.get(
+        "/projects/{project_id}/members",
+        response_model=list[ProjectMembershipResponse],
+        dependencies=[project_reader],
+    )
+    def project_members(project_id: str) -> list[ProjectMembershipResponse]:
+        return [
+            ProjectMembershipResponse(
+                project_id=item.project_id,
+                username=item.username,
+                role=item.role,
+                can_live_output=item.can_live_output,
+                created_at=item.created_at,
+                updated_at=item.updated_at,
+            )
+            for item in services.collaboration.list_memberships(project_id)
+        ]
+
+    @router.put(
+        "/projects/{project_id}/members/{username}",
+        response_model=ProjectMembershipResponse,
+    )
+    def put_project_member(
+        project_id: str,
+        username: str,
+        body: ProjectMembershipRequest,
+        identity: Annotated[AuthenticatedSession, project_administrator],
+    ) -> ProjectMembershipResponse:
+        if (
+            username != services.config.admin_username
+            and services.collaboration.get_user(username) is None
+        ):
+            raise HTTPException(status_code=404, detail={"code": "user_not_found"})
+        occurred_at = _now_iso()
+        membership = services.collaboration.put_membership(
+            project_id,
+            username,
+            body.role,
+            body.can_live_output,
+            occurred_at,
+        )
+        services.repository.append_audit(
+            actor=identity.username,
+            action="project.member.upsert",
+            target=f"{project_id}:{username}",
+            result="success",
+            occurred_at=occurred_at,
+            authorization_context={
+                "project_role": body.role.value,
+                "can_live_output": body.can_live_output,
+            },
+        )
+        return ProjectMembershipResponse(
+            project_id=membership.project_id,
+            username=membership.username,
+            role=membership.role,
+            can_live_output=membership.can_live_output,
+            created_at=membership.created_at,
+            updated_at=membership.updated_at,
+        )
+
+    @router.get(
+        "/projects/{project_id}/comments",
+        response_model=list[CommentResponse],
+        dependencies=[project_reader],
+    )
+    def comments(project_id: str) -> list[CommentResponse]:
+        return [
+            CommentResponse.model_validate(item)
+            for item in services.collaboration.list_comments(project_id)
+        ]
+
+    @router.post(
+        "/projects/{project_id}/comments",
+        response_model=CommentResponse,
+        status_code=201,
+    )
+    def create_comment(
+        project_id: str,
+        body: CommentRequest,
+        identity: Annotated[AuthenticatedSession, project_commenter],
+    ) -> CommentResponse:
+        services.repository.get_revision(project_id, body.revision)
+        occurred_at = _now_iso()
+        comment = services.collaboration.create_comment(
+            project_id,
+            body.revision,
+            body.object_id,
+            body.body,
+            identity.username,
+            occurred_at,
+        )
+        services.repository.append_audit(
+            actor=identity.username,
+            action="comment.create",
+            target=str(comment["id"]),
+            result="success",
+            occurred_at=occurred_at,
+            authorization_context={
+                "project_id": project_id,
+                "revision": body.revision,
+            },
+        )
+        return CommentResponse.model_validate(comment)
+
+    @router.put(
+        "/projects/{project_id}/comments/{comment_id}",
+        response_model=CommentResponse,
+    )
+    def update_comment(
+        project_id: str,
+        comment_id: str,
+        body: CommentStateRequest,
+        identity: Annotated[AuthenticatedSession, project_designer],
+    ) -> CommentResponse:
+        if not any(
+            item["id"] == comment_id
+            for item in services.collaboration.list_comments(project_id)
+        ):
+            raise HTTPException(status_code=404, detail={"code": "comment_not_found"})
+        occurred_at = _now_iso()
+        comment = services.collaboration.set_comment_state(
+            comment_id,
+            body.state,
+            identity.username,
+            occurred_at,
+        )
+        services.repository.append_audit(
+            actor=identity.username,
+            action="comment.state",
+            target=comment_id,
+            result=body.state,
+            occurred_at=occurred_at,
+            authorization_context={"project_id": project_id},
+        )
+        return CommentResponse.model_validate(comment)
+
+    @router.get(
+        "/projects/{project_id}/change-requests",
+        response_model=list[ChangeRequestResponse],
+        dependencies=[project_reader],
+    )
+    def change_requests(project_id: str) -> list[ChangeRequestResponse]:
+        return [
+            ChangeRequestResponse.model_validate(item)
+            for item in services.collaboration.list_change_requests(project_id)
+        ]
+
+    @router.post(
+        "/projects/{project_id}/change-requests",
+        response_model=ChangeRequestResponse,
+        status_code=201,
+    )
+    def create_change_request(
+        project_id: str,
+        body: ChangeRequestCreate,
+        identity: Annotated[AuthenticatedSession, project_commenter],
+    ) -> ChangeRequestResponse:
+        services.repository.get_revision(project_id, body.revision)
+        occurred_at = _now_iso()
+        change_request = services.collaboration.create_change_request(
+            project_id,
+            body.revision,
+            body.object_id,
+            body.title,
+            body.body,
+            identity.username,
+            occurred_at,
+        )
+        services.repository.append_audit(
+            actor=identity.username,
+            action="change_request.create",
+            target=str(change_request["id"]),
+            result="success",
+            occurred_at=occurred_at,
+            authorization_context={"project_id": project_id},
+        )
+        return ChangeRequestResponse.model_validate(change_request)
+
+    @router.put(
+        "/projects/{project_id}/change-requests/{request_id}",
+        response_model=ChangeRequestResponse,
+    )
+    def update_change_request(
+        project_id: str,
+        request_id: str,
+        body: ChangeRequestState,
+        identity: Annotated[AuthenticatedSession, project_designer],
+    ) -> ChangeRequestResponse:
+        if not any(
+            item["id"] == request_id
+            for item in services.collaboration.list_change_requests(project_id)
+        ):
+            raise HTTPException(
+                status_code=404,
+                detail={"code": "change_request_not_found"},
+            )
+        occurred_at = _now_iso()
+        change_request = services.collaboration.set_change_request_state(
+            request_id,
+            body.state,
+            identity.username,
+            occurred_at,
+        )
+        services.repository.append_audit(
+            actor=identity.username,
+            action="change_request.state",
+            target=request_id,
+            result=body.state,
+            occurred_at=occurred_at,
+            authorization_context={"project_id": project_id},
+        )
+        return ChangeRequestResponse.model_validate(change_request)
+
+    @router.post(
+        "/projects/{project_id}/review-links",
+        response_model=ReviewLinkResponse,
+        status_code=201,
+    )
+    def create_review_link(
+        project_id: str,
+        body: ReviewLinkRequest,
+        identity: Annotated[AuthenticatedSession, project_designer],
+    ) -> ReviewLinkResponse:
+        services.repository.get_revision(project_id, body.revision)
+        try:
+            expires_at = datetime.fromisoformat(body.expires_at)
+        except ValueError as error:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "invalid_review_expiry"},
+            ) from error
+        if expires_at.tzinfo is None or expires_at <= datetime.now(UTC):
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "invalid_review_expiry"},
+            )
+        occurred_at = _now_iso()
+        link, token = services.collaboration.create_review_link(
+            project_id,
+            body.revision,
+            expires_at.isoformat(),
+            identity.username,
+            occurred_at,
+        )
+        services.repository.append_audit(
+            actor=identity.username,
+            action="review_link.create",
+            target=str(link["id"]),
+            result="success",
+            occurred_at=occurred_at,
+            authorization_context={"project_id": project_id},
+        )
+        return ReviewLinkResponse(
+            id=str(link["id"]),
+            project_id=project_id,
+            revision=body.revision,
+            expires_at=str(link["expires_at"]),
+            created_by=identity.username,
+            created_at=str(link["created_at"]),
+            token=token,
+        )
+
+    @router.get("/review-links/{token}", response_model=ReviewLinkView)
+    def review_link(token: str) -> ReviewLinkView:
+        link = services.collaboration.resolve_review_link(token, _now_iso())
+        if link is None:
+            raise HTTPException(
+                status_code=404,
+                detail={"code": "review_link_not_found"},
+            )
+        revision = services.repository.get_revision(
+            str(link["project_id"]),
+            cast(int, link["revision"]),
+        )
+        return ReviewLinkView(
+            project_id=revision.project.id,
+            project_name=revision.project.name,
+            revision=revision.revision,
+            expires_at=str(link["expires_at"]),
+        )
+
+    @router.post("/projects/{project_id}/presence", status_code=204)
+    def presence_heartbeat(
+        project_id: str,
+        body: PresenceHeartbeatRequest,
+        identity: Annotated[AuthenticatedSession, project_commenter],
+    ) -> Response:
+        services.collaboration.heartbeat_presence(
+            project_id,
+            identity.username,
+            body.location,
+            _now_iso(),
+        )
+        return Response(status_code=204)
+
+    @router.get(
+        "/projects/{project_id}/presence",
+        response_model=list[PresenceResponse],
+        dependencies=[project_reader],
+    )
+    def presence(project_id: str) -> list[PresenceResponse]:
+        active_after = (datetime.now(UTC) - timedelta(seconds=60)).isoformat()
+        return [
+            PresenceResponse.model_validate(item)
+            for item in services.collaboration.list_presence(project_id, active_after)
+        ]
 
     @router.post("/projects", response_model=ProjectDraftResponse, status_code=201)
     def create_project(
@@ -355,6 +843,13 @@ def create_gui_router(services: GuiServices) -> APIRouter:
             actor=identity.username,
             role=identity.role,
             occurred_at=_now_iso(),
+        )
+        services.collaboration.put_membership(
+            revision.project.id,
+            identity.username,
+            Role.ADMINISTRATOR,
+            True,
+            _now_iso(),
         )
         response.headers["ETag"] = _etag(revision.revision)
         return _project_draft(revision)
@@ -385,6 +880,13 @@ def create_gui_router(services: GuiServices) -> APIRouter:
             role=identity.role,
             occurred_at=_now_iso(),
         )
+        services.collaboration.put_membership(
+            revision.project.id,
+            identity.username,
+            Role.ADMINISTRATOR,
+            True,
+            _now_iso(),
+        )
         response.headers["ETag"] = _etag(revision.revision)
         return _project_draft(revision)
 
@@ -393,7 +895,7 @@ def create_gui_router(services: GuiServices) -> APIRouter:
         project_id: str,
         body: ProjectMetadataRequest,
         response: Response,
-        identity: Annotated[AuthenticatedSession, author],
+        identity: Annotated[AuthenticatedSession, project_designer],
         if_match: Annotated[str | None, Header(alias="If-Match")] = None,
     ) -> ProjectSummary | JSONResponse:
         expected_revision = _parse_if_match(if_match)
@@ -431,7 +933,7 @@ def create_gui_router(services: GuiServices) -> APIRouter:
         project_id: str,
         body: ProjectMetadataRequest,
         response: Response,
-        identity: Annotated[AuthenticatedSession, author],
+        identity: Annotated[AuthenticatedSession, project_designer],
     ) -> ProjectDraftResponse:
         try:
             source = services.repository.get_revision(project_id)
@@ -446,6 +948,13 @@ def create_gui_router(services: GuiServices) -> APIRouter:
             actor=identity.username,
             role=identity.role,
             occurred_at=_now_iso(),
+        )
+        services.collaboration.put_membership(
+            duplicated.project.id,
+            identity.username,
+            Role.ADMINISTRATOR,
+            True,
+            _now_iso(),
         )
         services.repository.append_audit(
             actor=identity.username,
@@ -469,7 +978,7 @@ def create_gui_router(services: GuiServices) -> APIRouter:
     def archive_project(
         project_id: str,
         response: Response,
-        identity: Annotated[AuthenticatedSession, author],
+        identity: Annotated[AuthenticatedSession, project_designer],
         if_match: Annotated[str | None, Header(alias="If-Match")] = None,
     ) -> ProjectSummary | JSONResponse:
         expected_revision = _parse_if_match(if_match)
@@ -505,7 +1014,7 @@ def create_gui_router(services: GuiServices) -> APIRouter:
     @router.get(
         "/projects/{project_id}/export",
         response_model=ProjectExportDocument,
-        dependencies=[reader],
+        dependencies=[project_reader],
     )
     def export_project(project_id: str) -> ProjectExportDocument:
         try:
@@ -532,6 +1041,13 @@ def create_gui_router(services: GuiServices) -> APIRouter:
             role=identity.role,
             occurred_at=_now_iso(),
         )
+        services.collaboration.put_membership(
+            revision.project.id,
+            identity.username,
+            Role.ADMINISTRATOR,
+            True,
+            _now_iso(),
+        )
         response.headers["ETag"] = _etag(revision.revision)
         return _project_draft(revision)
 
@@ -544,7 +1060,7 @@ def create_gui_router(services: GuiServices) -> APIRouter:
         scene_id: str,
         body: ObjectOrganizationRequest,
         response: Response,
-        identity: Annotated[AuthenticatedSession, author],
+        identity: Annotated[AuthenticatedSession, project_designer],
         if_match: Annotated[str | None, Header(alias="If-Match")] = None,
     ) -> ProjectDraftResponse | JSONResponse:
         expected_revision = _parse_if_match(if_match)
@@ -580,7 +1096,7 @@ def create_gui_router(services: GuiServices) -> APIRouter:
         project_id: str,
         body: CreateScenePresetRequest,
         response: Response,
-        identity: Annotated[AuthenticatedSession, author],
+        identity: Annotated[AuthenticatedSession, project_designer],
         if_match: Annotated[str | None, Header(alias="If-Match")] = None,
     ) -> ProjectDraftResponse | JSONResponse:
         expected_revision = _parse_if_match(if_match)
@@ -616,7 +1132,7 @@ def create_gui_router(services: GuiServices) -> APIRouter:
         preset_id: str,
         body: ApplyScenePresetRequest,
         response: Response,
-        identity: Annotated[AuthenticatedSession, author],
+        identity: Annotated[AuthenticatedSession, project_designer],
         if_match: Annotated[str | None, Header(alias="If-Match")] = None,
     ) -> ProjectDraftResponse | JSONResponse:
         expected_revision = _parse_if_match(if_match)
@@ -646,7 +1162,7 @@ def create_gui_router(services: GuiServices) -> APIRouter:
     @router.get(
         "/projects/{project_id}/assets",
         response_model=list[AssetResponse],
-        dependencies=[reader],
+        dependencies=[project_reader],
     )
     def assets(project_id: str) -> list[AssetResponse]:
         try:
@@ -752,7 +1268,7 @@ def create_gui_router(services: GuiServices) -> APIRouter:
         asset_id: str,
         body: PlaceAssetRequest,
         response: Response,
-        identity: Annotated[AuthenticatedSession, author],
+        identity: Annotated[AuthenticatedSession, project_designer],
         if_match: Annotated[str | None, Header(alias="If-Match")] = None,
     ) -> ProjectDraftResponse | JSONResponse:
         expected_revision = _parse_if_match(if_match)
@@ -926,7 +1442,7 @@ def create_gui_router(services: GuiServices) -> APIRouter:
     @router.get(
         "/projects/{project_id}/draft",
         response_model=ProjectDraftResponse,
-        dependencies=[reader],
+        dependencies=[project_reader],
     )
     def get_draft(project_id: str, response: Response) -> ProjectDraftResponse:
         try:
@@ -944,7 +1460,7 @@ def create_gui_router(services: GuiServices) -> APIRouter:
         project_id: str,
         draft: DraftProject,
         response: Response,
-        identity: Annotated[AuthenticatedSession, author],
+        identity: Annotated[AuthenticatedSession, project_designer],
         if_match: Annotated[str | None, Header(alias="If-Match")] = None,
     ) -> ProjectDraftResponse | JSONResponse:
         expected_revision = _parse_if_match(if_match)
@@ -975,7 +1491,7 @@ def create_gui_router(services: GuiServices) -> APIRouter:
     @router.get(
         "/projects/{project_id}/revisions",
         response_model=list[RevisionSummary],
-        dependencies=[reader],
+        dependencies=[project_reader],
     )
     def revisions(project_id: str) -> list[RevisionSummary]:
         try:
@@ -1004,7 +1520,7 @@ def create_gui_router(services: GuiServices) -> APIRouter:
         project_id: str,
         source_revision: int,
         response: Response,
-        identity: Annotated[AuthenticatedSession, author],
+        identity: Annotated[AuthenticatedSession, project_designer],
         if_match: Annotated[str | None, Header(alias="If-Match")] = None,
     ) -> ProjectDraftResponse | JSONResponse:
         expected_revision = _parse_if_match(if_match)
@@ -1040,7 +1556,7 @@ def create_gui_router(services: GuiServices) -> APIRouter:
     )
     def compile_project(
         project_id: str,
-        identity: Annotated[AuthenticatedSession, author],
+        identity: Annotated[AuthenticatedSession, project_designer],
         if_match: Annotated[str | None, Header(alias="If-Match")] = None,
     ) -> CompilationResponse:
         expected_revision = _parse_if_match(if_match)
@@ -1132,8 +1648,218 @@ def create_gui_router(services: GuiServices) -> APIRouter:
         )
 
     @router.get(
+        "/projects/{project_id}/revisions/{revision}/release",
+        response_model=RevisionReleaseResponse,
+        dependencies=[project_reader],
+    )
+    def revision_release(project_id: str, revision: int) -> RevisionReleaseResponse:
+        try:
+            release = services.publication.release(project_id, revision)
+        except ProjectNotFoundError as error:
+            raise HTTPException(status_code=404, detail={"code": "revision_not_found"}) from error
+        return RevisionReleaseResponse.model_validate(release.__dict__)
+
+    @router.put(
+        "/projects/{project_id}/revisions/{revision}/release",
+        response_model=RevisionReleaseResponse,
+    )
+    def update_revision_release(
+        project_id: str,
+        revision: int,
+        body: UpdateRevisionReleaseRequest,
+        identity: Annotated[AuthenticatedSession, project_publisher],
+    ) -> RevisionReleaseResponse:
+        occurred_at = _now_iso()
+        try:
+            release = services.publication.update_release(
+                project_id=project_id,
+                revision=revision,
+                name=body.name,
+                summary=body.summary,
+                approval_state=body.approval_state,
+                actor=identity.username,
+                occurred_at=occurred_at,
+            )
+        except ProjectNotFoundError as error:
+            raise HTTPException(status_code=404, detail={"code": "revision_not_found"}) from error
+        services.repository.append_audit(
+            actor=identity.username,
+            action="revision.release.update",
+            target=f"{project_id}@{revision}",
+            result="success",
+            occurred_at=occurred_at,
+            authorization_context={
+                "role": identity.role.value,
+                "approval_state": release.approval_state,
+            },
+        )
+        return RevisionReleaseResponse.model_validate(release.__dict__)
+
+    @router.get(
+        "/projects/{project_id}/revision-diff",
+        response_model=RevisionDiffResponse,
+        dependencies=[project_reader],
+    )
+    def revision_diff(
+        project_id: str,
+        base_revision: int,
+        candidate_revision: int,
+    ) -> RevisionDiffResponse:
+        try:
+            changed = services.publication.diff(
+                project_id, base_revision, candidate_revision
+            )
+        except ProjectNotFoundError as error:
+            raise HTTPException(status_code=404, detail={"code": "revision_not_found"}) from error
+        return RevisionDiffResponse(
+            project_id=project_id,
+            base_revision=base_revision,
+            candidate_revision=candidate_revision,
+            changed_paths=changed,
+        )
+
+    @router.get(
+        "/projects/{project_id}/revisions/{revision}/publication-validation",
+        response_model=PublicationValidationResponse,
+        dependencies=[project_reader],
+    )
+    def publication_validation(
+        project_id: str,
+        revision: int,
+    ) -> PublicationValidationResponse:
+        try:
+            diagnostics = services.publication.validate(project_id, revision)
+        except ProjectNotFoundError as error:
+            raise HTTPException(status_code=404, detail={"code": "revision_not_found"}) from error
+        responses = tuple(
+            PublicationDiagnosticResponse.model_validate(item.__dict__)
+            for item in diagnostics
+        )
+        return PublicationValidationResponse(
+            project_id=project_id,
+            revision=revision,
+            passed=not any(item.severity == "error" for item in diagnostics),
+            diagnostics=responses,
+        )
+
+    @router.get(
+        "/projects/{project_id}/published-packages",
+        response_model=list[PublishedPackageResponse],
+        dependencies=[project_reader],
+    )
+    def published_packages(project_id: str) -> list[PublishedPackageResponse]:
+        return [_published_package(item) for item in services.publication.list(project_id)]
+
+    @router.post(
+        "/projects/{project_id}/revisions/{revision}/publish",
+        response_model=PublishedPackageResponse,
+        status_code=201,
+    )
+    def publish_revision(
+        project_id: str,
+        revision: int,
+        identity: Annotated[AuthenticatedSession, project_publisher],
+    ) -> PublishedPackageResponse:
+        occurred_at = _now_iso()
+        try:
+            package = services.publication.publish(
+                project_id=project_id,
+                revision=revision,
+                actor=identity.username,
+                occurred_at=occurred_at,
+            )
+        except (ProjectNotFoundError, PublicationError, CompilationError) as error:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "publication_failed", "message": str(error)},
+            ) from error
+        services.repository.append_audit(
+            actor=identity.username,
+            action="package.publish",
+            target=package.id,
+            result="success",
+            occurred_at=occurred_at,
+            authorization_context={
+                "role": identity.role.value,
+                "project_id": project_id,
+                "revision": revision,
+                "package_digest": package.digest_sha256,
+            },
+        )
+        return _published_package(package)
+
+    @router.post(
+        "/published-packages/{package_id}/{action}",
+        response_model=PublishedPackageResponse,
+    )
+    async def transition_published_package(
+        package_id: str,
+        action: Literal["stage", "activate", "deactivate", "rollback"],
+        body: ActivationRequest,
+        identity: Annotated[AuthenticatedSession, Depends(mutation_session)],
+    ) -> PublishedPackageResponse:
+        occurred_at = _now_iso()
+        try:
+            candidate = services.publication.get(package_id)
+            if identity.role is not Role.ADMINISTRATOR:
+                membership = services.collaboration.get_membership(
+                    candidate.project_id,
+                    identity.username,
+                )
+                if membership is None or membership.role not in {
+                    Role.PUBLISHER,
+                    Role.ADMINISTRATOR,
+                }:
+                    raise HTTPException(
+                        status_code=403,
+                        detail={"code": "insufficient_project_role"},
+                    )
+                if action in {"activate", "deactivate", "rollback"} and not (
+                    membership.can_live_output
+                ):
+                    raise HTTPException(
+                        status_code=403,
+                        detail={"code": "live_output_permission_required"},
+                    )
+            if action == "stage":
+                package = await services.publication.stage(package_id, occurred_at)
+            elif action == "activate":
+                package = await services.publication.activate(
+                    package_id,
+                    occurred_at=occurred_at,
+                    simulation_mode=body.simulation_mode,
+                )
+            elif action == "rollback":
+                package = await services.publication.rollback(
+                    package_id,
+                    occurred_at=occurred_at,
+                    simulation_mode=body.simulation_mode,
+                )
+            else:
+                package = services.publication.deactivate(package_id, occurred_at)
+        except (PublicationError, ArtifactDeploymentError, DeviceSessionError) as error:
+            raise HTTPException(
+                status_code=409,
+                detail={"code": f"package_{action}_failed", "message": str(error)},
+            ) from error
+        services.repository.append_audit(
+            actor=identity.username,
+            action=f"package.{action}",
+            target=package.id,
+            result="success",
+            occurred_at=occurred_at,
+            authorization_context={
+                "role": identity.role.value,
+                "project_id": package.project_id,
+                "revision": package.revision,
+                "package_digest": package.digest_sha256,
+            },
+        )
+        return _published_package(package)
+
+    @router.get(
         "/projects/{project_id}/compositions/{composition_id}/preview-frame",
-        dependencies=[reader],
+        dependencies=[project_reader],
     )
     def projector_composition_preview_frame(
         project_id: str,
@@ -1200,7 +1926,7 @@ def create_gui_router(services: GuiServices) -> APIRouter:
 
     @router.get(
         "/projects/{project_id}/compositions/{composition_id}/lighting-preview",
-        dependencies=[reader],
+        dependencies=[project_reader],
     )
     def lighting_composition_preview(
         project_id: str,
@@ -1249,6 +1975,94 @@ def create_gui_router(services: GuiServices) -> APIRouter:
                 status_code=404,
                 detail={"code": "project_not_found"},
             ) from error
+
+    @router.get(
+        "/projects/{project_id}/compositions/{composition_id}/stage-lighting-preview",
+        dependencies=[project_reader],
+    )
+    def stage_lighting_preview(
+        project_id: str,
+        composition_id: str,
+        timestamp_ms: int,
+    ) -> dict[str, object]:
+        try:
+            revision = services.repository.get_revision(project_id)
+            installation_id = revision.draft.editor_metadata.get("installation_id")
+            if not isinstance(installation_id, str):
+                raise ProjectorRenderError(
+                    "stage lighting preview requires installation ID"
+                )
+            mapper_export = services.mapper_export.export(installation_id)
+            assignments = {
+                assignment.resource: assignment
+                for assignment in services.repository.list_resource_assignments()
+            }
+            device_scales: dict[str, float] = {}
+            raw_surfaces = mapper_export.get("lighting_surfaces")
+            for value in raw_surfaces if isinstance(raw_surfaces, list) else []:
+                if not isinstance(value, dict):
+                    continue
+                resource = value.get("resource")
+                if not isinstance(resource, str):
+                    continue
+                assignment = assignments.get(resource)
+                if assignment is None:
+                    continue
+                scale = services.device_sessions.output_scale(
+                    UUID(assignment.device_id),
+                    assignment.device_output or assignment.resource,
+                )
+                if scale is not None:
+                    device_scales[resource] = scale
+            return preview_stage_lighting_samples(
+                project_id=project_id,
+                draft=revision.draft,
+                composition_id=composition_id,
+                timestamp_ms=timestamp_ms,
+                assets=services.asset_upload,
+                mapper_export=mapper_export,
+                device_reported_scales=device_scales,
+            )
+        except ProjectNotFoundError as error:
+            raise HTTPException(
+                status_code=404,
+                detail={"code": "project_not_found"},
+            ) from error
+        except (ProjectorRenderError, AssetUploadError, MapperExportError) as error:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "stage_lighting_preview_invalid", "message": str(error)},
+            ) from error
+
+    @router.get(
+        "/projects/{project_id}/preview-evaluation",
+        dependencies=[project_reader],
+    )
+    def preview_evaluation(
+        project_id: str,
+        space_id: str,
+        timestamp_ms: int,
+    ) -> dict[str, JsonValue]:
+        try:
+            revision = services.repository.get_revision(project_id)
+            return evaluate_preview_state(
+                project_id=project_id,
+                source_revision=revision.revision,
+                draft=revision.draft,
+                space_id=space_id,
+                timestamp_ms=timestamp_ms,
+                assets=services.asset_upload,
+            )
+        except ProjectNotFoundError as error:
+            raise HTTPException(
+                status_code=404,
+                detail={"code": "project_not_found"},
+            ) from error
+        except PreviewEvaluationError as error:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "preview_evaluation_invalid", "message": str(error)},
+            ) from error
         except (
             LightingPreviewError,
             ProjectorRenderError,
@@ -1268,7 +2082,7 @@ def create_gui_router(services: GuiServices) -> APIRouter:
     def create_render_job(
         project_id: str,
         body: CreateRenderJobRequest,
-        identity: Annotated[AuthenticatedSession, author],
+        identity: Annotated[AuthenticatedSession, project_designer],
     ) -> RenderJobResponse:
         try:
             job = services.render_jobs.create(
@@ -1304,10 +2118,114 @@ def create_gui_router(services: GuiServices) -> APIRouter:
     @router.get(
         "/projects/{project_id}/render-jobs",
         response_model=list[RenderJobResponse],
-        dependencies=[reader],
+        dependencies=[project_reader],
     )
     def render_jobs(project_id: str) -> list[RenderJobResponse]:
         return [_render_job(job) for job in services.render_jobs.list(project_id)]
+
+    @router.get(
+        "/projects/{project_id}/simulation-scenarios",
+        response_model=list[SimulationScenarioResponse],
+        dependencies=[project_reader],
+    )
+    def simulation_scenarios(project_id: str) -> list[SimulationScenarioResponse]:
+        try:
+            services.repository.get_revision(project_id)
+            return [
+                _simulation_scenario(scenario)
+                for scenario in services.simulation_scenarios.list(project_id)
+            ]
+        except ProjectNotFoundError as error:
+            raise HTTPException(
+                status_code=404,
+                detail={"code": "project_not_found"},
+            ) from error
+
+    @router.post(
+        "/projects/{project_id}/simulation-scenarios",
+        response_model=SimulationScenarioResponse,
+        status_code=201,
+    )
+    def save_simulation_scenario(
+        project_id: str,
+        body: SaveSimulationScenarioRequest,
+        identity: Annotated[AuthenticatedSession, project_designer],
+    ) -> SimulationScenarioResponse:
+        try:
+            revision = services.repository.get_revision(project_id)
+            scenario = services.simulation_scenarios.save(
+                project_id=project_id,
+                name=body.name,
+                source_revision=revision.revision,
+                steps=tuple(
+                    cast(dict[str, JsonValue], step.model_dump(mode="json"))
+                    for step in body.steps
+                ),
+                expected=body.expected,
+            )
+        except ProjectNotFoundError as error:
+            raise HTTPException(
+                status_code=404,
+                detail={"code": "project_not_found"},
+            ) from error
+        services.repository.append_audit(
+            actor=identity.username,
+            action="simulation_scenario.save",
+            target=scenario.id,
+            result="success",
+            occurred_at=_now_iso(),
+            authorization_context={
+                "role": identity.role.value,
+                "project_id": project_id,
+                "source_revision": scenario.source_revision,
+                "hardware_command_sent": False,
+            },
+        )
+        return _simulation_scenario(scenario)
+
+    @router.post(
+        "/projects/{project_id}/simulation-scenarios/{scenario_id}/run",
+        response_model=SimulationRunResponse,
+    )
+    async def run_simulation_scenario(
+        project_id: str,
+        scenario_id: str,
+        identity: Annotated[AuthenticatedSession, project_designer],
+    ) -> SimulationRunResponse:
+        try:
+            scenario = services.simulation_scenarios.get(project_id, scenario_id)
+            revision = services.repository.get_revision(
+                project_id,
+                scenario.source_revision,
+            )
+            compiled = services.compiler.compile(
+                project_id=project_id,
+                revision=revision.revision,
+                draft=revision.draft,
+            )
+            result = await services.simulation_scenarios.run(
+                scenario,
+                load_show_package(compiled.package_root),
+            )
+        except (ProjectNotFoundError, SimulationScenarioError) as error:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "simulation_scenario_invalid", "message": str(error)},
+            ) from error
+        services.repository.append_audit(
+            actor=identity.username,
+            action="simulation_scenario.run",
+            target=scenario.id,
+            result="success" if result["passed"] else "failure",
+            occurred_at=_now_iso(),
+            authorization_context={
+                "role": identity.role.value,
+                "project_id": project_id,
+                "source_revision": scenario.source_revision,
+                "hardware_command_sent": False,
+            },
+        )
+        return SimulationRunResponse.model_validate(result)
 
     @router.get(
         "/render-jobs/{job_id}",
@@ -1322,6 +2240,46 @@ def create_gui_router(services: GuiServices) -> APIRouter:
                 status_code=404,
                 detail={"code": "render_job_not_found"},
             ) from error
+
+    @router.get(
+        "/render-artifacts/{artifact_id}/preview-frame",
+        dependencies=[reader],
+    )
+    def render_artifact_preview_frame(
+        artifact_id: str,
+        resource: str,
+        timestamp_ms: int,
+    ) -> Response:
+        try:
+            manifest = services.repository.get_render_artifact_manifest(artifact_id)
+            duration_ms = manifest.get("duration_ms")
+            if not isinstance(duration_ms, int):
+                raise ArtifactPreviewError("artifact duration is invalid")
+            member = services.repository.get_render_artifact_member(artifact_id, resource)
+            frame = extract_artifact_preview_frame(
+                member.path,
+                timestamp_ms=timestamp_ms,
+                duration_ms=duration_ms,
+            )
+        except ProjectNotFoundError as error:
+            raise HTTPException(
+                status_code=404,
+                detail={"code": "render_artifact_not_found"},
+            ) from error
+        except (ArtifactPreviewError, ValueError) as error:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "render_artifact_preview_invalid", "message": str(error)},
+            ) from error
+        return Response(
+            content=frame,
+            media_type="image/png",
+            headers={
+                "Cache-Control": "no-store",
+                "X-Cueverge-Artifact-Id": artifact_id,
+                "X-Cueverge-Artifact-Digest": member.digest_sha256,
+            },
+        )
 
     @router.post(
         "/render-jobs/{job_id}/cancel",
@@ -1922,6 +2880,75 @@ def create_gui_router(services: GuiServices) -> APIRouter:
                 detail={"code": "projector_mapping_not_found"},
             ) from error
 
+    @router.get(
+        "/installation-geometry/{geometry_id}/projector-simulation-overlay",
+        dependencies=[reader],
+    )
+    def projector_simulation_overlay(
+        geometry_id: str,
+        photo_id: str,
+    ) -> Response:
+        try:
+            mapping = services.projector_mapping.get(geometry_id)
+            if mapping.content_asset_id is None:
+                raise ProjectorSimulationError(
+                    "projector mapping has no managed review content"
+                )
+            photo_view = next(
+                (view for view in mapping.photo_views if view.photo_id == photo_id),
+                None,
+            )
+            if photo_view is None:
+                raise ProjectorSimulationError(
+                    "projector surface is not mapped into the selected photo"
+                )
+            artifact_path, _ = services.asset_upload.get_artifact(
+                mapping.content_asset_id,
+                "review",
+            )
+            with Image.open(artifact_path) as source:
+                overlay = warp_review_proxy(
+                    source,
+                    output_width=1000,
+                    output_height=600,
+                    native_width=mapping.native_width,
+                    native_height=mapping.native_height,
+                    homography=photo_view.homography,
+                    mesh_vertices=mapping.mesh_vertices,
+                    mesh_triangles=mapping.mesh_triangles,
+                    destination_points=photo_view.points,
+                    orientation_degrees=mapping.orientation_degrees,
+                    mirror_x=mapping.mirror_x,
+                    mirror_y=mapping.mirror_y,
+                )
+        except ProjectorMappingError as error:
+            raise HTTPException(
+                status_code=404,
+                detail={"code": "projector_mapping_not_found"},
+            ) from error
+        except (AssetUploadError, OSError, ProjectorSimulationError) as error:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "projector_simulation_overlay_invalid",
+                    "message": str(error),
+                },
+            ) from error
+        output = BytesIO()
+        overlay.save(output, format="PNG")
+        return Response(
+            content=output.getvalue(),
+            media_type="image/png",
+            headers={
+                "Cache-Control": "no-store",
+                "X-Cueverge-Approximation": (
+                    "false" if mapping.calibration_source == "measured_grid" else "true"
+                ),
+                "X-Cueverge-Calibration-Source": mapping.calibration_source,
+                "X-Cueverge-Calibration-Revision": str(mapping.calibration_revision),
+            },
+        )
+
     @router.put(
         "/installation-geometry/{geometry_id}/projector-mapping",
         response_model=ProjectorMappingResponse,
@@ -2476,7 +3503,7 @@ def create_gui_router(services: GuiServices) -> APIRouter:
     @router.post("/operate/actions", response_model=OperateActionResponse)
     async def operate(
         body: OperateActionRequest,
-        identity: Annotated[AuthenticatedSession, operator_mutation],
+        identity: Annotated[AuthenticatedSession, live_output_mutation],
     ) -> OperateActionResponse:
         occurred_at = _now_iso()
         try:
@@ -2905,9 +3932,49 @@ def create_gui_router(services: GuiServices) -> APIRouter:
                 digest_sha256=artifact.digest_sha256,
                 size_bytes=artifact.size_bytes,
                 pinned=artifact.pinned,
+                in_use=artifact.in_use,
+                state=artifact.state,
+                last_used_unix_ms=artifact.last_used_unix_ms,
             )
             for artifact in artifacts
         ]
+
+    @router.post(
+        "/devices/{device_id}/artifacts/cleanup",
+        response_model=CleanupDeviceArtifactsResponse,
+    )
+    async def cleanup_device_artifacts(
+        device_id: str,
+        body: CleanupDeviceArtifactsRequest,
+        identity: Annotated[AuthenticatedSession, operator_mutation],
+    ) -> CleanupDeviceArtifactsResponse:
+        occurred_at = _now_iso()
+        try:
+            acknowledgment = await services.artifact_deployment.cleanup(
+                UUID(device_id),
+                body.digests,
+            )
+        except (ValueError, DeviceSessionError) as error:
+            raise HTTPException(
+                status_code=409,
+                detail={"code": "artifact_cleanup_failed", "message": str(error)},
+            ) from error
+        services.repository.append_audit(
+            actor=identity.username,
+            action="device.artifact.cleanup",
+            target=device_id,
+            result="success",
+            occurred_at=occurred_at,
+            authorization_context={
+                "role": identity.role.value,
+                "removed_digests": list(acknowledgment.removed_digests),
+                "rejected_digests": list(acknowledgment.rejected_digests),
+            },
+        )
+        return CleanupDeviceArtifactsResponse(
+            removed_digests=acknowledgment.removed_digests,
+            rejected_digests=acknowledgment.rejected_digests,
+        )
 
     @router.get(
         "/devices/{device_id}/transfers",
@@ -3313,6 +4380,34 @@ def create_gui_router(services: GuiServices) -> APIRouter:
             for event in services.repository.list_audit_events()
         ]
 
+    @router.get(
+        "/observability",
+        response_model=dict[str, JsonValue],
+        dependencies=[administrator],
+    )
+    def observability() -> dict[str, object]:
+        return services.observability.snapshot()
+
+    @router.post("/browser-errors", status_code=204)
+    def browser_error(
+        body: BrowserErrorRequest,
+        session: Annotated[AuthenticatedSession, Depends(mutation_session)],
+    ) -> Response:
+        services.observability.record_browser_error(
+            body.message,
+            body.source,
+            body.occurred_at,
+        )
+        services.repository.append_audit(
+            actor=session.username,
+            action="browser.error",
+            target=body.source,
+            result="reported",
+            occurred_at=body.occurred_at,
+            authorization_context={"message": body.message},
+        )
+        return Response(status_code=204)
+
     return router
 
 
@@ -3532,6 +4627,37 @@ def _render_job(job: StoredRenderJob) -> RenderJobResponse:
         started_at=job.started_at,
         completed_at=job.completed_at,
         updated_at=job.updated_at,
+    )
+
+
+def _published_package(package: PublishedPackage) -> PublishedPackageResponse:
+    return PublishedPackageResponse(
+        id=package.id,
+        project_id=package.project_id,
+        revision=package.revision,
+        digest_sha256=package.digest_sha256,
+        state=package.state,
+        manifest=package.manifest,
+        created_by=package.created_by,
+        created_at=package.created_at,
+        staged_at=package.staged_at,
+        activated_at=package.activated_at,
+        deactivated_at=package.deactivated_at,
+    )
+
+
+def _simulation_scenario(
+    scenario: StoredSimulationScenario,
+) -> SimulationScenarioResponse:
+    return SimulationScenarioResponse(
+        id=scenario.id,
+        project_id=scenario.project_id,
+        name=scenario.name,
+        source_revision=scenario.source_revision,
+        steps=scenario.steps,
+        expected=scenario.expected,
+        created_at=scenario.created_at,
+        updated_at=scenario.updated_at,
     )
 
 

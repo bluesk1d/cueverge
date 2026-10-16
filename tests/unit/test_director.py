@@ -70,6 +70,7 @@ def test_conditions_cooldowns_and_unavailable_scenes_filter_selection() -> None:
                         scene_id="engaged",
                         conditions={"audience": True},
                     ),
+                    ProgramScene(scene_id="authored-offline", available=False),
                     ProgramScene(scene_id="offline"),
                     ProgramScene(scene_id="ambient", cooldown_ms=30_000),
                 ),
@@ -86,6 +87,7 @@ def test_conditions_cooldowns_and_unavailable_scenes_filter_selection() -> None:
 
     assert director.select_next("ambient") is None
     assert director.status()["no_eligible_scene_count"] == 1
+    assert director.status()["eligibility"]["authored-offline"]["available"] is False
 
     context["audience"] = True
     assert director.select_next("ambient") == "engaged"

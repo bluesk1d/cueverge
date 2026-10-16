@@ -1,4 +1,11 @@
-import { FormEvent, useCallback, useEffect, useState } from "react";
+import {
+  FormEvent,
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useState,
+} from "react";
 
 import {
   ApiError,
@@ -18,6 +25,7 @@ import {
   getAssets,
   getInstallation,
   getInstallations,
+  getLocalUsers,
   getProjectDraft,
   getProjects,
   getResourceAssignments,
@@ -27,6 +35,7 @@ import {
   InstallationStatus,
   InstallationSummary,
   importProject,
+  LocalUser,
   login,
   logout,
   MaintenancePreview,
@@ -40,6 +49,7 @@ import {
   ProjectExportDocument,
   renameProject,
   ResourceAssignment,
+  Role,
   RuntimeStatus,
   Session,
   startMaintenancePreview,
@@ -48,9 +58,11 @@ import {
   updateInstallation,
   updateAssetMetadata,
   updateProjectDraft,
+  putLocalUser,
   uploadAsset,
 } from "./api";
 import { AppShell, Workspace } from "./components/AppShell";
+import { VirtualizedList } from "./components/VirtualizedList";
 import {
   EmptyState,
   ErrorState,
@@ -61,7 +73,27 @@ import {
 } from "./components/ui";
 import { OverviewPage } from "./pages/OverviewPage";
 import { InstallationPage } from "./pages/InstallationPage";
-import { TimelineEditor } from "./pages/TimelineEditor";
+
+const ShowLogicDesigner = lazy(() =>
+  import("./pages/ShowLogicDesigner").then((module) => ({
+    default: module.ShowLogicDesigner,
+  })),
+);
+const PublicationWorkspace = lazy(() =>
+  import("./pages/PublicationWorkspace").then((module) => ({
+    default: module.PublicationWorkspace,
+  })),
+);
+const CollaborationWorkspace = lazy(() =>
+  import("./pages/CollaborationWorkspace").then((module) => ({
+    default: module.CollaborationWorkspace,
+  })),
+);
+const TimelineEditor = lazy(() =>
+  import("./pages/TimelineEditor").then((module) => ({
+    default: module.TimelineEditor,
+  })),
+);
 
 export function App() {
   const [session, setSession] = useState<Session | null>(null);
@@ -423,7 +455,7 @@ export function ShowsPage({
             <ProjectGroup
               title="Active"
               projects={activeProjects}
-              canAuthor={canAuthor}
+              session={session}
               busy={busy}
               run={run}
             />
@@ -431,7 +463,7 @@ export function ShowsPage({
               <ProjectGroup
                 title="Archived"
                 projects={archivedProjects}
-                canAuthor={canAuthor}
+                session={session}
                 busy={busy}
                 run={run}
               />
@@ -446,13 +478,13 @@ export function ShowsPage({
 function ProjectGroup({
   title,
   projects,
-  canAuthor,
+  session,
   busy,
   run,
 }: {
   title: string;
   projects: ProjectSummary[];
-  canAuthor: boolean;
+  session: Session;
   busy: boolean;
   run: (action: () => Promise<void>) => Promise<void>;
 }) {
@@ -464,7 +496,7 @@ function ProjectGroup({
           <ProjectCard
             key={project.id}
             project={project}
-            canAuthor={canAuthor}
+            session={session}
             busy={busy}
             run={run}
           />
@@ -476,12 +508,12 @@ function ProjectGroup({
 
 function ProjectCard({
   project,
-  canAuthor,
+  session,
   busy,
   run,
 }: {
   project: ProjectSummary;
-  canAuthor: boolean;
+  session: Session;
   busy: boolean;
   run: (action: () => Promise<void>) => Promise<void>;
 }) {
@@ -491,6 +523,15 @@ function ProjectCard({
   const [assetSearch, setAssetSearch] = useState("");
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [assetError, setAssetError] = useState<string | null>(null);
+  const [timelineLoaded, setTimelineLoaded] = useState(false);
+  const [projectRole, setProjectRole] = useState<Role>(
+    session.role === "administrator" ? "administrator" : "viewer",
+  );
+  const canAuthor = ["designer", "publisher", "administrator"].includes(projectRole);
+  const canPublish = ["publisher", "administrator"].includes(projectRole);
+  const updatePermissions = useCallback((role: Role) => {
+    setProjectRole(role);
+  }, []);
 
   const loadAssets = useCallback(async () => {
     try {
@@ -650,9 +691,13 @@ function ProjectCard({
         {visibleAssets === null ? (
           <small>Loading assets…</small>
         ) : visibleAssets.length ? (
-          <ul>
-            {visibleAssets.map((asset) => (
-              <li key={asset.id}>
+          <VirtualizedList
+            ariaLabel={`Assets in ${project.name}`}
+            estimateSize={420}
+            items={visibleAssets}
+            keyFor={(asset) => asset.id}
+            renderItem={(asset) => (
+              <div className="virtual-asset-row">
                 <AssetPreview asset={asset} />
                 <div>
                   <strong>{asset.name}</strong>
@@ -736,9 +781,9 @@ function ProjectCard({
                           ? "processing"
                           : asset.status}
                 </StatusText>
-              </li>
-            ))}
-          </ul>
+              </div>
+            )}
+          />
         ) : assets?.length ? (
           <small>No assets match this search.</small>
         ) : (
@@ -747,23 +792,66 @@ function ProjectCard({
       </div>
       {draft && (
         <>
+          <Suspense fallback={<p>Loading collaboration workspace…</p>}>
+            <CollaborationWorkspace
+              projectId={project.id}
+              revision={draft.revision}
+              session={session}
+              onPermissions={updatePermissions}
+            />
+          </Suspense>
           <ScenePresetOrganizer
             canEdit={canAuthor && !project.archived_at}
             draft={draft}
             projectId={project.id}
             onUpdated={setDraft}
           />
-          <TimelineEditor
-            assets={assets ?? []}
-            canEdit={canAuthor && !project.archived_at}
-            draft={draft}
-            projectId={project.id}
-            onSave={async (document) => {
-              setDraft(
-                await updateProjectDraft(project.id, draft.revision, document),
-              );
-            }}
-          />
+          <Suspense fallback={<p>Loading autonomous show designer…</p>}>
+            <ShowLogicDesigner
+              canEdit={canAuthor && !project.archived_at}
+              draft={draft}
+              projectId={project.id}
+              onSave={async (document) => {
+                setDraft(
+                  await updateProjectDraft(project.id, draft.revision, document),
+                );
+              }}
+            />
+          </Suspense>
+          {timelineLoaded ? (
+            <Suspense fallback={<p>Loading timeline editor…</p>}>
+              <TimelineEditor
+                assets={assets ?? []}
+                canEdit={canAuthor && !project.archived_at}
+                draft={draft}
+                initiallyOpen
+                projectId={project.id}
+                onSave={async (document) => {
+                  setDraft(
+                    await updateProjectDraft(project.id, draft.revision, document),
+                  );
+                }}
+              />
+            </Suspense>
+          ) : (
+            <details
+              className="timeline-editor"
+              onToggle={(event) => {
+                if (event.currentTarget.open) {
+                  setTimelineLoaded(true);
+                }
+              }}
+            >
+              <summary>Timeline editor</summary>
+            </details>
+          )}
+          <Suspense fallback={<p>Loading publication workspace…</p>}>
+            <PublicationWorkspace
+              canPublish={canPublish && !project.archived_at}
+              draft={draft}
+              projectId={project.id}
+            />
+          </Suspense>
         </>
       )}
     </article>
@@ -2110,6 +2198,7 @@ export function SettingsPage({
         title="Settings"
         description="Durable installation records and application configuration."
       />
+      {canManage && <LocalUsersPanel />}
       <Panel
         title="Installations"
         description="Home is runtime-backed; new installations remain unprovisioned until a package is attached."
@@ -2166,6 +2255,98 @@ export function SettingsPage({
         {error && <p role="alert">{error}</p>}
       </Panel>
     </>
+  );
+}
+
+function LocalUsersPanel() {
+  const [users, setUsers] = useState<LocalUser[]>([]);
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [role, setRole] = useState<Role>("viewer");
+  const [error, setError] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  const load = useCallback(async () => {
+    try {
+      setUsers(await getLocalUsers());
+      setError(false);
+    } catch {
+      setError(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  async function save() {
+    setBusy(true);
+    try {
+      await putLocalUser(username.trim(), password, role);
+      setUsername("");
+      setPassword("");
+      await load();
+    } catch {
+      setError(true);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Panel
+      title="Local users"
+      description="Create controller-managed identities, then grant project-specific roles from each show."
+    >
+      <div className="local-user-create">
+        <label>
+          Username
+          <input
+            autoComplete="off"
+            value={username}
+            onChange={(event) => setUsername(event.target.value)}
+          />
+        </label>
+        <label>
+          Password
+          <input
+            autoComplete="new-password"
+            minLength={12}
+            type="password"
+            value={password}
+            onChange={(event) => setPassword(event.target.value)}
+          />
+        </label>
+        <label>
+          Global role
+          <select value={role} onChange={(event) => setRole(event.target.value as Role)}>
+            <option value="viewer">Viewer</option>
+            <option value="designer">Designer</option>
+            <option value="operator">Operator</option>
+            <option value="publisher">Publisher</option>
+            <option value="administrator">Administrator</option>
+          </select>
+        </label>
+        <button
+          disabled={busy || !username.trim() || password.length < 12}
+          onClick={() => void save()}
+        >
+          Save local user
+        </button>
+      </div>
+      {error && <p role="alert">Local users could not be updated.</p>}
+      <ul className="resource-list">
+        {users.map((user) => (
+          <li key={user.username}>
+            <strong>{user.username}</strong>
+            <span>
+              {user.role}
+              {user.disabled ? " · disabled" : ""}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </Panel>
   );
 }
 

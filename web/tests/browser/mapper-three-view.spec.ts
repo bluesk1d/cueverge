@@ -7,15 +7,21 @@ const photos = [
   photo("wide", "Wide front", "Wide"),
   photo("left-close", "Left close-up", "Left close"),
   photo("right-close", "Right close-up", "Right close"),
+  ...Array.from({ length: 9 }, (_, index) =>
+    photo(`scale-${index}`, `Scale viewpoint ${index}`, `Scale ${index}`),
+  ),
 ];
 
 let geometry = [
   fixture("fixture-wide", "wide", 0.2, 0.45),
   fixture("fixture-left", "left-close", 0.4, 0.5),
   fixture("fixture-right", "right-close", 0.7, 0.55),
+  ...Array.from({ length: 9 }, (_, index) =>
+    fixture(`fixture-scale-${index}`, `scale-${index}`, 0.1 + index * 0.08, 0.4),
+  ),
 ];
 
-test("linked fixture synchronizes across three photo viewpoints", async ({ page }) => {
+test("linked fixture synchronizes across twelve photo viewpoints", async ({ page }) => {
   await page.route("**/api/gui/v1/**", async (route) => {
     const request = route.request();
     const url = new URL(request.url());
@@ -83,6 +89,7 @@ test("linked fixture synchronizes across three photo viewpoints", async ({ page 
     .getByRole("heading", { name: "Visual Mapper" })
     .locator("xpath=ancestor::section");
   const viewpoint = mapper.getByRole("combobox").first();
+  await expect(viewpoint.locator("option")).toHaveCount(12);
   const fixtureCircle = mapper.locator(".geometry-shape--fixture");
 
   await expect(fixtureCircle).toHaveAttribute("cx", "200");

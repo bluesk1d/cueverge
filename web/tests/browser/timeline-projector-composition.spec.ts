@@ -4,7 +4,7 @@ const installationId = "demo-installation";
 const geometryId = "projector-surface";
 const photoIds = ["wide", "left-close", "right-close"];
 let savedDraft: Record<string, unknown> | null = null;
-let renderJobs: ReturnType<typeof renderJob>[] = [];
+let renderJobs: ReturnType<typeof renderJob>[] = [renderJob("completed")];
 
 test("projector-native edit returns to root and maps through every photo view", async ({
   page,
@@ -23,6 +23,26 @@ test("projector-native edit returns to root and maps through every photo view", 
       }
       return route.fulfill({ json: renderJobs });
     }
+    if (url.pathname.endsWith("/projects/demo-project/preview-evaluation")) {
+      return route.fulfill({
+        json: {
+          project_id: "demo-project",
+          source_revision: 1,
+          space_id: url.searchParams.get("space_id"),
+          space_kind: "projector_native",
+          timestamp_ms: Number(url.searchParams.get("timestamp_ms")),
+          duration_ms: 5000,
+          frame_rate: { numerator: 30, denominator: 1 },
+          frame_index: 0,
+          frame_timestamp_ms: 0,
+          timing_error_ms: 0,
+          resources: ["projector.left"],
+          degraded_resources: [],
+          evaluation: "backend_deterministic",
+          hardware_command_sent: false,
+        },
+      });
+    }
     if (
       url.pathname.endsWith("/render-jobs/render-job-1/cancel") &&
       request.method() === "POST"
@@ -38,6 +58,15 @@ test("projector-native edit returns to root and maps through every photo view", 
       return route.fulfill({ json: draftResponse(savedDraft) });
     }
     if (url.pathname.endsWith("/compositions/projector-composition/preview-frame")) {
+      return route.fulfill({
+        contentType: "image/png",
+        body: Buffer.from(
+          "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M/wHwAF/gL+X4R7WQAAAABJRU5ErkJggg==",
+          "base64",
+        ),
+      });
+    }
+    if (url.pathname.endsWith("/render-artifacts/artifact-1/preview-frame")) {
       return route.fulfill({
         contentType: "image/png",
         body: Buffer.from(
@@ -96,6 +125,22 @@ test("projector-native edit returns to root and maps through every photo view", 
     "Projector brightness, black level, and color correction",
     "Audio mix, encode, and mux",
   ]);
+  await expect(page.getByLabel("Backend preview diagnostics")).toContainText(
+    "Backend deterministic scene evaluation",
+  );
+  await expect(page.getByLabel("Backend preview diagnostics")).toContainText(
+    "Degraded resources: none",
+  );
+  await expect(page.getByLabel("Checksummed bake")).toHaveValue("artifact-1");
+  await page.getByLabel("Preview inspection mode").selectOption("side_by_side");
+  await expect(
+    page.getByLabel(/before and after/).getByRole("img"),
+  ).toHaveCount(2);
+  await page.getByLabel("Preview inspection mode").selectOption("difference");
+  await expect(page.getByLabel(/frame difference/)).toBeVisible();
+  await page.getByLabel("Preview speed").selectOption("2");
+  await page.getByRole("button", { name: "Next preview frame" }).click();
+  await expect(page.getByLabel("Scrub position")).not.toHaveValue("0");
 
   await expect(
     page.getByText(
@@ -390,7 +435,7 @@ function emptyCoverage() {
 }
 
 function renderJob(
-  state: "queued" | "canceled",
+  state: "queued" | "completed" | "canceled",
 ) {
   return {
     id: "render-job-1",
@@ -399,15 +444,16 @@ function renderJob(
     composition_id: "projector-composition",
     cache_key: "a".repeat(64),
     state,
-    progress: 0,
+    progress: state === "completed" ? 1 : 0,
     reserved_bytes: 1024,
     error: null,
-    artifact_id: null,
+    artifact_id: state === "completed" ? "artifact-1" : null,
     cancel_requested: state === "canceled",
     created_by: "admin",
     created_at: "2026-10-15T12:00:00Z",
     started_at: null,
-    completed_at: state === "canceled" ? "2026-10-15T12:00:01Z" : null,
+    completed_at:
+      state === "queued" ? null : "2026-10-15T12:00:01Z",
     updated_at: "2026-10-15T12:00:01Z",
   };
 }

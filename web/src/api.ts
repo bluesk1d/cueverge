@@ -5,6 +5,66 @@ export interface Session {
   role: Role;
 }
 
+export interface LocalUser {
+  username: string;
+  role: Role;
+  disabled: boolean;
+  created_at: string;
+}
+
+export interface ProjectMembership {
+  project_id: string;
+  username: string;
+  role: Role;
+  can_live_output: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ProjectComment {
+  id: string;
+  project_id: string;
+  revision: number;
+  object_id: string | null;
+  body: string;
+  state: "open" | "resolved";
+  created_by: string;
+  resolved_by: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ProjectChangeRequest {
+  id: string;
+  project_id: string;
+  revision: number;
+  object_id: string | null;
+  title: string;
+  body: string;
+  state: "open" | "accepted" | "closed";
+  created_by: string;
+  updated_by: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ProjectPresence {
+  project_id: string;
+  username: string;
+  location: string;
+  last_seen_at: string;
+}
+
+export interface ReviewLink {
+  id: string;
+  project_id: string;
+  revision: number;
+  expires_at: string;
+  created_by: string;
+  created_at: string;
+  token: string;
+}
+
 export interface InstallationResource {
   resource: string;
   kind: "media_agent" | "pixel_output" | "downstream_controller";
@@ -281,12 +341,91 @@ export interface ProjectExportDocument {
   assets?: unknown[];
 }
 
+export interface ProgramSceneDefinition {
+  scene_id: string;
+  weight: number;
+  cooldown_ms: number;
+  available: boolean;
+  conditions: Record<string, string | number | boolean>;
+}
+
+export interface ScenePoolDefinition {
+  id: string;
+  category: string;
+  scenes: ProgramSceneDefinition[];
+}
+
+export interface ShowProgramDefinition {
+  schema_version: 1;
+  initial_scene_id: string;
+  default_pool_id: string;
+  recent_history_size: number;
+  random_seed: number;
+  pools: ScenePoolDefinition[];
+}
+
+export interface AudiencePresenceDefinition {
+  schema_version: 1;
+  labels: string[];
+  cameras: string[];
+  zones: string[];
+  observation_freshness_ms: number;
+  arrival_confirmation_ms: number;
+  absence_grace_ms: number;
+  long_idle_ms: number;
+}
+
+export interface OpportunityDefinition {
+  id: string;
+  scene_id: string;
+  trigger_event: string;
+  trigger_attributes: Record<string, string | number | boolean>;
+  required_context: Record<string, string | number | boolean>;
+  ttl_ms: number;
+  event_ttl_ms: number;
+  qualification_window_ms: number;
+  min_presence_ms: number;
+  min_absence_before_arrival_ms: number;
+  acknowledgement_cooldown_ms: number;
+  priority: number;
+}
+
+export interface OpportunityProgramDefinition {
+  schema_version: 1;
+  opportunities: OpportunityDefinition[];
+}
+
+export interface EncounterTransitionDefinition {
+  event_type: string;
+  from_states: string[];
+  to_state: string;
+  scene_id: string | null;
+  min_state_age_ms: number;
+  attributes: Record<string, string | number | boolean>;
+}
+
+export interface EncounterDefinition {
+  schema_version: 1;
+  initial_state: string;
+  cooldown_state: string;
+  ambient_scene_id: string;
+  encounter_timeout_ms: number;
+  cooldown_ms: number;
+  debounce_ms: number;
+  event_ttl_ms: number;
+  transitions: EncounterTransitionDefinition[];
+}
+
 export interface ProjectDraftRecord {
   project: ProjectSummary;
   revision: number;
   draft: {
     schema_version?: number;
     installation?: unknown;
+    program?: ShowProgramDefinition | null;
+    audience?: AudiencePresenceDefinition | null;
+    opportunities?: OpportunityProgramDefinition | null;
+    encounter?: EncounterDefinition | null;
     editor_metadata: Record<string, unknown>;
     scenes: {
       schema_version: 1 | 2;
@@ -294,8 +433,13 @@ export interface ProjectDraftRecord {
       name: string;
       duration_ms?: number;
       resources?: string[];
+      priority?: number;
+      interruption?: "replace_by_priority" | "queue" | "ignore";
       failure_scene_id?: string | null;
-      completion?: { target_scene_id?: string | null };
+      completion?: {
+        policy?: "loop" | "select_next" | "transition_to" | "hold" | "stop";
+        target_scene_id?: string | null;
+      };
       scheduling?: {
         safe_points_ms?: number[];
         protected_intervals?: { start_ms: number; end_ms: number }[];
@@ -309,6 +453,56 @@ export interface ProjectDraftRecord {
     }[];
     [key: string]: unknown;
   };
+}
+
+export interface RevisionSummary {
+  revision: number;
+  parent_revision: number | null;
+  actor: string;
+  transaction_kind: string;
+  created_at: string;
+}
+
+export interface RevisionRelease {
+  project_id: string;
+  revision: number;
+  name: string | null;
+  summary: string | null;
+  approval_state: "draft" | "in_review" | "approved" | "rejected";
+  approved_by: string | null;
+  approved_at: string | null;
+}
+
+export interface RevisionDiff {
+  project_id: string;
+  base_revision: number;
+  candidate_revision: number;
+  changed_paths: string[];
+}
+
+export interface PublicationValidation {
+  project_id: string;
+  revision: number;
+  passed: boolean;
+  diagnostics: {
+    code: string;
+    severity: "error" | "warning" | "info";
+    message: string;
+  }[];
+}
+
+export interface PublishedPackage {
+  id: string;
+  project_id: string;
+  revision: number;
+  digest_sha256: string;
+  state: "published" | "staged" | "active" | "inactive" | "failed";
+  manifest: Record<string, unknown>;
+  created_by: string;
+  created_at: string;
+  staged_at: string | null;
+  activated_at: string | null;
+  deactivated_at: string | null;
 }
 
 export interface AssetRecord {
@@ -431,6 +625,38 @@ export interface RenderJob {
   updated_at: string;
 }
 
+export type SimulationStep =
+  | { kind: "advance"; delta_ms: number }
+  | {
+      kind: "observe";
+      event_type: string;
+      attributes: Record<string, string | number | boolean>;
+    }
+  | { kind: "operator_start" | "request_scene"; scene_id: string }
+  | { kind: "disconnect" | "reconnect"; agent_id?: string | null }
+  | { kind: "output_failure"; resource: string; failed: boolean };
+
+export interface SimulationScenario {
+  id: string;
+  project_id: string;
+  name: string;
+  source_revision: number;
+  steps: SimulationStep[];
+  expected: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SimulationRun {
+  scenario_id: string;
+  source_revision: number;
+  passed: boolean;
+  mismatches: unknown[];
+  actual: Record<string, unknown>;
+  hardware_adapters_opened: false;
+  hardware_commands_sent: false;
+}
+
 export interface SyncRehearsal {
   id: string;
   resources: string[];
@@ -488,6 +714,45 @@ export interface LightingPreview {
     output_index: number;
     requested_color: [number, number, number];
     color: [number, number, number];
+  }[];
+  hardware_command_sent: false;
+}
+
+export interface PreviewEvaluation {
+  project_id: string;
+  source_revision: number;
+  space_id: string;
+  space_kind: "scene" | "projector_native" | "lighting_surface" | "stage";
+  timestamp_ms: number;
+  duration_ms: number;
+  frame_rate: { numerator: number; denominator: number };
+  frame_index: number;
+  frame_timestamp_ms: number;
+  timing_error_ms: number;
+  resources: string[];
+  degraded_resources: {
+    source_id: string;
+    reason: string;
+    detail?: string | null;
+  }[];
+  evaluation: "backend_deterministic";
+  hardware_command_sent: false;
+}
+
+export interface StageLightingPreview {
+  composition_id: string;
+  timestamp_ms: number;
+  source: "shared_stage_compositor";
+  surfaces: {
+    surface_semantic_id: string;
+    surface_resource: string;
+    mapped_brightness_limit: number;
+    device_reported_scale: number | null;
+    samples: {
+      output_index: number;
+      requested_color: number[];
+      color: number[];
+    }[];
   }[];
   hardware_command_sent: false;
 }
@@ -1032,9 +1297,52 @@ export async function getProjectorMapping(
   );
 }
 
+export function projectorSimulationOverlayUrl(
+  geometryId: string,
+  photoId: string,
+): string {
+  return (
+    `/api/gui/v1/installation-geometry/${encodeURIComponent(geometryId)}` +
+    `/projector-simulation-overlay?photo_id=${encodeURIComponent(photoId)}`
+  );
+}
+
 export async function getRenderJobs(projectId: string): Promise<RenderJob[]> {
   return request<RenderJob[]>(
     `/api/gui/v1/projects/${encodeURIComponent(projectId)}/render-jobs`,
+  );
+}
+
+export async function getSimulationScenarios(
+  projectId: string,
+): Promise<SimulationScenario[]> {
+  return request<SimulationScenario[]>(
+    `/api/gui/v1/projects/${encodeURIComponent(projectId)}/simulation-scenarios`,
+  );
+}
+
+export async function saveSimulationScenario(
+  projectId: string,
+  values: Pick<SimulationScenario, "name" | "steps" | "expected">,
+): Promise<SimulationScenario> {
+  return request<SimulationScenario>(
+    `/api/gui/v1/projects/${encodeURIComponent(projectId)}/simulation-scenarios`,
+    {
+      method: "POST",
+      headers: mutationHeaders(),
+      body: JSON.stringify(values),
+    },
+  );
+}
+
+export async function runSimulationScenario(
+  projectId: string,
+  scenarioId: string,
+): Promise<SimulationRun> {
+  return request<SimulationRun>(
+    `/api/gui/v1/projects/${encodeURIComponent(projectId)}/simulation-scenarios/` +
+      `${encodeURIComponent(scenarioId)}/run`,
+    { method: "POST", headers: mutationHeaders() },
   );
 }
 
@@ -1074,6 +1382,18 @@ export function compositionPreviewFrameUrl(
   return resource
     ? `${base}&resource=${encodeURIComponent(resource)}`
     : base;
+}
+
+export function renderArtifactPreviewFrameUrl(
+  artifactId: string,
+  resource: string,
+  timestampMs: number,
+): string {
+  return (
+    `/api/gui/v1/render-artifacts/${encodeURIComponent(artifactId)}` +
+    `/preview-frame?resource=${encodeURIComponent(resource)}` +
+    `&timestamp_ms=${timestampMs}`
+  );
 }
 
 export async function recordSyncRehearsal(values: {
@@ -1124,6 +1444,29 @@ export async function getLightingPreview(
   return request<LightingPreview>(
     `/api/gui/v1/projects/${encodeURIComponent(projectId)}/compositions/` +
       `${encodeURIComponent(compositionId)}/lighting-preview?timestamp_ms=${timestampMs}`,
+  );
+}
+
+export async function getPreviewEvaluation(
+  projectId: string,
+  spaceId: string,
+  timestampMs: number,
+): Promise<PreviewEvaluation> {
+  return request<PreviewEvaluation>(
+    `/api/gui/v1/projects/${encodeURIComponent(projectId)}/preview-evaluation` +
+      `?space_id=${encodeURIComponent(spaceId)}&timestamp_ms=${timestampMs}`,
+  );
+}
+
+export async function getStageLightingPreview(
+  projectId: string,
+  compositionId: string,
+  timestampMs: number,
+): Promise<StageLightingPreview> {
+  return request<StageLightingPreview>(
+    `/api/gui/v1/projects/${encodeURIComponent(projectId)}/compositions/` +
+      `${encodeURIComponent(compositionId)}/stage-lighting-preview` +
+      `?timestamp_ms=${timestampMs}`,
   );
 }
 
@@ -1241,6 +1584,89 @@ export async function getProjects(): Promise<ProjectSummary[]> {
 export async function getProjectDraft(projectId: string): Promise<ProjectDraftRecord> {
   return request<ProjectDraftRecord>(
     `/api/gui/v1/projects/${encodeURIComponent(projectId)}/draft`,
+  );
+}
+
+export async function listProjectRevisions(
+  projectId: string,
+): Promise<RevisionSummary[]> {
+  return request<RevisionSummary[]>(
+    `/api/gui/v1/projects/${encodeURIComponent(projectId)}/revisions`,
+  );
+}
+
+export async function getRevisionRelease(
+  projectId: string,
+  revision: number,
+): Promise<RevisionRelease> {
+  return request<RevisionRelease>(
+    `/api/gui/v1/projects/${encodeURIComponent(projectId)}/revisions/${revision}/release`,
+  );
+}
+
+export async function updateRevisionRelease(
+  projectId: string,
+  revision: number,
+  release: Pick<RevisionRelease, "name" | "summary" | "approval_state">,
+): Promise<RevisionRelease> {
+  return request<RevisionRelease>(
+    `/api/gui/v1/projects/${encodeURIComponent(projectId)}/revisions/${revision}/release`,
+    { method: "PUT", body: JSON.stringify(release) },
+  );
+}
+
+export async function compareProjectRevisions(
+  projectId: string,
+  baseRevision: number,
+  candidateRevision: number,
+): Promise<RevisionDiff> {
+  const query = new URLSearchParams({
+    base_revision: String(baseRevision),
+    candidate_revision: String(candidateRevision),
+  });
+  return request<RevisionDiff>(
+    `/api/gui/v1/projects/${encodeURIComponent(projectId)}/revision-diff?${query}`,
+  );
+}
+
+export async function validatePublication(
+  projectId: string,
+  revision: number,
+): Promise<PublicationValidation> {
+  return request<PublicationValidation>(
+    `/api/gui/v1/projects/${encodeURIComponent(projectId)}/revisions/${revision}/publication-validation`,
+  );
+}
+
+export async function listPublishedPackages(
+  projectId: string,
+): Promise<PublishedPackage[]> {
+  return request<PublishedPackage[]>(
+    `/api/gui/v1/projects/${encodeURIComponent(projectId)}/published-packages`,
+  );
+}
+
+export async function publishRevision(
+  projectId: string,
+  revision: number,
+): Promise<PublishedPackage> {
+  return request<PublishedPackage>(
+    `/api/gui/v1/projects/${encodeURIComponent(projectId)}/revisions/${revision}/publish`,
+    { method: "POST" },
+  );
+}
+
+export async function transitionPublishedPackage(
+  packageId: string,
+  action: "stage" | "activate" | "deactivate" | "rollback",
+  simulationMode = false,
+): Promise<PublishedPackage> {
+  return request<PublishedPackage>(
+    `/api/gui/v1/published-packages/${encodeURIComponent(packageId)}/${action}`,
+    {
+      method: "POST",
+      body: JSON.stringify({ simulation_mode: simulationMode }),
+    },
   );
 }
 
@@ -1654,6 +2080,172 @@ export async function finishTimingCalibration(
   );
 }
 
+export async function getLocalUsers(): Promise<LocalUser[]> {
+  return request<LocalUser[]>("/api/gui/v1/users");
+}
+
+export async function putLocalUser(
+  username: string,
+  password: string,
+  role: Role,
+  disabled = false,
+): Promise<LocalUser> {
+  return request<LocalUser>(`/api/gui/v1/users/${encodeURIComponent(username)}`, {
+    method: "PUT",
+    headers: mutationHeaders(),
+    body: JSON.stringify({ username, password, role, disabled }),
+  });
+}
+
+export async function getProjectMembers(
+  projectId: string,
+): Promise<ProjectMembership[]> {
+  return request<ProjectMembership[]>(
+    `/api/gui/v1/projects/${encodeURIComponent(projectId)}/members`,
+  );
+}
+
+export async function putProjectMember(
+  projectId: string,
+  username: string,
+  role: Role,
+  canLiveOutput: boolean,
+): Promise<ProjectMembership> {
+  return request<ProjectMembership>(
+    `/api/gui/v1/projects/${encodeURIComponent(projectId)}/members/${encodeURIComponent(username)}`,
+    {
+      method: "PUT",
+      headers: mutationHeaders(),
+      body: JSON.stringify({ role, can_live_output: canLiveOutput }),
+    },
+  );
+}
+
+export async function getProjectComments(
+  projectId: string,
+): Promise<ProjectComment[]> {
+  return request<ProjectComment[]>(
+    `/api/gui/v1/projects/${encodeURIComponent(projectId)}/comments`,
+  );
+}
+
+export async function createProjectComment(
+  projectId: string,
+  revision: number,
+  body: string,
+  objectId?: string,
+): Promise<ProjectComment> {
+  return request<ProjectComment>(
+    `/api/gui/v1/projects/${encodeURIComponent(projectId)}/comments`,
+    {
+      method: "POST",
+      headers: mutationHeaders(),
+      body: JSON.stringify({
+        revision,
+        object_id: objectId || null,
+        body,
+      }),
+    },
+  );
+}
+
+export async function updateProjectComment(
+  projectId: string,
+  commentId: string,
+  state: ProjectComment["state"],
+): Promise<ProjectComment> {
+  return request<ProjectComment>(
+    `/api/gui/v1/projects/${encodeURIComponent(projectId)}/comments/${encodeURIComponent(commentId)}`,
+    {
+      method: "PUT",
+      headers: mutationHeaders(),
+      body: JSON.stringify({ state }),
+    },
+  );
+}
+
+export async function getProjectChangeRequests(
+  projectId: string,
+): Promise<ProjectChangeRequest[]> {
+  return request<ProjectChangeRequest[]>(
+    `/api/gui/v1/projects/${encodeURIComponent(projectId)}/change-requests`,
+  );
+}
+
+export async function createProjectChangeRequest(
+  projectId: string,
+  revision: number,
+  title: string,
+  body: string,
+  objectId?: string,
+): Promise<ProjectChangeRequest> {
+  return request<ProjectChangeRequest>(
+    `/api/gui/v1/projects/${encodeURIComponent(projectId)}/change-requests`,
+    {
+      method: "POST",
+      headers: mutationHeaders(),
+      body: JSON.stringify({
+        revision,
+        object_id: objectId || null,
+        title,
+        body,
+      }),
+    },
+  );
+}
+
+export async function updateProjectChangeRequest(
+  projectId: string,
+  requestId: string,
+  state: ProjectChangeRequest["state"],
+): Promise<ProjectChangeRequest> {
+  return request<ProjectChangeRequest>(
+    `/api/gui/v1/projects/${encodeURIComponent(projectId)}/change-requests/${encodeURIComponent(requestId)}`,
+    {
+      method: "PUT",
+      headers: mutationHeaders(),
+      body: JSON.stringify({ state }),
+    },
+  );
+}
+
+export async function createReviewLink(
+  projectId: string,
+  revision: number,
+  expiresAt: string,
+): Promise<ReviewLink> {
+  return request<ReviewLink>(
+    `/api/gui/v1/projects/${encodeURIComponent(projectId)}/review-links`,
+    {
+      method: "POST",
+      headers: mutationHeaders(),
+      body: JSON.stringify({ revision, expires_at: expiresAt }),
+    },
+  );
+}
+
+export async function heartbeatProjectPresence(
+  projectId: string,
+  location: string,
+): Promise<void> {
+  return request<void>(
+    `/api/gui/v1/projects/${encodeURIComponent(projectId)}/presence`,
+    {
+      method: "POST",
+      headers: mutationHeaders(),
+      body: JSON.stringify({ location }),
+    },
+  );
+}
+
+export async function getProjectPresence(
+  projectId: string,
+): Promise<ProjectPresence[]> {
+  return request<ProjectPresence[]>(
+    `/api/gui/v1/projects/${encodeURIComponent(projectId)}/presence`,
+  );
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
     ...init,
@@ -1686,4 +2278,21 @@ function mutationHeaders(): Record<string, string> {
     "Content-Type": "application/json",
     "X-CSRF-Token": readCookie("cueverge_csrf") ?? "",
   };
+}
+
+export async function reportBrowserError(
+  message: string,
+  source: string,
+  occurredAt = new Date().toISOString(),
+): Promise<void> {
+  await request<void>("/api/gui/v1/browser-errors", {
+    method: "POST",
+    headers: mutationHeaders(),
+    keepalive: true,
+    body: JSON.stringify({
+      message: message.slice(0, 2000),
+      source: source.slice(0, 500),
+      occurred_at: occurredAt,
+    }),
+  });
 }

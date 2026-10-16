@@ -241,6 +241,115 @@ def prepare_stage_composition(
     )
 
 
+def preview_stage_lighting_samples(
+    *,
+    project_id: str,
+    draft: DraftProject,
+    composition_id: str,
+    timestamp_ms: int,
+    assets: AssetUploadService,
+    mapper_export: dict[str, object],
+    device_reported_scales: dict[str, float],
+) -> dict[str, object]:
+    metadata = cast(dict[str, object], draft.editor_metadata)
+    composition = _mapping(_mapping(metadata.get("compositions")).get(composition_id))
+    if composition.get("space_kind") != "stage":
+        raise ProjectorRenderError("stage lighting preview requires stage-space composition")
+    duration_ms = _integer(composition.get("duration_ms"))
+    if timestamp_ms < 0 or timestamp_ms >= duration_ms:
+        raise ProjectorRenderError("stage lighting preview timestamp is outside duration")
+    settings = _mapping(composition.get("render_settings"))
+    render_width = _integer(settings.get("render_width"))
+    render_height = _integer(settings.get("render_height"))
+    logical_width = _number(composition.get("width"))
+    logical_height = _number(composition.get("height"))
+    raw_layers = _mapping(metadata.get("timeline_transform_layers")).get(composition_id, [])
+    if not isinstance(raw_layers, list) or not raw_layers:
+        raise ProjectorRenderError("stage composition has no media layers")
+    prepared = prepare_media_layers(
+        project_id=project_id,
+        raw_layers=raw_layers,
+        assets=assets,
+    )
+    stage_layers = tuple(
+        replace(
+            layer,
+            keyframes=_scale_stage_keyframes(
+                layer.keyframes,
+                render_width / logical_width,
+                render_height / logical_height,
+            ),
+        )
+        for layer in prepared.visual_layers
+    )
+    frame = working_to_srgb8(
+        compose_visual_frame(
+            stage_layers,
+            timestamp_ms=timestamp_ms,
+            output_width=render_width,
+            output_height=render_height,
+            background_rgb=_hex_rgb(_string(settings.get("output_background_color"))),
+        )[0]
+    )
+    surfaces: list[dict[str, object]] = []
+    for raw_surface in _list(mapper_export.get("lighting_surfaces")):
+        surface = _mapping(raw_surface)
+        resource = _string(surface.get("resource"))
+        mapped_brightness = max(0.0, min(1.0, _number(surface.get("brightness_limit"))))
+        device_scale = max(
+            0.0,
+            min(1.0, device_reported_scales.get(resource, 1.0)),
+        )
+        samples: list[dict[str, object]] = []
+        for raw_pixel in _list(surface.get("pixels")):
+            pixel = _mapping(raw_pixel)
+            x = min(
+                render_width - 1,
+                max(
+                    0,
+                    round(
+                        (_number(pixel.get("stage_x")) / logical_width)
+                        * (render_width - 1)
+                    ),
+                ),
+            )
+            y = min(
+                render_height - 1,
+                max(
+                    0,
+                    round(
+                        (_number(pixel.get("stage_y")) / logical_height)
+                        * (render_height - 1)
+                    ),
+                ),
+            )
+            requested = frame[y, x, :3].astype(np.uint8)
+            delivered = np.rint(requested.astype(np.float32) * mapped_brightness * device_scale)
+            samples.append(
+                {
+                    "output_index": _integer(pixel.get("output_index")),
+                    "requested_color": requested.tolist(),
+                    "color": np.clip(delivered, 0, 255).astype(np.uint8).tolist(),
+                }
+            )
+        surfaces.append(
+            {
+                "surface_semantic_id": _string(surface.get("semantic_id")),
+                "surface_resource": resource,
+                "mapped_brightness_limit": mapped_brightness,
+                "device_reported_scale": device_reported_scales.get(resource),
+                "samples": samples,
+            }
+        )
+    return {
+        "composition_id": composition_id,
+        "timestamp_ms": timestamp_ms,
+        "source": "shared_stage_compositor",
+        "surfaces": surfaces,
+        "hardware_command_sent": False,
+    }
+
+
 def render_stage_composition(
     *,
     project_id: str,

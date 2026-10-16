@@ -9,6 +9,12 @@ test("timeline shows media thumbnails and audio waveforms", async ({ page }) => 
     if (url.pathname.endsWith("/projects/demo-project/draft")) {
       return route.fulfill({ json: draftResponse() });
     }
+    if (url.pathname.endsWith("/assets/audio-asset/artifacts/review")) {
+      return route.fulfill({
+        contentType: "audio/wav",
+        body: wavFixture(),
+      });
+    }
     if (url.pathname.includes("/artifacts/")) {
       return route.fulfill({
         contentType: "image/svg+xml",
@@ -43,6 +49,28 @@ test("timeline shows media thumbnails and audio waveforms", async ({ page }) => 
   await expect(
     page.getByLabel("Narration timing reference"),
   ).toBeVisible();
+  await expect(
+    page.getByRole("region", { name: "Browser editorial audio" }),
+  ).toContainText("do not represent venue output or hardware synchronization");
+  await expect(
+    page.getByLabel("Editorial audio proxy for Narration"),
+  ).toHaveAttribute(
+    "src",
+    "/api/gui/v1/assets/audio-asset/artifacts/review",
+  );
+  await expect(
+    page.getByAltText("Editorial waveform for Narration reference"),
+  ).toBeVisible();
+  await expect(page.getByLabel("Narration waveform position")).toBeVisible();
+  await expect(page.getByLabel("Narration audio level")).toBeVisible();
+
+  const scrub = page.getByLabel("Scrub position");
+  await page.getByRole("button", { name: "Play editorial preview" }).click();
+  await expect.poll(async () => Number(await scrub.inputValue())).toBeGreaterThan(50);
+  await page.getByRole("button", { name: "Pause editorial preview" }).click();
+  const pausedAt = Number(await scrub.inputValue());
+  await page.waitForTimeout(150);
+  expect(Number(await scrub.inputValue())).toBe(pausedAt);
 });
 
 function draftResponse() {
@@ -113,9 +141,35 @@ function assets() {
       waveform: { media_type: "image/png", size_bytes: 128 },
     }),
     asset("audio-asset", "Narration reference", "audio/wav", {
+      review: { media_type: "audio/mpeg", size_bytes: 512 },
       waveform: { media_type: "image/png", size_bytes: 128 },
     }),
   ];
+}
+
+function wavFixture(): Buffer {
+  const sampleCount = 800;
+  const sampleRate = 8000;
+  const output = Buffer.alloc(44 + sampleCount * 2);
+  output.write("RIFF", 0);
+  output.writeUInt32LE(output.length - 8, 4);
+  output.write("WAVEfmt ", 8);
+  output.writeUInt32LE(16, 16);
+  output.writeUInt16LE(1, 20);
+  output.writeUInt16LE(1, 22);
+  output.writeUInt32LE(sampleRate, 24);
+  output.writeUInt32LE(sampleRate * 2, 28);
+  output.writeUInt16LE(2, 32);
+  output.writeUInt16LE(16, 34);
+  output.write("data", 36);
+  output.writeUInt32LE(sampleCount * 2, 40);
+  for (let index = 0; index < sampleCount; index += 1) {
+    output.writeInt16LE(
+      Math.round(6000 * Math.sin((2 * Math.PI * 440 * index) / sampleRate)),
+      44 + index * 2,
+    );
+  }
+  return output;
 }
 
 function asset(

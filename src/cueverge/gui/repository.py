@@ -157,6 +157,15 @@ class StoredDeviceArtifact:
     digest_sha256: str
     size_bytes: int
     pinned: bool
+    in_use: bool
+    state: Literal["verified", "corrupt"]
+    last_used_unix_ms: int
+
+
+ArtifactInventoryRow = (
+    tuple[str, int, bool]
+    | tuple[str, int, bool, bool, Literal["verified", "corrupt"], int]
+)
 
 
 @dataclass(frozen=True)
@@ -797,6 +806,26 @@ class GuiRepository:
                 connection.execute(
                     "ALTER TABLE device_artifacts ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0"
                 )
+            if "in_use" not in artifact_columns:
+                connection.execute(
+                    "ALTER TABLE device_artifacts ADD COLUMN in_use INTEGER NOT NULL DEFAULT 0"
+                )
+            if "state" not in artifact_columns:
+                connection.execute(
+                    "ALTER TABLE device_artifacts ADD COLUMN state TEXT NOT NULL "
+                    "DEFAULT 'verified'"
+                )
+            if "last_used_unix_ms" not in artifact_columns:
+                connection.execute(
+                    "ALTER TABLE device_artifacts ADD COLUMN "
+                    "last_used_unix_ms INTEGER NOT NULL DEFAULT 0"
+                )
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO schema_migrations(version, applied_at)
+                VALUES (40, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+                """
+            )
             connection.execute(
                 """
                 INSERT OR IGNORE INTO schema_migrations(version, applied_at)
@@ -2419,7 +2448,7 @@ class GuiRepository:
         free_bytes: int,
         supports_pinning: bool,
         supports_resumable_transfer: bool,
-        artifacts: tuple[tuple[str, int, bool], ...],
+        artifacts: tuple[ArtifactInventoryRow, ...],
         transfers: tuple[dict[str, JsonValue], ...],
         faults: tuple[str, ...],
     ) -> None:
@@ -2476,12 +2505,13 @@ class GuiRepository:
             connection.executemany(
                 """
                 INSERT INTO device_artifacts(
-                    device_id, digest_sha256, size_bytes, pinned
-                ) VALUES (?, ?, ?, ?)
+                    device_id, digest_sha256, size_bytes, pinned,
+                    in_use, state, last_used_unix_ms
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    (device_id, digest_sha256, size_bytes, int(pinned))
-                    for digest_sha256, size_bytes, pinned in artifacts
+                    (device_id, *_normalize_artifact_inventory_row(artifact))
+                    for artifact in artifacts
                 ),
             )
             connection.commit()
@@ -2527,7 +2557,8 @@ class GuiRepository:
         with self._connect() as connection:
             rows = connection.execute(
                 """
-                SELECT digest_sha256, size_bytes, pinned
+                SELECT digest_sha256, size_bytes, pinned, in_use, state,
+                       last_used_unix_ms
                 FROM device_artifacts
                 WHERE device_id = ?
                 ORDER BY digest_sha256
@@ -2539,6 +2570,9 @@ class GuiRepository:
                 digest_sha256=str(row["digest_sha256"]),
                 size_bytes=int(row["size_bytes"]),
                 pinned=bool(row["pinned"]),
+                in_use=bool(row["in_use"]),
+                state=cast(Literal["verified", "corrupt"], str(row["state"])),
+                last_used_unix_ms=int(row["last_used_unix_ms"]),
             )
             for row in rows
         )
@@ -3575,6 +3609,23 @@ def _stored_revision(project: StoredProject, row: sqlite3.Row) -> StoredRevision
         transaction_kind=str(row["transaction_kind"]),
         created_at=str(row["created_at"]),
         draft=DraftProject.model_validate_json(str(row["content_json"])),
+    )
+
+
+def _normalize_artifact_inventory_row(
+    artifact: ArtifactInventoryRow,
+) -> tuple[str, int, int, int, Literal["verified", "corrupt"], int]:
+    if len(artifact) == 3:
+        digest, size_bytes, pinned = artifact
+        return digest, size_bytes, int(pinned), 0, "verified", 0
+    digest, size_bytes, pinned, in_use, state, last_used_unix_ms = artifact
+    return (
+        digest,
+        size_bytes,
+        int(pinned),
+        int(in_use),
+        state,
+        last_used_unix_ms,
     )
 
 

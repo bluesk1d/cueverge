@@ -42,7 +42,8 @@ identities. See `examples/controller.env.example`.
 Control endpoints bind wherever Uvicorn is configured. Media agents connect
 only through the certificate-authenticated protocol-v2 listener.
 See [operations and simulation](docs/operations.md) for mode semantics,
-diagnostics, and the hardware-free test harness.
+diagnostics, container deployment, native tool dependencies, and the
+hardware-free test harness.
 
 ## Repository boundaries
 

@@ -6,10 +6,14 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator, model_validator
 
 from cueverge.core.models import (
+    AudiencePresenceDefinition,
+    EncounterDefinition,
     InstallationDefinition,
     LightingCue,
+    OpportunityProgramDefinition,
     SceneDefinitionV1,
     SceneDefinitionV2,
+    ShowProgramDefinition,
 )
 from cueverge.protocol.device_v2 import DeviceCapabilityDocument, DeviceKind
 
@@ -49,6 +53,10 @@ class DraftProject(GuiModel):
     schema_version: Literal[1]
     installation: InstallationDefinition
     scenes: tuple[SceneDefinitionV1 | SceneDefinitionV2, ...] = Field(min_length=1)
+    program: ShowProgramDefinition | None = None
+    audience: AudiencePresenceDefinition | None = None
+    opportunities: OpportunityProgramDefinition | None = None
+    encounter: EncounterDefinition | None = None
     editor_metadata: dict[str, JsonValue] = Field(default_factory=dict)
 
     @model_validator(mode="after")
@@ -60,7 +68,46 @@ class DraftProject(GuiModel):
             self.editor_metadata,
             {scene.id: scene.duration_ms for scene in self.scenes},
         )
+        _validate_autonomous_show(self)
         return self
+
+
+def _validate_autonomous_show(draft: DraftProject) -> None:
+    scene_ids = {scene.id for scene in draft.scenes}
+    if draft.program is not None:
+        referenced = {draft.program.initial_scene_id}
+        referenced.update(
+            entry.scene_id
+            for pool in draft.program.pools
+            for entry in pool.scenes
+        )
+        missing = referenced.difference(scene_ids)
+        if missing:
+            raise ValueError(
+                f"show program references unknown scenes: {sorted(missing)}"
+            )
+    if draft.opportunities is not None:
+        missing = {
+            opportunity.scene_id
+            for opportunity in draft.opportunities.opportunities
+            if opportunity.scene_id not in scene_ids
+        }
+        if missing:
+            raise ValueError(
+                f"engagement opportunities reference unknown scenes: {sorted(missing)}"
+            )
+    if draft.encounter is not None:
+        referenced = {draft.encounter.ambient_scene_id}
+        referenced.update(
+            transition.scene_id
+            for transition in draft.encounter.transitions
+            if transition.scene_id is not None
+        )
+        missing = referenced.difference(scene_ids)
+        if missing:
+            raise ValueError(
+                f"encounter references unknown scenes: {sorted(missing)}"
+            )
 
 
 def _validate_composition_graph(
@@ -871,6 +918,115 @@ class SessionResponse(GuiModel):
     role: Role
 
 
+class LocalUserRequest(GuiModel):
+    username: str = Field(min_length=1, max_length=100, pattern=r"^[A-Za-z0-9._-]+$")
+    password: str = Field(min_length=12, max_length=1024)
+    role: Role
+    disabled: bool = False
+
+
+class LocalUserResponse(GuiModel):
+    username: str
+    role: Role
+    disabled: bool
+    created_at: str
+
+
+class ProjectMembershipRequest(GuiModel):
+    role: Role
+    can_live_output: bool = False
+
+
+class ProjectMembershipResponse(GuiModel):
+    project_id: str
+    username: str
+    role: Role
+    can_live_output: bool
+    created_at: str
+    updated_at: str
+
+
+class CommentRequest(GuiModel):
+    revision: int = Field(ge=1)
+    object_id: str | None = Field(default=None, min_length=1, max_length=200)
+    body: str = Field(min_length=1, max_length=4000)
+
+
+class CommentStateRequest(GuiModel):
+    state: Literal["open", "resolved"]
+
+
+class CommentResponse(GuiModel):
+    id: str
+    project_id: str
+    revision: int
+    object_id: str | None
+    body: str
+    state: Literal["open", "resolved"]
+    created_by: str
+    resolved_by: str | None
+    created_at: str
+    updated_at: str
+
+
+class ChangeRequestCreate(GuiModel):
+    revision: int = Field(ge=1)
+    object_id: str | None = Field(default=None, min_length=1, max_length=200)
+    title: str = Field(min_length=1, max_length=200)
+    body: str = Field(min_length=1, max_length=4000)
+
+
+class ChangeRequestState(GuiModel):
+    state: Literal["open", "accepted", "closed"]
+
+
+class ChangeRequestResponse(GuiModel):
+    id: str
+    project_id: str
+    revision: int
+    object_id: str | None
+    title: str
+    body: str
+    state: Literal["open", "accepted", "closed"]
+    created_by: str
+    updated_by: str
+    created_at: str
+    updated_at: str
+
+
+class ReviewLinkRequest(GuiModel):
+    revision: int = Field(ge=1)
+    expires_at: str = Field(min_length=1, max_length=64)
+
+
+class ReviewLinkResponse(GuiModel):
+    id: str
+    project_id: str
+    revision: int
+    expires_at: str
+    created_by: str
+    created_at: str
+    token: str
+
+
+class ReviewLinkView(GuiModel):
+    project_id: str
+    project_name: str
+    revision: int
+    expires_at: str
+
+
+class PresenceHeartbeatRequest(GuiModel):
+    location: str = Field(min_length=1, max_length=200)
+
+
+class PresenceResponse(GuiModel):
+    project_id: str
+    username: str
+    location: str
+    last_seen_at: str
+
+
 class CreateProjectRequest(GuiModel):
     name: str = Field(min_length=1, max_length=200)
     draft: DraftProject
@@ -1131,6 +1287,60 @@ class CompilationResponse(GuiModel):
     scene_ids: tuple[str, ...]
 
 
+class UpdateRevisionReleaseRequest(GuiModel):
+    name: str | None = Field(default=None, max_length=200)
+    summary: str | None = Field(default=None, max_length=4000)
+    approval_state: Literal["draft", "in_review", "approved", "rejected"]
+
+
+class RevisionReleaseResponse(GuiModel):
+    project_id: str
+    revision: int = Field(ge=1)
+    name: str | None
+    summary: str | None
+    approval_state: Literal["draft", "in_review", "approved", "rejected"]
+    approved_by: str | None
+    approved_at: str | None
+
+
+class RevisionDiffResponse(GuiModel):
+    project_id: str
+    base_revision: int = Field(ge=1)
+    candidate_revision: int = Field(ge=1)
+    changed_paths: tuple[str, ...]
+
+
+class PublicationDiagnosticResponse(GuiModel):
+    code: str
+    severity: Literal["error", "warning", "info"]
+    message: str
+
+
+class PublicationValidationResponse(GuiModel):
+    project_id: str
+    revision: int = Field(ge=1)
+    passed: bool
+    diagnostics: tuple[PublicationDiagnosticResponse, ...]
+
+
+class PublishedPackageResponse(GuiModel):
+    id: str
+    project_id: str
+    revision: int = Field(ge=1)
+    digest_sha256: str
+    state: Literal["published", "staged", "active", "inactive", "failed"]
+    manifest: dict[str, JsonValue]
+    created_by: str
+    created_at: str
+    staged_at: str | None
+    activated_at: str | None
+    deactivated_at: str | None
+
+
+class ActivationRequest(GuiModel):
+    simulation_mode: bool = False
+
+
 class CreateRenderJobRequest(GuiModel):
     composition_id: str = Field(min_length=1, max_length=200)
 
@@ -1152,6 +1362,69 @@ class RenderJobResponse(GuiModel):
     started_at: str | None
     completed_at: str | None
     updated_at: str
+
+
+class SimulationStepRequest(GuiModel):
+    kind: Literal[
+        "advance",
+        "observe",
+        "operator_start",
+        "request_scene",
+        "disconnect",
+        "reconnect",
+        "output_failure",
+    ]
+    delta_ms: int | None = Field(default=None, ge=0)
+    event_type: str | None = Field(default=None, min_length=1)
+    attributes: dict[str, str | int | float | bool] = Field(default_factory=dict)
+    scene_id: str | None = Field(default=None, min_length=1)
+    agent_id: str | None = Field(default=None, min_length=1)
+    resource: str | None = Field(default=None, min_length=1)
+    failed: bool | None = None
+
+    @model_validator(mode="after")
+    def validate_step_fields(self) -> "SimulationStepRequest":
+        required = {
+            "advance": (self.delta_ms, "delta_ms"),
+            "observe": (self.event_type, "event_type"),
+            "operator_start": (self.scene_id, "scene_id"),
+            "request_scene": (self.scene_id, "scene_id"),
+            "output_failure": (self.resource, "resource"),
+        }
+        if self.kind in required and required[self.kind][0] is None:
+            raise ValueError(
+                f"{self.kind} simulation step requires {required[self.kind][1]}"
+            )
+        if self.kind == "output_failure" and self.failed is None:
+            raise ValueError("output_failure simulation step requires failed")
+        return self
+
+
+class SaveSimulationScenarioRequest(GuiModel):
+    name: str = Field(min_length=1, max_length=200)
+    steps: tuple[SimulationStepRequest, ...] = Field(min_length=1)
+    expected: dict[str, JsonValue] = Field(default_factory=dict)
+
+
+class SimulationScenarioResponse(GuiModel):
+    id: str
+    project_id: str
+    name: str
+    source_revision: int = Field(ge=1)
+    steps: tuple[dict[str, JsonValue], ...]
+    expected: dict[str, JsonValue]
+    created_at: str
+    updated_at: str
+
+
+class SimulationRunResponse(GuiModel):
+    scenario_id: str
+    source_revision: int = Field(ge=1)
+    passed: bool
+    mismatches: tuple[JsonValue, ...]
+    actual: dict[str, JsonValue]
+    hardware_adapters_opened: Literal[False] = False
+    hardware_commands_sent: Literal[False] = False
 
 
 class RecordSyncRehearsalRequest(GuiModel):
@@ -1745,6 +2018,27 @@ class DeviceArtifactResponse(GuiModel):
     digest_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     size_bytes: int = Field(ge=0)
     pinned: bool
+    in_use: bool
+    state: Literal["verified", "corrupt"]
+    last_used_unix_ms: int = Field(ge=0)
+
+
+class CleanupDeviceArtifactsRequest(GuiModel):
+    digests: tuple[str, ...] = Field(min_length=1)
+
+    @field_validator("digests")
+    @classmethod
+    def validate_digests(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if len(value) != len(set(value)):
+            raise ValueError("cleanup artifact digests must be unique")
+        if any(re.fullmatch(r"[0-9a-f]{64}", digest) is None for digest in value):
+            raise ValueError("cleanup artifact digests must be SHA-256 values")
+        return value
+
+
+class CleanupDeviceArtifactsResponse(GuiModel):
+    removed_digests: tuple[str, ...]
+    rejected_digests: tuple[str, ...]
 
 
 class DeviceTransferStatusResponse(GuiModel):
@@ -1904,6 +2198,12 @@ class AuditEventResponse(GuiModel):
     result: str
     occurred_at: str
     authorization_context: dict[str, JsonValue]
+
+
+class BrowserErrorRequest(GuiModel):
+    message: str = Field(min_length=1, max_length=2000)
+    source: str = Field(min_length=1, max_length=500)
+    occurred_at: str = Field(min_length=1, max_length=64)
 
 
 class ActivityEventResponse(GuiModel):

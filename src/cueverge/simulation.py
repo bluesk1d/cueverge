@@ -187,6 +187,13 @@ class ShowSimulation:
             raise LookupError(f"unknown simulated lighting resource: {resource}") from error
         return tuple(sink.frames)
 
+    def set_output_failure(self, resource: str, *, failed: bool) -> None:
+        try:
+            sink = self.sinks[resource]
+        except KeyError as error:
+            raise LookupError(f"unknown simulated lighting resource: {resource}") from error
+        sink.failure = "injected simulation output failure" if failed else None
+
     def _active_clock_agent_id(self) -> str:
         active = self.runtime.active_scene
         if active is None:

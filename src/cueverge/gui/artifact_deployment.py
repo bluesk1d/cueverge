@@ -1,4 +1,5 @@
 import asyncio
+import time
 from dataclasses import dataclass
 from typing import Literal, cast
 from urllib.parse import quote, urlsplit, urlunsplit
@@ -12,6 +13,8 @@ from cueverge.gui.repository import GuiRepository, ProjectNotFoundError
 from cueverge.protocol.device_v2 import (
     DeviceArtifactActivateAck,
     DeviceArtifactActivateCommand,
+    DeviceArtifactCleanupAck,
+    DeviceArtifactCleanupCommand,
     DeviceArtifactStageAck,
     DeviceArtifactStageCommand,
 )
@@ -42,6 +45,176 @@ class ArtifactDeploymentService:
         self.sessions = sessions
 
     async def deploy(self, artifact_id: str) -> ArtifactDeploymentResult:
+        staged = await self.stage(artifact_id)
+        activated = await self.activate(artifact_id)
+        return ArtifactDeploymentResult(
+            activation_identity=activated.activation_identity,
+            artifact_id=artifact_id,
+            resources=activated.resources,
+            staged_device_ids=staged.staged_device_ids,
+            activated_device_ids=activated.activated_device_ids,
+        )
+
+    async def cleanup(
+        self,
+        device_id: UUID,
+        digests: tuple[str, ...],
+    ) -> DeviceArtifactCleanupAck:
+        command = DeviceArtifactCleanupCommand(
+            request_id=uuid4(),
+            device_session_id=_session_placeholder(),
+            controller_epoch=self.sessions.controller_epoch,
+            digests=digests,
+        )
+        response = await self.sessions.request(
+            device_id,
+            command.request_id,
+            command,
+        )
+        return DeviceArtifactCleanupAck.model_validate(response)
+
+    async def stage(
+        self,
+        artifact_id: str,
+        *,
+        protected_digests: tuple[str, ...] = (),
+    ) -> ArtifactDeploymentResult:
+        prepared = self._prepare(
+            artifact_id,
+            protected_digests=protected_digests,
+        )
+        staged = await asyncio.gather(
+            *[
+                self.sessions.request(
+                    device_id,
+                    command.request_id,
+                    command,
+                )
+                for _, device_id, command in prepared.stage_requests
+            ]
+        )
+        for response in staged:
+            acknowledgment = DeviceArtifactStageAck.model_validate(response)
+            if acknowledgment.status != "completed":
+                raise ArtifactDeploymentError(f"artifact staging failed: {acknowledgment.error}")
+        return ArtifactDeploymentResult(
+            activation_identity=str(prepared.activation_identity),
+            artifact_id=artifact_id,
+            resources=prepared.resources,
+            staged_device_ids=tuple(sorted(item[0] for item in prepared.stage_requests)),
+            activated_device_ids=(),
+        )
+
+    async def activate(self, artifact_id: str) -> ArtifactDeploymentResult:
+        prepared = self._prepare(artifact_id)
+        activation_at_unix_ms = time.time_ns() // 1_000_000 + 2000
+        prepare_requests = tuple(
+            (
+                device_name,
+                device_id,
+                command.model_copy(
+                    update={
+                        "phase": "prepare",
+                        "activation_at_unix_ms": activation_at_unix_ms,
+                    }
+                ),
+            )
+            for device_name, device_id, command in prepared.activation_requests
+        )
+        prepared_responses = await asyncio.gather(
+            *[
+                self.sessions.request(
+                    device_id,
+                    command.request_id,
+                    command,
+                )
+                for _, device_id, command in prepare_requests
+            ]
+        )
+        for response in prepared_responses:
+            activation_ack = DeviceArtifactActivateAck.model_validate(response)
+            if activation_ack.status != "completed":
+                await self._rollback_activation(prepared.activation_requests)
+                raise ArtifactDeploymentError(
+                    f"artifact activation preparation failed: {activation_ack.error}"
+                )
+        commit_requests = tuple(
+            (
+                device_name,
+                device_id,
+                command.model_copy(
+                    update={
+                        "request_id": uuid4(),
+                        "phase": "commit",
+                        "activation_at_unix_ms": activation_at_unix_ms,
+                    }
+                ),
+            )
+            for device_name, device_id, command in prepared.activation_requests
+        )
+        commit_responses = await asyncio.gather(
+            *[
+                self.sessions.request(
+                    device_id,
+                    command.request_id,
+                    command,
+                )
+                for _, device_id, command in commit_requests
+            ],
+            return_exceptions=True,
+        )
+        failures = [
+            response
+            for response in commit_responses
+            if isinstance(response, BaseException)
+            or DeviceArtifactActivateAck.model_validate(response).status != "completed"
+        ]
+        if failures:
+            await self._rollback_activation(commit_requests)
+            raise ArtifactDeploymentError(
+                "artifact activation commit failed; previous activation was restored"
+            )
+        return ArtifactDeploymentResult(
+            activation_identity=str(prepared.activation_identity),
+            artifact_id=artifact_id,
+            resources=prepared.resources,
+            staged_device_ids=(),
+            activated_device_ids=tuple(
+                sorted(item[0] for item in commit_requests)
+            ),
+        )
+
+    async def _rollback_activation(
+        self,
+        requests: tuple[tuple[str, UUID, DeviceArtifactActivateCommand], ...],
+    ) -> None:
+        await asyncio.gather(
+            *[
+                self.sessions.request(
+                    device_id,
+                    rollback.request_id,
+                    rollback,
+                )
+                for _, device_id, command in requests
+                for rollback in (
+                    command.model_copy(
+                        update={
+                            "request_id": uuid4(),
+                            "phase": "rollback",
+                            "activation_at_unix_ms": None,
+                        }
+                    ),
+                )
+            ],
+            return_exceptions=True,
+        )
+
+    def _prepare(
+        self,
+        artifact_id: str,
+        *,
+        protected_digests: tuple[str, ...] = (),
+    ) -> "_PreparedDeployment":
         public_url = self.config.device_listener_public_url
         if public_url is None:
             raise ArtifactDeploymentError("device listener public URL is unavailable")
@@ -116,6 +289,7 @@ class ArtifactDeploymentService:
                                 resource,
                             )
                         ),
+                        protected_digests=protected_digests,
                     ),
                 )
             )
@@ -142,41 +316,20 @@ class ArtifactDeploymentService:
                 )
             )
             resources.append(resource)
-        staged = await asyncio.gather(
-            *[
-                self.sessions.request(
-                    device_id,
-                    command.request_id,
-                    command,
-                )
-                for _, device_id, command in stage_requests
-            ]
-        )
-        for response in staged:
-            acknowledgment = DeviceArtifactStageAck.model_validate(response)
-            if acknowledgment.status != "completed":
-                raise ArtifactDeploymentError(f"artifact staging failed: {acknowledgment.error}")
-        activated = await asyncio.gather(
-            *[
-                self.sessions.request(
-                    device_id,
-                    command.request_id,
-                    command,
-                )
-                for _, device_id, command in activation_requests
-            ]
-        )
-        for response in activated:
-            activation_ack = DeviceArtifactActivateAck.model_validate(response)
-            if activation_ack.status != "completed":
-                raise ArtifactDeploymentError(f"artifact activation failed: {activation_ack.error}")
-        return ArtifactDeploymentResult(
-            activation_identity=str(activation_identity),
-            artifact_id=artifact_id,
+        return _PreparedDeployment(
+            activation_identity=activation_identity,
             resources=tuple(sorted(resources)),
-            staged_device_ids=tuple(sorted(item[0] for item in stage_requests)),
-            activated_device_ids=tuple(sorted(item[0] for item in activation_requests)),
+            stage_requests=tuple(stage_requests),
+            activation_requests=tuple(activation_requests),
         )
+
+
+@dataclass(frozen=True)
+class _PreparedDeployment:
+    activation_identity: UUID
+    resources: tuple[str, ...]
+    stage_requests: tuple[tuple[str, UUID, DeviceArtifactStageCommand], ...]
+    activation_requests: tuple[tuple[str, UUID, DeviceArtifactActivateCommand], ...]
 
 
 def _artifact_url(base: str, artifact_id: str, resource: str) -> str:

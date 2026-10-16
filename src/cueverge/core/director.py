@@ -99,7 +99,7 @@ class ShowDirector:
         now_ms: int,
         context: Mapping[str, str | int | float | bool],
     ) -> dict[str, object]:
-        available = self._scene_available(entry.scene_id)
+        available = entry.available and self._scene_available(entry.scene_id)
         cooldown_remaining_ms = max(
             0,
             entry.cooldown_ms

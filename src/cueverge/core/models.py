@@ -415,6 +415,7 @@ class ProgramScene(FrozenModel):
     scene_id: str = Field(min_length=1)
     weight: int = Field(default=1, ge=1, le=1000)
     cooldown_ms: int = Field(default=0, ge=0)
+    available: bool = True
     conditions: dict[str, str | int | float | bool] = Field(default_factory=dict)
 
 

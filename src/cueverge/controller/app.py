@@ -1,9 +1,10 @@
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from typing import Protocol
 
 from fastapi import FastAPI, Request
+from starlette.responses import Response
 from starlette.staticfiles import StaticFiles
 
 from cueverge.config import ControllerConfig
@@ -13,6 +14,7 @@ from cueverge.core.loader import load_show_package
 from cueverge.gui.config import GuiConfig
 from cueverge.gui.device_router import create_device_enrollment_router
 from cueverge.gui.embedded_device_listener import EmbeddedDeviceListener
+from cueverge.gui.observability import ApiTimer
 from cueverge.gui.router import create_gui_router
 from cueverge.gui.service import GuiServices
 from cueverge.integrations.mqtt import FrigateMqttIngress
@@ -84,6 +86,24 @@ def create_app(
     app = FastAPI(title="Cueverge Controller", version="0.1.0", lifespan=lifespan)
     app.state.runtime = controller
     if configured_gui is not None:
+        @app.middleware("http")
+        async def observe_gui_api(
+            request: Request,
+            call_next: Callable[[Request], Awaitable[Response]],
+        ) -> Response:
+            timer = ApiTimer()
+            status_code = 500
+            try:
+                response = await call_next(request)
+                status_code = response.status_code
+                return response
+            finally:
+                if request.url.path.startswith("/api/gui/"):
+                    configured_gui.observability.record_api(
+                        timer.elapsed_ms(),
+                        status_code,
+                    )
+
         app.include_router(create_gui_router(configured_gui))
         if configured_gui.device_enrollment is not None:
             app.include_router(create_device_enrollment_router(configured_gui.device_enrollment))

@@ -31,6 +31,7 @@ class CompiledPackage:
     digest: str
     files: tuple[str, ...]
     scene_ids: tuple[str, ...]
+    package_root: Path
 
 
 class DraftCompiler:
@@ -54,6 +55,17 @@ class DraftCompiler:
                 temporary_root / "installation.json",
                 draft.installation.model_dump(mode="json"),
             )
+            for filename, definition in (
+                ("program.json", draft.program),
+                ("audience.json", draft.audience),
+                ("opportunities.json", draft.opportunities),
+                ("encounter.json", draft.encounter),
+            ):
+                if definition is not None:
+                    _write_json(
+                        temporary_root / filename,
+                        definition.model_dump(mode="json"),
+                    )
             runtime_root = temporary_root / "runtime"
             runtime_root.mkdir()
             _write_json(
@@ -91,6 +103,7 @@ class DraftCompiler:
                 digest=digest,
                 files=files,
                 scene_ids=tuple(sorted(catalog.scenes)),
+                package_root=destination,
             )
         except BaseException:
             if temporary_root.exists():

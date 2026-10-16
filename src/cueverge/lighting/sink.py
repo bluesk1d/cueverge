@@ -22,8 +22,11 @@ class FrameSink(Protocol):
 @dataclass
 class MemoryFrameSink:
     frames: list[RenderedFrame] = field(default_factory=list)
+    failure: str | None = None
 
     def send(self, frame: RenderedFrame) -> None:
+        if self.failure is not None:
+            raise OSError(self.failure)
         self.frames.append(frame)
 
     def close(self) -> None:

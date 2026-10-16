@@ -21,6 +21,7 @@ from cueverge.gui.repository import (
 )
 from cueverge.protocol.device_v2 import (
     DeviceArtifactActivateAck,
+    DeviceArtifactCleanupAck,
     DeviceArtifactInventory,
     DeviceArtifactStageAck,
     DeviceCommandAck,
@@ -264,6 +265,9 @@ def create_device_app(
                                 artifact.digest_sha256,
                                 artifact.size_bytes,
                                 artifact.pinned,
+                                artifact.in_use,
+                                artifact.state,
+                                artifact.last_used_unix_ms,
                             )
                             for artifact in inventory.artifacts
                         ),
@@ -285,6 +289,13 @@ def create_device_app(
                         UUID(device.id),
                         activate_ack.request_id,
                         activate_ack,
+                    )
+                elif message_type == "device.artifact.cleanup.ack":
+                    cleanup_ack = DeviceArtifactCleanupAck.model_validate(payload)
+                    sessions.acknowledge(
+                        UUID(device.id),
+                        cleanup_ack.request_id,
+                        cleanup_ack,
                     )
                 elif message_type == "device.command.ack" and runtime is not None:
                     if runtime_agent_id is None:
