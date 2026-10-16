@@ -62,6 +62,7 @@ class ActiveMediaSession:
     asset_id: str | None
     required: bool
     start_delay_ms: int
+    end_behavior: Literal["stop", "hold_last_frame", "loop"]
 
 
 @dataclass(frozen=True)
@@ -88,6 +89,7 @@ class ActiveScene:
                 asset_id=output.asset_id,
                 required=output.definition.required,
                 start_delay_ms=output.definition.start_delay_ms,
+                end_behavior=output.definition.end_behavior,
             ),
         )
 
@@ -408,6 +410,7 @@ class ControllerRuntime:
                 asset_id=output.asset_id,
                 required=output.definition.required,
                 start_delay_ms=output.definition.start_delay_ms,
+                end_behavior=output.definition.end_behavior,
             )
             for output in scene.media_outputs
             if output.agent_id in self._agents
@@ -681,6 +684,7 @@ class ControllerRuntime:
             scene_instance_id=active.scene_instance_id,
             playback_session_id=media_session.playback_session_id,
             asset_id=media_session.asset_id,
+            end_behavior=(media_session.end_behavior if command_name == "prepare" else None),
             target_position_ms=target_position_ms,
         )
         self._pending_commands[command.request_id] = PendingCommand(command, self.clock())

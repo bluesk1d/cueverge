@@ -11,12 +11,21 @@ const pixels = Array.from({ length: 5 }, (_, offset) => ({
   footprint_width: 0.02,
   footprint_height: 0.03,
 }));
+let savedLightingSurface: Record<string, unknown> | null = null;
+let projectDraftWrites = 0;
 
 test("linked LED views preserve physical order and support pre-live preview", async ({
   page,
 }) => {
   await page.route("**/api/gui/v1/**", async (route) => {
+    const request = route.request();
     const url = new URL(route.request().url());
+    if (url.pathname.includes("/projects/") && url.pathname.endsWith("/draft")) {
+      if (request.method() === "PUT") {
+        projectDraftWrites += 1;
+      }
+      return route.fulfill({ status: 404, json: { detail: "not used" } });
+    }
     if (url.pathname.endsWith(`/${installationId}/photos`)) {
       return route.fulfill({
         json: [photo("wide-led", "Wide roofline"), photo("close-led", "Roofline close-up")],
@@ -27,11 +36,58 @@ test("linked LED views preserve physical order and support pre-live preview", as
         json: [
           segment("segment-wide", "wide-led", 0.1, 0.9),
           segment("segment-close", "close-led", 0.25, 0.65),
+          overlayGeometry("projector-wide", "wide-led", "projector_surface", [
+            [0.1, 0.1],
+            [0.6, 0.1],
+            [0.6, 0.5],
+            [0.1, 0.5],
+          ]),
+          overlayGeometry("mask-wide", "wide-led", "mask", [
+            [0.3, 0.2],
+            [0.4, 0.2],
+            [0.4, 0.4],
+          ]),
+          overlayGeometry("path-wide", "wide-led", "path", [
+            [0.1, 0.7],
+            [0.8, 0.7],
+          ]),
+          overlayGeometry("fixture-wide", "wide-led", "fixture", [[0.75, 0.35]]),
         ],
+      });
+    }
+    if (
+      request.method() === "PUT" &&
+      url.pathname.includes("/installation-geometry/") &&
+      !url.pathname.endsWith("/lighting-surface")
+    ) {
+      const geometryId = url.pathname.split("/").at(-1)!;
+      return route.fulfill({
+        json: segment(
+          geometryId,
+          geometryId.includes("close") ? "close-led" : "wide-led",
+          0.1,
+          0.9,
+        ),
       });
     }
     if (url.pathname.includes("/lighting-surface")) {
       const geometryId = url.pathname.split("/").at(-2)!;
+      if (request.method() === "PUT") {
+        savedLightingSurface = request.postDataJSON();
+        const response = surface(geometryId);
+        response.pixel_overrides = (
+          savedLightingSurface as {
+            pixel_overrides: typeof response.pixel_overrides;
+          }
+        ).pixel_overrides;
+        response.pixels = response.pixels.map((pixel) =>
+          pixel.output_index === 102
+            ? { ...pixel, local_x: 1.2, local_y: 0.4 }
+            : pixel,
+        );
+        response.revision = 2;
+        return route.fulfill({ json: response });
+      }
       return route.fulfill({ json: surface(geometryId) });
     }
     if (url.pathname.startsWith("/api/gui/v1/installation-photos/")) {
@@ -71,19 +127,110 @@ test("linked LED views preserve physical order and support pre-live preview", as
   const viewpoint = mapper.getByRole("combobox").first();
   const canvas = mapper.getByRole("img", { name: /Geometry editor/ });
 
-  await mapper.getByRole("button", { name: "Edit" }).click();
+  await mapper
+    .getByRole("listitem")
+    .filter({ hasText: "Roofline pixels" })
+    .getByRole("button", { name: "Edit" })
+    .click();
   await expect(mapper.getByText(/5 pixels mapped from output index 100 to 104/)).toBeVisible();
   await expect(mapper.locator(".geometry-pixel-label").first()).toHaveText("100");
   await expect(mapper.locator(".geometry-pixel-label").last()).toHaveText("104");
   const wideCx = await mapper.locator(".geometry-pixel-footprint").first().getAttribute("cx");
+
+  await mapper.getByRole("button", { name: "Show simulation overlay" }).click();
+  await expect(canvas).toHaveClass(/geometry-canvas--simulation/);
+  await expect(mapper.locator(".geometry-simulation-pixel")).toHaveCount(5);
+  await expect(mapper.locator(".geometry-shape--projector_surface")).toHaveCount(1);
+  await expect(mapper.locator(".geometry-shape--mask")).toHaveCount(1);
+  await expect(mapper.locator(".geometry-shape--path")).toHaveCount(1);
+  await expect(mapper.locator(".geometry-shape--fixture")).toHaveCount(1);
+  await expect(mapper.getByText(/Approximate photo simulation/)).toBeVisible();
+  await expect(mapper.getByText(/no hardware adapters or enrolled clients/)).toBeVisible();
+  const projectorPoints = await mapper
+    .locator(".geometry-shape--projector_surface")
+    .getAttribute("points");
+  const previewMode = mapper.getByLabel("Simulation preview mode");
+  await previewMode.selectOption("logical_composition");
+  await expect(mapper.locator(".geometry-simulation-pixel")).toHaveCount(5);
+  await expect(mapper.locator(".geometry-shape--projector_surface")).toHaveCount(0);
+  await expect(mapper.getByLabel("Simulation context status")).toContainText(
+    "logical composition · scene time 0 ms",
+  );
+  await previewMode.selectOption("parent_context");
+  await expect(mapper.locator(".geometry-shape--projector_surface")).toHaveCount(1);
+  await previewMode.selectOption("native_projector");
+  await expect(mapper.locator(".geometry-shape--projector_surface")).toHaveCount(1);
+  await expect(mapper.locator(".geometry-simulation-pixel")).toHaveCount(0);
+  await previewMode.selectOption("selected_output");
+  await mapper.getByLabel("Simulation output context").selectOption("lighting");
+  await expect(mapper.locator(".geometry-simulation-pixel")).toHaveCount(5);
+  await expect(mapper.locator(".geometry-shape--projector_surface")).toHaveCount(0);
+  await previewMode.selectOption("full_installation");
+  await expect(
+    mapper.locator(".geometry-shape--projector_surface"),
+  ).toHaveAttribute("points", projectorPoints ?? "");
+  await expect(mapper.getByLabel("Simulation context status")).toContainText(
+    "full installation · scene time 0 ms",
+  );
+  await mapper
+    .getByRole("button", { name: "Show side-by-side viewpoint" })
+    .click();
+  await expect(
+    mapper.getByRole("img", {
+      name: "Synchronized simulation for Roofline close-up",
+    }),
+  ).toBeVisible();
+  await expect(mapper.locator(".geometry-simulation-pixel")).toHaveCount(10);
+  await previewMode.selectOption("logical_composition");
+  await expect(mapper.locator(".geometry-simulation-pixel")).toHaveCount(10);
+  await expect(
+    mapper
+      .getByRole("img", {
+        name: "Synchronized simulation for Roofline close-up",
+      })
+        .locator("title")
+        .first(),
+  ).toContainText("scene time 0 ms");
+  await mapper
+    .getByRole("button", { name: "Hide side-by-side viewpoint" })
+    .click();
+  await expect(
+    mapper.getByRole("img", {
+      name: "Synchronized simulation for Roofline close-up",
+    }),
+  ).toHaveCount(0);
+  await previewMode.selectOption("full_installation");
 
   await mapper.getByRole("button", { name: "Preview traversal" }).click();
   await expect(canvas).toHaveClass(/geometry-canvas--traversal/);
   await mapper.getByRole("button", { name: "Stop traversal preview" }).click();
   await expect(canvas).not.toHaveClass(/geometry-canvas--traversal/);
 
+  await mapper.getByLabel("Pixel correction output").selectOption("102");
+  await mapper.getByLabel("Corrected pixel local X").fill("1.2");
+  await mapper.getByLabel("Corrected pixel local Y").fill("0.4");
+  await mapper.getByRole("button", { name: "Apply pixel correction" }).click();
+  await mapper.getByRole("button", { name: "Update geometry" }).click();
+  await expect.poll(() => savedLightingSurface).not.toBeNull();
+  expect(
+    (
+      savedLightingSurface as {
+        pixel_overrides: {
+          output_index: number;
+          local_x: number;
+          local_y: number;
+        }[];
+      }
+    ).pixel_overrides,
+  ).toEqual([{ output_index: 102, local_x: 1.2, local_y: 0.4 }]);
+  expect(projectDraftWrites).toBe(0);
+
   await viewpoint.selectOption("close-led");
-  await mapper.getByRole("button", { name: "Edit" }).click();
+  await mapper
+    .getByRole("listitem")
+    .filter({ hasText: "Roofline pixels" })
+    .getByRole("button", { name: "Edit" })
+    .click();
   await expect(mapper.getByText(/5 pixels mapped from output index 100 to 104/)).toBeVisible();
   const closeCx = await mapper.locator(".geometry-pixel-footprint").first().getAttribute("cx");
   expect(closeCx).not.toBe(wideCx);
@@ -155,7 +302,38 @@ function surface(geometryId: string) {
     brightness_limit: 0.6,
     timing_offset_ms: -45,
     release_offset_ms: 20,
+    pixel_overrides: [],
     pixels,
+    revision: 1,
+    created_at: "2026-10-14T12:00:00Z",
+    updated_at: "2026-10-14T12:00:00Z",
+  };
+}
+
+function overlayGeometry(
+  id: string,
+  photoId: string,
+  kind: "projector_surface" | "mask" | "path" | "fixture",
+  points: [number, number][],
+) {
+  return {
+    id,
+    installation_id: installationId,
+    photo_id: photoId,
+    kind,
+    name: `${kind.replaceAll("_", " ")} overlay`,
+    semantic_id: `semantic-${id}`,
+    landmark_ids: [],
+    points: points.map(([x, y]) => ({ x, y })),
+    closed: kind === "projector_surface" || kind === "mask",
+    color: "#38bdf8",
+    label_visible: true,
+    locked: false,
+    hidden: false,
+    z_index: 1,
+    direction: "forward",
+    start_index: null,
+    pixel_count: null,
     revision: 1,
     created_at: "2026-10-14T12:00:00Z",
     updated_at: "2026-10-14T12:00:00Z",

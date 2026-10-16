@@ -6,9 +6,14 @@ from pydantic import ValidationError
 
 from cueverge.protocol.device_v2 import (
     ArtifactCacheCapability,
+    DeviceArtifactActivateAck,
+    DeviceArtifactActivateCommand,
+    DeviceArtifactStageAck,
+    DeviceArtifactStageCommand,
     DeviceCapabilityDocument,
     DeviceCertificate,
     DeviceEnrollmentRequest,
+    DeviceHeartbeat,
     DeviceIdentity,
     DeviceKind,
     DeviceMediaCommand,
@@ -77,6 +82,24 @@ def test_generic_timing_calibration_capability_is_typed_and_bounded() -> None:
         TimingAdjustment(minimum_ms=0, maximum_ms=100, resolution_ms=30)
 
 
+def test_device_reported_output_scaling_is_bounded() -> None:
+    values = {
+        "device_id": DEVICE_ID,
+        "device_session_id": uuid4(),
+        "controller_epoch": uuid4(),
+        "sequence": 1,
+        "device_monotonic_ms": 100,
+        "output_scaling": {"pixels.main": 0.625},
+    }
+
+    heartbeat = DeviceHeartbeat.model_validate(values)
+
+    assert heartbeat.output_scaling == {"pixels.main": 0.625}
+    values["output_scaling"] = {"pixels.main": 1.1}
+    with pytest.raises(ValidationError):
+        DeviceHeartbeat.model_validate(values)
+
+
 def test_device_kind_restricts_authority_capabilities() -> None:
     with pytest.raises(ValidationError, match="cannot declare downstream control"):
         DeviceCapabilityDocument(
@@ -121,6 +144,7 @@ def test_media_commands_are_session_fenced_and_command_specific() -> None:
         **values,
         command="prepare",
         asset_id="media/ambient.mp4",
+        end_behavior="hold_last_frame",
     )
     assert command.protocol_version == 2
     assert "agent_id" not in command.model_dump()
@@ -129,6 +153,48 @@ def test_media_commands_are_session_fenced_and_command_specific() -> None:
         DeviceMediaCommand(**values, command="seek")
     with pytest.raises(ValidationError, match="valid only for prepare"):
         DeviceMediaCommand(**values, command="play", asset_id="media/ambient.mp4")
+    with pytest.raises(ValidationError, match="requires end_behavior"):
+        DeviceMediaCommand(**values, command="prepare", asset_id="media/ambient.mp4")
+
+
+def test_artifact_stage_and_activation_messages_require_matching_error_state() -> None:
+    values = {
+        "request_id": uuid4(),
+        "device_session_id": uuid4(),
+        "controller_epoch": uuid4(),
+        "activation_identity": uuid4(),
+    }
+    stage = DeviceArtifactStageCommand(
+        **values,
+        resource="projector.left",
+        digest_sha256="a" * 64,
+        size_bytes=1024,
+        download_url="https://controller.example/artifact",
+    )
+    activate = DeviceArtifactActivateCommand(
+        **values,
+        resource=stage.resource,
+        digest_sha256=stage.digest_sha256,
+        media_end_behavior="hold_last_frame",
+        duration_ms=1000,
+        frame_rate_numerator=30,
+        frame_rate_denominator=1,
+        frame_time_origin_ms=0,
+    )
+    assert stage.protocol_version == 2
+    assert activate.media_end_behavior == "hold_last_frame"
+    with pytest.raises(ValidationError, match="must match status"):
+        DeviceArtifactStageAck(
+            **values,
+            digest_sha256=stage.digest_sha256,
+            status="error",
+        )
+    with pytest.raises(ValidationError, match="must match status"):
+        DeviceArtifactActivateAck(
+            **values,
+            status="completed",
+            error="unexpected",
+        )
 
 
 def test_certificate_and_enrolled_identity_require_complete_valid_state() -> None:

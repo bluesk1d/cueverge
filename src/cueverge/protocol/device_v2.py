@@ -3,7 +3,7 @@ from enum import StrEnum
 from typing import Annotated, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
+from pydantic import AnyUrl, BaseModel, ConfigDict, Field, SecretStr, model_validator
 
 from cueverge.protocol.models import Discontinuity, PlaybackState
 
@@ -311,6 +311,10 @@ class DeviceHeartbeat(DeviceProtocolModel):
     sequence: int = Field(ge=0)
     device_monotonic_ms: int = Field(ge=0)
     device_unix_ms: int = Field(default=0, ge=0)
+    output_scaling: dict[
+        str,
+        Annotated[float, Field(ge=0, le=1)],
+    ] = Field(default_factory=dict)
 
 
 class DeviceHeartbeatAck(DeviceProtocolModel):
@@ -393,6 +397,70 @@ class DeviceArtifactInventory(DeviceProtocolModel):
         return self
 
 
+class DeviceArtifactStageCommand(DeviceProtocolModel):
+    type: Literal["device.artifact.stage"] = "device.artifact.stage"
+    protocol_version: Literal[2] = DEVICE_PROTOCOL_VERSION
+    request_id: UUID
+    device_session_id: UUID
+    controller_epoch: UUID
+    activation_identity: UUID
+    resource: str = Field(min_length=1, max_length=200)
+    digest_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    size_bytes: int = Field(gt=0)
+    download_url: AnyUrl
+
+
+class DeviceArtifactStageAck(DeviceProtocolModel):
+    type: Literal["device.artifact.stage.ack"] = "device.artifact.stage.ack"
+    protocol_version: Literal[2] = DEVICE_PROTOCOL_VERSION
+    request_id: UUID
+    device_session_id: UUID
+    controller_epoch: UUID
+    activation_identity: UUID
+    digest_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    status: Literal["completed", "error"]
+    error: str | None = None
+
+    @model_validator(mode="after")
+    def validate_error(self) -> "DeviceArtifactStageAck":
+        if (self.status == "error") != (self.error is not None):
+            raise ValueError("artifact stage error detail must match status")
+        return self
+
+
+class DeviceArtifactActivateCommand(DeviceProtocolModel):
+    type: Literal["device.artifact.activate"] = "device.artifact.activate"
+    protocol_version: Literal[2] = DEVICE_PROTOCOL_VERSION
+    request_id: UUID
+    device_session_id: UUID
+    controller_epoch: UUID
+    activation_identity: UUID
+    resource: str = Field(min_length=1, max_length=200)
+    digest_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    media_end_behavior: Literal["stop", "hold_last_frame", "loop"]
+    duration_ms: int = Field(gt=0)
+    frame_rate_numerator: int = Field(gt=0)
+    frame_rate_denominator: int = Field(gt=0)
+    frame_time_origin_ms: int = Field(ge=0)
+
+
+class DeviceArtifactActivateAck(DeviceProtocolModel):
+    type: Literal["device.artifact.activate.ack"] = "device.artifact.activate.ack"
+    protocol_version: Literal[2] = DEVICE_PROTOCOL_VERSION
+    request_id: UUID
+    device_session_id: UUID
+    controller_epoch: UUID
+    activation_identity: UUID
+    status: Literal["completed", "error"]
+    error: str | None = None
+
+    @model_validator(mode="after")
+    def validate_error(self) -> "DeviceArtifactActivateAck":
+        if (self.status == "error") != (self.error is not None):
+            raise ValueError("artifact activation error detail must match status")
+        return self
+
+
 class DeviceMediaCommand(DeviceProtocolModel):
     type: Literal["device.media.command"] = "device.media.command"
     protocol_version: Literal[2] = DEVICE_PROTOCOL_VERSION
@@ -404,6 +472,7 @@ class DeviceMediaCommand(DeviceProtocolModel):
     scene_instance_id: UUID
     playback_session_id: UUID
     asset_id: str | None = None
+    end_behavior: Literal["stop", "hold_last_frame", "loop"] | None = None
     target_position_ms: int | None = Field(default=None, ge=0)
 
     @model_validator(mode="after")
@@ -414,6 +483,10 @@ class DeviceMediaCommand(DeviceProtocolModel):
             raise ValueError("target_position_ms is valid only for seek")
         if self.command != "prepare" and self.asset_id is not None:
             raise ValueError("asset_id is valid only for prepare")
+        if self.command == "prepare" and self.end_behavior is None:
+            raise ValueError("prepare command requires end_behavior")
+        if self.command != "prepare" and self.end_behavior is not None:
+            raise ValueError("end_behavior is valid only for prepare")
         return self
 
 

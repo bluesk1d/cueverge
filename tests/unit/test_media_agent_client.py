@@ -1,6 +1,7 @@
 import asyncio
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 from cueverge.config import MediaAgentConfig
 from cueverge.media_agent.client import MediaAgentClient, PlayerError, PlayerStatus
@@ -13,9 +14,15 @@ class FakePlayer:
     playing: bool = False
     position_ms: int = 1250
     status_error: bool = False
+    end_behavior: str | None = None
 
-    async def prepare(self, asset_id: str | None) -> None:
+    async def prepare(
+        self,
+        asset_id: str | None,
+        end_behavior: Literal["stop", "hold_last_frame", "loop"],
+    ) -> None:
         self.prepared = asset_id
+        self.end_behavior = end_behavior
 
     async def play(self) -> None:
         self.playing = True
@@ -54,6 +61,7 @@ def test_commands_are_fenced_acknowledged_and_emit_telemetry() -> None:
         acknowledgment = await client.handle_command(prepare)
         assert acknowledgment.status == "completed"
         assert player.prepared == "media/demo.mp4"
+        assert player.end_behavior == "hold_last_frame"
 
         play = _command(client, "play")
         assert (await client.handle_command(play)).status == "completed"
@@ -102,4 +110,5 @@ def _command(
         scene_instance_id="scene-1",
         playback_session_id="playback-1",
         asset_id=asset_id,
+        end_behavior="hold_last_frame" if command == "prepare" else None,
     )

@@ -9,6 +9,8 @@ from typing import Any
 
 from cueverge.core.loader import ShowPackageError, load_show_package
 from cueverge.gui.contracts import DraftProject
+from cueverge.gui.render_pipeline import render_pipeline_manifest
+from cueverge.gui.render_verification import verification_policy_manifest
 
 
 class CompilationError(ValueError):
@@ -57,6 +59,14 @@ class DraftCompiler:
             _write_json(
                 runtime_root / "composition-graph.json",
                 _compile_composition_graph(draft),
+            )
+            _write_json(
+                runtime_root / "render-pipeline.json",
+                render_pipeline_manifest(),
+            )
+            _write_json(
+                runtime_root / "render-verification.json",
+                verification_policy_manifest(),
             )
             for index, scene in enumerate(draft.scenes):
                 _write_json(
@@ -332,6 +342,7 @@ def _compile_composition_graph(draft: DraftProject) -> dict[str, object]:
                         "name": layer.get("name"),
                         "kind": layer.get("kind"),
                         "source_id": layer.get("source_id"),
+                        "layer_schema_version": layer.get("layer_schema_version"),
                         "output_id": output_id,
                         "editing_space_id": space_id,
                         "context_id": context["context_id"],
@@ -357,6 +368,18 @@ def _compile_composition_graph(draft: DraftProject) -> dict[str, object]:
                             "lighting": "static_cue",
                             "unsupported": "reject",
                         },
+                        "source_in_ms": layer.get("in_point_ms"),
+                        "source_out_ms": layer.get("out_point_ms"),
+                        "source_conformance": {
+                            "alpha_interpretation": layer.get("alpha_interpretation"),
+                            "color_space": layer.get("source_color_space"),
+                            "scaling_behavior": layer.get("scaling_behavior"),
+                        },
+                        "render_conformance": _render_contract(compositions.get(space_id)),
+                        "z_index": layer.get("z_index"),
+                        "fade_in_ms": round(_integer(layer.get("fade_in_ms"), 0) * time_scale),
+                        "fade_out_ms": round(_integer(layer.get("fade_out_ms"), 0) * time_scale),
+                        "audio": layer.get("audio"),
                         "start_ms": start_ms,
                         "duration_ms": duration_ms,
                         "keyframes": [
@@ -391,6 +414,7 @@ def _compile_composition_graph(draft: DraftProject) -> dict[str, object]:
                 "transform_layers": sorted(
                     transform_layers,
                     key=lambda value: (
+                        _integer(value["z_index"], 0),
                         _integer(value["start_ms"], 0),
                         str(value["id"]),
                     ),
@@ -445,6 +469,31 @@ def _coordinate_space(
         "target_id": composition.get("target_id"),
         "width": composition.get("width"),
         "height": composition.get("height"),
+    }
+
+
+def _render_contract(
+    composition: dict[str, Any] | None,
+) -> dict[str, object] | None:
+    if composition is None:
+        return None
+    settings = _object(composition.get("render_settings"))
+    return {
+        "render_pipeline_revision": settings.get("render_pipeline_revision", 1),
+        "resolution": {
+            "width": settings.get("render_width"),
+            "height": settings.get("render_height"),
+        },
+        "frame_rate": {
+            "numerator": settings.get("frame_rate_numerator", 30000),
+            "denominator": settings.get("frame_rate_denominator", 1001),
+        },
+        "working_color_space": settings.get("working_color_space", "linear_srgb"),
+        "working_alpha_mode": settings.get("working_alpha_mode", "premultiplied"),
+        "scaling_filter": settings.get("scaling_filter", "lanczos"),
+        "output_background_color": settings.get("output_background_color", "#000000"),
+        "media_end_behavior": settings.get("media_end_behavior", "hold_last_frame"),
+        "output_profile": settings.get("output_profile"),
     }
 
 

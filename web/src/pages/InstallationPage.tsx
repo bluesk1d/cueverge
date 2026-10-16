@@ -541,6 +541,13 @@ const GEOMETRY_KINDS: InstallationGeometryKind[] = [
   "safety_zone",
 ];
 
+type SimulationPreviewMode =
+  | "logical_composition"
+  | "parent_context"
+  | "native_projector"
+  | "selected_output"
+  | "full_installation";
+
 function GeometryMapper({
   installationId,
   projectorResources,
@@ -582,6 +589,14 @@ function GeometryMapper({
   const [pixelCount, setPixelCount] = useState("");
   const [stagePoints, setStagePoints] = useState("");
   const [traversalPreview, setTraversalPreview] = useState(false);
+  const [simulationOverlay, setSimulationOverlay] = useState(false);
+  const [simulationPreviewMode, setSimulationPreviewMode] =
+    useState<SimulationPreviewMode>("full_installation");
+  const [simulationTarget, setSimulationTarget] = useState("");
+  const [sideBySideSimulation, setSideBySideSimulation] = useState(false);
+  const [secondaryPhotoId, setSecondaryPhotoId] = useState(
+    photos[1]?.id ?? photos[0]?.id ?? "",
+  );
   const [pixelGenerator, setPixelGenerator] = useState<
     "row" | "grid" | "ring" | "outline" | "individual" | "import"
   >("row");
@@ -664,6 +679,13 @@ function GeometryMapper({
     mirror_x: false,
     mirror_y: false,
     mask_semantic_ids: [] as string[],
+    calibration_source: "unverified_estimate" as
+      | "measured_grid"
+      | "easy_corner_pin"
+      | "unverified_estimate",
+    calibration_revision: 1,
+    mesh_vertices: [] as [number, number, number, number][],
+    mesh_triangles: [] as [number, number, number][],
   });
   const [lightingValues, setLightingValues] = useState({
     resource: "wled-001",
@@ -688,11 +710,32 @@ function GeometryMapper({
     brightness_limit: 1,
     timing_offset_ms: 0,
     release_offset_ms: 0,
+    pixel_overrides: [] as {
+      output_index: number;
+      local_x: number;
+      local_y: number;
+    }[],
   });
+  const [pixelCorrectionIndex, setPixelCorrectionIndex] = useState(0);
+  const [pixelCorrectionX, setPixelCorrectionX] = useState(0);
+  const [pixelCorrectionY, setPixelCorrectionY] = useState(0);
   const photo = photos.find((candidate) => candidate.id === photoId) ?? photos[0];
+  const secondaryPhoto =
+    photos.find(
+      (candidate) =>
+        candidate.id === secondaryPhotoId && candidate.id !== photo?.id,
+    ) ??
+    photos.find((candidate) => candidate.id !== photo?.id);
   const visible = geometry
     .filter((item) => item.photo_id === photo?.id && !item.hidden)
     .sort((left, right) => left.z_index - right.z_index);
+  const semanticTargets = [...new Set(visible.map((item) => item.semantic_id))];
+  const simulationGeometry = filterSimulationGeometry(
+    visible,
+    simulationPreviewMode,
+    simulationTarget,
+    projectorResources,
+  );
   const visibleSuggestions = suggestions.filter(
     (suggestion) =>
       suggestion.photo_id === photo?.id && suggestion.state === "pending",
@@ -721,16 +764,6 @@ function GeometryMapper({
       item.stage_points?.map(([x, y]) => `${x},${y}`).join("\n") ?? "",
     );
     setMapping(undefined);
-    setLinkedSemanticId(null);
-    setColor("#6ee7ff");
-    setLabelVisible(true);
-    setLocked(false);
-    setHidden(false);
-    setZIndex(0);
-    setDirection("forward");
-    setStartIndex("");
-    setPixelCount("");
-    setStagePoints("");
     if (item.kind === "projector_surface") {
       try {
         const loaded = await getProjectorMapping(item.id);
@@ -758,6 +791,11 @@ function GeometryMapper({
           mirror_x: loaded.mirror_x,
           mirror_y: loaded.mirror_y,
           mask_semantic_ids: loaded.mask_semantic_ids,
+          calibration_source:
+            loaded.calibration_source ?? "unverified_estimate",
+          calibration_revision: loaded.calibration_revision ?? 1,
+          mesh_vertices: loaded.mesh_vertices ?? [],
+          mesh_triangles: loaded.mesh_triangles ?? [],
         });
       } catch {
         setMapping(undefined);
@@ -783,7 +821,14 @@ function GeometryMapper({
           brightness_limit: loaded.brightness_limit,
           timing_offset_ms: loaded.timing_offset_ms,
           release_offset_ms: loaded.release_offset_ms,
+          pixel_overrides: loaded.pixel_overrides,
         });
+        const firstPixel = loaded.pixels[0];
+        if (firstPixel) {
+          setPixelCorrectionIndex(firstPixel.output_index);
+          setPixelCorrectionX(firstPixel.local_x);
+          setPixelCorrectionY(firstPixel.local_y);
+        }
       } catch {
         setLightingSurface(undefined);
       }
@@ -1049,6 +1094,91 @@ function GeometryMapper({
             </option>
           ))}
         </select>
+        <button
+          aria-pressed={simulationOverlay}
+          onClick={() => setSimulationOverlay((current) => !current)}
+        >
+          {simulationOverlay ? "Hide simulation overlay" : "Show simulation overlay"}
+        </button>
+        {simulationOverlay && (
+          <>
+            <select
+              aria-label="Simulation preview mode"
+              value={simulationPreviewMode}
+              onChange={(event) => {
+                setSimulationPreviewMode(
+                  event.target.value as SimulationPreviewMode,
+                );
+                setSimulationTarget("");
+              }}
+            >
+              <option value="logical_composition">Current logical composition</option>
+              <option value="parent_context">Parent composition context</option>
+              <option value="native_projector">Selected native projector canvas</option>
+              <option value="selected_output">Selected device / output</option>
+              <option value="full_installation">Full mapped installation</option>
+            </select>
+            {["logical_composition", "parent_context"].includes(
+              simulationPreviewMode,
+            ) && (
+              <select
+                aria-label="Simulation semantic context"
+                value={simulationTarget}
+                onChange={(event) => setSimulationTarget(event.target.value)}
+              >
+                <option value="">All semantic targets</option>
+                {semanticTargets.map((semanticId) => (
+                  <option key={semanticId} value={semanticId}>
+                    {semanticId}
+                  </option>
+                ))}
+              </select>
+            )}
+            {["native_projector", "selected_output"].includes(
+              simulationPreviewMode,
+            ) && (
+              <select
+                aria-label="Simulation output context"
+                value={simulationTarget}
+                onChange={(event) => setSimulationTarget(event.target.value)}
+              >
+                <option value="">All configured outputs</option>
+                {projectorResources.map((resource) => (
+                  <option key={resource} value={resource}>
+                    {resource}
+                  </option>
+                ))}
+                <option value="lighting">Mapped lighting outputs</option>
+              </select>
+            )}
+            <small aria-label="Simulation context status">
+              {simulationPreviewMode.replaceAll("_", " ")} · scene time 0 ms
+            </small>
+            <button
+              aria-pressed={sideBySideSimulation}
+              onClick={() => setSideBySideSimulation((current) => !current)}
+            >
+              {sideBySideSimulation
+                ? "Hide side-by-side viewpoint"
+                : "Show side-by-side viewpoint"}
+            </button>
+            {sideBySideSimulation && (
+              <select
+                aria-label="Secondary simulation viewpoint"
+                value={secondaryPhoto?.id ?? ""}
+                onChange={(event) => setSecondaryPhotoId(event.target.value)}
+              >
+                {photos
+                  .filter((candidate) => candidate.id !== photo?.id)
+                  .map((candidate) => (
+                    <option key={candidate.id} value={candidate.id}>
+                      {candidate.viewpoint} · {candidate.name}
+                    </option>
+                  ))}
+              </select>
+            )}
+          </>
+        )}
         {canEdit && (
           <>
             <select
@@ -1178,7 +1308,9 @@ function GeometryMapper({
                   (!mappingValues.resource ||
                     (mappingValues.surface_model === "planar"
                       ? points.length !== 4
-                      : points.length < 5))) ||
+                      : points.length < 5 ||
+                        mappingValues.mesh_vertices.length < 4 ||
+                        mappingValues.mesh_triangles.length < 2))) ||
                 (kind === "pixel_segment" &&
                   (!startIndex || !pixelCount || Number(pixelCount) < 1))
               }
@@ -1243,6 +1375,90 @@ function GeometryMapper({
               <option value="subdivided">Subdivided / non-planar</option>
             </select>
           </label>
+          <label>
+            Calibration source
+            <select
+              aria-label="Projection calibration source"
+              value={mappingValues.calibration_source}
+              onChange={(event) =>
+                setMappingValues((current) => ({
+                  ...current,
+                  calibration_source: event.target.value as
+                    | "measured_grid"
+                    | "easy_corner_pin"
+                    | "unverified_estimate",
+                }))
+              }
+            >
+              <option value="measured_grid">Measured live grid</option>
+              <option value="easy_corner_pin">Easy-mode corner pin</option>
+              <option value="unverified_estimate">Unverified estimate</option>
+            </select>
+          </label>
+          <label>
+            Calibration revision
+            <input
+              aria-label="Projection calibration revision"
+              min="1"
+              type="number"
+              value={mappingValues.calibration_revision}
+              onChange={(event) =>
+                setMappingValues((current) => ({
+                  ...current,
+                  calibration_revision: Number(event.target.value),
+                }))
+              }
+            />
+          </label>
+          {mappingValues.surface_model === "subdivided" && (
+            <>
+              <label className="asset-governance__wide">
+                Mesh vertices · UV u,v then stage/object x,y
+                <textarea
+                  aria-label="Projection mesh vertices"
+                  rows={5}
+                  value={mappingValues.mesh_vertices
+                    .map((vertex) => vertex.join(","))
+                    .join("\n")}
+                  onChange={(event) =>
+                    setMappingValues((current) => ({
+                      ...current,
+                      mesh_vertices: event.target.value
+                        .split("\n")
+                        .map((line) => line.split(",").map(Number))
+                        .filter(
+                          (vertex): vertex is [number, number, number, number] =>
+                            vertex.length === 4 && vertex.every(Number.isFinite),
+                        ),
+                    }))
+                  }
+                />
+              </label>
+              <label className="asset-governance__wide">
+                Mesh triangle vertex indices
+                <textarea
+                  aria-label="Projection mesh triangles"
+                  rows={4}
+                  value={mappingValues.mesh_triangles
+                    .map((triangle) => triangle.join(","))
+                    .join("\n")}
+                  onChange={(event) =>
+                    setMappingValues((current) => ({
+                      ...current,
+                      mesh_triangles: event.target.value
+                        .split("\n")
+                        .map((line) => line.split(",").map(Number))
+                        .filter(
+                          (triangle): triangle is [number, number, number] =>
+                            triangle.length === 3 &&
+                            triangle.every(Number.isInteger),
+                        ),
+                    }))
+                  }
+                />
+              </label>
+            </>
+          )}
           <label>
             Content fit
             <select
@@ -1401,6 +1617,13 @@ function GeometryMapper({
             />
           </label>
           <small>
+            Calibration: {mappingValues.calibration_source.replaceAll("_", " ")} ·
+            revision {mappingValues.calibration_revision}
+            {mappingValues.surface_model === "subdivided"
+              ? ` · indexed mesh ${mappingValues.mesh_vertices.length} vertices / ${mappingValues.mesh_triangles.length} triangles`
+              : ""}
+          </small>
+          <small>
             {mapping
               ? mapping.diagnostic ??
                 `Homography: ${mapping.homography?.map((value) => value.toFixed(5)).join(", ")}`
@@ -1425,6 +1648,21 @@ function GeometryMapper({
           ) : (
             <div className="projector-grid-preview" aria-label="Generated calibration grid" />
           )}
+          <ProjectorWarpPreviews
+            calibrationRevision={mappingValues.calibration_revision}
+            calibrationSource={mappingValues.calibration_source}
+            meshTriangles={mappingValues.mesh_triangles}
+            meshVertices={mappingValues.mesh_vertices}
+            nativeHeight={mappingValues.native_height}
+            nativeWidth={mappingValues.native_width}
+            stageExtent={[
+              mappingValues.stage_x,
+              mappingValues.stage_y,
+              mappingValues.stage_width,
+              mappingValues.stage_height,
+            ]}
+            surfaceModel={mappingValues.surface_model}
+          />
           {canPreview && (
             <button
               disabled={!mappingValues.resource}
@@ -1644,11 +1882,131 @@ function GeometryMapper({
                 </label>
               ))}
               {lightingSurface && (
-                <small>
-                  {lightingSurface.pixels.length} pixels mapped from output index{" "}
-                  {lightingSurface.pixels[0]?.output_index} to{" "}
-                  {lightingSurface.pixels.at(-1)?.output_index}.
-                </small>
+                <>
+                  <small>
+                    {lightingSurface.pixels.length} pixels mapped from output index{" "}
+                    {lightingSurface.pixels[0]?.output_index} to{" "}
+                    {lightingSurface.pixels.at(-1)?.output_index}.
+                  </small>
+                  <div className="pixel-correction-controls">
+                    <label>
+                      Pixel correction
+                      <select
+                        aria-label="Pixel correction output"
+                        value={pixelCorrectionIndex}
+                        onChange={(event) => {
+                          const outputIndex = Number(event.target.value);
+                          const pixel = lightingSurface.pixels.find(
+                            (candidate) =>
+                              candidate.output_index === outputIndex,
+                          );
+                          setPixelCorrectionIndex(outputIndex);
+                          if (pixel) {
+                            setPixelCorrectionX(pixel.local_x);
+                            setPixelCorrectionY(pixel.local_y);
+                          }
+                        }}
+                      >
+                        {lightingSurface.pixels.map((pixel) => (
+                          <option
+                            key={pixel.output_index}
+                            value={pixel.output_index}
+                          >
+                            Diagnostic output {pixel.output_index}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>
+                      Corrected local X
+                      <input
+                        aria-label="Corrected pixel local X"
+                        max={lightingValues.local_width}
+                        min={0}
+                        step="0.001"
+                        type="number"
+                        value={pixelCorrectionX}
+                        onChange={(event) =>
+                          setPixelCorrectionX(Number(event.target.value))
+                        }
+                      />
+                    </label>
+                    <label>
+                      Corrected local Y
+                      <input
+                        aria-label="Corrected pixel local Y"
+                        max={lightingValues.local_height}
+                        min={0}
+                        step="0.001"
+                        type="number"
+                        value={pixelCorrectionY}
+                        onChange={(event) =>
+                          setPixelCorrectionY(Number(event.target.value))
+                        }
+                      />
+                    </label>
+                    <button
+                      onClick={() => {
+                        const correction = {
+                          output_index: pixelCorrectionIndex,
+                          local_x: pixelCorrectionX,
+                          local_y: pixelCorrectionY,
+                        };
+                        setLightingValues((current) => ({
+                          ...current,
+                          pixel_overrides: [
+                            ...current.pixel_overrides.filter(
+                              (override) =>
+                                override.output_index !== pixelCorrectionIndex,
+                            ),
+                            correction,
+                          ].sort(
+                            (left, right) =>
+                              left.output_index - right.output_index,
+                          ),
+                        }));
+                        setLightingSurface((current) =>
+                          current
+                            ? {
+                                ...current,
+                                pixel_overrides: [
+                                  ...current.pixel_overrides.filter(
+                                    (override) =>
+                                      override.output_index !==
+                                      pixelCorrectionIndex,
+                                  ),
+                                  correction,
+                                ],
+                                pixels: current.pixels.map((pixel) =>
+                                  pixel.output_index === pixelCorrectionIndex
+                                    ? {
+                                        ...pixel,
+                                        local_x: pixelCorrectionX,
+                                        local_y: pixelCorrectionY,
+                                        stage_x:
+                                          current.stage_matrix[0] *
+                                            pixelCorrectionX +
+                                          current.stage_matrix[2] *
+                                            pixelCorrectionY +
+                                          current.stage_matrix[4],
+                                        stage_y:
+                                          current.stage_matrix[1] *
+                                            pixelCorrectionX +
+                                          current.stage_matrix[3] *
+                                            pixelCorrectionY +
+                                          current.stage_matrix[5],
+                                      }
+                                    : pixel,
+                                ),
+                              }
+                            : current,
+                        );
+                      }}
+                    >
+                      Apply pixel correction
+                    </button>
+                  </div>
+                </>
               )}
               {canPreview && (
                 <button
@@ -1823,6 +2181,44 @@ function GeometryMapper({
               )
               .join(" · ")}
           </small>
+          <div
+            aria-label="Projector stage contributions"
+            className="stage-contribution-legend"
+          >
+            {[
+              ...new Set(
+                stageCoverage.regions.flatMap((region) => region.resources),
+              ),
+            ].map((resource) => (
+              <span key={resource}>
+                {resource}:{" "}
+                {
+                  stageCoverage.regions.filter((region) =>
+                    region.resources.includes(resource),
+                  ).length
+                }{" "}
+                region(s)
+              </span>
+            ))}
+          </div>
+          <div aria-label="Stage coverage warnings">
+            {stageCoverage.regions
+              .filter((region) =>
+                ["overlap", "occluded", "uncovered"].includes(region.kind),
+              )
+              .map((region, index) => (
+                <small
+                  className="asset-diagnostic--warning"
+                  key={`${region.kind}:${index}`}
+                >
+                  {region.kind === "overlap"
+                    ? `Overlap contribution: ${region.resources.join(", ")}`
+                    : region.kind === "occluded"
+                      ? `Occluded stage region: ${region.resources.join(", ") || "no visible output"}`
+                      : "Uncovered stage region has no projector contribution"}
+                </small>
+              ))}
+          </div>
           <svg
             aria-label="Shared stage coverage preview"
             viewBox="0 0 600 300"
@@ -1837,6 +2233,7 @@ function GeometryMapper({
                 <polygon
                   key={`${region.kind}:${index}`}
                   className={`stage-region stage-region--${region.kind}`}
+                  data-resources={region.resources.join(",")}
                   points={region.points
                     .map(
                       ([x, y]) =>
@@ -1852,13 +2249,55 @@ function GeometryMapper({
                 </polygon>
               );
             })}
+            {geometry
+              .filter(
+                (item) =>
+                  item.kind === "path" &&
+                  item.stage_points !== null &&
+                  item.stage_points.length >= 2,
+              )
+              .map((item) => {
+                const width =
+                  stageCoverage.maximum_x - stageCoverage.minimum_x || 1;
+                const height =
+                  stageCoverage.maximum_y - stageCoverage.minimum_y || 1;
+                return (
+                  <polyline
+                    className="stage-simulation-motion-path"
+                    key={item.id}
+                    points={item.stage_points!
+                      .map(
+                        ([x, y]) =>
+                          `${((x - stageCoverage.minimum_x) / width) * 600},${
+                            ((y - stageCoverage.minimum_y) / height) * 300
+                          }`,
+                      )
+                      .join(" ")}
+                  >
+                    <title>Stage motion path: {item.name}</title>
+                  </polyline>
+                );
+              })}
           </svg>
         </section>
       )}
       {photo && (
+        <div
+          className={
+            simulationOverlay && sideBySideSimulation
+              ? "simulation-view-grid simulation-view-grid--split"
+              : "simulation-view-grid"
+          }
+        >
+        {simulationOverlay && (
+          <small className="simulation-approximation" role="status">
+            Approximate photo simulation · no hardware adapters or enrolled
+            clients are active
+          </small>
+        )}
         <svg
           aria-label={`Geometry editor for ${photo.name}`}
-          className={`geometry-canvas${traversalPreview ? " geometry-canvas--traversal" : ""}`}
+          className={`geometry-canvas${traversalPreview ? " geometry-canvas--traversal" : ""}${simulationOverlay ? " geometry-canvas--simulation" : ""}`}
           role="img"
           viewBox={`${panX} ${panY} ${1000 / zoom} ${600 / zoom}`}
           onClick={(event) => {
@@ -1950,9 +2389,34 @@ function GeometryMapper({
             href={installationPhotoUrl(photo.id)}
             preserveAspectRatio="xMidYMid meet"
           />
-          {visible.map((item) => (
-            <GeometryShape key={item.id} geometry={item} />
+          {(simulationOverlay ? simulationGeometry : visible).map((item) => (
+            <GeometryShape
+              key={item.id}
+              geometry={item}
+              simulation={simulationOverlay}
+            />
           ))}
+          {simulationOverlay &&
+            simulationGeometry
+              .filter((item) => item.kind === "pixel_segment")
+              .flatMap((item) =>
+                photoPixelPoints(item).map((pixel) => (
+                  <circle
+                    className="geometry-simulation-pixel"
+                    cx={pixel.x * 1000}
+                    cy={pixel.y * 600}
+                    key={`${item.id}:${pixel.outputIndex}`}
+                    r="7"
+                    style={{
+                      fill: `hsl(${(pixel.outputIndex * 47) % 360} 90% 60%)`,
+                    }}
+                  >
+                    <title>
+                      Simulated logical pixel on {item.name}
+                    </title>
+                  </circle>
+                )),
+              )}
           {visibleSuggestions.map((suggestion) =>
             suggestion.closed ? (
               <polygon
@@ -2030,6 +2494,23 @@ function GeometryMapper({
             </>
           )}
         </svg>
+        {simulationOverlay && sideBySideSimulation && secondaryPhoto && (
+          <SimulationPhotoCanvas
+            geometry={filterSimulationGeometry(
+              geometry
+                .filter(
+                  (item) =>
+                    item.photo_id === secondaryPhoto.id && !item.hidden,
+                )
+                .sort((left, right) => left.z_index - right.z_index),
+              simulationPreviewMode,
+              simulationTarget,
+              projectorResources,
+            )}
+            photo={secondaryPhoto}
+          />
+        )}
+        </div>
       )}
       {points.length >= 2 && (
         <small>
@@ -2106,7 +2587,114 @@ function GeometryMapper({
   );
 }
 
-function GeometryShape({ geometry }: { geometry: InstallationGeometry }) {
+function ProjectorWarpPreviews({
+  surfaceModel,
+  nativeWidth,
+  nativeHeight,
+  stageExtent,
+  meshVertices,
+  meshTriangles,
+  calibrationSource,
+  calibrationRevision,
+}: {
+  surfaceModel: "planar" | "subdivided";
+  nativeWidth: number;
+  nativeHeight: number;
+  stageExtent: [number, number, number, number];
+  meshVertices: [number, number, number, number][];
+  meshTriangles: [number, number, number][];
+  calibrationSource:
+    | "measured_grid"
+    | "easy_corner_pin"
+    | "unverified_estimate";
+  calibrationRevision: number;
+}) {
+  const vertices =
+    surfaceModel === "subdivided" && meshVertices.length
+      ? meshVertices
+      : [
+          [0, 0, stageExtent[0], stageExtent[1]],
+          [1, 0, stageExtent[0] + stageExtent[2], stageExtent[1]],
+          [
+            1,
+            1,
+            stageExtent[0] + stageExtent[2],
+            stageExtent[1] + stageExtent[3],
+          ],
+          [0, 1, stageExtent[0], stageExtent[1] + stageExtent[3]],
+        ] as [number, number, number, number][];
+  const triangles =
+    surfaceModel === "subdivided" && meshTriangles.length
+      ? meshTriangles
+      : ([
+          [0, 1, 2],
+          [0, 2, 3],
+        ] as [number, number, number][]);
+  const minimumX = Math.min(...vertices.map((vertex) => vertex[2]));
+  const minimumY = Math.min(...vertices.map((vertex) => vertex[3]));
+  const maximumX = Math.max(...vertices.map((vertex) => vertex[2]));
+  const maximumY = Math.max(...vertices.map((vertex) => vertex[3]));
+  const stageWidth = maximumX - minimumX || 1;
+  const stageHeight = maximumY - minimumY || 1;
+  const provenance = calibrationSource.replaceAll("_", " ");
+  return (
+    <div className="projector-warp-previews">
+      <figure>
+        <figcaption>
+          Native canvas warp · {nativeWidth}×{nativeHeight}
+        </figcaption>
+        <svg
+          aria-label="Projector native calibrated warp preview"
+          viewBox={`0 0 ${nativeWidth} ${nativeHeight}`}
+        >
+          {triangles.map((triangle, index) => (
+            <polygon
+              key={index}
+              points={triangle
+                .map((vertexIndex) => {
+                  const vertex = vertices[vertexIndex];
+                  return `${vertex[0] * nativeWidth},${vertex[1] * nativeHeight}`;
+                })
+                .join(" ")}
+            />
+          ))}
+        </svg>
+      </figure>
+      <figure>
+        <figcaption>
+          Installation warp · {provenance} · revision {calibrationRevision}
+        </figcaption>
+        <svg
+          aria-label="Installation calibrated warp preview"
+          viewBox="0 0 800 400"
+        >
+          {triangles.map((triangle, index) => (
+            <polygon
+              key={index}
+              points={triangle
+                .map((vertexIndex) => {
+                  const vertex = vertices[vertexIndex];
+                  return `${((vertex[2] - minimumX) / stageWidth) * 800},${
+                    ((vertex[3] - minimumY) / stageHeight) * 400
+                  }`;
+                })
+                .join(" ")}
+            />
+          ))}
+        </svg>
+      </figure>
+    </div>
+  );
+}
+
+
+function GeometryShape({
+  geometry,
+  simulation,
+}: {
+  geometry: InstallationGeometry;
+  simulation?: boolean;
+}) {
   const coordinates = geometry.points
     .map((point) => `${point.x * 1000},${point.y * 600}`)
     .join(" ");
@@ -2119,7 +2707,7 @@ function GeometryShape({ geometry }: { geometry: InstallationGeometry }) {
     return (
       <g>
         <circle
-          className={`geometry-shape geometry-shape--${geometry.kind}`}
+          className={`geometry-shape geometry-shape--${geometry.kind}${simulation ? " geometry-shape--simulation" : ""}`}
           style={{ fill: geometry.color, stroke: geometry.color }}
           cx={point.x * 1000}
           cy={point.y * 600}
@@ -2139,13 +2727,13 @@ function GeometryShape({ geometry }: { geometry: InstallationGeometry }) {
   }
   const shape = geometry.closed ? (
     <polygon
-      className={`geometry-shape geometry-shape--${geometry.kind}`}
+      className={`geometry-shape geometry-shape--${geometry.kind}${simulation ? " geometry-shape--simulation" : ""}`}
       points={coordinates}
       style={{ stroke: geometry.color }}
     />
   ) : (
     <polyline
-      className={`geometry-shape geometry-shape--${geometry.kind}`}
+      className={`geometry-shape geometry-shape--${geometry.kind}${simulation ? " geometry-shape--simulation" : ""}`}
       points={coordinates}
       style={{ stroke: geometry.color }}
     />
@@ -2169,6 +2757,112 @@ function GeometryShape({ geometry }: { geometry: InstallationGeometry }) {
       </text>
     </g>
   );
+}
+
+function SimulationPhotoCanvas({
+  photo,
+  geometry,
+}: {
+  photo: InstallationPhoto;
+  geometry: InstallationGeometry[];
+}) {
+  return (
+    <svg
+      aria-label={`Synchronized simulation for ${photo.name}`}
+      className="geometry-canvas geometry-canvas--simulation geometry-canvas--secondary"
+      role="img"
+      viewBox="0 0 1000 600"
+    >
+      <image
+        width="1000"
+        height="600"
+        href={installationPhotoUrl(photo.id)}
+        preserveAspectRatio="xMidYMid meet"
+      />
+      {geometry.map((item) => (
+        <GeometryShape geometry={item} key={item.id} simulation />
+      ))}
+      {geometry
+        .filter((item) => item.kind === "pixel_segment")
+        .flatMap((item) =>
+          photoPixelPoints(item).map((pixel) => (
+            <circle
+              className="geometry-simulation-pixel"
+              cx={pixel.x * 1000}
+              cy={pixel.y * 600}
+              key={`${item.id}:${pixel.outputIndex}`}
+              r="7"
+              style={{
+                fill: `hsl(${(pixel.outputIndex * 47) % 360} 90% 60%)`,
+              }}
+            >
+              <title>
+                Simulated logical pixel on {item.name} · scene time 0 ms
+              </title>
+            </circle>
+          )),
+        )}
+    </svg>
+  );
+}
+
+function filterSimulationGeometry(
+  geometry: InstallationGeometry[],
+  mode: SimulationPreviewMode,
+  target: string,
+  projectorResources: string[],
+): InstallationGeometry[] {
+  if (mode === "full_installation") {
+    return geometry;
+  }
+  if (mode === "logical_composition") {
+    return target
+      ? geometry.filter((item) => item.semantic_id === target)
+      : geometry.filter((item) =>
+          ["pixel_segment", "fixture", "path"].includes(item.kind),
+        );
+  }
+  if (mode === "parent_context") {
+    return target
+      ? geometry.filter(
+          (item) =>
+            item.semantic_id === target ||
+            ["projector_surface", "mask", "audience_zone", "safety_zone"].includes(
+              item.kind,
+            ),
+        )
+      : geometry;
+  }
+  if (mode === "native_projector") {
+    const projectors = geometry.filter(
+      (item) => item.kind === "projector_surface",
+    );
+    if (!target) {
+      return projectors;
+    }
+    const resourceIndex = projectorResources.indexOf(target);
+    return resourceIndex >= 0 && projectors[resourceIndex]
+      ? [projectors[resourceIndex]]
+      : [];
+  }
+  if (target === "lighting") {
+    return geometry.filter((item) =>
+      ["pixel_segment", "fixture", "path"].includes(item.kind),
+    );
+  }
+  if (!target) {
+    return geometry;
+  }
+  const projectors = geometry.filter(
+    (item) => item.kind === "projector_surface",
+  );
+  const resourceIndex = projectorResources.indexOf(target);
+  return resourceIndex >= 0 && projectors[resourceIndex]
+    ? [
+        projectors[resourceIndex],
+        ...geometry.filter((item) => item.kind === "mask"),
+      ]
+    : [];
 }
 
 function geometryDiagnostics(geometry: InstallationGeometry[]): string[] {

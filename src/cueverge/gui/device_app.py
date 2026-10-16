@@ -1,10 +1,13 @@
 import logging
 import time
 from asyncio import Lock
+from collections.abc import Iterator
 from datetime import UTC, datetime
+from pathlib import Path
 from uuid import UUID
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Header, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import StreamingResponse
 from pydantic import ValidationError
 
 from cueverge.controller.runtime import ControllerRuntime
@@ -14,9 +17,12 @@ from cueverge.gui.device_transport import peer_device_certificate
 from cueverge.gui.repository import (
     DeviceCertificateAuthorizationError,
     GuiRepository,
+    ProjectNotFoundError,
 )
 from cueverge.protocol.device_v2 import (
+    DeviceArtifactActivateAck,
     DeviceArtifactInventory,
+    DeviceArtifactStageAck,
     DeviceCommandAck,
     DeviceCredentialRotationRequest,
     DeviceCredentialRotationResponse,
@@ -55,10 +61,18 @@ class DeviceCommandChannel:
             scene_instance_id=UUID(command.scene_instance_id),
             playback_session_id=UUID(command.playback_session_id),
             asset_id=command.asset_id,
+            end_behavior=command.end_behavior,
             target_position_ms=command.target_position_ms,
         )
         async with self._send_lock:
             await self.websocket.send_json(message.model_dump(mode="json"))
+
+    async def send_device_message(self, message: object) -> None:
+        model_dump = getattr(message, "model_dump", None)
+        if not callable(model_dump):
+            raise DeviceSessionError("device message is not serializable")
+        async with self._send_lock:
+            await self.websocket.send_json(model_dump(mode="json"))
 
 
 def create_device_app(
@@ -78,6 +92,49 @@ def create_device_app(
     @app.get("/health/live")
     async def live() -> dict[str, str]:
         return {"status": "live"}
+
+    @app.get("/api/device/v2/render-artifacts/{artifact_id}/{resource}")
+    async def render_artifact_member(
+        artifact_id: str,
+        resource: str,
+        request: Request,
+        range_header: str | None = Header(default=None, alias="Range"),
+    ) -> StreamingResponse:
+        try:
+            peer = peer_device_certificate(request.scope)
+            device = repository.authorize_device_certificate(
+                device_id=str(peer.device_id),
+                certificate_serial=peer.serial,
+                certificate_fingerprint_sha256=peer.fingerprint_sha256,
+            )
+            assignments = {item.resource: item for item in repository.list_resource_assignments()}
+            assignment = assignments.get(resource)
+            if assignment is None or assignment.device_id != device.id:
+                raise ValueError("artifact resource is not assigned to this device")
+            member = repository.get_render_artifact_member(artifact_id, resource)
+        except (
+            ValueError,
+            DeviceCertificateAuthorizationError,
+            ProjectNotFoundError,
+        ):
+            raise HTTPException(status_code=403, detail="artifact access denied") from None
+        start = _range_start(range_header, member.size_bytes)
+        status_code = 206 if start else 200
+        length = member.size_bytes - start
+        headers = {
+            "Accept-Ranges": "bytes",
+            "Content-Length": str(length),
+            "ETag": f'"sha256:{member.digest_sha256}"',
+            "Cache-Control": "private, immutable",
+        }
+        if start:
+            headers["Content-Range"] = f"bytes {start}-{member.size_bytes - 1}/{member.size_bytes}"
+        return StreamingResponse(
+            _file_chunks(member.path, start),
+            status_code=status_code,
+            media_type="video/mp4",
+            headers=headers,
+        )
 
     @app.websocket("/api/device/v2/agent/ws")
     async def device_socket(websocket: WebSocket) -> None:
@@ -105,6 +162,7 @@ def create_device_app(
             if runtime is not None and device.device_kind is DeviceKind.DIRECT_MEDIA_AGENT:
                 runtime_agent_id = _assigned_agent_id(repository, runtime, device.id)
                 channel = DeviceCommandChannel(websocket, session_id)
+                sessions.attach_channel(UUID(device.id), session_id, channel)
                 runtime_welcome = runtime.register_agent(
                     AgentHello(
                         agent_id=runtime_agent_id,
@@ -214,6 +272,20 @@ def create_device_app(
                         ),
                         faults=inventory.faults,
                     )
+                elif message_type == "device.artifact.stage.ack":
+                    stage_ack = DeviceArtifactStageAck.model_validate(payload)
+                    sessions.acknowledge(
+                        UUID(device.id),
+                        stage_ack.request_id,
+                        stage_ack,
+                    )
+                elif message_type == "device.artifact.activate.ack":
+                    activate_ack = DeviceArtifactActivateAck.model_validate(payload)
+                    sessions.acknowledge(
+                        UUID(device.id),
+                        activate_ack.request_id,
+                        activate_ack,
+                    )
                 elif message_type == "device.command.ack" and runtime is not None:
                     if runtime_agent_id is None:
                         raise ValueError("device has no runtime assignment")
@@ -305,6 +377,30 @@ def create_device_app(
 
 def _now_ms() -> int:
     return time.time_ns() // 1_000_000
+
+
+def _range_start(value: str | None, size: int) -> int:
+    if value is None:
+        return 0
+    if not value.startswith("bytes=") or "," in value:
+        raise HTTPException(status_code=416, detail="unsupported range")
+    start_text, separator, end_text = value[6:].partition("-")
+    if not separator or not start_text or end_text:
+        raise HTTPException(status_code=416, detail="only open-ended ranges are supported")
+    try:
+        start = int(start_text)
+    except ValueError as error:
+        raise HTTPException(status_code=416, detail="invalid range") from error
+    if start < 0 or start >= size:
+        raise HTTPException(status_code=416, detail="range is outside artifact")
+    return start
+
+
+def _file_chunks(path: Path, start: int) -> Iterator[bytes]:
+    with path.open("rb") as source:
+        source.seek(start)
+        while chunk := source.read(1024 * 1024):
+            yield chunk
 
 
 def _assigned_agent_id(

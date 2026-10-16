@@ -27,7 +27,11 @@ class PlayerStatus:
 
 
 class Player(Protocol):
-    async def prepare(self, asset_id: str | None) -> None: ...
+    async def prepare(
+        self,
+        asset_id: str | None,
+        end_behavior: Literal["stop", "hold_last_frame", "loop"],
+    ) -> None: ...
 
     async def play(self) -> None: ...
 
@@ -62,7 +66,10 @@ class MediaAgentClient:
             return self._ack(command, "error", rejection, rejection)
         try:
             if command.command == "prepare":
-                await self.player.prepare(command.asset_id)
+                await self.player.prepare(
+                    command.asset_id,
+                    command.end_behavior or "hold_last_frame",
+                )
                 self.scene_instance_id = command.scene_instance_id
                 self.playback_session_id = command.playback_session_id
                 self.sequence = 0

@@ -903,6 +903,378 @@ keyframes and nested time remapping are disabled with schema-gap explanations;
 crafted unsupported metadata is rejected by authenticated API validation
 instead of being previewed or compiled lossily.
 
+### Projector media composition and baking foundation
+
+GUI-05 media layers use a versioned schema shared by image, video, audio, and
+nested-composition records. Every layer has an explicit timeline interval,
+source in/out points whose span matches that interval, stable output-track
+binding, signed visual order, and bounded fades. Image, video, and nested
+composition layers retain the GUI-04 transform keyframes for position,
+independent scale, rotation, anchor, opacity, and crop/reveal.
+
+Audio layers carry no fake spatial transform. They provide gain from -96 to
++24 dB, mute, solo, unique nonnegative mix order, source trim, timeline
+placement, and audio fades. The GUI exposes these values in the existing
+controller timeline. Validation rejects ambiguous trim/duration relationships,
+duplicate audio mix order, fades beyond the layer duration, missing audio
+properties, or audio properties on visual layers.
+
+Compilation emits the explicit source trim, output interval, scaled fades,
+visual order, and audio mix payload alongside each runtime media layer. Layer
+ordering is deterministic by authored order and stable ID. These records are
+the input contract for later controller-side preview and bake jobs; clients do
+not receive editable composition state.
+
+Projector compositions declare render-pipeline revision 1, integer rational
+frame rate, native logical resolution, linear-sRGB working color,
+premultiplied working alpha, and Lanczos or bicubic scaling. Each visual source
+declares whether it is opaque, straight-alpha, or premultiplied-alpha, its
+source color space (`sRGB`, `BT.709`, or linear sRGB), and fit/fill/stretch/native
+scaling behavior. Audio layers explicitly carry no visual conformance fields.
+
+Preview and future bake jobs consume the same compiled `render_conformance`
+record. Decoders must convert source alpha/color into the premultiplied linear
+working representation before transforms and composition; source artwork is
+not flattened merely to make preview convenient. Compiler output retains both
+the source interpretation and normative composition contract so alpha, frame
+rate, resolution, and filtering cannot silently diverge between preview and
+baking.
+
+Render-pipeline revision 1 is a compiler-owned seven-stage manifest shared by
+preview and bake consumers: decode/conform, logical alpha composition,
+physical-object mapping and occlusion, projector-native warp, overlap blend,
+projector color correction, then audio mix/encode/mux. Every immutable package
+contains `runtime/render-pipeline.json`; tests assert the exact stage IDs and
+order so reordering requires a deliberate revision rather than an incidental
+implementation change. The projector composition UI presents the same order.
+
+Output profiles are explicit rather than inferred from a filename. The
+low-power preset targets MP4, H.264 Main level 4.0, yuv420p, zero B-frames,
+bounded bitrate, AAC 48 kHz stereo, -16 LUFS, and a fixed keyframe interval,
+with hardware compatibility labeled `h264_main_level_4_yuv420p`. A more
+conservative legacy preset uses H.264 Baseline level 3.1. Resolution and
+rational frame rate remain composition settings; bitrate, loudness, and
+keyframe interval are bounded editable values. The complete selected profile
+is embedded in render conformance for later encoder and client compatibility
+checks.
+
+Projection objects now persist calibration source (`measured_grid`,
+`easy_corner_pin`, or `unverified_estimate`), an explicit calibration
+revision, and optional indexed non-planar mesh data. Mesh vertices contain
+normalized projector-native UV plus stage/object XY; triangles contain three
+validated vertex indices. Planar mappings cannot carry mesh data, while legacy
+subdivided mappings without a mesh remain readable but block runtime export
+with `projector_mesh_missing`.
+
+Schema migration 36 adds the projection-object fields without photo-space data
+entering runtime contracts. The mapper edits vertices and triangles as
+line-oriented numeric data, displays calibration provenance and mesh counts,
+and preserves orientation, masks, crop, and overlap calibration already owned
+by GUI-03. Runtime mapper export includes calibration provenance and indexed
+mesh UV/stage data but never photo IDs, raster points, or photo homographies.
+
+The controller compositor foundation uses PyAV for timestamped video-frame
+decode, Pillow for still-image decode, and NumPy for deterministic float32
+linear-light premultiplied RGBA processing. Straight and premultiplied source
+alpha are conformed into the same working representation before composition.
+The indexed-mesh rasterizer evaluates barycentric UV coordinates and bilinear
+samples source pixels into stage/output bounds. Unit references verify alpha
+equivalence, source-over composition, sRGB conversion, still/video decode
+agreement, and byte-identical repeated mesh rasterization. ffmpeg remains the
+separate final encoder/muxer.
+
+Render verification policy revision 1 uses conservative lossy-output
+tolerances selected for preview/bake comparison: mean RGB error at most 1/255,
+maximum RGB error at most 4/255, audio peak error at or below -60 dBFS, and
+integrated loudness within ±0.2 LUFS. The compiler writes these thresholds to
+`runtime/render-verification.json`; comparison helpers reject dimension/sample
+shape mismatches and report measured values with the pass/fail result.
+
+Projector compositions also declare the opaque final-output background color,
+defaulting to black. Alpha-bearing decoded frames and intermediate
+compositions remain premultiplied authoring artifacts; only the final portable
+projector target composites residual alpha onto this configured background.
+
+Output-set encoding renders all projector members into one temporary directory
+and atomically installs that directory only after every member and the manifest
+succeed. All members share duration, rational frame rate, zero frame/time
+origin, render-pipeline and verification revisions, source revision,
+composition digest, calibration revisions, and one activation identity.
+Exactly one designated clock-source projector MP4 owns the AAC stereo mix;
+other members are video-only, preventing duplicate audio.
+
+The render manifest records source checksums, composition/calibration identity,
+the actual `ffmpeg -version` identity, H.264/AAC settings, member stream
+metadata, file sizes, member SHA-256 checksums, and a canonical manifest
+digest. Final MP4 frames are composited onto the configured opaque background;
+the float32 premultiplied working frame remains available as an alpha-bearing
+authoring intermediate.
+
+The hidden projector-native runner resolves only ready managed asset originals
+whose project ownership, digest, and size are valid. It decodes alpha stills,
+lossless alpha video, opaque H.264 video, and multiple audio clips; applies
+floor/hold video timing, GUI-04 transforms/fades/order, 48 kHz stereo
+resampling/mixing, and the configured opaque background; then writes one
+H.264/AAC MP4 and the atomic render manifest. End-to-end tests inspect the
+resulting audio/video streams and all source checksums. No client-side layer
+compositing is required.
+
+Durable render jobs use SQLite schema 37 and one lazy worker thread, enforcing
+the selected single-render concurrency and 10 GiB per-job temporary reservation
+cap. Running jobs recover to queued after controller restart. Cache keys cover
+renderer revision, source project revision, canonical composition settings,
+and every source checksum. Valid cache hits complete immediately.
+
+Authenticated GUI routes create, list, inspect, and cancel jobs. The timeline
+shows state, progress, reservation, cache prefix, artifact identity, failures,
+and cancellation. Queued cancellation is immediate; running cancellation is
+observed before promotion. Completed output sets are atomically promoted to
+the active artifact only after all encoding succeeds. Failed or canceled
+replacements never change the prior active artifact. Stage-space jobs are
+explicitly rejected until multi-projector assembly is connected.
+
+Stage-space jobs are now connected. The worker evaluates one authoritative
+working frame per timestamp, converts stage positions/Bezier handles into the
+declared stage raster, and derives every projector member through its planar
+extent or indexed UV mesh. Stage occlusion polygons suppress the relevant
+projector contribution. Overlap weights use a deterministic distance-field
+partition between each projector's exclusive coverage, shaped by calibrated
+ramp width and gamma and normalized to sum to one.
+
+Per-projector brightness, white balance, 3×3 color matrix, and black level are
+applied after warp/blend. The output-set test combines a planar projector, a
+non-level five-vertex indexed mesh, an occlusion polygon, calibrated overlap,
+one shared semi-transparent stage layer, common frame count/origin, and audio
+only on the clock-source projector. Missing/stale/out-of-tolerance rehearsal
+evidence blocks the stage job before rendering.
+
+Authenticated projector-native preview frames call the same governed source
+resolver and compositor used by baking. Preview applies floor/hold source
+timing, transforms, crop, opacity, fades, ordering, linear-premultiplied alpha,
+configured background, and declared yuv420p target conformance. A reference
+test decodes the first H.264 MP4 frame and compares it to controller preview
+using verification policy revision 1; measured mean/max RGB error must remain
+within the selected limits.
+
+Stage preview reuses the exact prepared pre-encode member frames from stage
+baking, including indexed/planar mapping, projection occlusion, overlap
+distance-field masks, brightness, black level, white balance, and color
+matrix. The UI presents each projector member. Reference acceptance decodes a
+baked stage MP4 member and compares it to its controller preview under the
+same policy, preventing preview-only omission or pipeline reordering.
+
+Reproducibility acceptance repeats ffmpeg encoding with identical frame/audio
+inputs and requires identical member SHA-256 checksums. Render cache identity
+covers source digests, source project revision (and therefore timeline/profile
+settings), and mapper/calibration environment. Missing, wrong-project, wrong
+media-type, short, or size-mismatched sources fail explicitly; no substitute
+asset/effect is introduced. A failed replacement retains the old active
+artifact, while a subsequent successful retry promotes a separately identified
+set with the new cache key.
+
+Cross-projector synchronization policy requires measured start error no greater
+than 20 ms and drift no greater than 10 ms/minute. Rehearsal evidence records
+the exact resource group, duration, measurements, actor/time, notes, and
+client/device/certificate/software/routing context. It expires after 30 days
+or immediately when context changes. Stage render admission evaluates this
+evidence before work starts; the existing controller prepare-all/play barrier
+and accepted per-output timing offsets remain authoritative at playback.
+
+Media end behavior is carried from scene media output through controller and
+protocol-v2 prepare commands into mpv. `hold_last_frame` sets
+`keep-open=always`, `loop` sets `loop-file=inf`, and `stop` disables both.
+Gapless loop admission compares first/last frames, first/last 10 ms of audio,
+requires the frame count to end on the configured GOP interval, and inspects
+encoded AAC first-packet PTS, skip/encoder-delay samples, and discard padding.
+The output manifest records the policy and inspected boundary metadata.
+
+Completed render artifacts deploy over protocol v2 without sending playback
+commands. The controller authorizes each member against its logical resource
+assignment, serves range-resumable bytes only on the mTLS device listener, and
+sends stage commands containing activation identity, digest, size, and URL.
+Agents resume partial files, verify exact size/SHA-256, atomically install and
+pin the cache entry, then acknowledge.
+
+The controller waits for every member's stage acknowledgment before sending
+group activation commands. Activation records the common identity, resource,
+digest, end behavior, duration, rational frame rate, and frame-time origin on
+each client. The group is considered deployed only after all activation
+acknowledgments; no member plays or becomes independently eligible during
+staging. GUI-04 remains the only editable layer graph—clients receive only
+compiled MP4 artifacts and timing metadata.
+
+GUI-05 hardware acceptance is partially commissioned. On Client02,
+`hold_last_frame` remained non-idle and paused at 2.967 s one second after EOF;
+the captured 640×360 frame remained nonblack at mean RGB `(32, 32, 64)`.
+Gapless loop playback stayed non-idle and wrapped three times without an
+observed black flash. Audible-gap observation remains pending because no
+speakers/headphones were connected; Client02 now uses mpv's default playback
+device so a later attached device is selected automatically. Two-projector
+start/drift measurement remains pending because Client01's kernel DRM state
+reports both HDMI and DisplayPort physically disconnected.
+
+Subsequent Client02 audio commissioning used the default Realtek playback
+device at an audible level. Three-boundary tests were repeated with mpv
+`loop-file`, in-file A–B looping, and a two-entry playlist with
+`gapless-audio=yes`. Each approach maintained nonblack video and position
+wraps, but a short audible dropout remained at every AAC/MP4 boundary.
+Therefore this artifact/profile is not declared gapless on the target client,
+and the GUI-05 audible-loop acceptance remains unchecked rather than masking
+the hardware result.
+
+### Spatial lighting composition foundation
+
+GUI-06 begins by reusing GUI-04 composition navigation for lighting surfaces.
+The photo-free mapper export now includes each mapped pixel's authoritative
+surface-local coordinate in addition to stage position, plus surface-local
+dimensions, boundary/control points, and the affine stage transform. A focused
+lighting composition renders that logical canvas and calibrated sample points
+under the same global playhead, markers, nested composition graph, transform
+keyframes, and blend-aware cue model. Output indices are intentionally absent
+from normal authoring labels; they remain available only in installation
+diagnostics and wiring verification.
+
+The deterministic lighting evaluator samples a float32 logical RGB canvas at
+authoritative surface-local pixel coordinates. It supports nearest, bilinear,
+and bounded footprint/area modes; area sampling falls back explicitly to
+bilinear when no raster sample falls inside a sparse footprint. After
+sampling, per-pixel 3×3 color matrix and RGB gain, gamma, and surface
+brightness are applied. The result reports normalized channel load,
+calibration clipping count, and colors reordered only at the final step by
+verified physical output index. Electrical power configuration and enforcement
+remain device-owned; Cueverge may display device-reported limiting but does not
+model supply voltage or amperage. Repeated evaluation is byte-identical and
+sends no WLED/DDP frame.
+
+Physical output indices remain confined to GUI-03 installation wiring,
+traversal, index-preview, and chase diagnostics. GUI-06 focused composition
+labels show only local coordinates and semantic surface/path/fixture targets;
+browser acceptance confirms no physical pixel index appears in the normal
+surface authoring view.
+
+Installation mappings may contain multiple non-overlapping strands on one
+logical output. A strand can persist bounded per-output-index local-coordinate
+corrections for misplaced physical pixels. Corrections are validated against
+the strand's declared index range, transformed into stage coordinates, included
+in the photo-free mapper export, and reused by every linked photo viewpoint.
+They do not rewrite semantic paths, fixture/group targets, or authored lighting
+layers. Index traversal remains a simulation-only installation diagnostic.
+
+Lighting author layers share stable IDs, timing intervals, precedence, opacity,
+and replace/add/max/multiply blending. Spatial mode provides solid, linear and
+radial gradient, shape, seeded procedural texture, and the existing GUI-04
+image/video/nested transform layers with animated crop/reveal masks. Ordered
+path mode targets verified semantic paths with normalized position, width,
+direction, fill, and chase/pulse/sweep primitives. Fixture/group mode targets
+semantic IDs with solid or pulse looks. Persistence is an orthogonal lifetime
+flag rather than another authoring mode: a persistent look remains active for
+the composition while retaining its semantic target, precedence, opacity, and
+blend operation. The editor normalizes persistent intervals to the composition
+duration and disables contradictory interval edits.
+
+The backend evaluates raster transform layers as the base float32 lighting
+canvas, composites semantic author layers by precedence/blend, then performs
+the single sampling, calibration, gamma/brightness, normalized-load, and
+physical ordering pass. Unit tests combine a blue raster with a red semantic layer and
+require the sampled magenta result, proving neither path bypasses final limits.
+Mixed-show coverage combines a raster wash, spatial layer, topology-aware path
+chase, timed fixture pulse, and persistent semantic fixture look. The targeted
+effects produce distinct channel contributions at their logical
+samples, while repeated evaluation at the same timestamp remains byte-identical.
+
+Shared-stage lighting uses the authoritative stage raster already evaluated for
+projectors. For each lighting surface, destination local sample coordinates
+are mapped through the saved affine local-to-stage transform and bilinearly
+resampled from stage space before local layers are composited. Integration
+tests feed one stage stripe through both the projector mesh path and a
+translated lighting surface and require the logical LED samples and projector
+pixels to align, with repeated evaluation producing identical frames.
+
+The authenticated focused-lighting preview endpoint evaluates that same
+composition pipeline at an explicit timestamp. It resolves the semantic
+surface, inverts its saved local-to-stage affine transform for fixture and path
+geometry, samples authoritative local pixels, and returns RGB samples,
+normalized channel load, calibration clipping, and mapping provenance. The
+timeline colors logical sample points from this response while keeping physical
+indices confined to diagnostic metadata. Preview evaluation has no lighting
+transport dependency and cannot send WLED or DDP commands.
+
+Focused preview diagnostics also expose each logical sampling footprint, the
+surface-local output boundary, unmapped and duplicate mapping counts,
+calibration provenance/staleness, and device limiting status. Protocol-v2
+heartbeats may report a bounded 0–1 scale by declared device output. The
+controller associates that report through the resource assignment and returns
+both the requested post-calibration color and the estimated delivered color.
+That estimate scales the complete final frame after raster, procedural, path,
+fixture, gamma, and brightness processing, so no raster layer can bypass a
+reported device limit. Cueverge displays the report but does not configure or
+enforce electrical limits.
+
+Lighting evaluation is a pure function of the saved composition, calibrated
+mapping, and authoritative timestamp. Pause repeats the same timestamp without
+advancing hidden state; forward and backward seeks can be evaluated in any
+order; and a fresh evaluator after reconnect produces the same bytes. Seeded
+procedural layers derive their state from the timestamp rather than a mutable
+random stream.
+
+Interactive preview has explicit complexity budgets rather than an unbounded
+real-time claim. Nearest and bilinear sampling target 30 fps for canvases up to
+512×512, 4,096 output pixels, and 128 combined raster/author layers. Bounded
+area sampling targets 10 fps for canvases up to 256×256, 2,048 output pixels,
+and 64 layers. Preview reports whether the current composition qualifies and
+which dimensions exceed the profile. Exceeding the profile remains valid for
+deterministic single-frame evaluation but is identified as a future pre-bake
+candidate; no pre-baked lighting sequence is selected implicitly.
+
+The pipeline terminates at the controller's existing configured `FrameSink`
+adapter boundary. Dispatch accepts only a frame whose output indices are
+already monotonically ordered, converts its final calibrated RGB rows into one
+resource-identified `RenderedFrame`, and delegates routing to `FrameSinkRouter`.
+Missing resource adapters and malformed order fail explicitly. This preserves
+the same adapter selection used by controller configuration without embedding
+DDP or WLED behavior in GUI composition code. End-to-end tests route complete
+raster/spatial/path/fixture/persistent frames through memory adapters only;
+physical network output is not activated by preview or acceptance tests.
+
+### Installation photo simulation foundation
+
+GUI-07 begins with an explicit simulation overlay on every installation photo
+viewpoint. The mapper retains the authored normalized geometry and layers
+deterministically colored logical pixel samples, fixtures, ordered paths,
+projector surfaces, masks, and semantic labels above the photo. Typed geometry
+uses distinct simulation styling so masks remain visibly occlusive, projector
+surfaces remain translucent, and paths and fixtures remain distinguishable.
+
+This initial overlay is labeled as an approximate photo simulation rather than
+measured output. Enabling or disabling it changes no authored coordinates,
+timing, mapping revisions, or output state. It opens no hardware adapter and
+sends no command to enrolled clients; backend controller-evaluated colors and
+multi-view playback are later GUI-07 layers on this same visual surface.
+
+The shared surface provides presentation-only contexts for the current logical
+composition, its parent context, a selected native projector canvas, a selected
+device/output, and the full mapped installation. Logical mode isolates semantic
+lighting geometry; parent mode restores masks, projector surfaces, and safety
+context; native mode isolates one projector surface; output mode isolates
+projector or lighting geometry; and full mode shows every mapped object.
+Context switching filters only rendered overlay objects. Browser acceptance
+requires the SVG coordinates and authoritative scene timestamp to remain
+unchanged across every switch.
+
+Simulation may open a second named photo viewpoint beside the primary mapper.
+Both canvases share one preview mode, semantic/output target, and scene
+timestamp while each retains its own photo-normalized geometry. Selecting or
+hiding the secondary viewpoint is presentation-only and does not duplicate
+timeline evaluation. On narrow screens the synchronized views stack without
+changing their shared context; on wider screens they render side by side.
+
+The calibrated shared-stage panel combines semantic stage paths with coverage
+polygons and per-projector contribution counts. Covered, overlap, occluded, and
+uncovered regions retain distinct fills; overlap lists every contributing
+projector, while occluded and uncovered regions surface explicit warnings.
+Stage paths use saved stage coordinates rather than photo points, so the same
+motion diagnostic remains stable when the selected photo viewpoint changes.
+
 Topology exposes each enrolled device's complete typed capability document and
 active certificate expiry without exposing certificate contents. The UI shows
 protocol range, media codecs/containers, simultaneous-output limits,

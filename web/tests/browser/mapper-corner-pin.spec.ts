@@ -98,6 +98,9 @@ test("compound-angle mapping reuses one homography for multiple assets", async (
     "/api/gui/v1/assets/asset-still-a/artifacts/review",
   );
   await expect(mapper.getByText(/Homography:/)).toContainText("0.00037");
+  await expect(
+    mapper.getByText(/Installation warp · unverified estimate · revision 1/),
+  ).toBeVisible();
 
   await content.selectOption("asset-still-b");
   await mapper.getByRole("button", { name: "Update geometry" }).click();

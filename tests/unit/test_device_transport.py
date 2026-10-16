@@ -62,6 +62,7 @@ def test_authenticated_device_session_is_fenced_and_heartbeat_acknowledged(
                 "controller_epoch": welcome["controller_epoch"],
                 "sequence": 1,
                 "device_monotonic_ms": 100,
+                "output_scaling": {"pixels.main": 0.625},
             }
         )
         acknowledgment = websocket.receive_json()
@@ -80,6 +81,7 @@ def test_authenticated_device_session_is_fenced_and_heartbeat_acknowledged(
         assert len(presence) == 1
         assert presence[0].session_id == str(session_id)
         assert presence[0].disconnected_at_ms is None
+        assert sessions.output_scale(DEVICE_ID, "pixels.main") == 0.625
 
     assert sessions.connected_device_ids() == ()
     assert repository.list_device_presence()[0].disconnected_at_ms is not None

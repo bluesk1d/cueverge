@@ -562,12 +562,25 @@ def test_installation_crud_preserves_runtime_active_record(tmp_path: Path) -> No
             "content_asset_id": None,
             "fit_mode": "stretch",
             "overscan": True,
+            "calibration_source": "measured_grid",
+            "calibration_revision": 3,
+            "mesh_vertices": [
+                [0, 0, 0, 0],
+                [1, 0, 4, 0],
+                [1, 1, 4, 2.25],
+                [0, 1, 0, 2.25],
+                [0.5, 0.5, 2, 1.2],
+            ],
+            "mesh_triangles": [[0, 1, 4], [1, 2, 4], [2, 3, 4], [3, 0, 4]],
         },
         headers=_mutation_headers(client, if_match='"2"'),
     )
     assert subdivided.status_code == 200
     assert subdivided.json()["homography"] is None
-    assert "single homography cannot represent" in subdivided.json()["diagnostic"]
+    assert subdivided.json()["diagnostic"] is None
+    assert subdivided.json()["calibration_source"] == "measured_grid"
+    assert subdivided.json()["calibration_revision"] == 3
+    assert len(subdivided.json()["mesh_triangles"]) == 4
     assert "Stretch distortion will be visible." in subdivided.json()["fit_diagnostics"]
     assert "Overscan is enabled" in " ".join(subdivided.json()["fit_diagnostics"])
     linked_geometry = client.post(
@@ -763,6 +776,68 @@ def test_installation_crud_preserves_runtime_active_record(tmp_path: Path) -> No
     assert lighting_surface.json()["pixels"][0]["stage_x"] == 14
     assert lighting_surface.json()["brightness_limit"] == 0.6
     assert lighting_surface.json()["timing_offset_ms"] == -45
+    corrected_surface = client.put(
+        f"/api/gui/v1/installation-geometry/{pixel_segment.json()['id']}/lighting-surface",
+        json={
+            "resource": "roofline.demo",
+            "local_width": 10,
+            "local_height": 2,
+            "local_points": [[1, 1], [9, 1]],
+            "stage_matrix": [1, 0, 0, 1, 5, 3],
+            "fixture_id": "roofline",
+            "group_id": "front",
+            "path_id": "roof-path",
+            "strand_id": "strand-a",
+            "calibration_id": "cal-1",
+            "pixel_footprint_width": 0.02,
+            "pixel_footprint_height": 0.03,
+            "brightness_limit": 0.6,
+            "timing_offset_ms": -45,
+            "pixel_overrides": [{"output_index": 120, "local_x": 4.2, "local_y": 1.4}],
+        },
+        headers=_mutation_headers(client, if_match='"1"'),
+    )
+    assert corrected_surface.status_code == 200
+    corrected_pixel = next(
+        pixel for pixel in corrected_surface.json()["pixels"] if pixel["output_index"] == 120
+    )
+    assert corrected_pixel["local_x"] == 4.2
+    assert corrected_pixel["local_y"] == 1.4
+    assert corrected_pixel["stage_x"] == 9.2
+    assert corrected_surface.json()["pixel_overrides"] == [
+        {"output_index": 120, "local_x": 4.2, "local_y": 1.4}
+    ]
+    second_strand = client.post(
+        f"/api/gui/v1/installations/{installation_id}/geometry",
+        json={
+            "photo_id": photo_id,
+            "kind": "pixel_segment",
+            "name": "Window pixels",
+            "points": [{"x": 0.2, "y": 0.6}, {"x": 0.8, "y": 0.6}],
+            "closed": False,
+            "direction": "forward",
+            "start_index": 200,
+            "pixel_count": 25,
+        },
+        headers=_mutation_headers(client),
+    )
+    assert second_strand.status_code == 201
+    second_surface = client.put(
+        f"/api/gui/v1/installation-geometry/{second_strand.json()['id']}/lighting-surface",
+        json={
+            "resource": "roofline.demo",
+            "local_width": 10,
+            "local_height": 2,
+            "local_points": [[2, 0.5], [8, 0.5]],
+            "stage_matrix": [1, 0, 0, 1, 5, 3],
+            "group_id": "front",
+            "strand_id": "strand-b",
+            "pixel_footprint_width": 0.02,
+            "pixel_footprint_height": 0.03,
+        },
+        headers=_mutation_headers(client),
+    )
+    assert second_surface.status_code == 200
     fixture = client.post(
         f"/api/gui/v1/installations/{installation_id}/geometry",
         json={
@@ -816,7 +891,26 @@ def test_installation_crud_preserves_runtime_active_record(tmp_path: Path) -> No
         [2, 2.2],
     ]
     assert mapped_export["projectors"][0]["media_start_delay_ms"] == 0
-    assert mapped_export["lighting_surfaces"][0]["timing_offset_ms"] == -45
+    assert (
+        next(
+            surface
+            for surface in mapped_export["lighting_surfaces"]
+            if surface["strand_id"] == "strand-a"
+        )["timing_offset_ms"]
+        == -45
+    )
+    assert {surface["strand_id"] for surface in mapped_export["lighting_surfaces"]} == {
+        "strand-a",
+        "strand-b",
+    }
+    corrected_export = next(
+        surface
+        for surface in mapped_export["lighting_surfaces"]
+        if surface["strand_id"] == "strand-a"
+    )
+    assert corrected_export["pixel_overrides"] == [
+        {"output_index": 120, "local_x": 4.2, "local_y": 1.4}
+    ]
     assert "photo" not in json.dumps(mapped_export)
     linked_pixels = client.post(
         f"/api/gui/v1/installations/{installation_id}/geometry",
@@ -839,8 +933,15 @@ def test_installation_crud_preserves_runtime_active_record(tmp_path: Path) -> No
     )
     assert linked_surface.status_code == 200
     assert linked_surface.json()["geometry_id"] == linked_pixels.json()["id"]
-    assert linked_surface.json()["pixels"] == lighting_surface.json()["pixels"]
+    assert linked_surface.json()["pixels"] == corrected_surface.json()["pixels"]
     assert linked_pixels.json()["points"] != pixel_segment.json()["points"]
+    assert (
+        client.delete(
+            f"/api/gui/v1/installation-geometry/{second_strand.json()['id']}",
+            headers=_mutation_headers(client, if_match='"1"'),
+        ).status_code
+        == 204
+    )
     assert (
         client.delete(
             f"/api/gui/v1/installation-geometry/{linked_pixels.json()['id']}",
@@ -1472,6 +1573,32 @@ def test_compilation_round_trips_through_loader_without_runtime_side_effects(
     assert len(package_roots) == 1
     package_root = package_roots[0]
     assert load_show_package(package_root).require("ambient").definition.name == "Ambient"
+    render_pipeline = json.loads(
+        (package_root / "runtime" / "render-pipeline.json").read_text(encoding="utf-8")
+    )
+    assert render_pipeline["render_pipeline_revision"] == 1
+    assert render_pipeline["consumers"] == ["preview", "bake"]
+    assert [stage["id"] for stage in render_pipeline["stages"]] == [
+        "decode_conform",
+        "logical_composite",
+        "physical_object_mapping",
+        "projector_native_warp",
+        "overlap_blend",
+        "projector_color",
+        "audio_encode_mux",
+    ]
+    render_verification = json.loads(
+        (package_root / "runtime" / "render-verification.json").read_text(encoding="utf-8")
+    )
+    assert render_verification["verification_policy_revision"] == 1
+    assert render_verification["frame"] == {
+        "mean_rgb_error_limit": 1 / 255,
+        "max_rgb_error_limit": 4 / 255,
+    }
+    assert render_verification["audio"] == {
+        "peak_error_dbfs_limit": -60.0,
+        "loudness_error_lufs_limit": 0.2,
+    }
     for document in package_root.rglob("*.json"):
         assert "editor_metadata" not in json.loads(document.read_text(encoding="utf-8"))
 
@@ -1484,6 +1611,38 @@ def test_compilation_round_trips_through_loader_without_runtime_side_effects(
     assert status.json()["source"] == "controller_runtime"
     assert runtime.active_scene is None
     assert runtime.sink.frames == []
+
+
+def test_render_job_api_requires_auth_csrf_and_reports_invalid_composition(
+    tmp_path: Path,
+) -> None:
+    runtime = ControllerRuntime()
+    services = _services(tmp_path, runtime)
+    client = TestClient(create_app(runtime, gui_services=services))
+    unauthorized = client.get("/api/gui/v1/projects/missing/render-jobs")
+    assert unauthorized.status_code == 401
+    _login(client)
+    project = client.post(
+        "/api/gui/v1/projects/from-active",
+        json={"name": "Render API fixture"},
+        headers=_mutation_headers(client),
+    ).json()
+    project_id = project["project"]["id"]
+
+    without_csrf = client.post(
+        f"/api/gui/v1/projects/{project_id}/render-jobs",
+        json={"composition_id": "missing"},
+        headers={"Origin": ORIGIN},
+    )
+    assert without_csrf.status_code == 403
+    invalid = client.post(
+        f"/api/gui/v1/projects/{project_id}/render-jobs",
+        json={"composition_id": "missing"},
+        headers=_mutation_headers(client),
+    )
+    assert invalid.status_code == 422
+    assert invalid.json()["detail"]["code"] == "render_job_invalid"
+    assert client.get(f"/api/gui/v1/projects/{project_id}/render-jobs").json() == []
 
 
 def test_compilation_flattens_compositions_and_reports_unsupported_constructs(
@@ -1503,6 +1662,34 @@ def test_compilation_flattens_compositions_and_reports_unsupported_constructs(
         "height": 4,
         "local_time_offset_ms": 500,
         "children": [],
+        "render_settings": {
+            "render_pipeline_revision": 1,
+            "render_width": 1920,
+            "render_height": 1080,
+            "frame_rate_numerator": 30000,
+            "frame_rate_denominator": 1001,
+            "working_color_space": "linear_srgb",
+            "working_alpha_mode": "premultiplied",
+            "scaling_filter": "lanczos",
+            "output_background_color": "#000000",
+            "media_end_behavior": "hold_last_frame",
+            "output_profile": {
+                "preset_id": "low_power_h264",
+                "container": "mp4",
+                "video_codec": "h264",
+                "video_profile": "main",
+                "video_level": "4.0",
+                "pixel_format": "yuv420p",
+                "max_video_bitrate_kbps": 8000,
+                "audio_codec": "aac",
+                "audio_sample_rate": 48000,
+                "audio_channel_layout": "stereo",
+                "loudness_target_lufs": -16,
+                "keyframe_interval_frames": 60,
+                "b_frames": 0,
+                "hardware_decoder_compatibility": "h264_main_level_4_yuv420p",
+            },
+        },
     }
     metadata = {
         "compositions": {"impact": composition},
@@ -1521,6 +1708,7 @@ def test_compilation_flattens_compositions_and_reports_unsupported_constructs(
         "timeline_transform_layers": {
             "impact": [
                 {
+                    "layer_schema_version": 1,
                     "id": "ghost-layer",
                     "name": "Ghost",
                     "kind": "image",
@@ -1528,6 +1716,15 @@ def test_compilation_flattens_compositions_and_reports_unsupported_constructs(
                     "track_id": "fixture-track",
                     "start_ms": 200,
                     "duration_ms": 500,
+                    "in_point_ms": 100,
+                    "out_point_ms": 600,
+                    "z_index": 2,
+                    "fade_in_ms": 50,
+                    "fade_out_ms": 75,
+                    "audio": None,
+                    "alpha_interpretation": "straight",
+                    "source_color_space": "srgb",
+                    "scaling_behavior": "fit",
                     "keyframes": [
                         {
                             "id": "ghost-start",
@@ -1681,6 +1878,7 @@ def test_compilation_flattens_compositions_and_reports_unsupported_constructs(
         "name": "Ghost",
         "kind": "image",
         "source_id": "ghost-asset",
+        "layer_schema_version": 1,
         "output_id": "scene:ambient>impact|fixture-track",
         "editing_space_id": "impact",
         "context_id": "scene:ambient>impact",
@@ -1708,6 +1906,43 @@ def test_compilation_flattens_compositions_and_reports_unsupported_constructs(
             "lighting": "static_cue",
             "unsupported": "reject",
         },
+        "source_in_ms": 100,
+        "source_out_ms": 600,
+        "source_conformance": {
+            "alpha_interpretation": "straight",
+            "color_space": "srgb",
+            "scaling_behavior": "fit",
+        },
+        "render_conformance": {
+            "render_pipeline_revision": 1,
+            "resolution": {"width": 1920, "height": 1080},
+            "frame_rate": {"numerator": 30000, "denominator": 1001},
+            "working_color_space": "linear_srgb",
+            "working_alpha_mode": "premultiplied",
+            "scaling_filter": "lanczos",
+            "output_background_color": "#000000",
+            "media_end_behavior": "hold_last_frame",
+            "output_profile": {
+                "preset_id": "low_power_h264",
+                "container": "mp4",
+                "video_codec": "h264",
+                "video_profile": "main",
+                "video_level": "4.0",
+                "pixel_format": "yuv420p",
+                "max_video_bitrate_kbps": 8000,
+                "audio_codec": "aac",
+                "audio_sample_rate": 48000,
+                "audio_channel_layout": "stereo",
+                "loudness_target_lufs": -16,
+                "keyframe_interval_frames": 60,
+                "b_frames": 0,
+                "hardware_decoder_compatibility": "h264_main_level_4_yuv420p",
+            },
+        },
+        "z_index": 2,
+        "fade_in_ms": 50,
+        "fade_out_ms": 75,
+        "audio": None,
         "start_ms": 700,
         "duration_ms": 500,
         "keyframes": [

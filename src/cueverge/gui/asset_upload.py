@@ -690,6 +690,22 @@ class AssetUploadService:
             raise AssetUploadError("asset artifact file size is inconsistent")
         return path, media_type
 
+    def get_original(self, asset_id: str) -> tuple[StoredAsset, Path]:
+        asset = self.get_asset(asset_id)
+        if (
+            asset.status != "ready"
+            or asset.current_revision is None
+            or asset.digest_sha256 is None
+            or asset.media_type is None
+        ):
+            raise AssetUploadError("asset original is not ready for rendering")
+        path = self.object_root / asset.digest_sha256[:2] / asset.digest_sha256
+        if not path.is_file():
+            raise AssetUploadError("asset original file is missing")
+        if asset.size_bytes is not None and path.stat().st_size != asset.size_bytes:
+            raise AssetUploadError("asset original file size does not match metadata")
+        return asset, path
+
     def recover_pending_assets(self) -> tuple[str, ...]:
         with self._connect() as connection:
             rows = connection.execute(

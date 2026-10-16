@@ -36,6 +36,7 @@ class MapperExportService:
         with self._connect() as connection:
             projectors = [
                 {
+                    "geometry_id": str(row["geometry_id"]),
                     "resource": str(row["resource"]),
                     "native_width": int(row["native_width"]),
                     "native_height": int(row["native_height"]),
@@ -55,6 +56,11 @@ class MapperExportService:
                         float(row["stage_height"]),
                     ],
                     "mask_semantic_ids": json.loads(str(row["mask_semantic_ids_json"])),
+                    "calibration_source": str(row["calibration_source"]),
+                    "calibration_revision": int(row["calibration_revision"]),
+                    "surface_model": str(row["surface_model"]),
+                    "mesh_vertices": json.loads(str(row["mesh_vertices_json"])),
+                    "mesh_triangles": json.loads(str(row["mesh_triangles_json"])),
                     "brightness_limit": float(row["brightness_limit"]),
                     "media_start_delay_ms": int(row["media_start_delay_ms"]),
                     "media_release_delay_ms": int(row["media_release_delay_ms"]),
@@ -95,12 +101,25 @@ class MapperExportService:
                         "path_id": row["path_id"],
                         "strand_id": row["strand_id"],
                         "calibration_id": row["calibration_id"],
+                        "mapping_revision": int(row["revision"]),
+                        "pixel_overrides": [
+                            {
+                                "output_index": override.output_index,
+                                "local_x": override.local_x,
+                                "local_y": override.local_y,
+                            }
+                            for override in mapped.pixel_overrides
+                        ],
                         "brightness_limit": float(row["brightness_limit"]),
                         "timing_offset_ms": int(row["timing_offset_ms"]),
                         "release_offset_ms": int(row["release_offset_ms"]),
                         "pixels": [
                             {
                                 "output_index": pixel.output_index,
+                                "local_x": pixel.local_x,
+                                "local_y": pixel.local_y,
+                                "footprint_width": pixel.footprint_width,
+                                "footprint_height": pixel.footprint_height,
                                 "stage_x": pixel.stage_x,
                                 "stage_y": pixel.stage_y,
                             }
@@ -161,6 +180,28 @@ class MapperExportService:
                     object_ids=tuple(str(row["ids"]).split(",")),
                 )
                 for row in duplicate_resources
+            )
+            missing_meshes = connection.execute(
+                """
+                SELECT m.geometry_id
+                FROM projector_surface_mappings AS m
+                JOIN installation_geometry AS g ON g.id = m.geometry_id
+                WHERE g.installation_id = ?
+                  AND m.surface_model = 'subdivided'
+                  AND json_array_length(m.mesh_triangles_json) = 0
+                """,
+                (installation_id,),
+            ).fetchall()
+            diagnostics.extend(
+                MapperDiagnostic(
+                    code="projector_mesh_missing",
+                    message=(
+                        f"Subdivided projector surface {row['geometry_id']} "
+                        "requires an indexed UV mesh."
+                    ),
+                    object_ids=(str(row["geometry_id"]),),
+                )
+                for row in missing_meshes
             )
             for row in connection.execute(
                 """

@@ -757,6 +757,7 @@ function ProjectCard({
             assets={assets ?? []}
             canEdit={canAuthor && !project.archived_at}
             draft={draft}
+            projectId={project.id}
             onSave={async (document) => {
               setDraft(
                 await updateProjectDraft(project.id, draft.revision, document),

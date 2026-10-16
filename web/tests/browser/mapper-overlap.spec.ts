@@ -17,7 +17,13 @@ test("overlap calibration is tunable and non-destructive", async ({ page }) => {
       return route.fulfill({ json: [photo()] });
     }
     if (url.pathname.endsWith(`/${installationId}/geometry`)) {
-      return route.fulfill({ json: [surface(firstId, "Left projector", 0.05), surface(secondId, "Right projector", 0.45)] });
+      return route.fulfill({
+        json: [
+          surface(firstId, "Left projector", 0.05),
+          surface(secondId, "Right projector", 0.45),
+          motionPath(),
+        ],
+      });
     }
     if (url.pathname.endsWith("/assets/image-library")) {
       return route.fulfill({ json: [] });
@@ -66,7 +72,27 @@ test("overlap calibration is tunable and non-destructive", async ({ page }) => {
     .locator("xpath=ancestor::section");
 
   await expect(mapper.getByRole("img", { name: "Shared stage coverage preview" })).toBeVisible();
-  await expect(mapper.getByText(/covered: 1 · overlap: 1 · occluded: 0 · uncovered: 1/)).toBeVisible();
+  await expect(mapper.getByText(/covered: 1 · overlap: 1 · occluded: 1 · uncovered: 1/)).toBeVisible();
+  await expect(mapper.getByLabel("Projector stage contributions")).toContainText(
+    "projector.left: 3 region(s)",
+  );
+  await expect(mapper.getByLabel("Projector stage contributions")).toContainText(
+    "projector.right: 1 region(s)",
+  );
+  await expect(mapper.getByLabel("Stage coverage warnings")).toContainText(
+    "Overlap contribution: projector.left, projector.right",
+  );
+  await expect(mapper.getByLabel("Stage coverage warnings")).toContainText(
+    "Occluded stage region: projector.left",
+  );
+  await expect(mapper.getByLabel("Stage coverage warnings")).toContainText(
+    "Uncovered stage region has no projector contribution",
+  );
+  await expect(
+    mapper
+      .getByRole("img", { name: "Shared stage coverage preview" })
+      .locator(".stage-simulation-motion-path"),
+  ).toHaveCount(1);
   await mapper.getByRole("button", { name: "Edit" }).first().click();
   await mapper.getByLabel("Paired projector surface").selectOption(secondId);
   await mapper.getByLabel("Overlap gamma").fill("1.35");
@@ -137,7 +163,39 @@ function coverage() {
         resources: [],
         source_ids: [],
       },
+      {
+        kind: "occluded",
+        points: [[1, 1], [2, 1], [2, 2], [1, 2]],
+        resources: ["projector.left"],
+        source_ids: [firstId],
+      },
     ],
+  };
+}
+
+function motionPath() {
+  return {
+    id: "ghost-motion",
+    installation_id: installationId,
+    photo_id: "overlap-photo",
+    kind: "path",
+    name: "Ghost crossing",
+    semantic_id: "ghost-crossing",
+    landmark_ids: [],
+    points: [{ x: 0.1, y: 0.5 }, { x: 0.9, y: 0.5 }],
+    stage_points: [[0.5, 1.5], [6.5, 1.5]],
+    closed: false,
+    color: "#ffffff",
+    label_visible: true,
+    locked: false,
+    hidden: false,
+    z_index: 2,
+    direction: "forward",
+    start_index: null,
+    pixel_count: null,
+    revision: 1,
+    created_at: "2026-10-14T12:00:00Z",
+    updated_at: "2026-10-14T12:00:00Z",
   };
 }
 

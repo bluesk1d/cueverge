@@ -117,6 +117,16 @@ class StoredResourceAssignment:
 
 
 @dataclass(frozen=True)
+class StoredRenderArtifactMember:
+    artifact_id: str
+    resource: str
+    path: Path
+    digest_sha256: str
+    size_bytes: int
+    media_end_behavior: Literal["stop", "hold_last_frame", "loop"]
+
+
+@dataclass(frozen=True)
 class StoredDevicePresence:
     device_id: str
     session_id: str
@@ -670,6 +680,42 @@ class GuiRepository:
                 VALUES (6, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
                 """
             )
+            lighting_surface_columns = {
+                str(row["name"])
+                for row in connection.execute("PRAGMA table_info(lighting_surfaces)").fetchall()
+            }
+            if "pixel_overrides_json" not in lighting_surface_columns:
+                connection.execute(
+                    "ALTER TABLE lighting_surfaces "
+                    "ADD COLUMN pixel_overrides_json TEXT NOT NULL DEFAULT '[]'"
+                )
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO schema_migrations(version, applied_at)
+                VALUES (39, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+                """
+            )
+            connection.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS projector_sync_rehearsals (
+                    id TEXT PRIMARY KEY,
+                    resources_json TEXT NOT NULL,
+                    start_error_ms REAL NOT NULL CHECK (start_error_ms >= 0),
+                    drift_ms_per_minute REAL NOT NULL
+                        CHECK (drift_ms_per_minute >= 0),
+                    measurement_duration_seconds INTEGER NOT NULL
+                        CHECK (measurement_duration_seconds > 0),
+                    context_json TEXT NOT NULL,
+                    notes TEXT,
+                    actor TEXT NOT NULL,
+                    measured_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_projector_sync_rehearsals_time
+                    ON projector_sync_rehearsals(measured_at DESC);
+                INSERT OR IGNORE INTO schema_migrations(version, applied_at)
+                VALUES (38, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+                """
+            )
             presence_columns = {
                 str(row["name"])
                 for row in connection.execute("PRAGMA table_info(device_presence)").fetchall()
@@ -1112,6 +1158,80 @@ class GuiRepository:
                 """
                 INSERT OR IGNORE INTO schema_migrations(version, applied_at)
                 VALUES (35, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+                """
+            )
+            mapping_columns = {
+                str(row["name"])
+                for row in connection.execute(
+                    "PRAGMA table_info(projector_surface_mappings)"
+                ).fetchall()
+            }
+            for column, definition in (
+                (
+                    "calibration_source",
+                    "TEXT NOT NULL DEFAULT 'unverified_estimate'",
+                ),
+                ("calibration_revision", "INTEGER NOT NULL DEFAULT 1"),
+                ("mesh_vertices_json", "TEXT NOT NULL DEFAULT '[]'"),
+                ("mesh_triangles_json", "TEXT NOT NULL DEFAULT '[]'"),
+            ):
+                if column not in mapping_columns:
+                    connection.execute(
+                        f"ALTER TABLE projector_surface_mappings ADD COLUMN {column} {definition}"
+                    )
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO schema_migrations(version, applied_at)
+                VALUES (36, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+                """
+            )
+            connection.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS render_jobs (
+                    id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                    source_revision INTEGER NOT NULL CHECK (source_revision >= 1),
+                    composition_id TEXT NOT NULL,
+                    cache_key TEXT NOT NULL,
+                    state TEXT NOT NULL CHECK (
+                        state IN ('queued', 'running', 'completed', 'failed', 'canceled')
+                    ),
+                    progress REAL NOT NULL DEFAULT 0
+                        CHECK (progress >= 0 AND progress <= 1),
+                    reserved_bytes INTEGER NOT NULL CHECK (reserved_bytes >= 0),
+                    error TEXT,
+                    artifact_id TEXT,
+                    cancel_requested INTEGER NOT NULL DEFAULT 0
+                        CHECK (cancel_requested IN (0, 1)),
+                    created_by TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    started_at TEXT,
+                    completed_at TEXT,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_render_jobs_queue
+                    ON render_jobs(state, created_at);
+                CREATE INDEX IF NOT EXISTS idx_render_jobs_cache
+                    ON render_jobs(cache_key, state);
+                CREATE TABLE IF NOT EXISTS render_artifacts (
+                    id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                    composition_id TEXT NOT NULL,
+                    cache_key TEXT NOT NULL UNIQUE,
+                    output_path TEXT NOT NULL,
+                    manifest_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS active_render_artifacts (
+                    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                    composition_id TEXT NOT NULL,
+                    artifact_id TEXT NOT NULL
+                        REFERENCES render_artifacts(id) ON DELETE RESTRICT,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY(project_id, composition_id)
+                );
+                INSERT OR IGNORE INTO schema_migrations(version, applied_at)
+                VALUES (37, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
                 """
             )
 
@@ -3005,6 +3125,81 @@ class GuiRepository:
         if revision_row is None:
             raise ProjectNotFoundError(f"{project_id}@{selected_revision}")
         return _stored_revision(project, revision_row)
+
+    def get_render_artifact_member(
+        self,
+        artifact_id: str,
+        resource: str,
+    ) -> StoredRenderArtifactMember:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT output_path, manifest_json
+                FROM render_artifacts
+                WHERE id = ?
+                """,
+                (artifact_id,),
+            ).fetchone()
+        if row is None:
+            raise ProjectNotFoundError(artifact_id)
+        manifest = json.loads(str(row["manifest_json"]))
+        if not isinstance(manifest, dict):
+            raise ValueError("render artifact manifest is invalid")
+        members = manifest.get("members")
+        if not isinstance(members, list):
+            raise ValueError("render artifact members are invalid")
+        member = next(
+            (
+                item
+                for item in members
+                if isinstance(item, dict) and item.get("resource") == resource
+            ),
+            None,
+        )
+        if member is None:
+            raise ProjectNotFoundError(f"{artifact_id}:{resource}")
+        filename = member.get("filename")
+        digest = member.get("digest_sha256")
+        size = member.get("size_bytes")
+        end_behavior = manifest.get("media_end_behavior")
+        if (
+            not isinstance(filename, str)
+            or Path(filename).name != filename
+            or not isinstance(digest, str)
+            or not isinstance(size, int)
+            or end_behavior not in {"stop", "hold_last_frame", "loop"}
+        ):
+            raise ValueError("render artifact member metadata is invalid")
+        path = Path(str(row["output_path"])) / filename
+        if not path.is_file() or path.stat().st_size != size:
+            raise ValueError("render artifact member file is missing or corrupt")
+        return StoredRenderArtifactMember(
+            artifact_id=artifact_id,
+            resource=resource,
+            path=path,
+            digest_sha256=digest,
+            size_bytes=size,
+            media_end_behavior=cast(
+                Literal["stop", "hold_last_frame", "loop"],
+                end_behavior,
+            ),
+        )
+
+    def get_render_artifact_manifest(
+        self,
+        artifact_id: str,
+    ) -> dict[str, JsonValue]:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT manifest_json FROM render_artifacts WHERE id = ?",
+                (artifact_id,),
+            ).fetchone()
+        if row is None:
+            raise ProjectNotFoundError(artifact_id)
+        value = json.loads(str(row["manifest_json"]))
+        if not isinstance(value, dict):
+            raise ValueError("render artifact manifest is invalid")
+        return cast(dict[str, JsonValue], value)
 
     def list_revisions(self, project_id: str) -> tuple[StoredRevision, ...]:
         project = self.get_revision(project_id).project

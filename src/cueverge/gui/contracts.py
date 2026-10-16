@@ -1,3 +1,4 @@
+import re
 from datetime import date
 from enum import StrEnum
 from typing import Literal
@@ -91,6 +92,8 @@ def _validate_composition_graph(
             "stage",
         }:
             raise ValueError("composition must declare a supported logical editing space")
+        if value.get("space_kind") == "lighting_surface":
+            _validate_lighting_composition_settings(value.get("lighting_settings"))
         if not isinstance(value.get("target_id"), str) or not value["target_id"]:
             raise ValueError("composition editing space requires a target ID")
         for dimension in ("width", "height"):
@@ -200,6 +203,31 @@ def _validate_composition_graph(
                 raise ValueError("composition instance placement requires numeric x and y")
     _validate_timeline_sync(editor_metadata, scene_durations, compositions)
     _validate_transform_layers(editor_metadata, scene_durations, compositions)
+    _validate_lighting_author_layers(editor_metadata, scene_durations, compositions)
+
+
+def _validate_lighting_composition_settings(value: JsonValue | None) -> None:
+    if not isinstance(value, dict):
+        raise ValueError("lighting surface composition requires lighting settings")
+    for dimension in ("canvas_width", "canvas_height"):
+        size = value.get(dimension)
+        if not isinstance(size, int) or isinstance(size, bool) or size <= 0 or size > 2048:
+            raise ValueError("lighting canvas dimensions must be in [1, 2048]")
+    if value.get("sampling") not in {"nearest", "bilinear", "area"}:
+        raise ValueError("lighting sampling mode is unsupported")
+    gamma = value.get("gamma")
+    brightness = value.get("brightness")
+    if (
+        not isinstance(gamma, (int, float))
+        or isinstance(gamma, bool)
+        or gamma <= 0
+        or gamma > 5
+        or not isinstance(brightness, (int, float))
+        or isinstance(brightness, bool)
+        or brightness < 0
+        or brightness > 1
+    ):
+        raise ValueError("lighting evaluation settings are invalid")
 
 
 def _validate_timeline_sync(
@@ -354,6 +382,105 @@ def _validate_timeline_sync(
                 raise ValueError("non-lighting timeline cue cannot define lighting properties")
 
 
+def _validate_lighting_author_layers(
+    editor_metadata: dict[str, JsonValue],
+    scene_durations: dict[str, int],
+    compositions: dict[str, dict[str, JsonValue]],
+) -> None:
+    raw_layers = editor_metadata.get("lighting_author_layers", {})
+    if not isinstance(raw_layers, dict):
+        raise ValueError("lighting author layer metadata must be an object")
+    durations = dict(scene_durations)
+    for composition_id, composition in compositions.items():
+        duration = composition.get("duration_ms")
+        if isinstance(duration, int) and not isinstance(duration, bool):
+            durations[composition_id] = duration
+    unknown_spaces = set(raw_layers).difference(durations)
+    if unknown_spaces:
+        raise ValueError(
+            f"lighting layers reference unknown editing spaces: {sorted(unknown_spaces)}"
+        )
+    layer_ids: set[str] = set()
+    for space_id, values in raw_layers.items():
+        if not isinstance(values, list):
+            raise ValueError(f"lighting layers for {space_id} must be a list")
+        for value in values:
+            if not isinstance(value, dict):
+                raise ValueError("lighting author layer must be an object")
+            layer_id = value.get("id")
+            if not isinstance(layer_id, str) or not layer_id:
+                raise ValueError("lighting author layer requires a stable ID")
+            if layer_id in layer_ids:
+                raise ValueError("lighting author layer IDs must be unique")
+            layer_ids.add(layer_id)
+            if not isinstance(value.get("name"), str) or not value["name"]:
+                raise ValueError("lighting author layer name is required")
+            mode = value.get("mode")
+            if not isinstance(mode, str) or mode not in {
+                "spatial",
+                "path",
+                "fixture",
+            }:
+                raise ValueError("lighting author mode is unsupported")
+            start = value.get("start_ms")
+            duration = value.get("duration_ms")
+            persistent = value.get("persistent", False)
+            if (
+                not isinstance(persistent, bool)
+                or not isinstance(start, int)
+                or isinstance(start, bool)
+                or start < 0
+                or not isinstance(duration, int)
+                or isinstance(duration, bool)
+                or duration <= 0
+                or start + duration > durations[space_id]
+            ):
+                raise ValueError("lighting author layer interval is invalid")
+            precedence = value.get("precedence")
+            opacity = value.get("opacity")
+            if (
+                not isinstance(precedence, int)
+                or isinstance(precedence, bool)
+                or precedence < 0
+                or precedence > 1000
+                or value.get("blend_mode") not in {"replace", "add", "max", "multiply"}
+                or not isinstance(opacity, (int, float))
+                or isinstance(opacity, bool)
+                or opacity < 0
+                or opacity > 1
+            ):
+                raise ValueError("lighting layer blend settings are invalid")
+            payload = value.get(mode)
+            if not isinstance(payload, dict):
+                raise ValueError(f"lighting {mode} layer payload is required")
+            if mode == "spatial":
+                if payload.get("primitive") not in {
+                    "solid",
+                    "linear_gradient",
+                    "radial_gradient",
+                    "shape",
+                    "procedural_noise",
+                }:
+                    raise ValueError("spatial lighting primitive is unsupported")
+                if not isinstance(payload.get("seed"), int):
+                    raise ValueError("spatial lighting seed must be an integer")
+            elif mode == "path":
+                if (
+                    not isinstance(payload.get("path_id"), str)
+                    or not payload["path_id"]
+                    or payload.get("primitive") not in {"chase", "pulse", "sweep"}
+                    or payload.get("direction") not in {"forward", "reverse"}
+                ):
+                    raise ValueError("path lighting layer is invalid")
+            elif (
+                payload.get("target_kind") not in {"fixture", "group"}
+                or not isinstance(payload.get("target_id"), str)
+                or not payload["target_id"]
+                or payload.get("primitive") not in {"solid", "pulse"}
+            ):
+                raise ValueError("fixture/group lighting layer is invalid")
+
+
 def _validate_transform_layers(
     editor_metadata: dict[str, JsonValue],
     scene_durations: dict[str, int],
@@ -392,6 +519,9 @@ def _validate_transform_layers(
     for space_id, values in raw_layers.items():
         if not isinstance(values, list):
             raise ValueError(f"transform layers for {space_id} must be a list")
+        if values and space_id in compositions:
+            _validate_render_settings(compositions[space_id].get("render_settings"))
+        audio_mix_orders: set[int] = set()
         for value in values:
             if not isinstance(value, dict):
                 raise ValueError("transform layer must be an object")
@@ -404,7 +534,7 @@ def _validate_transform_layers(
             if not isinstance(value.get("name"), str) or not value["name"]:
                 raise ValueError("transform layer name is required")
             kind = value.get("kind")
-            if kind not in {"image", "video", "composition"}:
+            if kind not in {"image", "video", "audio", "composition"}:
                 raise ValueError("transform layer kind is unsupported")
             source_id = value.get("source_id")
             if not isinstance(source_id, str) or not source_id:
@@ -427,9 +557,82 @@ def _validate_transform_layers(
                 or start_ms + duration_ms > durations[space_id]
             ):
                 raise ValueError("transform layer interval must fit its editing space")
+            if value.get("layer_schema_version") != 1:
+                raise ValueError("media layer requires schema version 1")
+            in_point_ms = value.get("in_point_ms")
+            out_point_ms = value.get("out_point_ms")
+            z_index = value.get("z_index")
+            fade_in_ms = value.get("fade_in_ms")
+            fade_out_ms = value.get("fade_out_ms")
+            if (
+                not isinstance(in_point_ms, int)
+                or isinstance(in_point_ms, bool)
+                or in_point_ms < 0
+                or not isinstance(out_point_ms, int)
+                or isinstance(out_point_ms, bool)
+                or out_point_ms <= in_point_ms
+                or out_point_ms - in_point_ms != duration_ms
+            ):
+                raise ValueError(
+                    "media layer source in/out points must match its timeline duration"
+                )
+            if not isinstance(z_index, int) or isinstance(z_index, bool):
+                raise ValueError("media layer ordering must be an integer")
+            if (
+                not isinstance(fade_in_ms, int)
+                or isinstance(fade_in_ms, bool)
+                or fade_in_ms < 0
+                or not isinstance(fade_out_ms, int)
+                or isinstance(fade_out_ms, bool)
+                or fade_out_ms < 0
+                or fade_in_ms + fade_out_ms > duration_ms
+            ):
+                raise ValueError("media layer fades must fit its duration")
+            audio = value.get("audio")
+            if kind == "audio":
+                if not isinstance(audio, dict):
+                    raise ValueError("audio layer requires mix properties")
+                gain_db = audio.get("gain_db")
+                mix_order = audio.get("mix_order")
+                if (
+                    not isinstance(gain_db, (int, float))
+                    or isinstance(gain_db, bool)
+                    or gain_db < -96
+                    or gain_db > 24
+                    or not isinstance(audio.get("mute"), bool)
+                    or not isinstance(audio.get("solo"), bool)
+                    or not isinstance(mix_order, int)
+                    or isinstance(mix_order, bool)
+                    or mix_order < 0
+                ):
+                    raise ValueError("audio layer mix properties are invalid")
+                if mix_order in audio_mix_orders:
+                    raise ValueError("audio layer mix order must be unique")
+                audio_mix_orders.add(mix_order)
+            elif audio is not None:
+                raise ValueError("non-audio layer cannot define audio mix properties")
+            alpha_interpretation = value.get("alpha_interpretation")
+            source_color_space = value.get("source_color_space")
+            scaling_behavior = value.get("scaling_behavior")
+            if kind == "audio":
+                if any(
+                    item is not None
+                    for item in (
+                        alpha_interpretation,
+                        source_color_space,
+                        scaling_behavior,
+                    )
+                ):
+                    raise ValueError("audio layers cannot define visual conformance")
+            elif (
+                alpha_interpretation not in {"opaque", "straight", "premultiplied"}
+                or source_color_space not in {"srgb", "bt709", "linear_srgb"}
+                or scaling_behavior not in {"fit", "fill", "stretch", "native"}
+            ):
+                raise ValueError("visual layer conformance is invalid")
             keyframes = value.get("keyframes")
-            if not isinstance(keyframes, list) or not keyframes:
-                raise ValueError("transform layer requires at least one keyframe")
+            if not isinstance(keyframes, list) or (kind != "audio" and not keyframes):
+                raise ValueError("visual transform layer requires at least one keyframe")
             times: list[int] = []
             for keyframe in keyframes:
                 if not isinstance(keyframe, dict):
@@ -468,6 +671,97 @@ def _validate_transform_layers(
 
     for composition_id in compositions:
         visit(composition_id)
+
+
+def _validate_render_settings(value: JsonValue | None) -> None:
+    if not isinstance(value, dict):
+        raise ValueError("composition with media layers requires render settings")
+    if value.get("render_pipeline_revision") != 1:
+        raise ValueError("render pipeline revision must be 1")
+    for dimension in ("render_width", "render_height"):
+        size = value.get(dimension)
+        if not isinstance(size, int) or isinstance(size, bool) or size <= 0 or size > 16384:
+            raise ValueError("composition render dimensions are invalid")
+    if value.get("working_color_space") != "linear_srgb":
+        raise ValueError("working color space must be linear_srgb")
+    if value.get("working_alpha_mode") != "premultiplied":
+        raise ValueError("working alpha mode must be premultiplied")
+    if value.get("scaling_filter") not in {"lanczos", "bicubic"}:
+        raise ValueError("composition scaling filter is unsupported")
+    background = value.get("output_background_color")
+    if not isinstance(background, str) or re.fullmatch(r"#[0-9A-Fa-f]{6}", background) is None:
+        raise ValueError("composition output background must be an RGB color")
+    if value.get("media_end_behavior") not in {
+        "stop",
+        "hold_last_frame",
+        "loop",
+    }:
+        raise ValueError("composition media end behavior is invalid")
+    numerator = value.get("frame_rate_numerator")
+    denominator = value.get("frame_rate_denominator")
+    if (
+        not isinstance(numerator, int)
+        or isinstance(numerator, bool)
+        or numerator <= 0
+        or numerator > 240000
+        or not isinstance(denominator, int)
+        or isinstance(denominator, bool)
+        or denominator <= 0
+        or denominator > 1001
+    ):
+        raise ValueError("composition frame rate is invalid")
+    profile = value.get("output_profile")
+    if not isinstance(profile, dict):
+        raise ValueError("composition output profile is required")
+    expected = (
+        {
+            "container": "mp4",
+            "video_codec": "h264",
+            "video_profile": "main",
+            "video_level": "4.0",
+            "pixel_format": "yuv420p",
+            "audio_codec": "aac",
+            "audio_sample_rate": 48000,
+            "audio_channel_layout": "stereo",
+            "b_frames": 0,
+            "hardware_decoder_compatibility": "h264_main_level_4_yuv420p",
+        }
+        if profile.get("preset_id") == "low_power_h264"
+        else {
+            "container": "mp4",
+            "video_codec": "h264",
+            "video_profile": "baseline",
+            "video_level": "3.1",
+            "pixel_format": "yuv420p",
+            "audio_codec": "aac",
+            "audio_sample_rate": 48000,
+            "audio_channel_layout": "stereo",
+            "b_frames": 0,
+            "hardware_decoder_compatibility": "h264_baseline_level_3_1_yuv420p",
+        }
+        if profile.get("preset_id") == "legacy_h264"
+        else None
+    )
+    if expected is None or any(profile.get(key) != item for key, item in expected.items()):
+        raise ValueError("composition output profile is incompatible with its preset")
+    bitrate = profile.get("max_video_bitrate_kbps")
+    loudness = profile.get("loudness_target_lufs")
+    keyframe_interval = profile.get("keyframe_interval_frames")
+    if (
+        not isinstance(bitrate, int)
+        or isinstance(bitrate, bool)
+        or bitrate < 500
+        or bitrate > 50000
+        or not isinstance(loudness, (int, float))
+        or isinstance(loudness, bool)
+        or loudness < -40
+        or loudness > -5
+        or not isinstance(keyframe_interval, int)
+        or isinstance(keyframe_interval, bool)
+        or keyframe_interval <= 0
+        or keyframe_interval > 600
+    ):
+        raise ValueError("composition output profile numeric settings are invalid")
 
 
 def _validate_transform_keyframe(keyframe: dict[str, JsonValue]) -> None:
@@ -837,6 +1131,63 @@ class CompilationResponse(GuiModel):
     scene_ids: tuple[str, ...]
 
 
+class CreateRenderJobRequest(GuiModel):
+    composition_id: str = Field(min_length=1, max_length=200)
+
+
+class RenderJobResponse(GuiModel):
+    id: str
+    project_id: str
+    source_revision: int = Field(ge=1)
+    composition_id: str
+    cache_key: str
+    state: Literal["queued", "running", "completed", "failed", "canceled"]
+    progress: float = Field(ge=0, le=1)
+    reserved_bytes: int = Field(ge=0)
+    error: str | None
+    artifact_id: str | None
+    cancel_requested: bool
+    created_by: str
+    created_at: str
+    started_at: str | None
+    completed_at: str | None
+    updated_at: str
+
+
+class RecordSyncRehearsalRequest(GuiModel):
+    resources: tuple[str, ...] = Field(min_length=2)
+    start_error_ms: float = Field(ge=0)
+    drift_ms_per_minute: float = Field(ge=0)
+    measurement_duration_seconds: int = Field(gt=0)
+    notes: str | None = Field(default=None, max_length=2000)
+    measured_at: str
+
+
+class SyncRehearsalResponse(RecordSyncRehearsalRequest):
+    id: str
+    actor: str
+    context: dict[str, JsonValue]
+
+
+class EvaluateSyncAdmissionRequest(GuiModel):
+    resources: tuple[str, ...] = Field(min_length=2)
+
+
+class SyncAdmissionResponse(GuiModel):
+    allowed: bool
+    code: str
+    message: str
+    rehearsal: SyncRehearsalResponse | None
+
+
+class ArtifactDeploymentResponse(GuiModel):
+    activation_identity: str
+    artifact_id: str
+    resources: tuple[str, ...]
+    staged_device_ids: tuple[str, ...]
+    activated_device_ids: tuple[str, ...]
+
+
 class InstallationResourceResponse(GuiModel):
     resource: str
     kind: Literal["media_agent", "pixel_output", "downstream_controller"]
@@ -1064,11 +1415,33 @@ class ProjectorMappingRequest(GuiModel):
     mirror_x: bool = False
     mirror_y: bool = False
     mask_semantic_ids: tuple[str, ...] = ()
+    calibration_source: Literal["measured_grid", "easy_corner_pin", "unverified_estimate"] = (
+        "unverified_estimate"
+    )
+    calibration_revision: int = Field(default=1, ge=1)
+    mesh_vertices: tuple[tuple[float, float, float, float], ...] = ()
+    mesh_triangles: tuple[tuple[int, int, int], ...] = ()
 
     @model_validator(mode="after")
     def validate_crop(self) -> "ProjectorMappingRequest":
         if self.crop_x + self.crop_width > 1 or self.crop_y + self.crop_height > 1:
             raise ValueError("projector crop exceeds the native canvas")
+        if self.surface_model == "planar":
+            if self.mesh_vertices or self.mesh_triangles:
+                raise ValueError("planar projector mapping cannot define a mesh")
+            return self
+        if not self.mesh_vertices and not self.mesh_triangles:
+            return self
+        if len(self.mesh_vertices) < 4 or len(self.mesh_triangles) < 2:
+            raise ValueError("subdivided projector mapping requires an indexed mesh")
+        for u, v, _, _ in self.mesh_vertices:
+            if not 0 <= u <= 1 or not 0 <= v <= 1:
+                raise ValueError("projector mesh UV coordinates must be normalized")
+        for triangle in self.mesh_triangles:
+            if len(set(triangle)) != 3 or any(
+                index < 0 or index >= len(self.mesh_vertices) for index in triangle
+            ):
+                raise ValueError("projector mesh triangle indices are invalid")
         return self
 
 
@@ -1090,6 +1463,12 @@ class ProjectorPhotoViewResponse(GuiModel):
     homography: tuple[float, ...] | None
 
 
+class PixelPositionOverride(GuiModel):
+    output_index: int = Field(ge=0)
+    local_x: float
+    local_y: float
+
+
 class LightingSurfaceRequest(GuiModel):
     resource: str = Field(min_length=1, max_length=200)
     local_width: float = Field(gt=0)
@@ -1106,6 +1485,17 @@ class LightingSurfaceRequest(GuiModel):
     brightness_limit: float = Field(default=1, gt=0, le=1)
     timing_offset_ms: int = Field(default=0, ge=-5000, le=5000)
     release_offset_ms: int = Field(default=0, ge=-5000, le=5000)
+    pixel_overrides: tuple[PixelPositionOverride, ...] = Field(
+        default_factory=tuple,
+        max_length=10000,
+    )
+
+    @model_validator(mode="after")
+    def validate_unique_overrides(self) -> "LightingSurfaceRequest":
+        indices = [override.output_index for override in self.pixel_overrides]
+        if len(indices) != len(set(indices)):
+            raise ValueError("pixel correction output indices must be unique")
+        return self
 
 
 class MappedPixelResponse(GuiModel):

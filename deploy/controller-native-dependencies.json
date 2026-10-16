@@ -19,7 +19,7 @@
           "ffmpeg",
           "ffprobe"
         ],
-        "reason": "Asset probing, loudness analysis, thumbnails, proxies, and waveforms"
+        "reason": "Asset probing, loudness analysis, thumbnails, proxies, waveforms, and final render encoding/muxing"
       },
       {
         "name": "clamav",
@@ -29,6 +29,20 @@
           "freshclam"
         ],
         "reason": "Optional uploaded-asset malware scanning and signature updates"
+      }
+    ],
+    "python_media_libraries": [
+      {
+        "name": "av",
+        "reason": "Deterministic timestamped video and audio decoding for controller-side composition"
+      },
+      {
+        "name": "numpy",
+        "reason": "Linear-light premultiplied alpha math and indexed triangle rasterization"
+      },
+      {
+        "name": "pillow",
+        "reason": "Still-image decoding and conversion into the normative RGBA working representation"
       }
     ],
     "ffmpeg_capabilities": {

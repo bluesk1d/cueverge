@@ -2,9 +2,11 @@ import asyncio
 import hashlib
 import json
 import logging
+import os
 import shutil
 import ssl
 import time
+import urllib.request
 from pathlib import Path
 from uuid import UUID, uuid4
 
@@ -15,8 +17,12 @@ from websockets.exceptions import WebSocketException
 from cueverge.media_agent.client import MediaAgentClient
 from cueverge.media_agent.device_enrollment import StoredDeviceIdentity
 from cueverge.protocol.device_v2 import (
+    DeviceArtifactActivateAck,
+    DeviceArtifactActivateCommand,
     DeviceArtifactInventory,
     DeviceArtifactRecord,
+    DeviceArtifactStageAck,
+    DeviceArtifactStageCommand,
     DeviceArtifactTransferStatus,
     DeviceCommandAck,
     DeviceHeartbeat,
@@ -166,22 +172,23 @@ class DevicePresenceClient:
                 async with send_lock:
                     await websocket.send(report.model_dump_json())
             elif message_type == "device.media.command":
-                command = DeviceMediaCommand.model_validate(message)
+                media_command = DeviceMediaCommand.model_validate(message)
                 internal = AgentCommand(
-                    request_id=str(command.request_id),
-                    command=command.command,
+                    request_id=str(media_command.request_id),
+                    command=media_command.command,
                     agent_id=self.media_client.runtime_identity,
                     agent_session_id=str(session_id),
                     controller_epoch=str(welcome.controller_epoch),
-                    scene_id=command.scene_id,
-                    scene_instance_id=str(command.scene_instance_id),
-                    playback_session_id=str(command.playback_session_id),
-                    asset_id=command.asset_id,
-                    target_position_ms=command.target_position_ms,
+                    scene_id=media_command.scene_id,
+                    scene_instance_id=str(media_command.scene_instance_id),
+                    playback_session_id=str(media_command.playback_session_id),
+                    asset_id=media_command.asset_id,
+                    end_behavior=media_command.end_behavior,
+                    target_position_ms=media_command.target_position_ms,
                 )
                 result = await self.media_client.handle_command(internal)
                 response = DeviceCommandAck(
-                    request_id=command.request_id,
+                    request_id=media_command.request_id,
                     device_session_id=session_id,
                     controller_epoch=welcome.controller_epoch,
                     status=result.status,
@@ -190,8 +197,124 @@ class DevicePresenceClient:
                 )
                 async with send_lock:
                     await websocket.send(response.model_dump_json())
+            elif message_type == "device.artifact.stage":
+                stage_command = DeviceArtifactStageCommand.model_validate(message)
+                _validate_deployment_command(stage_command, session_id, welcome)
+                try:
+                    await asyncio.to_thread(self._stage_artifact, stage_command)
+                    stage_ack = DeviceArtifactStageAck(
+                        request_id=stage_command.request_id,
+                        device_session_id=session_id,
+                        controller_epoch=welcome.controller_epoch,
+                        activation_identity=stage_command.activation_identity,
+                        digest_sha256=stage_command.digest_sha256,
+                        status="completed",
+                    )
+                except (OSError, ValueError, DevicePresenceError) as error:
+                    stage_ack = DeviceArtifactStageAck(
+                        request_id=stage_command.request_id,
+                        device_session_id=session_id,
+                        controller_epoch=welcome.controller_epoch,
+                        activation_identity=stage_command.activation_identity,
+                        digest_sha256=stage_command.digest_sha256,
+                        status="error",
+                        error=str(error),
+                    )
+                async with send_lock:
+                    await websocket.send(stage_ack.model_dump_json())
+            elif message_type == "device.artifact.activate":
+                activate_command = DeviceArtifactActivateCommand.model_validate(message)
+                _validate_deployment_command(activate_command, session_id, welcome)
+                try:
+                    self._activate_artifact(activate_command)
+                    activation_ack = DeviceArtifactActivateAck(
+                        request_id=activate_command.request_id,
+                        device_session_id=session_id,
+                        controller_epoch=welcome.controller_epoch,
+                        activation_identity=activate_command.activation_identity,
+                        status="completed",
+                    )
+                except (OSError, ValueError, DevicePresenceError) as error:
+                    activation_ack = DeviceArtifactActivateAck(
+                        request_id=activate_command.request_id,
+                        device_session_id=session_id,
+                        controller_epoch=welcome.controller_epoch,
+                        activation_identity=activate_command.activation_identity,
+                        status="error",
+                        error=str(error),
+                    )
+                async with send_lock:
+                    await websocket.send(activation_ack.model_dump_json())
             else:
                 raise DevicePresenceError(f"unsupported controller message: {message_type}")
+
+    def _stage_artifact(self, command: DeviceArtifactStageCommand) -> None:
+        asset_root = self.media_client.config.asset_root
+        asset_root.mkdir(parents=True, exist_ok=True)
+        target = asset_root / command.digest_sha256
+        if target.is_file():
+            if (
+                target.stat().st_size == command.size_bytes
+                and _sha256_file(target) == command.digest_sha256
+            ):
+                return
+            raise DevicePresenceError("existing cached artifact does not match digest")
+        partial = asset_root / f".{command.digest_sha256}.part"
+        received = partial.stat().st_size if partial.exists() else 0
+        if received > command.size_bytes:
+            partial.unlink()
+            received = 0
+        headers = {"Range": f"bytes={received}-"} if received else {}
+        request = urllib.request.Request(
+            str(command.download_url),
+            headers=headers,
+        )
+        with urllib.request.urlopen(
+            request,
+            context=self.ssl_context,
+            timeout=60,
+        ) as response:
+            if received and response.status != 206:
+                partial.unlink(missing_ok=True)
+                received = 0
+            mode = "ab" if received else "wb"
+            with partial.open(mode) as output:
+                while chunk := response.read(1024 * 1024):
+                    output.write(chunk)
+        if partial.stat().st_size != command.size_bytes:
+            raise DevicePresenceError("staged artifact size does not match manifest")
+        if _sha256_file(partial) != command.digest_sha256:
+            raise DevicePresenceError("staged artifact checksum does not match manifest")
+        os.replace(partial, target)
+        _update_cache_state(
+            asset_root,
+            command.digest_sha256,
+        )
+
+    def _activate_artifact(self, command: DeviceArtifactActivateCommand) -> None:
+        asset_root = self.media_client.config.asset_root
+        target = asset_root / command.digest_sha256
+        if not target.is_file() or _sha256_file(target) != command.digest_sha256:
+            raise DevicePresenceError("activation artifact is not staged")
+        state = {
+            "activation_identity": str(command.activation_identity),
+            "resource": command.resource,
+            "digest_sha256": command.digest_sha256,
+            "media_end_behavior": command.media_end_behavior,
+            "duration_ms": command.duration_ms,
+            "frame_rate": {
+                "numerator": command.frame_rate_numerator,
+                "denominator": command.frame_rate_denominator,
+            },
+            "frame_time_origin_ms": command.frame_time_origin_ms,
+            "activated_at_unix_ms": time.time_ns() // 1_000_000,
+        }
+        temporary = asset_root / ".cueverge-activation.tmp"
+        temporary.write_text(
+            json.dumps(state, sort_keys=True, separators=(",", ":")),
+            encoding="utf-8",
+        )
+        os.replace(temporary, asset_root / ".cueverge-activation.json")
 
     async def _heartbeat_loop(
         self,
@@ -397,3 +520,49 @@ def _load_cache_state(
         )
     except (OSError, UnicodeError, json.JSONDecodeError, ValueError):
         return False, False, set(), (), ("Cache state metadata is invalid",)
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        while chunk := source.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _validate_deployment_command(
+    command: DeviceArtifactStageCommand | DeviceArtifactActivateCommand,
+    session_id: UUID,
+    welcome: DeviceWelcome,
+) -> None:
+    if command.device_session_id != session_id:
+        raise DevicePresenceError("artifact command device session was fenced")
+    if command.controller_epoch != welcome.controller_epoch:
+        raise DevicePresenceError("artifact command controller epoch was fenced")
+
+
+def _update_cache_state(asset_root: Path, digest: str) -> None:
+    state_path = asset_root / ".cueverge-cache-state.json"
+    value: dict[str, object] = {}
+    if state_path.exists():
+        loaded = json.loads(state_path.read_text(encoding="utf-8"))
+        if not isinstance(loaded, dict):
+            raise DevicePresenceError("cache state metadata is invalid")
+        value = loaded
+    pins = value.get("pinned_digests", [])
+    if not isinstance(pins, list) or not all(isinstance(item, str) for item in pins):
+        raise DevicePresenceError("cache pin metadata is invalid")
+    value.update(
+        {
+            "supports_pinning": True,
+            "supports_resumable_transfer": True,
+            "pinned_digests": sorted(set(pins) | {digest}),
+            "transfers": [],
+        }
+    )
+    temporary = asset_root / ".cueverge-cache-state.tmp"
+    temporary.write_text(
+        json.dumps(value, sort_keys=True, separators=(",", ":")),
+        encoding="utf-8",
+    )
+    os.replace(temporary, state_path)

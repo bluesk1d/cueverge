@@ -47,6 +47,11 @@ test("transform layers persist independent axes crop and Bezier controls", async
       exact: true,
     }),
   ).toBeVisible();
+  await page
+    .getByLabel("Source alpha interpretation")
+    .selectOption("premultiplied");
+  await page.getByLabel("Source color space").selectOption("bt709");
+  await page.getByLabel("Source scaling behavior").selectOption("fill");
 
   await page.getByLabel("Position 1").fill("100");
   await page.getByLabel("Position 2").fill("50");
@@ -109,6 +114,21 @@ test("transform layers persist independent axes crop and Bezier controls", async
   await expect(
     page.getByRole("button", { name: "Time-remap nested composition" }),
   ).toBeDisabled();
+  await page.getByLabel("New transform layer name").fill("Narration clip");
+  await page.getByLabel("New transform layer kind").selectOption("audio");
+  await page.getByLabel("New transform layer source").fill("audio-asset");
+  await page
+    .getByLabel("New transform layer track")
+    .selectOption("media:left-window");
+  await page.getByLabel("New transform layer duration").fill("800");
+  await page.getByRole("button", { name: "Add transform layer" }).click();
+  await page.getByLabel("Layer source in").fill("100");
+  await page.getByLabel("Layer visual order").fill("3");
+  await page.getByLabel("Layer fade in").fill("100");
+  await page.getByLabel("Layer fade out").fill("150");
+  await page.getByLabel("Audio gain").fill("-6");
+  await page.getByLabel("Audio mute").check();
+  await page.getByLabel("Audio mix order").fill("0");
   await page.getByRole("button", { name: "Save timeline" }).click();
 
   await expect.poll(() => savedDraft).not.toBeNull();
@@ -121,6 +141,9 @@ test("transform layers persist independent axes crop and Bezier controls", async
     track_id: "media:left-window",
     start_ms: 250,
     duration_ms: 1000,
+    alpha_interpretation: "premultiplied",
+    source_color_space: "bt709",
+    scaling_behavior: "fill",
   });
   expect(layer.keyframes).toHaveLength(2);
   expect(layer.keyframes[0]).toMatchObject({
@@ -148,7 +171,30 @@ test("transform layers persist independent axes crop and Bezier controls", async
       spatial_out: null,
     },
   });
-  expect(saved.editor_metadata.timeline_transform_layers.ambient).toHaveLength(2);
+  expect(saved.editor_metadata.timeline_transform_layers.ambient).toHaveLength(3);
+  expect(
+    saved.editor_metadata.timeline_transform_layers.ambient.find(
+      (candidate) => candidate.name === "Narration clip",
+    ),
+  ).toMatchObject({
+    layer_schema_version: 1,
+    kind: "audio",
+    source_id: "audio-asset",
+    start_ms: 500,
+    duration_ms: 800,
+    in_point_ms: 100,
+    out_point_ms: 900,
+    z_index: 3,
+    fade_in_ms: 100,
+    fade_out_ms: 150,
+    audio: {
+      gain_db: -6,
+      mute: true,
+      solo: false,
+      mix_order: 0,
+    },
+    keyframes: [],
+  });
 
   await page.reload();
   await page.getByRole("button", { name: "Shows", exact: true }).click();

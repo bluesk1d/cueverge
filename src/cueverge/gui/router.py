@@ -2,8 +2,9 @@ import asyncio
 import time
 from collections.abc import Callable, Collection, Mapping
 from datetime import UTC, datetime, timedelta
-from typing import Annotated, Literal
-from uuid import uuid4
+from io import BytesIO
+from typing import Annotated, Literal, cast
+from uuid import UUID, uuid4
 
 from fastapi import (
     APIRouter,
@@ -16,8 +17,11 @@ from fastapi import (
     Response,
 )
 from fastapi.responses import FileResponse, JSONResponse
+from PIL import Image
+from pydantic import JsonValue
 
 from cueverge.controller.runtime import ShowMode
+from cueverge.gui.artifact_deployment import ArtifactDeploymentError
 from cueverge.gui.asset_upload import (
     AssetMetadataConflictError,
     AssetMetadataLockedError,
@@ -35,6 +39,7 @@ from cueverge.gui.contracts import (
     AcceptedCalibrationResponse,
     ActivityEventResponse,
     ApplyScenePresetRequest,
+    ArtifactDeploymentResponse,
     AssetMetadataConflictResponse,
     AssetResponse,
     AssetSceneReferenceResponse,
@@ -50,6 +55,7 @@ from cueverge.gui.contracts import (
     CreateOutputArmRequest,
     CreatePairingTokenRequest,
     CreateProjectRequest,
+    CreateRenderJobRequest,
     CreateScenePresetRequest,
     DeviceArtifactResponse,
     DeviceConnectionPolicyResponse,
@@ -58,6 +64,7 @@ from cueverge.gui.contracts import (
     DeviceTransferStatusResponse,
     DiscoveredEndpointResponse,
     DraftProject,
+    EvaluateSyncAdmissionRequest,
     GeometryPoint,
     GeometrySuggestionRequest,
     GeometrySuggestionResponse,
@@ -93,6 +100,8 @@ from cueverge.gui.contracts import (
     ProjectorOverlapResponse,
     ProjectorPhotoViewResponse,
     ProjectSummary,
+    RecordSyncRehearsalRequest,
+    RenderJobResponse,
     ResourceAssignmentConflictResponse,
     ResourceAssignmentResponse,
     ReviewCalibrationContextRequest,
@@ -107,6 +116,8 @@ from cueverge.gui.contracts import (
     StageCoverageResponse,
     StageRegionResponse,
     StartTimingCalibrationRequest,
+    SyncAdmissionResponse,
+    SyncRehearsalResponse,
     TimingCalibrationSessionResponse,
     TopologyNodeResponse,
     TopologyResponse,
@@ -115,6 +126,10 @@ from cueverge.gui.contracts import (
     UpdateInstallationRequest,
     UpdateTimingCalibrationRequest,
 )
+from cueverge.gui.contracts import (
+    PixelPositionOverride as PixelPositionOverrideResponse,
+)
+from cueverge.gui.device_session import DeviceSessionError
 from cueverge.gui.endpoint_discovery import EndpointDiscoveryError
 from cueverge.gui.geometry_suggestions import (
     GeometrySuggestionError,
@@ -131,9 +146,17 @@ from cueverge.gui.installation_photos import (
     InstallationPhotoError,
     StoredInstallationPhoto,
 )
+from cueverge.gui.lighting_preview import (
+    LightingPreviewError,
+    evaluate_lighting_preview,
+    resolve_lighting_preview_surface,
+)
 from cueverge.gui.lighting_surface import (
     LightingSurfaceError,
     StoredLightingSurface,
+)
+from cueverge.gui.lighting_surface import (
+    PixelPositionOverride as StoredPixelPositionOverride,
 )
 from cueverge.gui.mapper_export import MapperExportError
 from cueverge.gui.output_arming import OutputArmError, StoredOutputArm
@@ -146,6 +169,11 @@ from cueverge.gui.projector_overlap import (
     ProjectorOverlapError,
     StoredProjectorOverlap,
 )
+from cueverge.gui.projector_renderer import (
+    ProjectorRenderError,
+    preview_projector_composition,
+)
+from cueverge.gui.render_jobs import RenderJobError, StoredRenderJob
 from cueverge.gui.repository import (
     ActiveInstallationDeleteError,
     DeviceNotFoundError,
@@ -167,6 +195,12 @@ from cueverge.gui.repository import (
     StoredRevision,
 )
 from cueverge.gui.service import GuiServices
+from cueverge.gui.stage_renderer import preview_stage_composition_member
+from cueverge.gui.sync_rehearsal import (
+    StoredSyncRehearsal,
+    SyncAdmission,
+    SyncRehearsalError,
+)
 from cueverge.gui.timing_calibration import (
     StoredAcceptedCalibration,
     StoredTimingCalibration,
@@ -1098,6 +1132,321 @@ def create_gui_router(services: GuiServices) -> APIRouter:
         )
 
     @router.get(
+        "/projects/{project_id}/compositions/{composition_id}/preview-frame",
+        dependencies=[reader],
+    )
+    def projector_composition_preview_frame(
+        project_id: str,
+        composition_id: str,
+        timestamp_ms: int,
+        resource: str | None = None,
+    ) -> Response:
+        try:
+            revision = services.repository.get_revision(project_id)
+            composition = revision.draft.editor_metadata.get("compositions", {})
+            raw_composition = (
+                composition.get(composition_id) if isinstance(composition, dict) else None
+            )
+            if isinstance(raw_composition, dict) and raw_composition.get("space_kind") == "stage":
+                installation_id = revision.draft.editor_metadata.get("installation_id")
+                if not isinstance(installation_id, str) or resource is None:
+                    raise ProjectorRenderError(
+                        "stage preview requires installation and projector resource"
+                    )
+                frame = preview_stage_composition_member(
+                    project_id=project_id,
+                    source_revision=revision.revision,
+                    draft=revision.draft,
+                    composition_id=composition_id,
+                    assets=services.asset_upload,
+                    mapper_export=services.mapper_export.export(installation_id),
+                    coverage=services.stage_coverage.analyze(installation_id),
+                    overlaps=services.projector_overlap.list(installation_id),
+                    resource=resource,
+                    timestamp_ms=timestamp_ms,
+                )
+            else:
+                frame = preview_projector_composition(
+                    project_id=project_id,
+                    draft=revision.draft,
+                    composition_id=composition_id,
+                    timestamp_ms=timestamp_ms,
+                    assets=services.asset_upload,
+                )
+        except ProjectNotFoundError as error:
+            raise HTTPException(
+                status_code=404,
+                detail={"code": "project_not_found"},
+            ) from error
+        except (
+            ProjectorRenderError,
+            AssetUploadError,
+            MapperExportError,
+        ) as error:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "preview_frame_invalid", "message": str(error)},
+            ) from error
+        output = BytesIO()
+        Image.fromarray(frame, mode="RGBA").save(output, format="PNG")
+        return Response(
+            content=output.getvalue(),
+            media_type="image/png",
+            headers={
+                "Cache-Control": "no-store",
+                "X-Cueverge-Render-Pipeline-Revision": "1",
+            },
+        )
+
+    @router.get(
+        "/projects/{project_id}/compositions/{composition_id}/lighting-preview",
+        dependencies=[reader],
+    )
+    def lighting_composition_preview(
+        project_id: str,
+        composition_id: str,
+        timestamp_ms: int,
+    ) -> dict[str, object]:
+        try:
+            revision = services.repository.get_revision(project_id)
+            installation_id = revision.draft.editor_metadata.get("installation_id")
+            if not isinstance(installation_id, str):
+                raise LightingPreviewError("lighting preview requires installation ID")
+            mapper_export = services.mapper_export.export(installation_id)
+            surface = resolve_lighting_preview_surface(
+                draft=revision.draft,
+                composition_id=composition_id,
+                mapper_export=mapper_export,
+            )
+            resource = surface.get("resource")
+            assignment = next(
+                (
+                    candidate
+                    for candidate in services.repository.list_resource_assignments()
+                    if candidate.resource == resource
+                ),
+                None,
+            )
+            device_reported_scale = (
+                services.device_sessions.output_scale(
+                    UUID(assignment.device_id),
+                    assignment.device_output or assignment.resource,
+                )
+                if assignment is not None
+                else None
+            )
+            return evaluate_lighting_preview(
+                project_id=project_id,
+                draft=revision.draft,
+                composition_id=composition_id,
+                timestamp_ms=timestamp_ms,
+                assets=services.asset_upload,
+                mapper_export=mapper_export,
+                device_reported_scale=device_reported_scale,
+            )
+        except ProjectNotFoundError as error:
+            raise HTTPException(
+                status_code=404,
+                detail={"code": "project_not_found"},
+            ) from error
+        except (
+            LightingPreviewError,
+            ProjectorRenderError,
+            AssetUploadError,
+            MapperExportError,
+        ) as error:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "lighting_preview_invalid", "message": str(error)},
+            ) from error
+
+    @router.post(
+        "/projects/{project_id}/render-jobs",
+        response_model=RenderJobResponse,
+        status_code=202,
+    )
+    def create_render_job(
+        project_id: str,
+        body: CreateRenderJobRequest,
+        identity: Annotated[AuthenticatedSession, author],
+    ) -> RenderJobResponse:
+        try:
+            job = services.render_jobs.create(
+                project_id=project_id,
+                composition_id=body.composition_id,
+                actor=identity.username,
+            )
+        except ProjectNotFoundError as error:
+            raise HTTPException(
+                status_code=404,
+                detail={"code": "project_not_found"},
+            ) from error
+        except RenderJobError as error:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "render_job_invalid", "message": str(error)},
+            ) from error
+        services.repository.append_audit(
+            actor=identity.username,
+            action="render_job.create",
+            target=job.id,
+            result="success",
+            occurred_at=_now_iso(),
+            authorization_context={
+                "role": identity.role.value,
+                "project_id": project_id,
+                "composition_id": body.composition_id,
+                "cache_key": job.cache_key,
+            },
+        )
+        return _render_job(job)
+
+    @router.get(
+        "/projects/{project_id}/render-jobs",
+        response_model=list[RenderJobResponse],
+        dependencies=[reader],
+    )
+    def render_jobs(project_id: str) -> list[RenderJobResponse]:
+        return [_render_job(job) for job in services.render_jobs.list(project_id)]
+
+    @router.get(
+        "/render-jobs/{job_id}",
+        response_model=RenderJobResponse,
+        dependencies=[reader],
+    )
+    def render_job(job_id: str) -> RenderJobResponse:
+        try:
+            return _render_job(services.render_jobs.get(job_id))
+        except RenderJobError as error:
+            raise HTTPException(
+                status_code=404,
+                detail={"code": "render_job_not_found"},
+            ) from error
+
+    @router.post(
+        "/render-jobs/{job_id}/cancel",
+        response_model=RenderJobResponse,
+    )
+    def cancel_render_job(
+        job_id: str,
+        identity: Annotated[AuthenticatedSession, author],
+    ) -> RenderJobResponse:
+        try:
+            job = services.render_jobs.cancel(job_id)
+        except RenderJobError as error:
+            raise HTTPException(
+                status_code=409,
+                detail={"code": "render_job_not_cancelable", "message": str(error)},
+            ) from error
+        services.repository.append_audit(
+            actor=identity.username,
+            action="render_job.cancel",
+            target=job_id,
+            result="success",
+            occurred_at=_now_iso(),
+            authorization_context={"role": identity.role.value},
+        )
+        return _render_job(job)
+
+    @router.post(
+        "/projector-sync-rehearsals",
+        response_model=SyncRehearsalResponse,
+        status_code=201,
+    )
+    def record_projector_sync_rehearsal(
+        body: RecordSyncRehearsalRequest,
+        identity: Annotated[AuthenticatedSession, operator_mutation],
+    ) -> SyncRehearsalResponse:
+        try:
+            rehearsal = services.sync_rehearsal.record(
+                resources=body.resources,
+                start_error_ms=body.start_error_ms,
+                drift_ms_per_minute=body.drift_ms_per_minute,
+                measurement_duration_seconds=body.measurement_duration_seconds,
+                context=services.render_jobs.resource_context(body.resources),
+                notes=body.notes,
+                actor=identity.username,
+                measured_at=body.measured_at,
+            )
+        except (SyncRehearsalError, RenderJobError) as error:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "sync_rehearsal_invalid", "message": str(error)},
+            ) from error
+        services.repository.append_audit(
+            actor=identity.username,
+            action="projector_sync_rehearsal.record",
+            target=rehearsal.id,
+            result="success",
+            occurred_at=_now_iso(),
+            authorization_context={
+                "role": identity.role.value,
+                "resources": list(rehearsal.resources),
+                "hardware_command_sent": False,
+            },
+        )
+        return _sync_rehearsal(rehearsal)
+
+    @router.post(
+        "/projector-sync-rehearsals/evaluate",
+        response_model=SyncAdmissionResponse,
+        dependencies=[reader],
+    )
+    def evaluate_projector_sync_rehearsal(
+        body: EvaluateSyncAdmissionRequest,
+    ) -> SyncAdmissionResponse:
+        try:
+            admission = services.sync_rehearsal.evaluate(
+                resources=body.resources,
+                current_context=services.render_jobs.resource_context(body.resources),
+                now=_now_iso(),
+            )
+        except RenderJobError as error:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "sync_admission_invalid", "message": str(error)},
+            ) from error
+        return _sync_admission(admission)
+
+    @router.post(
+        "/render-artifacts/{artifact_id}/deploy",
+        response_model=ArtifactDeploymentResponse,
+    )
+    async def deploy_render_artifact(
+        artifact_id: str,
+        identity: Annotated[AuthenticatedSession, operator_mutation],
+    ) -> ArtifactDeploymentResponse:
+        try:
+            result = await services.artifact_deployment.deploy(artifact_id)
+        except (ArtifactDeploymentError, DeviceSessionError, ValueError) as error:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "artifact_deployment_failed",
+                    "message": str(error),
+                },
+            ) from error
+        services.repository.append_audit(
+            actor=identity.username,
+            action="render_artifact.deploy",
+            target=artifact_id,
+            result="success",
+            occurred_at=_now_iso(),
+            authorization_context={
+                "role": identity.role.value,
+                "activation_identity": result.activation_identity,
+                "resources": list(result.resources),
+            },
+        )
+        return ArtifactDeploymentResponse(
+            activation_identity=result.activation_identity,
+            artifact_id=result.artifact_id,
+            resources=result.resources,
+            staged_device_ids=result.staged_device_ids,
+            activated_device_ids=result.activated_device_ids,
+        )
+
+    @router.get(
         "/installations",
         response_model=list[InstallationSummaryResponse],
         dependencies=[reader],
@@ -1782,13 +2131,22 @@ def create_gui_router(services: GuiServices) -> APIRouter:
         if_match: Annotated[str | None, Header(alias="If-Match")] = None,
     ) -> LightingSurfaceResponse:
         try:
+            values = body.model_dump(exclude={"pixel_overrides"})
             surface = services.lighting_surface.upsert(
                 geometry_id=geometry_id,
                 expected_revision=_parse_optional_if_match(if_match),
                 actor=identity.username,
                 role=identity.role,
                 occurred_at=_now_iso(),
-                **body.model_dump(),
+                pixel_overrides=tuple(
+                    StoredPixelPositionOverride(
+                        output_index=override.output_index,
+                        local_x=override.local_x,
+                        local_y=override.local_y,
+                    )
+                    for override in body.pixel_overrides
+                ),
+                **values,
             )
         except LightingSurfaceError as error:
             raise HTTPException(
@@ -3134,6 +3492,10 @@ def _projector_mapping(mapping: StoredProjectorMapping) -> ProjectorMappingRespo
         mirror_x=mapping.mirror_x,
         mirror_y=mapping.mirror_y,
         mask_semantic_ids=mapping.mask_semantic_ids,
+        calibration_source=mapping.calibration_source,
+        calibration_revision=mapping.calibration_revision,
+        mesh_vertices=mapping.mesh_vertices,
+        mesh_triangles=mapping.mesh_triangles,
         homography=mapping.homography,
         diagnostic=mapping.diagnostic,
         fit_diagnostics=mapping.fit_diagnostics,
@@ -3149,6 +3511,52 @@ def _projector_mapping(mapping: StoredProjectorMapping) -> ProjectorMappingRespo
         revision=mapping.revision,
         created_at=mapping.created_at,
         updated_at=mapping.updated_at,
+    )
+
+
+def _render_job(job: StoredRenderJob) -> RenderJobResponse:
+    return RenderJobResponse(
+        id=job.id,
+        project_id=job.project_id,
+        source_revision=job.source_revision,
+        composition_id=job.composition_id,
+        cache_key=job.cache_key,
+        state=job.state,
+        progress=job.progress,
+        reserved_bytes=job.reserved_bytes,
+        error=job.error,
+        artifact_id=job.artifact_id,
+        cancel_requested=job.cancel_requested,
+        created_by=job.created_by,
+        created_at=job.created_at,
+        started_at=job.started_at,
+        completed_at=job.completed_at,
+        updated_at=job.updated_at,
+    )
+
+
+def _sync_rehearsal(rehearsal: StoredSyncRehearsal) -> SyncRehearsalResponse:
+    return SyncRehearsalResponse(
+        id=rehearsal.id,
+        resources=rehearsal.resources,
+        start_error_ms=rehearsal.start_error_ms,
+        drift_ms_per_minute=rehearsal.drift_ms_per_minute,
+        measurement_duration_seconds=rehearsal.measurement_duration_seconds,
+        context=cast(dict[str, JsonValue], rehearsal.context),
+        notes=rehearsal.notes,
+        actor=rehearsal.actor,
+        measured_at=rehearsal.measured_at,
+    )
+
+
+def _sync_admission(admission: SyncAdmission) -> SyncAdmissionResponse:
+    return SyncAdmissionResponse(
+        allowed=admission.allowed,
+        code=admission.code,
+        message=admission.message,
+        rehearsal=(
+            _sync_rehearsal(admission.rehearsal) if admission.rehearsal is not None else None
+        ),
     )
 
 
@@ -3170,6 +3578,14 @@ def _lighting_surface(surface: StoredLightingSurface) -> LightingSurfaceResponse
         brightness_limit=surface.brightness_limit,
         timing_offset_ms=surface.timing_offset_ms,
         release_offset_ms=surface.release_offset_ms,
+        pixel_overrides=tuple(
+            PixelPositionOverrideResponse(
+                output_index=override.output_index,
+                local_x=override.local_x,
+                local_y=override.local_y,
+            )
+            for override in surface.pixel_overrides
+        ),
         pixels=tuple(
             MappedPixelResponse(
                 output_index=pixel.output_index,

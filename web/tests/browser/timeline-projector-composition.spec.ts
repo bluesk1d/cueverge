@@ -3,6 +3,8 @@ import { expect, test } from "@playwright/test";
 const installationId = "demo-installation";
 const geometryId = "projector-surface";
 const photoIds = ["wide", "left-close", "right-close"];
+let savedDraft: Record<string, unknown> | null = null;
+let renderJobs: ReturnType<typeof renderJob>[] = [];
 
 test("projector-native edit returns to root and maps through every photo view", async ({
   page,
@@ -13,8 +15,36 @@ test("projector-native edit returns to root and maps through every photo view", 
     if (url.pathname.endsWith("/projects/demo-project/assets")) {
       return route.fulfill({ json: [] });
     }
+    if (url.pathname.endsWith("/projects/demo-project/render-jobs")) {
+      if (request.method() === "POST") {
+        const job = renderJob("queued");
+        renderJobs = [job];
+        return route.fulfill({ status: 202, json: job });
+      }
+      return route.fulfill({ json: renderJobs });
+    }
+    if (
+      url.pathname.endsWith("/render-jobs/render-job-1/cancel") &&
+      request.method() === "POST"
+    ) {
+      const job = renderJob("canceled");
+      renderJobs = [job];
+      return route.fulfill({ json: job });
+    }
     if (url.pathname.endsWith("/projects/demo-project/draft")) {
-      return route.fulfill({ json: draftResponse(request.postDataJSON()) });
+      if (request.method() === "PUT") {
+        savedDraft = request.postDataJSON();
+      }
+      return route.fulfill({ json: draftResponse(savedDraft) });
+    }
+    if (url.pathname.endsWith("/compositions/projector-composition/preview-frame")) {
+      return route.fulfill({
+        contentType: "image/png",
+        body: Buffer.from(
+          "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M/wHwAF/gL+X4R7WQAAAABJRU5ErkJggg==",
+          "base64",
+        ),
+      });
     }
     if (url.pathname.endsWith(`/${installationId}/photos`)) {
       return route.fulfill({ json: photoIds.map(photo) });
@@ -49,6 +79,23 @@ test("projector-native edit returns to root and maps through every photo view", 
   await page.getByRole("button", { name: "Shows", exact: true }).click();
   await page.getByText("Timeline editor", { exact: true }).click();
   await page.getByLabel("Editing space").selectOption("projector-composition");
+  await expect(
+    page.getByAltText("Controller render preview for Left projector"),
+  ).toHaveAttribute(
+    "src",
+    "/api/gui/v1/projects/demo-project/compositions/projector-composition/preview-frame?timestamp_ms=0",
+  );
+  await expect(
+    page.getByLabel("Render pipeline order").locator("li"),
+  ).toHaveText([
+    "Decode and conform sources",
+    "Logical transforms, masks, and alpha composition",
+    "Physical-object mapping and occlusion",
+    "Projector-native warp, crop, and orientation",
+    "Overlap and edge blending",
+    "Projector brightness, black level, and color correction",
+    "Audio mix, encode, and mux",
+  ]);
 
   await expect(
     page.getByText(
@@ -60,7 +107,53 @@ test("projector-native edit returns to root and maps through every photo view", 
   ).toHaveCount(0);
   await page.getByLabel("Position 1").fill("960");
   await page.getByLabel("Position 2").fill("540");
+  await page.getByLabel("Render frame-rate numerator").fill("24");
+  await page.getByLabel("Render frame-rate denominator").fill("1");
+  await page.getByLabel("Render scaling filter").selectOption("bicubic");
+  await page.getByLabel("Final output background").fill("#112233");
+  await page.getByLabel("Client output preset").selectOption("legacy_h264");
+  await page.getByLabel("Maximum video bitrate").fill("3500");
+  await page.getByLabel("Loudness target").fill("-18");
+  await page.getByLabel("Keyframe interval").fill("48");
+  await page.getByRole("button", { name: "Start controller render" }).click();
+  await expect(page.locator(".timeline-render-job")).toContainText("queued");
+  await page.getByRole("button", { name: "Cancel render" }).click();
+  await expect(page.locator(".timeline-render-job")).toContainText("canceled");
   await page.getByRole("button", { name: "Save timeline" }).click();
+  await expect.poll(() => savedDraft).not.toBeNull();
+  expect(
+    (
+      savedDraft as {
+        editor_metadata: {
+          compositions: Record<string, { render_settings: Record<string, unknown> }>;
+        };
+      }
+    ).editor_metadata.compositions["projector-composition"].render_settings,
+  ).toMatchObject({
+    render_pipeline_revision: 1,
+    frame_rate_numerator: 24,
+    frame_rate_denominator: 1,
+    working_color_space: "linear_srgb",
+    working_alpha_mode: "premultiplied",
+    scaling_filter: "bicubic",
+    output_background_color: "#112233",
+    output_profile: {
+      preset_id: "legacy_h264",
+      container: "mp4",
+      video_codec: "h264",
+      video_profile: "baseline",
+      video_level: "3.1",
+      pixel_format: "yuv420p",
+      max_video_bitrate_kbps: 3500,
+      audio_codec: "aac",
+      audio_sample_rate: 48000,
+      audio_channel_layout: "stereo",
+      loudness_target_lufs: -18,
+      keyframe_interval_frames: 48,
+      b_frames: 0,
+      hardware_decoder_compatibility: "h264_baseline_level_3_1_yuv420p",
+    },
+  });
 
   await page
     .getByRole("navigation", { name: "Composition breadcrumbs" })
@@ -293,5 +386,28 @@ function emptyCoverage() {
     maximum_x: 1,
     maximum_y: 1,
     regions: [],
+  };
+}
+
+function renderJob(
+  state: "queued" | "canceled",
+) {
+  return {
+    id: "render-job-1",
+    project_id: "demo-project",
+    source_revision: 1,
+    composition_id: "projector-composition",
+    cache_key: "a".repeat(64),
+    state,
+    progress: 0,
+    reserved_bytes: 1024,
+    error: null,
+    artifact_id: null,
+    cancel_requested: state === "canceled",
+    created_by: "admin",
+    created_at: "2026-10-15T12:00:00Z",
+    started_at: null,
+    completed_at: state === "canceled" ? "2026-10-15T12:00:01Z" : null,
+    updated_at: "2026-10-15T12:00:01Z",
   };
 }

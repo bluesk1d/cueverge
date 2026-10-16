@@ -46,6 +46,17 @@ class FakeMpvClient:
         return self.properties[name]
 
 
+class RecordingMpvClient:
+    def __init__(self) -> None:
+        self.commands: list[tuple[object, ...]] = []
+
+    async def command(self, *items: object) -> object:
+        self.commands.append(items)
+        if items == ("get_property", "duration"):
+            return 3.0
+        return None
+
+
 def test_json_line_codec_is_compact_and_newline_delimited() -> None:
     encoded = JsonLineCodec.encode(["get_property", "time-pos/full"], 7)
 
@@ -215,5 +226,53 @@ def test_player_checks_idle_before_position_and_retains_last_time() -> None:
         assert completed.duration_ms == 4000
         assert completed.state is PlaybackState.COMPLETED
         assert fake.requests == ["idle-active"]
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    ("end_behavior", "keep_open_value"),
+    [
+        ("hold_last_frame", "always"),
+        ("loop", "no"),
+        ("stop", "no"),
+    ],
+)
+def test_player_configures_exact_end_behavior(
+    tmp_path: Path,
+    end_behavior: str,
+    keep_open_value: str,
+) -> None:
+    async def scenario() -> None:
+        asset = tmp_path / "clip.mp4"
+        asset.write_bytes(b"video")
+        fake = RecordingMpvClient()
+        player = MpvPlayer(fake, tmp_path)  # type: ignore[arg-type]
+
+        await player.prepare(asset.name, end_behavior)  # type: ignore[arg-type]
+
+        assert fake.commands == [
+            ("set_property", "loop-file", "no"),
+            ("set_property", "keep-open", keep_open_value),
+            (
+                "set_property",
+                "gapless-audio",
+                "yes" if end_behavior == "loop" else "no",
+            ),
+            ("loadfile", str(asset.resolve()), "replace"),
+            ("set_property", "pause", True),
+            *(
+                [
+                    ("get_property", "duration"),
+                    ("set_property", "ab-loop-a", 0),
+                    ("set_property", "ab-loop-b", 3.0),
+                ]
+                if end_behavior == "loop"
+                else [
+                    ("set_property", "ab-loop-a", "no"),
+                    ("set_property", "ab-loop-b", "no"),
+                ]
+            ),
+        ]
 
     asyncio.run(scenario())

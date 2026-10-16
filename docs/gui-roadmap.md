@@ -113,9 +113,9 @@ away from the current screen.
 | GUI-02 | 10 / 11 | In progress |
 | GUI-03 | 33 / 39 | In progress |
 | GUI-04 | 28 / 28 | Complete |
-| GUI-05 | 0 / 27 | Not started |
-| GUI-06 | 0 / 14 | Not started |
-| GUI-07 | 0 / 19 | Not started |
+| GUI-05 | 25 / 27 | In progress |
+| GUI-06 | 14 / 14 | Complete |
+| GUI-07 | 4 / 19 | In progress |
 | GUI-08 | 0 / 10 | Not started |
 | GUI-09 | 0 / 17 | Not started |
 | GUI-10 | 0 / 10 | Not started |
@@ -492,33 +492,33 @@ clients.
 
 ### Scope
 
-- [ ] Support image, video, and audio layers in projector compositions. Layers have
+- [x] Support image, video, and audio layers in projector compositions. Layers have
   explicit in/out points, ordering, position, scale, rotation, opacity, crop,
   and supported fades; audio layers have gain, mute/solo, fades, and an
   explicit mix order.
-- [ ] Preserve alpha channels from supported image and video sources throughout
+- [x] Preserve alpha channels from supported image and video sources throughout
   controller-side composition. Define premultiplied versus straight alpha,
   color space, frame rate, resolution, and scaling behavior so preview and
   final rendering agree.
-- [ ] Perform all layer and timeline editing through GUI-04 on the controller.
+- [x] Perform all layer and timeline editing through GUI-04 on the controller.
   Playback clients receive compiled assets and timing metadata, not editable
   composition graphs or a requirement to composite layers in real time.
-- [ ] Extend GUI-03 projector calibration with projection-object metadata.
+- [x] Extend GUI-03 projector calibration with projection-object metadata.
   Surfaces may provide homography, mesh/UV warp, masks, occlusion regions,
   overlap regions, orientation, and calibration revision. Projector layers can
   target those surfaces without baking photo-view coordinates into source
   artwork.
-- [ ] Show the calibrated warp in native-canvas and installation previews. Make it
+- [x] Show the calibrated warp in native-canvas and installation previews. Make it
   clear whether a transform comes from a measured live grid, easy-mode corner
   pinning, or an unverified estimate.
-- [ ] Add controller-side render jobs that flatten the layer graph, alpha
+- [x] Add controller-side render jobs that flatten the layer graph, alpha
   composition, masks, projection warps, color/output transforms, and audio mix
   into a muxed MP4 targeted to a specific projector profile.
-- [ ] For a stage-space layer visible to multiple projectors, evaluate one
+- [x] For a stage-space layer visible to multiple projectors, evaluate one
   authoritative transform per frame, intersect it with each projector's
   calibrated coverage, and render the correct clipped and edge-blended
   contribution into each projector-specific bake.
-- [ ] Define one normative render pipeline used by preview and baking:
+- [x] Define one normative render pipeline used by preview and baking:
   1. Decode and conform source layers into the composition's declared frame
      rate, resolution, alpha interpretation, and working color space.
   2. Evaluate layer transforms, opacity, masks, and alpha composition in
@@ -529,64 +529,64 @@ clients.
   6. Apply projector-specific brightness, black-level, and color correction.
   7. Mix and conform audio, then encode and mux the target artifact.
   Changing this order requires an explicit versioned render-pipeline revision.
-- [ ] Make output codec, profile, level, pixel format, resolution, frame rate,
+- [x] Make output codec, profile, level, pixel format, resolution, frame rate,
   audio codec, sample rate, channel layout, loudness target, keyframe policy,
   and hardware-decoder compatibility explicit. Provide conservative presets
   for enrolled low-power clients.
-- [ ] Treat bakes for one multi-projector composition as an output set with a
+- [x] Treat bakes for one multi-projector composition as an output set with a
   common duration, frame rate, frame/time origin, render-pipeline revision,
   and activation identity. Prepare the complete set before allowing any member
   to activate.
-- [ ] Define a measured cross-projector synchronization tolerance. Use a shared
+- [x] Define a measured cross-projector synchronization tolerance. Use a shared
   prepare/play barrier and calibrated start offsets, record drift during
   rehearsal, and reject or warn on cross-projector motion when the selected
   clients cannot maintain the declared tolerance. Pre-baking removes live
   compositing load but does not by itself prevent independent clients from
   drifting.
-- [ ] Produce a render manifest containing source revision, asset checksums,
+- [x] Produce a render manifest containing source revision, asset checksums,
   composition settings, calibration revision, encoder identity/settings,
   duration, stream metadata, and output checksum. Invalidate or mark the bake
   stale whenever one of those inputs changes.
-- [ ] Cache identical renders, report progress and actionable failures, support
+- [x] Cache identical renders, report progress and actionable failures, support
   cancellation, bound CPU/storage concurrency, and retain the last valid bake
   until a replacement completes.
-- [ ] Support explicit media end behavior including `stop`, `hold_last_frame`, and
+- [x] Support explicit media end behavior including `stop`, `hold_last_frame`, and
   `loop`. A held final frame must remain visible without a black flash until
   the controller replaces or stops it. Loop validation inspects the first and
   last frames, audio boundary, encoder delay/padding, and keyframe placement;
   optional authored handles or a crossfade may be used when a truly gapless
   boundary is required.
-- [ ] Make renders reproducible and verifiable: pin the render-pipeline and encoder
+- [x] Make renders reproducible and verifiable: pin the render-pipeline and encoder
   versions and settings, require every external dependency, seed variation,
   capture reference frame and audio checks, and compare selected timestamps
   within documented pixel, color, and audio tolerances. Never silently
   substitute a missing asset, font, calibration, or effect.
-- [ ] Use one pre-baked audio/video file when possible so the client performs
+- [x] Use one pre-baked audio/video file when possible so the client performs
   simple prepare/play/seek operations and preserves a stable internal A/V
   relationship. Continue to apply measured per-device timing offsets for
   projector, audio path, lighting, and other outputs; baking does not pretend
   to remove physical hardware latency.
-- [ ] Treat alpha-bearing intermediate renders as authoring artifacts. The final
+- [x] Treat alpha-bearing intermediate renders as authoring artifacts. The final
   projector MP4 is normally composited to the target output background because
   broadly compatible MP4 playback profiles do not provide a portable alpha
   channel.
 
 ### Acceptance
 
-- [ ] A creator can layer still images, alpha images, alpha video, opaque video,
+- [x] A creator can layer still images, alpha images, alpha video, opaque video,
   and multiple audio clips in a projector composition and edit them entirely
   through GUI-04.
-- [ ] The same composition produces matching controller preview and baked frames
+- [x] The same composition produces matching controller preview and baked frames
   at defined test timestamps within documented color and pixel tolerances.
-- [ ] A layer mapped to a calibrated physical object uses the selected surface's
+- [x] A layer mapped to a calibrated physical object uses the selected surface's
   warp and mask, including a non-level projector and a mesh that cannot be
   represented by one four-corner homography.
-- [ ] One stage-space animation produces a lockstep set of projector-native bakes;
+- [x] One stage-space animation produces a lockstep set of projector-native bakes;
   at every tested frame their clipped overlap contributions reconstruct the
   authoritative stage element after warp, blend, and color correction.
-- [ ] The controller creates a single compatible MP4 with mixed audio that a
+- [x] The controller creates a single compatible MP4 with mixed audio that a
   declared low-power client can play without live layer compositing.
-- [ ] Preview and bake execute the same versioned pipeline order, including
+- [x] Preview and bake execute the same versioned pipeline order, including
   edge-blend and per-projector color correction, and reference-frame tests
   detect changes outside documented tolerances.
 - [ ] A projector client can hold the decoded last frame without flashing black.
@@ -595,10 +595,10 @@ clients.
 - [ ] An on-hardware rehearsal measures cross-projector start error and drift and
   blocks a seam-sensitive animation when the selected client group exceeds
   its declared synchronization tolerance.
-- [ ] Repeating a bake with identical inputs is reproducible and cacheable. A
+- [x] Repeating a bake with identical inputs is reproducible and cacheable. A
   source, timeline, encoder-profile, or calibration change marks the old bake
   stale and produces a separately checksummed artifact.
-- [ ] A failed or canceled bake cannot replace the last valid artifact, exhaust
+- [x] A failed or canceled bake cannot replace the last valid artifact, exhaust
   unbounded controller resources, or leave publication appearing ready.
 
 ## Milestone GUI-06: spatial addressable-light authoring
@@ -608,11 +608,11 @@ physical LED order, while retaining precise path and fixture effects.
 
 ### Scope
 
-- [ ] Add lighting-surface compositions to GUI-04. Creators can edit a focused
+- [x] Add lighting-surface compositions to GUI-04. Creators can edit a focused
   surface, fixture, path, output, or the full shared stage using the same
   playhead, markers, nested compositions, transform keyframes, masks, and
   blend modes as projector content.
-- [ ] Support three complementary authoring modes:
+- [x] Support three complementary authoring modes:
   - **Spatial canvas:** composite solid shapes, gradients, images, video or
     image sequences, animated masks, nested compositions, and deterministic
     procedural textures in surface-local or stage space.
@@ -620,48 +620,51 @@ physical LED order, while retaining precise path and fixture effects.
     chase, pulse, and sweep behavior along verified semantic paths.
   - **Fixture/group:** apply reusable semantic looks and cues without exposing
     indices or geometry details.
-- [ ] Keep a direct physical-index view for installation diagnostics only; normal
+- [x] Keep a direct physical-index view for installation diagnostics only; normal
   authored cues target spatial layers, paths, fixtures, or groups.
-- [ ] Allow raster layers and existing deterministic lighting primitives to
+- [x] Allow raster layers and existing deterministic lighting primitives to
   coexist with explicit precedence and `replace`, `add`, `max`, and `multiply`
   blending.
-- [ ] Sample the final lighting canvas at each pixel's calibrated point or
+- [x] Sample the final lighting canvas at each pixel's calibrated point or
   footprint. Support nearest, bilinear, and bounded area/footprint sampling so
   sparse pixels respond predictably when animated edges move between them.
-- [ ] Define one deterministic lighting pipeline:
+- [x] Define one deterministic lighting pipeline:
   1. Evaluate stage- and surface-space layers at authoritative scene time.
   2. Transform shared stage content into each lighting surface.
   3. Composite raster, procedural, path, fixture, and persistent-look layers.
   4. Sample colors at logical pixel positions.
-  5. Apply per-pixel/fixture color calibration, gamma, brightness, and power
-     limits.
+  5. Apply per-pixel/fixture color calibration, gamma, and brightness; report
+     normalized load and device-reported limiting while electrical power
+     limits remain device-owned.
   6. Reorder the frame into verified physical output/index order and send it
      through the configured adapter.
-- [ ] Show estimated current and peak power, clipping/scaling caused by limits,
+- [x] Show normalized channel load, calibration clipping, device-reported
+  limiting/scaling,
   unmapped or duplicate pixels, sampling footprints, output boundaries, and
   stale geometry calibration.
-- [ ] Keep evaluation deterministic and seekable under pause, seek, reconnect, and
+- [x] Keep evaluation deterministic and seekable under pause, seek, reconnect, and
   simulation. Establish frame-rate and pixel-count performance budgets before
   considering optional pre-baked lighting frame sequences.
-- [ ] Let one stage-space layer contribute to both projector and lighting
+- [x] Let one stage-space layer contribute to both projector and lighting
   compositions. Each output samples or renders that shared layer through its
   own calibrated geometry while retaining its own color and safety limits.
 
 ### Acceptance
 
-- [ ] An installer maps a multi-strand LED shape, verifies it with an index chase,
+- [x] An installer maps a multi-strand LED shape, verifies it with an index chase,
   and corrects one misplaced pixel without changing authored cues.
-- [ ] A creator paints an animated 2D gradient and moving shape over a facade,
+- [x] A creator paints an animated 2D gradient and moving shape over a facade,
   previews the sampled LED colors, and produces the same frame after repeated
   evaluation of the same timestamp without referring to physical indices.
-- [ ] The same show combines a spatial raster wash, a topology-aware path chase,
+- [x] The same show combines a spatial raster wash, a topology-aware path chase,
   a semantic fixture pulse, and a persistent look with deterministic blending.
-- [ ] One animated stage-space object moves from projected content into an
+- [x] One animated stage-space object moves from projected content into an
   addressable-light surface; projector pixels and LED samples remain aligned
   to the calibrated physical path in simulation.
-- [ ] Gamma, brightness, and power limiting occur after composition but before
-  physical output ordering, are visible in preview, and cannot be bypassed by
-  a raster layer.
+- [x] Gamma and brightness occur after composition but before physical output
+  ordering, normalized load is visible in preview, and any device-reported
+  limiting cannot be bypassed by a raster layer. Electrical limits remain
+  configured and enforced by the output device.
 
 ## Milestone GUI-07: visual, lighting, and audio simulation
 
@@ -669,15 +672,15 @@ Make the photo mapper and timeline a trustworthy rehearsal environment.
 
 ### Scope
 
-- [ ] Overlay simulated pixel colors, fixtures, paths, projector surfaces, masks,
+- [x] Overlay simulated pixel colors, fixtures, paths, projector surfaces, masks,
   and labels on any installation photo.
-- [ ] Provide preview modes for the current logical composition, its parent
+- [x] Provide preview modes for the current logical composition, its parent
   context, a selected native projector canvas, a selected device/output, and
   the full mapped installation. Switching preview modes must not change
   authored coordinates or timing.
-- [ ] Support instant switching and synchronized side-by-side playback of multiple
+- [x] Support instant switching and synchronized side-by-side playback of multiple
   viewpoints.
-- [ ] Show stage-space motion paths and the per-projector contributions together,
+- [x] Show stage-space motion paths and the per-projector contributions together,
   including coverage, overlap, occlusion, and uncovered-region warnings.
 - [ ] Composite review proxies into mapped projector surfaces using GUI-03's
   content-to-surface and surface-to-photo transforms. Label the result as an

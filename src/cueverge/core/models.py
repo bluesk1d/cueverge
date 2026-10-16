@@ -127,6 +127,7 @@ class MediaOutputDefinition(MediaDefinition):
     id: str = Field(min_length=1)
     required: bool = True
     start_delay_ms: int = Field(default=0, ge=0, le=5000)
+    end_behavior: Literal["stop", "hold_last_frame", "loop"] = "hold_last_frame"
 
 
 class LightingTargetDefinition(FrozenModel):

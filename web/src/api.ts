@@ -129,6 +129,13 @@ export interface ProjectorMapping {
   mirror_x: boolean;
   mirror_y: boolean;
   mask_semantic_ids: string[];
+  calibration_source:
+    | "measured_grid"
+    | "easy_corner_pin"
+    | "unverified_estimate";
+  calibration_revision: number;
+  mesh_vertices: [number, number, number, number][];
+  mesh_triangles: [number, number, number][];
   homography: number[] | null;
   diagnostic: string | null;
   fit_diagnostics: string[];
@@ -160,14 +167,19 @@ export interface LightingSurface {
   brightness_limit: number;
   timing_offset_ms: number;
   release_offset_ms: number;
+  pixel_overrides: {
+    output_index: number;
+    local_x: number;
+    local_y: number;
+  }[];
   pixels: {
     output_index: number;
     local_x: number;
     local_y: number;
-    stage_x: number;
-    stage_y: number;
     footprint_width: number;
     footprint_height: number;
+    stage_x: number;
+    stage_y: number;
   }[];
   revision: number;
   created_at: string;
@@ -218,8 +230,18 @@ export interface InstallationMapperExport {
   lighting_surfaces: {
     semantic_id: string;
     resource: string;
+    local_width: number;
+    local_height: number;
+    local_points: [number, number][];
+    stage_matrix: [number, number, number, number, number, number];
+    calibration_id: string | null;
+    mapping_revision: number;
     pixels?: {
       output_index: number;
+      local_x: number;
+      local_y: number;
+      footprint_width: number;
+      footprint_height: number;
       stage_x: number;
       stage_y: number;
     }[];
@@ -388,6 +410,86 @@ export interface RuntimeStatus {
     };
     health: Record<string, string>;
   };
+}
+
+export interface RenderJob {
+  id: string;
+  project_id: string;
+  source_revision: number;
+  composition_id: string;
+  cache_key: string;
+  state: "queued" | "running" | "completed" | "failed" | "canceled";
+  progress: number;
+  reserved_bytes: number;
+  error: string | null;
+  artifact_id: string | null;
+  cancel_requested: boolean;
+  created_by: string;
+  created_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+  updated_at: string;
+}
+
+export interface SyncRehearsal {
+  id: string;
+  resources: string[];
+  start_error_ms: number;
+  drift_ms_per_minute: number;
+  measurement_duration_seconds: number;
+  context: Record<string, unknown>;
+  notes: string | null;
+  measured_at: string;
+  actor: string;
+}
+
+export interface SyncAdmission {
+  allowed: boolean;
+  code: string;
+  message: string;
+  rehearsal: SyncRehearsal | null;
+}
+
+export interface ArtifactDeployment {
+  activation_identity: string;
+  artifact_id: string;
+  resources: string[];
+  staged_device_ids: string[];
+  activated_device_ids: string[];
+}
+
+export interface LightingPreview {
+  composition_id: string;
+  timestamp_ms: number;
+  surface_semantic_id: string;
+  surface_resource: string;
+  sampling: "nearest" | "bilinear" | "area";
+  normalized_channel_load: number;
+  clipped_pixels: number;
+  diagnostics: {
+    mapping_revision: number;
+    calibration_id: string | null;
+    mapping_stale: boolean;
+    unmapped_pixels: number;
+    duplicate_output_indices: number[];
+    device_reported_scale: number | null;
+  };
+  output_boundary: [number, number][];
+  performance_budget: {
+    profile: "interactive_30fps" | "area_preview_10fps";
+    target_fps: number;
+    maximum_canvas_pixels: number;
+    maximum_output_pixels: number;
+    maximum_author_layers: number;
+    qualified: boolean;
+    exceeded_dimensions: string[];
+  };
+  samples: {
+    output_index: number;
+    requested_color: [number, number, number];
+    color: [number, number, number];
+  }[];
+  hardware_command_sent: false;
 }
 
 export type TopologyNodeKind =
@@ -927,6 +1029,101 @@ export async function getProjectorMapping(
 ): Promise<ProjectorMapping> {
   return request<ProjectorMapping>(
     `/api/gui/v1/installation-geometry/${encodeURIComponent(geometryId)}/projector-mapping`,
+  );
+}
+
+export async function getRenderJobs(projectId: string): Promise<RenderJob[]> {
+  return request<RenderJob[]>(
+    `/api/gui/v1/projects/${encodeURIComponent(projectId)}/render-jobs`,
+  );
+}
+
+export async function createRenderJob(
+  projectId: string,
+  compositionId: string,
+): Promise<RenderJob> {
+  return request<RenderJob>(
+    `/api/gui/v1/projects/${encodeURIComponent(projectId)}/render-jobs`,
+    {
+      method: "POST",
+      headers: mutationHeaders(),
+      body: JSON.stringify({ composition_id: compositionId }),
+    },
+  );
+}
+
+export async function cancelRenderJob(jobId: string): Promise<RenderJob> {
+  return request<RenderJob>(
+    `/api/gui/v1/render-jobs/${encodeURIComponent(jobId)}/cancel`,
+    {
+      method: "POST",
+      headers: mutationHeaders(),
+    },
+  );
+}
+
+export function compositionPreviewFrameUrl(
+  projectId: string,
+  compositionId: string,
+  timestampMs: number,
+  resource?: string,
+): string {
+  const base =
+    `/api/gui/v1/projects/${encodeURIComponent(projectId)}/compositions/` +
+    `${encodeURIComponent(compositionId)}/preview-frame?timestamp_ms=${timestampMs}`;
+  return resource
+    ? `${base}&resource=${encodeURIComponent(resource)}`
+    : base;
+}
+
+export async function recordSyncRehearsal(values: {
+  resources: string[];
+  start_error_ms: number;
+  drift_ms_per_minute: number;
+  measurement_duration_seconds: number;
+  notes: string | null;
+  measured_at: string;
+}): Promise<SyncRehearsal> {
+  return request<SyncRehearsal>("/api/gui/v1/projector-sync-rehearsals", {
+    method: "POST",
+    headers: mutationHeaders(),
+    body: JSON.stringify(values),
+  });
+}
+
+export async function evaluateSyncAdmission(
+  resources: string[],
+): Promise<SyncAdmission> {
+  return request<SyncAdmission>(
+    "/api/gui/v1/projector-sync-rehearsals/evaluate",
+    {
+      method: "POST",
+      headers: mutationHeaders(),
+      body: JSON.stringify({ resources }),
+    },
+  );
+}
+
+export async function deployRenderArtifact(
+  artifactId: string,
+): Promise<ArtifactDeployment> {
+  return request<ArtifactDeployment>(
+    `/api/gui/v1/render-artifacts/${encodeURIComponent(artifactId)}/deploy`,
+    {
+      method: "POST",
+      headers: mutationHeaders(),
+    },
+  );
+}
+
+export async function getLightingPreview(
+  projectId: string,
+  compositionId: string,
+  timestampMs: number,
+): Promise<LightingPreview> {
+  return request<LightingPreview>(
+    `/api/gui/v1/projects/${encodeURIComponent(projectId)}/compositions/` +
+      `${encodeURIComponent(compositionId)}/lighting-preview?timestamp_ms=${timestampMs}`,
   );
 }
 

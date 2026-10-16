@@ -1,6 +1,7 @@
+import asyncio
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 from cueverge.media_agent.client import PlayerError, PlayerStatus
 from cueverge.media_agent.mpv import MpvClient, MpvError, resolve_local_asset
@@ -14,15 +15,53 @@ class MpvPlayer:
     _last_position_ms: int = 0
     _last_duration_ms: int | None = None
 
-    async def prepare(self, asset_id: str | None) -> None:
+    async def prepare(
+        self,
+        asset_id: str | None,
+        end_behavior: Literal["stop", "hold_last_frame", "loop"],
+    ) -> None:
         if asset_id is None:
             raise PlayerError("media-backed scene did not provide an asset")
         try:
             asset = resolve_local_asset(self.asset_root, asset_id)
         except MpvError as error:
             raise PlayerError(str(error)) from error
+        await self._command(
+            "set_property",
+            "loop-file",
+            "no",
+        )
+        await self._command(
+            "set_property",
+            "keep-open",
+            "always" if end_behavior == "hold_last_frame" else "no",
+        )
+        await self._command(
+            "set_property",
+            "gapless-audio",
+            "yes" if end_behavior == "loop" else "no",
+        )
         await self._command("loadfile", str(asset), "replace")
         await self._command("set_property", "pause", True)
+        if end_behavior == "loop":
+            duration = await self._wait_for_duration()
+            await self._command("set_property", "ab-loop-a", 0)
+            await self._command("set_property", "ab-loop-b", duration)
+        else:
+            await self._command("set_property", "ab-loop-a", "no")
+            await self._command("set_property", "ab-loop-b", "no")
+
+    async def _wait_for_duration(self) -> float:
+        for _ in range(200):
+            try:
+                duration = await self._property("duration")
+            except PlayerError:
+                await asyncio.sleep(0.05)
+                continue
+            if isinstance(duration, int | float) and duration > 0:
+                return float(duration)
+            await asyncio.sleep(0.05)
+        raise PlayerError("mpv did not report loop duration within 10 seconds")
 
     async def play(self) -> None:
         await self._command("set_property", "pause", False)

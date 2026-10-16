@@ -43,6 +43,10 @@ class StoredProjectorMapping:
     mirror_x: bool
     mirror_y: bool
     mask_semantic_ids: tuple[str, ...]
+    calibration_source: Literal["measured_grid", "easy_corner_pin", "unverified_estimate"]
+    calibration_revision: int
+    mesh_vertices: tuple[tuple[float, float, float, float], ...]
+    mesh_triangles: tuple[tuple[int, int, int], ...]
     photo_views: tuple["ProjectorPhotoView", ...]
     homography: tuple[float, ...] | None
     diagnostic: str | None
@@ -122,6 +126,10 @@ class ProjectorMappingService:
         mirror_x: bool,
         mirror_y: bool,
         mask_semantic_ids: tuple[str, ...],
+        calibration_source: Literal["measured_grid", "easy_corner_pin", "unverified_estimate"],
+        calibration_revision: int,
+        mesh_vertices: tuple[tuple[float, float, float, float], ...],
+        mesh_triangles: tuple[tuple[int, int, int], ...],
         actor: str,
         role: Role,
         occurred_at: str,
@@ -204,11 +212,12 @@ class ProjectorMappingService:
                         brightness_limit, media_start_delay_ms,
                         media_release_delay_ms,
                         orientation_degrees, mirror_x, mirror_y,
-                        mask_semantic_ids_json,
+                        mask_semantic_ids_json, calibration_source,
+                        calibration_revision, mesh_vertices_json, mesh_triangles_json,
                         revision, created_at, updated_at
                     ) VALUES (
                         ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                        ?, ?, ?, ?, ?, ?, 1, ?, ?
+                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?
                     )
                     """,
                     (
@@ -235,6 +244,10 @@ class ProjectorMappingService:
                         int(mirror_x),
                         int(mirror_y),
                         json.dumps(mask_semantic_ids, separators=(",", ":")),
+                        calibration_source,
+                        calibration_revision,
+                        json.dumps(mesh_vertices, separators=(",", ":")),
+                        json.dumps(mesh_triangles, separators=(",", ":")),
                         occurred_at,
                         occurred_at,
                     ),
@@ -255,7 +268,9 @@ class ProjectorMappingService:
                         overscan = ?, brightness_limit = ?, media_start_delay_ms = ?,
                         media_release_delay_ms = ?,
                         orientation_degrees = ?, mirror_x = ?, mirror_y = ?,
-                        mask_semantic_ids_json = ?,
+                        mask_semantic_ids_json = ?, calibration_source = ?,
+                        calibration_revision = ?, mesh_vertices_json = ?,
+                        mesh_triangles_json = ?,
                         revision = ?, updated_at = ?
                     WHERE geometry_id = ?
                     """,
@@ -282,6 +297,10 @@ class ProjectorMappingService:
                         int(mirror_x),
                         int(mirror_y),
                         json.dumps(mask_semantic_ids, separators=(",", ":")),
+                        calibration_source,
+                        calibration_revision,
+                        json.dumps(mesh_vertices, separators=(",", ":")),
+                        json.dumps(mesh_triangles, separators=(",", ":")),
                         revision,
                         occurred_at,
                         geometry_id,
@@ -329,6 +348,10 @@ class ProjectorMappingService:
             mirror_x=mirror_x,
             mirror_y=mirror_y,
             mask_semantic_ids=mask_semantic_ids,
+            calibration_source=calibration_source,
+            calibration_revision=calibration_revision,
+            mesh_vertices=mesh_vertices,
+            mesh_triangles=mesh_triangles,
             photo_views=self._photo_views(
                 geometry.installation_id,
                 geometry.semantic_id,
@@ -342,8 +365,8 @@ class ProjectorMappingService:
             homography=homography,
             diagnostic=(
                 "A single homography cannot represent this subdivided surface; "
-                "define planar sub-surfaces before simulation or publication."
-                if surface_model == "subdivided"
+                "an indexed UV mesh is required before simulation or publication."
+                if surface_model == "subdivided" and not mesh_triangles
                 else None
             ),
             fit_diagnostics=_fit_diagnostics(
@@ -467,6 +490,24 @@ def _stored_mapping(
         mirror_x=bool(row["mirror_x"]),
         mirror_y=bool(row["mirror_y"]),
         mask_semantic_ids=tuple(json.loads(str(row["mask_semantic_ids_json"]))),
+        calibration_source=cast(
+            Literal["measured_grid", "easy_corner_pin", "unverified_estimate"],
+            str(row["calibration_source"]),
+        ),
+        calibration_revision=int(row["calibration_revision"]),
+        mesh_vertices=tuple(
+            (
+                float(vertex[0]),
+                float(vertex[1]),
+                float(vertex[2]),
+                float(vertex[3]),
+            )
+            for vertex in json.loads(str(row["mesh_vertices_json"]))
+        ),
+        mesh_triangles=tuple(
+            (int(triangle[0]), int(triangle[1]), int(triangle[2]))
+            for triangle in json.loads(str(row["mesh_triangles_json"]))
+        ),
         photo_views=photo_views,
         homography=(
             _homography(
@@ -482,8 +523,8 @@ def _stored_mapping(
         ),
         diagnostic=(
             "A single homography cannot represent this subdivided surface; "
-            "define planar sub-surfaces before simulation or publication."
-            if surface_model == "subdivided"
+            "an indexed UV mesh is required before simulation or publication."
+            if surface_model == "subdivided" and not json.loads(str(row["mesh_triangles_json"]))
             else None
         ),
         fit_diagnostics=_fit_diagnostics(

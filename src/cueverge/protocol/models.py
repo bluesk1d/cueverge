@@ -81,6 +81,7 @@ class AgentCommand(ProtocolMessage):
     scene_instance_id: str
     playback_session_id: str
     asset_id: str | None = None
+    end_behavior: Literal["stop", "hold_last_frame", "loop"] | None = None
     target_position_ms: int | None = Field(default=None, ge=0)
 
 

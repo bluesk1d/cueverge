@@ -29,6 +29,13 @@ class MappedPixel:
 
 
 @dataclass(frozen=True)
+class PixelPositionOverride:
+    output_index: int
+    local_x: float
+    local_y: float
+
+
+@dataclass(frozen=True)
 class StoredLightingSurface:
     geometry_id: str
     resource: str
@@ -46,6 +53,7 @@ class StoredLightingSurface:
     brightness_limit: float
     timing_offset_ms: int
     release_offset_ms: int
+    pixel_overrides: tuple[PixelPositionOverride, ...]
     pixels: tuple[MappedPixel, ...]
     revision: int
     created_at: str
@@ -94,6 +102,7 @@ class LightingSurfaceService:
         actor: str,
         role: Role,
         occurred_at: str,
+        pixel_overrides: tuple[PixelPositionOverride, ...] = (),
     ) -> StoredLightingSurface:
         geometry = self.geometry.get(geometry_id)
         if (
@@ -110,6 +119,22 @@ class LightingSurfaceService:
             raise LightingSurfaceError("one local point is valid only for a one-pixel surface")
         if any(x < 0 or x > local_width or y < 0 or y > local_height for x, y in local_points):
             raise LightingSurfaceError("lighting local points exceed surface bounds")
+        valid_indices = set(
+            range(geometry.start_index, geometry.start_index + geometry.pixel_count)
+        )
+        override_indices = [override.output_index for override in pixel_overrides]
+        if len(override_indices) != len(set(override_indices)):
+            raise LightingSurfaceError("pixel correction output indices must be unique")
+        if any(override.output_index not in valid_indices for override in pixel_overrides):
+            raise LightingSurfaceError("pixel correction index is outside this segment")
+        if any(
+            override.local_x < 0
+            or override.local_x > local_width
+            or override.local_y < 0
+            or override.local_y > local_height
+            for override in pixel_overrides
+        ):
+            raise LightingSurfaceError("pixel correction exceeds surface bounds")
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = _find_surface_row(connection, geometry)
@@ -130,6 +155,17 @@ class LightingSurfaceService:
                 brightness_limit,
                 timing_offset_ms,
                 release_offset_ms,
+                json.dumps(
+                    [
+                        {
+                            "output_index": override.output_index,
+                            "local_x": override.local_x,
+                            "local_y": override.local_y,
+                        }
+                        for override in pixel_overrides
+                    ],
+                    separators=(",", ":"),
+                ),
             )
             if row is None:
                 if expected_revision is not None:
@@ -143,9 +179,9 @@ class LightingSurfaceService:
                         fixture_id, group_id, path_id, strand_id,
                         calibration_id, pixel_footprint_width, pixel_footprint_height,
                         brightness_limit, timing_offset_ms,
-                        release_offset_ms,
+                        release_offset_ms, pixel_overrides_json,
                         revision, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
                     """,
                     (geometry_id, *values, occurred_at, occurred_at),
                 )
@@ -163,7 +199,7 @@ class LightingSurfaceService:
                         path_id = ?, strand_id = ?, calibration_id = ?,
                         pixel_footprint_width = ?, pixel_footprint_height = ?,
                         brightness_limit = ?, timing_offset_ms = ?,
-                        release_offset_ms = ?,
+                        release_offset_ms = ?, pixel_overrides_json = ?,
                         revision = ?, updated_at = ?
                     WHERE geometry_id = ?
                     """,
@@ -217,6 +253,20 @@ def _stored_surface(
     if not isinstance(raw_local_points, list) or len(raw_local_points) < 1:
         raise LightingSurfaceError("lighting surface local points are invalid")
     local_points = tuple((float(point[0]), float(point[1])) for point in raw_local_points)
+    raw_overrides = json.loads(str(row["pixel_overrides_json"]))
+    if not isinstance(raw_overrides, list):
+        raise LightingSurfaceError("pixel corrections are invalid")
+    pixel_overrides = tuple(
+        PixelPositionOverride(
+            output_index=int(override["output_index"]),
+            local_x=float(override["local_x"]),
+            local_y=float(override["local_y"]),
+        )
+        for override in raw_overrides
+        if isinstance(override, dict)
+    )
+    if len(pixel_overrides) != len(raw_overrides):
+        raise LightingSurfaceError("pixel corrections are invalid")
     if geometry.start_index is None or geometry.pixel_count is None:
         raise LightingSurfaceError("lighting surface geometry has no pixel index range")
     pixels = _map_pixels(
@@ -227,6 +277,7 @@ def _stored_surface(
         matrix,
         float(row["pixel_footprint_width"]),
         float(row["pixel_footprint_height"]),
+        pixel_overrides,
     )
     return StoredLightingSurface(
         geometry_id=requested_geometry_id,
@@ -245,6 +296,7 @@ def _stored_surface(
         brightness_limit=float(row["brightness_limit"]),
         timing_offset_ms=int(row["timing_offset_ms"]),
         release_offset_ms=int(row["release_offset_ms"]),
+        pixel_overrides=pixel_overrides,
         pixels=pixels,
         revision=int(row["revision"]),
         created_at=str(row["created_at"]),
@@ -285,12 +337,13 @@ def _map_pixels(
     matrix: tuple[float, ...],
     footprint_width: float,
     footprint_height: float,
+    overrides: tuple[PixelPositionOverride, ...],
 ) -> tuple[MappedPixel, ...]:
     ordered = points if direction == "forward" else tuple(reversed(points))
     if len(ordered) == 1 and pixel_count == 1:
         local_x, local_y = ordered[0]
         a, b, c, d, tx, ty = matrix
-        return (
+        single_pixel = (
             MappedPixel(
                 output_index=start_index,
                 local_x=local_x,
@@ -301,6 +354,7 @@ def _map_pixels(
                 footprint_height=footprint_height,
             ),
         )
+        return _apply_pixel_overrides(single_pixel, overrides, matrix)
     lengths = [
         math.hypot(right[0] - left[0], right[1] - left[1]) for left, right in pairwise(ordered)
     ]
@@ -334,4 +388,27 @@ def _map_pixels(
                 )
                 break
             traversed += length
-    return tuple(mapped)
+    return _apply_pixel_overrides(tuple(mapped), overrides, matrix)
+
+
+def _apply_pixel_overrides(
+    pixels: tuple[MappedPixel, ...],
+    overrides: tuple[PixelPositionOverride, ...],
+    matrix: tuple[float, ...],
+) -> tuple[MappedPixel, ...]:
+    by_index = {override.output_index: override for override in overrides}
+    a, b, c, d, tx, ty = matrix
+    return tuple(
+        MappedPixel(
+            output_index=pixel.output_index,
+            local_x=override.local_x,
+            local_y=override.local_y,
+            stage_x=a * override.local_x + c * override.local_y + tx,
+            stage_y=b * override.local_x + d * override.local_y + ty,
+            footprint_width=pixel.footprint_width,
+            footprint_height=pixel.footprint_height,
+        )
+        if (override := by_index.get(pixel.output_index)) is not None
+        else pixel
+        for pixel in pixels
+    )

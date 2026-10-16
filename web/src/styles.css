@@ -1503,6 +1503,27 @@ p {
   vector-effect: non-scaling-stroke;
 }
 
+.lighting-composition-boundary {
+  fill: rgb(34 211 238 / 8%);
+  stroke: #22d3ee;
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+}
+
+.lighting-composition-sample {
+  fill: #f8fafc;
+  stroke: #0e7490;
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+}
+
+.lighting-composition-footprint {
+  fill: rgb(34 211 238 / 12%);
+  stroke: rgb(34 211 238 / 55%);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
 .stage-motion-path {
   fill: none;
   stroke: #c4b5fd;
@@ -1659,6 +1680,124 @@ p {
   padding: 7px;
   background: color-mix(in srgb, var(--cv-primary) 5%, var(--cv-bg));
   border: 1px solid color-mix(in srgb, var(--cv-primary) 25%, var(--cv-border));
+}
+
+.timeline-lighting-authoring {
+  display: grid;
+  gap: 6px;
+  padding: 7px;
+  border: 1px solid var(--cv-border);
+}
+
+.timeline-lighting-layer {
+  text-align: left;
+}
+
+.timeline-lighting-layer--selected {
+  border-color: var(--cv-primary);
+}
+
+.timeline-lighting-layer-properties,
+.timeline-lighting-layer-create {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+  padding: 7px;
+  background: var(--cv-bg);
+  border: 1px solid var(--cv-border);
+}
+
+.timeline-lighting-layer-properties label {
+  display: grid;
+  gap: 3px;
+  color: var(--cv-text-faint);
+  font-size: 11px;
+}
+
+.timeline-render-conformance {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+  padding: 7px;
+  background: color-mix(in srgb, #22d3ee 5%, var(--cv-bg));
+  border: 1px solid color-mix(in srgb, #22d3ee 30%, var(--cv-border));
+}
+
+.timeline-render-conformance > strong,
+.timeline-render-conformance > small,
+.timeline-render-pipeline {
+  grid-column: 1 / -1;
+}
+
+.timeline-render-jobs {
+  display: grid;
+  grid-column: 1 / -1;
+  gap: 6px;
+  padding: 7px;
+  background: var(--cv-bg);
+  border: 1px solid var(--cv-border);
+}
+
+.timeline-render-job {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 3px 8px;
+  padding: 6px;
+  border: 1px solid var(--cv-border);
+}
+
+.timeline-render-job small {
+  grid-column: 1;
+}
+
+.timeline-render-job button {
+  grid-column: 2;
+  grid-row: 1 / span 3;
+}
+
+.timeline-sync-rehearsal {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+  padding: 7px;
+  border: 1px solid var(--cv-border);
+}
+
+.timeline-sync-rehearsal > strong,
+.timeline-sync-rehearsal > small {
+  grid-column: 1 / -1;
+}
+
+.timeline-sync-rehearsal label {
+  display: grid;
+  gap: 3px;
+  color: var(--cv-text-faint);
+  font-size: 11px;
+}
+
+.timeline-render-preview {
+  grid-column: 1 / -1;
+  width: 100%;
+  max-height: 420px;
+  object-fit: contain;
+  background: #000;
+  border: 1px solid var(--cv-border);
+}
+
+.timeline-render-pipeline {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+  padding-left: 24px;
+  color: var(--cv-text-faint);
+  font-size: 11px;
+}
+
+.timeline-render-conformance label {
+  display: grid;
+  gap: 3px;
+  color: var(--cv-text-faint);
+  font-size: 11px;
 }
 
 .timeline-transform-properties,
@@ -2120,6 +2259,44 @@ p {
     repeating-linear-gradient(#111 0 9.8%, #444 10%);
 }
 
+.projector-warp-previews {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.projector-warp-previews figure {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+}
+
+.projector-warp-previews figcaption {
+  color: var(--cv-text-faint);
+  font-size: 11px;
+}
+
+.projector-warp-previews svg {
+  width: 100%;
+  max-height: 260px;
+  background: #080b10;
+  border: 1px solid var(--cv-border);
+}
+
+.projector-warp-previews polygon {
+  fill: rgb(34 211 238 / 12%);
+  stroke: #22d3ee;
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+}
+
+@media (max-width: 620px) {
+  .projector-warp-previews {
+    grid-template-columns: 1fr;
+  }
+}
+
 .geometry-canvas {
   width: 100%;
   max-height: 620px;
@@ -2163,6 +2340,20 @@ p {
   fill: rgb(100 116 139 / 35%);
 }
 
+.stage-contribution-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+}
+
+.stage-simulation-motion-path {
+  fill: none;
+  stroke: #f8fafc;
+  stroke-width: 4;
+  stroke-dasharray: 10 6;
+  vector-effect: non-scaling-stroke;
+}
+
 .geometry-shape {
   fill: color-mix(in srgb, var(--cv-primary) 20%, transparent);
   stroke: var(--cv-primary);
@@ -2173,6 +2364,58 @@ p {
 .geometry-canvas--traversal .geometry-shape {
   stroke-dasharray: 18 10;
   animation: geometry-traversal 0.8s linear infinite;
+}
+
+.geometry-canvas--simulation .geometry-shape--projector_surface {
+  fill: rgb(56 189 248 / 28%);
+  stroke: #38bdf8;
+}
+
+.geometry-canvas--simulation .geometry-shape--path {
+  fill: none;
+  stroke: #f8fafc;
+  stroke-dasharray: 12 6;
+}
+
+.geometry-canvas--simulation .geometry-shape--fixture {
+  fill: #fef08a;
+  stroke: #fff;
+}
+
+.geometry-canvas--simulation .geometry-shape--mask {
+  fill: rgb(15 23 42 / 78%);
+  stroke: #fb7185;
+}
+
+.geometry-simulation-pixel {
+  stroke: #fff;
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+}
+
+.simulation-approximation {
+  display: block;
+  color: var(--cv-warning);
+  font-weight: 700;
+}
+
+.simulation-view-grid {
+  display: grid;
+  gap: 12px;
+}
+
+.simulation-view-grid--split {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.geometry-canvas--secondary {
+  align-self: stretch;
+}
+
+@media (max-width: 800px) {
+  .simulation-view-grid--split {
+    grid-template-columns: 1fr;
+  }
 }
 
 @keyframes geometry-traversal {
@@ -2369,10 +2612,14 @@ p {
   .timeline-preset-controls,
   .timeline-compound-controls,
   .timeline-lighting-properties,
+  .timeline-lighting-layer-properties,
+  .timeline-lighting-layer-create,
   .timeline-scene-policy,
   .timeline-transform-properties,
   .timeline-transform-create,
   .timeline-keyframe-properties,
+  .timeline-render-conformance,
+  .timeline-sync-rehearsal,
   .composition-create {
     grid-template-columns: 1fr;
   }
