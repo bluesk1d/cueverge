@@ -1,5 +1,10 @@
 # Operations and simulation
 
+For task-oriented service documentation, start with the
+[service administration guide](service-administration.md) or the
+[installation and show operator guide](operator-guide.md). This document is
+the supporting engine/deployment reference, not the GUI walkthrough.
+
 Production GUI operating limits and the administrator observability contract
 are documented in [GUI scale budgets](scale-budgets.md).
 
@@ -68,7 +73,7 @@ non-final proposal before restoring access.
 
 ## Operating modes
 
-Cueverge starts in `automatic` mode. `POST /api/v1/show/mode` accepts:
+Cueverge starts in `automatic` mode. The engine supports:
 
 - `automatic`: external observations may drive audience, encounter, and
   opportunity behavior.
@@ -78,10 +83,14 @@ Cueverge starts in `automatic` mode. `POST /api/v1/show/mode` accepts:
 - `blackout`: performs normal stop handling, emits an explicit all-black pixel
   frame, and rejects automatic observations.
 
-`POST /api/v1/blackout` is a shortcut for blackout mode.
-`POST /api/v1/show/reset` starts the encounter ambient scene, or the program
-initial scene when no encounter is configured. Reset and direct scene starts do
-not silently change the selected operating mode.
+The authenticated GUI uses `POST /api/gui/v1/operate/actions` with an `action`
+of `automatic`, `maintenance`, or `blackout`; the current GUI does not expose
+disabled mode. Its `reset` action starts the encounter ambient scene, or the
+program initial scene when no encounter is configured. Reset and direct
+engine scene starts do not silently change the selected operating mode.
+Browser mutations require the authenticated session, allowed origin, CSRF
+header, and live-output authorization. The old `/api/v1/...` endpoints are
+removed, not aliases for these actions.
 
 Observation ingress may remain connected outside automatic mode. The runtime
 rejects those observations before they can alter presence, opportunities,
@@ -89,7 +98,8 @@ encounters, or scene selection.
 
 ## Status and health
 
-`GET /api/v1/status` includes:
+The authenticated `GET /api/gui/v1/runtime/status` response wraps runtime
+facts in `status`, alongside `observed_at`. Runtime facts include:
 
 - operating mode and whether automatic show behavior is enabled
 - active and queued scenes
@@ -118,9 +128,8 @@ The machine-readable source for controller image construction and preflight is
 [`deploy/controller-native-dependencies.json`](../deploy/controller-native-dependencies.json).
 Update that manifest in the same change whenever controller code adds a native
 executable, codec, filter, system library, build tool, or persistent path. This
-section explains the policy; the eventual Dockerfile and image-preflight test
-must consume or validate the manifest rather than maintaining an independent
-list.
+section explains the policy; the Dockerfile and image-preflight checks
+consume or validate the manifest rather than maintaining an independent list.
 
 The controller Dockerfile derives its required and optional Debian package
 specifications from this inventory. The startup preflight reads the same file
@@ -132,7 +141,7 @@ capability lists directly to Docker or shell files:
 | Tool | Image role | Requirement |
 | --- | --- | --- |
 | Python 3.12+ and the locked `pyproject.toml`/`uv.lock` environment | Controller runtime | Required |
-| `ffmpeg` and `ffprobe` (normally supplied by the distribution's `ffmpeg` package) | Asset metadata, loudness analysis, thumbnails, review proxies, and waveforms; future render jobs | Required when the asset workspace is enabled |
+| `ffmpeg` and `ffprobe` (normally supplied by the distribution's `ffmpeg` package) | Asset metadata, loudness analysis, thumbnails, review proxies, waveforms, and render jobs | Required for asset processing and rendering |
 | `clamscan` and current ClamAV definitions | Uploaded-asset malware scanning | Optional, but production deployments that require malware scanning must install both and arrange definition updates |
 | Node.js and npm | Building the React/Vite application | Build-stage only; do not retain them in the final controller image |
 | CA certificates | TLS connections to external services and devices | Required in the runtime image |
@@ -252,10 +261,17 @@ Deployment is deliberately split into four attributable operations:
 2. **Stage** transfers only missing checksummed render members. Clients resume
    partial range downloads, verify size and SHA-256, and atomically rename
    completed temporary files.
-3. **Activate** is allowed only after staging and atomically replaces the
-   active package after every required client acknowledges activation.
+3. **Activate** is allowed only after staging, activates rendered artifacts
+   with required client acknowledgements, and updates the active publication
+   record.
 4. **Deactivate/roll back** retains the previous package and reactivates a
    previously staged or inactive package.
+
+These operations do not reload the running controller's scene catalog.
+Deactivation updates publication state and does not stop physical playback.
+Scene-logic handover and rollback require an explicit package configuration
+change and controller restart; see
+[release handover](service-administration.md#release-handover-and-upgrades).
 
 Every stage command carries the complete protected digest set for the
 candidate, active, and retained rollback packages. The media agent also
@@ -271,12 +287,14 @@ filesystem paths.
 ## Backup, restore, and disaster recovery
 
 Back up the complete `/var/lib/cueverge` volume as one consistency unit. It
-contains:
+contains the configured GUI data root, normally `/var/lib/cueverge/gui` in
+the supplied image. Paths below are relative to that GUI data root:
 
-- `gui/gui.sqlite3` plus its SQLite WAL/SHM files: projects, revisions,
+- `gui.sqlite3` plus its SQLite WAL/SHM files: projects, revisions,
   approvals, device identities, assignments, render metadata, publication
   state, and audit history.
-- `assets/`: original uploads and generated review artifacts.
+- `assets/`: original uploads, installation reference images, and generated
+  review artifacts.
 - `renders/`: immutable baked projector artifacts.
 - `compiled/` and `published/`: reproducible compiled and published packages.
 - `device-ca/`: the controller device CA and signing key material.

@@ -1,5 +1,12 @@
 # Cueverge show creator guide
 
+For the current browser workflow, use the
+[installation and show operator guide](operator-guide.md). For deployment,
+accounts, devices, and recovery, use the
+[service administration guide](service-administration.md). This document is
+the creative capability reference and brief template; installation-specific
+examples below are not universal system requirements.
+
 This document describes Cueverge from the perspective of a show creator. It is
 both a capability reference and a creative brief template. A completed show
 definition based on this guide should contain enough information to separate:
@@ -18,7 +25,8 @@ generic capability.
 Cueverge is a self-hosted engine for event-driven multimedia shows. It
 coordinates:
 
-- Video projected from a Windows media computer.
+- Video projected from a Windows or Linux media computer (see the platform
+  guides for hardware qualification status).
 - Audio played from the same media asset through the configured analog output.
 - Addressable RGB lighting rendered from authoritative media time.
 - External observations such as Frigate person and zone events.
@@ -87,9 +95,10 @@ A scene is one media-synchronized unit. The current schema requires:
 - A pixel-lighting resource and one lighting effect definition.
 - Explicit claims for every referenced resource.
 
-Cueverge currently runs one active scene at a time. It does not composite
-multiple videos, mix independent scene audio, or layer independent lighting
-scenes.
+Cueverge currently runs one active scene at a time. A scene can use multiple
+media and lighting outputs. Browser-authored compositions can layer media and
+mix audio into controller-baked artifacts; this does not imply simultaneous
+independent runtime scenes or live video compositing.
 
 ### Media behavior
 
@@ -120,11 +129,14 @@ Autonomous media behavior supported now:
 
 Important current limitations:
 
-- There is no independent sound-effect channel or audio ducking.
-- There is no video compositing, transparency layer, or simultaneous playback.
+- There is no independent runtime sound-effect channel or runtime audio ducking.
+- Layered video, alpha, and audio composition are authored and baked on the
+  controller, not composited dynamically by the runtime media agents.
 - Conditions are exact scalar matches rather than arbitrary expressions.
 - Cueverge does not yet start programs from wall-clock schedules by itself.
-- Media assets are deployed to the laptop's private asset root manually.
+- Managed rendered artifacts can be staged into checksummed device caches.
+  Legacy package-relative source media still require deployment beneath the
+  media host's private asset root.
 
 For the first show, each authored media file should normally contain all video
 and audio needed for that scene. Authored transition clips are preferable to
