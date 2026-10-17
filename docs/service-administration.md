@@ -180,6 +180,10 @@ and the MCP authentication boundary before pushing a multi-platform image for
 
 Both GitHub workflows use Node.js 24-based actions. GitHub-hosted runners
 support these actions; a self-hosted runner must be version 2.327.1 or newer.
+CI explicitly installs FFmpeg (including FFprobe) before running the native
+capability and renderer tests; these tools are not assumed to be present on
+GitHub-hosted runners. Production container package versions remain pinned in
+the native dependency inventory.
 This is separate from the controller's frontend build, which uses Node.js 22
 in its build stage.
 

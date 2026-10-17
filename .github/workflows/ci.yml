@@ -16,6 +16,10 @@ jobs:
         with:
           python-version: "3.12"
           enable-cache: true
+      - name: Install native media test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends ffmpeg
       - run: uv sync --all-groups --locked
       - run: uv run ruff format --check .
       - run: uv run ruff check .
