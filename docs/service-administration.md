@@ -90,6 +90,64 @@ do not deploy old `/api/v1/...` integration examples.
 
 ## Deploying the controller
 
+### Using the published image on a NAS
+
+Controller images are published manually by the
+[Publish controller image workflow](../.github/workflows/publish-image.yml).
+It checks AMD64 startup, native dependency preflight, frontend availability,
+and the MCP authentication boundary before pushing a multi-platform image for
+`linux/amd64` and `linux/arm64`.
+
+The registry image is `ghcr.io/bluesk1d/cueverge:latest`. Each publication also
+has a `sha-<full-git-commit>` tag, and the workflow summary records the exact
+digest. Prefer a digest-pinned image for a qualified installation; `latest`
+changes on the next successful manual publication. The GitHub package remains
+private unless its owner explicitly changes visibility.
+
+On the NAS, authenticate with a GitHub credential authorized to read the
+private package (a classic personal access token with `read:packages`, and
+access to the repository/package, is supported):
+
+```bash
+read -rsp 'GitHub package-read token: ' GHCR_TOKEN
+printf '\n'
+printf '%s' "$GHCR_TOKEN" | docker login ghcr.io --username bluesk1d --password-stdin
+unset GHCR_TOKEN
+docker pull ghcr.io/bluesk1d/cueverge:latest
+```
+
+Use a registry-image stack rather than the source-build Compose file on the
+NAS. For example, behind a same-host HTTPS reverse proxy:
+
+```yaml
+services:
+  controller:
+    image: ghcr.io/bluesk1d/cueverge:latest
+    restart: unless-stopped
+    init: true
+    ports:
+      - "127.0.0.1:7000:8000"
+    environment:
+      CUEVERGE_GUI_ENABLED: "true"
+      CUEVERGE_GUI_ADMIN_USERNAME: ${CUEVERGE_GUI_ADMIN_USERNAME:-admin}
+      CUEVERGE_GUI_ADMIN_PASSWORD_HASH: ${CUEVERGE_GUI_ADMIN_PASSWORD_HASH:?Set the administrator hash}
+      CUEVERGE_GUI_ALLOWED_ORIGINS: ${CUEVERGE_GUI_ALLOWED_ORIGINS:?Set the public HTTPS origin}
+      CUEVERGE_GUI_SECURE_COOKIES: "true"
+    volumes:
+      - cueverge-data:/var/lib/cueverge
+
+volumes:
+  cueverge-data:
+```
+
+Supply the private environment values described below through the NAS stack
+manager or a protected Compose environment file. If the reverse proxy is
+containerized, connect it over a private Docker network instead of assuming
+its loopback reaches the NAS host. The controller's container HTTP port is
+8000, while this example's host port is 7000. Device listener publication,
+private package mounts, DDP, and MQTT remain separate opt-in configuration.
+Do not remove the persistent volume when updating the image.
+
 ### 1. Prepare private configuration
 
 Keep addresses, output mappings, passwords, CA material, and private media out
