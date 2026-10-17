@@ -65,6 +65,43 @@ export interface ReviewLink {
   token: string;
 }
 
+export type McpScope =
+  | "read"
+  | "draft_edit"
+  | "simulation"
+  | "publish_prepare"
+  | "live_operation";
+
+export interface McpToken {
+  id: string;
+  client_id: string;
+  username: string;
+  project_id: string;
+  scopes: McpScope[];
+  expires_at: string;
+  revoked_at: string | null;
+  created_at: string;
+  token: string | null;
+}
+
+export interface McpProposal {
+  id: string;
+  project_id: string;
+  base_revision: number;
+  title: string;
+  kind: string;
+  changed_paths: string[];
+  state: "proposed" | "validated" | "approved" | "merged" | "rejected" | "failed";
+  client_id: string;
+  username: string;
+  validation: { code?: unknown; severity?: unknown; message?: unknown }[];
+  simulation: Record<string, unknown> | null;
+  approved_by: string | null;
+  disposition_reason: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface InstallationResource {
   resource: string;
   kind: "media_agent" | "pixel_output" | "downstream_controller";
@@ -2245,6 +2282,85 @@ export async function getProjectPresence(
     `/api/gui/v1/projects/${encodeURIComponent(projectId)}/presence`,
   );
 }
+
+export async function getMcpTokens(projectId: string): Promise<McpToken[]> {
+  return request<McpToken[]>(
+    `/api/gui/v1/projects/${encodeURIComponent(projectId)}/mcp-tokens`,
+  );
+}
+
+export async function createMcpToken(
+  projectId: string,
+  clientId: string,
+  scopes: McpScope[],
+  expiresAt: string,
+): Promise<McpToken> {
+  return request<McpToken>(
+    `/api/gui/v1/projects/${encodeURIComponent(projectId)}/mcp-tokens`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        client_id: clientId,
+        scopes,
+        expires_at: expiresAt,
+      }),
+    },
+  );
+}
+
+export async function revokeMcpToken(
+  projectId: string,
+  tokenId: string,
+): Promise<void> {
+  await request<void>(
+    `/api/gui/v1/projects/${encodeURIComponent(projectId)}/mcp-tokens/${encodeURIComponent(tokenId)}`,
+    { method: "DELETE" },
+  );
+}
+
+export async function getMcpProposals(
+  projectId: string,
+): Promise<McpProposal[]> {
+  return request<McpProposal[]>(
+    `/api/gui/v1/projects/${encodeURIComponent(projectId)}/mcp-proposals`,
+  );
+}
+
+async function transitionMcpProposal(
+  projectId: string,
+  proposalId: string,
+  action: "validate" | "approve" | "reject" | "merge",
+  reason?: string,
+): Promise<McpProposal> {
+  return request<McpProposal>(
+    `/api/gui/v1/projects/${encodeURIComponent(projectId)}/mcp-proposals/${encodeURIComponent(proposalId)}/${action}`,
+    {
+      method: "POST",
+      body:
+        action === "approve" || action === "reject"
+          ? JSON.stringify({ reason })
+          : undefined,
+    },
+  );
+}
+
+export const validateMcpProposal = (projectId: string, proposalId: string) =>
+  transitionMcpProposal(projectId, proposalId, "validate");
+
+export const approveMcpProposal = (
+  projectId: string,
+  proposalId: string,
+  reason: string,
+) => transitionMcpProposal(projectId, proposalId, "approve", reason);
+
+export const rejectMcpProposal = (
+  projectId: string,
+  proposalId: string,
+  reason: string,
+) => transitionMcpProposal(projectId, proposalId, "reject", reason);
+
+export const mergeMcpProposal = (projectId: string, proposalId: string) =>
+  transitionMcpProposal(projectId, proposalId, "merge");
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {

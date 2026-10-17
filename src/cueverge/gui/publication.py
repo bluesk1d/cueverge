@@ -180,13 +180,54 @@ class PublicationService:
         for asset_id in sorted(referenced_assets):
             asset = assets.get(asset_id)
             if asset is None:
-                add("asset_missing", f"Referenced asset {asset_id} is not in the project.")
-            elif (
-                asset.status != "ready"
-                or asset.original_file_status != "available"
-                or asset.digest_sha256 is None
-            ):
-                add("asset_not_publishable", f"Asset {asset.name} is not ready and checksummed.")
+                add(
+                    "asset_missing",
+                    f"Referenced asset {asset_id} is not in the project. "
+                    "Relink the reference or import the asset before publishing.",
+                )
+            elif asset.status == "quarantined":
+                add(
+                    "asset_quarantined",
+                    f"Asset {asset.name} was quarantined by malware scanning. "
+                    "Replace it with a clean upload before publishing.",
+                )
+            elif asset.status == "failed":
+                detail = f" Processing failed: {asset.error}" if asset.error else ""
+                add(
+                    "asset_processing_failed",
+                    f"Asset {asset.name} could not be processed.{detail} "
+                    "Retry processing or replace the asset before publishing.",
+                )
+            elif asset.status == "uploading":
+                add(
+                    "asset_processing_incomplete",
+                    f"Asset {asset.name} is still uploading or processing. "
+                    "Wait for processing to finish before publishing.",
+                )
+            elif asset.original_file_status == "missing":
+                add(
+                    "asset_original_missing",
+                    f"Asset {asset.name} no longer has its original file. "
+                    "Relink or restore the original before publishing.",
+                )
+            elif asset.original_file_status == "size_mismatch":
+                add(
+                    "asset_original_size_mismatch",
+                    f"Asset {asset.name} does not match its recorded original size. "
+                    "Restore the verified original or replace the asset before publishing.",
+                )
+            elif asset.original_file_status == "pending":
+                add(
+                    "asset_original_unverified",
+                    f"Asset {asset.name} has not completed original-file verification. "
+                    "Wait for verification before publishing.",
+                )
+            elif asset.digest_sha256 is None:
+                add(
+                    "asset_checksum_missing",
+                    f"Asset {asset.name} has no verified SHA-256 checksum. "
+                    "Reprocess or replace the asset before publishing.",
+                )
 
         compositions = _object_map(draft.editor_metadata.get("compositions"))
         jobs = self.render_jobs.list(project_id)

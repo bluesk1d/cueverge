@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
-ARG PYTHON_IMAGE=python:3.12-slim-bookworm
-ARG NODE_IMAGE=node:22-bookworm-slim
+ARG PYTHON_IMAGE=python:3.12-slim-bookworm@sha256:34386ef0cb081344d7ec1c103ba398e6e9f64e9ab3a1509accc92a4e24a07258
+ARG NODE_IMAGE=node:22-bookworm-slim@sha256:c3de60bf2f9dd0ac6370e6117950ff62d6e339527e7472301c9c78a017978392
 ARG UV_VERSION=0.11.23
 
 FROM ${NODE_IMAGE} AS web-build
@@ -26,10 +26,17 @@ RUN uv sync --locked --no-dev --no-editable
 FROM ${PYTHON_IMAGE} AS runtime
 
 ARG INSTALL_CLAMAV=false
+COPY deploy/controller-native-dependencies.json /opt/cueverge/deploy/controller-native-dependencies.json
+COPY docker/native_dependency_preflight.py /opt/cueverge/deploy/native_dependency_preflight.py
 RUN apt-get update \
-    && apt-get install --yes --no-install-recommends ca-certificates ffmpeg \
+    && REQUIRED_PACKAGES="$(python /opt/cueverge/deploy/native_dependency_preflight.py \
+         /opt/cueverge/deploy/controller-native-dependencies.json --apt-packages)" \
+    && apt-get install --yes --no-install-recommends ${REQUIRED_PACKAGES} \
     && if [ "${INSTALL_CLAMAV}" = "true" ]; then \
-         apt-get install --yes --no-install-recommends clamav; \
+         OPTIONAL_PACKAGES="$(python /opt/cueverge/deploy/native_dependency_preflight.py \
+           /opt/cueverge/deploy/controller-native-dependencies.json \
+           --apt-packages --include-optional)"; \
+         apt-get install --yes --no-install-recommends ${OPTIONAL_PACKAGES}; \
        fi \
     && rm -rf /var/lib/apt/lists/*
 

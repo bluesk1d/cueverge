@@ -4304,6 +4304,39 @@ p {
     background: var(--cv-surface-subtle);
   }
 
+  .mcp-workspace {
+    border: 1px solid var(--border);
+    border-radius: 1rem;
+    margin-block: 1rem;
+    padding: 1rem;
+  }
+
+  .mcp-workspace > summary {
+    cursor: pointer;
+    font-size: 1.05rem;
+    font-weight: 700;
+  }
+
+  .mcp-secret {
+    background: var(--surface-raised);
+    border: 2px solid var(--warning, #c98200);
+    border-radius: 0.75rem;
+    display: grid;
+    gap: 0.75rem;
+    margin-block: 0.75rem;
+    padding: 0.75rem;
+  }
+
+  .mcp-secret code {
+    overflow-wrap: anywhere;
+    user-select: all;
+  }
+
+  .mcp-proposals > li > ul {
+    margin-block: 0.5rem;
+    padding-inline-start: 1.25rem;
+  }
+
   .collaboration-workspace > header,
   .collaboration-grid,
   .member-management > div {

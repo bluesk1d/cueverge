@@ -24,6 +24,7 @@ from cueverge.gui.installation_geometry import InstallationGeometryService
 from cueverge.gui.installation_photos import InstallationPhotoService
 from cueverge.gui.lighting_surface import LightingSurfaceService
 from cueverge.gui.mapper_export import MapperExportService
+from cueverge.gui.mcp_authoring import McpAuthoringService, McpAuthoringStore
 from cueverge.gui.observability import GuiObservability
 from cueverge.gui.output_arming import OutputArmService
 from cueverge.gui.projector_mapping import ProjectorMappingService
@@ -85,6 +86,8 @@ class GuiServices:
     output_arming: OutputArmService
     stage_coverage: StageCoverageService
     mapper_export: MapperExportService
+    mcp_authoring: McpAuthoringService
+    mcp_store: McpAuthoringStore
     render_jobs: RenderJobService
     sync_rehearsal: SyncRehearsalService
     artifact_deployment: ArtifactDeploymentService
@@ -124,6 +127,8 @@ class GuiServices:
             device_sessions,
         )
         compiler = DraftCompiler(config.data_root / "compiled")
+        mcp_store = McpAuthoringStore(repository.database_path)
+        mcp_store.migrate()
         render_jobs = RenderJobService(
             repository,
             asset_upload,
@@ -155,6 +160,13 @@ class GuiServices:
             output_arming=OutputArmService(repository),
             stage_coverage=stage_coverage,
             mapper_export=mapper_export,
+            mcp_authoring=McpAuthoringService(
+                mcp_store,
+                repository,
+                compiler,
+                SimulationScenarioService(config.data_root / "simulation-scenarios"),
+            ),
+            mcp_store=mcp_store,
             render_jobs=render_jobs,
             sync_rehearsal=sync_rehearsal,
             artifact_deployment=artifact_deployment,

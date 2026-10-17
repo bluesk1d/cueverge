@@ -1027,6 +1027,62 @@ class PresenceResponse(GuiModel):
     last_seen_at: str
 
 
+McpScopeValue = Literal[
+    "read",
+    "draft_edit",
+    "simulation",
+    "publish_prepare",
+    "live_operation",
+]
+
+
+class CreateMcpTokenRequest(GuiModel):
+    client_id: str = Field(min_length=1, max_length=200)
+    scopes: tuple[McpScopeValue, ...] = Field(default=("read",), min_length=1)
+    expires_at: str = Field(min_length=1, max_length=64)
+
+
+class McpTokenResponse(GuiModel):
+    id: str
+    client_id: str
+    username: str
+    project_id: str
+    scopes: tuple[McpScopeValue, ...]
+    expires_at: str
+    revoked_at: str | None
+    created_at: str
+    token: str | None = None
+
+
+class McpProposalDispositionRequest(GuiModel):
+    reason: str = Field(min_length=1, max_length=2000)
+
+
+class McpProposalResponse(GuiModel):
+    id: str
+    project_id: str
+    base_revision: int = Field(ge=1)
+    title: str
+    kind: str
+    changed_paths: tuple[str, ...]
+    state: Literal[
+        "proposed",
+        "validated",
+        "approved",
+        "merged",
+        "rejected",
+        "failed",
+    ]
+    client_id: str
+    username: str
+    validation: tuple[dict[str, JsonValue], ...]
+    simulation: dict[str, JsonValue] | None
+    approved_by: str | None
+    disposition_reason: str | None
+    created_at: str
+    updated_at: str
+
+
 class CreateProjectRequest(GuiModel):
     name: str = Field(min_length=1, max_length=200)
     draft: DraftProject

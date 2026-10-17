@@ -89,6 +89,11 @@ const CollaborationWorkspace = lazy(() =>
     default: module.CollaborationWorkspace,
   })),
 );
+const McpWorkspace = lazy(() =>
+  import("./pages/McpWorkspace").then((module) => ({
+    default: module.McpWorkspace,
+  })),
+);
 const TimelineEditor = lazy(() =>
   import("./pages/TimelineEditor").then((module) => ({
     default: module.TimelineEditor,
@@ -799,6 +804,9 @@ function ProjectCard({
               session={session}
               onPermissions={updatePermissions}
             />
+          </Suspense>
+          <Suspense fallback={<p>Loading MCP authoring workspace…</p>}>
+            <McpWorkspace projectId={project.id} canDesign={canAuthor} />
           </Suspense>
           <ScenePresetOrganizer
             canEdit={canAuthor && !project.archived_at}

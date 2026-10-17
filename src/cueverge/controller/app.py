@@ -1,6 +1,6 @@
 import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from typing import Protocol
 
 from fastapi import FastAPI, Request
@@ -14,6 +14,7 @@ from cueverge.core.loader import load_show_package
 from cueverge.gui.config import GuiConfig
 from cueverge.gui.device_router import create_device_enrollment_router
 from cueverge.gui.embedded_device_listener import EmbeddedDeviceListener
+from cueverge.gui.mcp_server import create_mcp_app
 from cueverge.gui.observability import ApiTimer
 from cueverge.gui.router import create_gui_router
 from cueverge.gui.service import GuiServices
@@ -47,6 +48,7 @@ def create_app(
         gui_config = GuiConfig.from_environment()
         if gui_config is not None:
             configured_gui = GuiServices.create(gui_config, controller)
+    mcp_app = create_mcp_app(configured_gui) if configured_gui is not None else None
     device_listener = (
         EmbeddedDeviceListener(
             configured_gui.config,
@@ -73,7 +75,12 @@ def create_app(
             else None
         )
         try:
-            yield
+            async with AsyncExitStack() as stack:
+                if mcp_app is not None:
+                    await stack.enter_async_context(
+                        mcp_app.router.lifespan_context(mcp_app)
+                    )
+                yield
         finally:
             if asset_recovery is not None:
                 await asset_recovery
@@ -105,6 +112,8 @@ def create_app(
                     )
 
         app.include_router(create_gui_router(configured_gui))
+        if mcp_app is not None:
+            app.mount("/mcp", mcp_app, name="mcp-authoring")
         if configured_gui.device_enrollment is not None:
             app.include_router(create_device_enrollment_router(configured_gui.device_enrollment))
 

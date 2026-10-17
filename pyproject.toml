@@ -13,6 +13,7 @@ dependencies = [
   "av>=14,<17",
   "cryptography>=46,<47",
   "fastapi>=0.115,<1",
+  "mcp>=2.3,<3",
   "numpy>=2,<3",
   "pillow>=11,<13",
   "pydantic>=2.10,<3",

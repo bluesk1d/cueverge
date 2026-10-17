@@ -4,6 +4,7 @@ import json
 import shutil
 import time
 from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
@@ -18,6 +19,7 @@ from pydantic import SecretStr
 from cueverge.controller.app import create_app
 from cueverge.controller.runtime import ControllerRuntime
 from cueverge.core.loader import load_show_package
+from cueverge.gui.asset_upload import StoredAsset
 from cueverge.gui.config import GuiConfig
 from cueverge.gui.contracts import DraftProject, Role
 from cueverge.gui.endpoint_discovery import (
@@ -25,6 +27,7 @@ from cueverge.gui.endpoint_discovery import (
     EndpointDiscoveryService,
 )
 from cueverge.gui.mapper_export import MapperExportError
+from cueverge.gui.mcp_authoring import McpAuthoringError, McpScope
 from cueverge.gui.passwords import hash_password
 from cueverge.gui.publication import PublicationDiagnostic, PublicationError
 from cueverge.gui.repository import StoredDevice
@@ -93,6 +96,350 @@ def test_observability_reports_api_storage_and_browser_errors(tmp_path: Path) ->
         and event.actor == "admin"
         and event.target == "timeline"
         for event in services.repository.list_audit_events()
+    )
+
+
+def test_mcp_tokens_are_hashed_scoped_expiring_and_revocable(tmp_path: Path) -> None:
+    services = _services(tmp_path, ControllerRuntime())
+    project = services.repository.create_project(
+        name="MCP token fixture",
+        draft=DraftProject.model_validate(_draft()),
+        actor="admin",
+        role=Role.ADMINISTRATOR,
+        occurred_at="2026-03-10T12:00:00+00:00",
+    )
+    created = services.mcp_store.create_token(
+        client_id="assistant-one",
+        username="admin",
+        project_id=project.project.id,
+        scopes=(McpScope.READ, McpScope.DRAFT_EDIT),
+        expires_at="2026-03-11T12:00:00+00:00",
+        occurred_at="2026-03-10T12:00:00+00:00",
+    )
+
+    assert created.token.startswith("cvmcp_")
+    assert (
+        services.mcp_store.verify_token(
+            created.token,
+            "2026-03-10T12:30:00+00:00",
+        )
+        == created.record
+    )
+    assert (
+        services.mcp_store.verify_token(
+            created.token,
+            "2026-03-12T12:00:00+00:00",
+        )
+        is None
+    )
+    assert created.token not in services.repository.database_path.read_text(
+        encoding="utf-8",
+        errors="ignore",
+    )
+
+    services.mcp_store.revoke_token(
+        created.record.id,
+        "2026-03-10T13:00:00+00:00",
+    )
+    assert (
+        services.mcp_store.verify_token(
+            created.token,
+            "2026-03-10T13:00:01+00:00",
+        )
+        is None
+    )
+
+
+def test_mcp_proposal_isolated_until_human_approval_and_merge(
+    tmp_path: Path,
+) -> None:
+    services = _services(tmp_path, ControllerRuntime())
+    project = services.repository.create_project(
+        name="MCP proposal fixture",
+        draft=DraftProject.model_validate(_draft()),
+        actor="admin",
+        role=Role.ADMINISTRATOR,
+        occurred_at="2026-03-10T12:00:00+00:00",
+    )
+    template = project.draft.scenes[0]
+
+    proposal = services.mcp_authoring.propose_scene_outline(
+        project_id=project.project.id,
+        base_revision=project.revision,
+        template_scene_id=template.id,
+        scene_id="assistant-scene",
+        name="Assistant scene",
+        duration_ms=2500,
+        client_id="assistant-one",
+        username="admin",
+    )
+
+    unchanged = services.repository.get_revision(project.project.id)
+    assert unchanged.revision == 1
+    assert [scene.id for scene in unchanged.draft.scenes] == [template.id]
+
+    validated = services.mcp_authoring.validate_proposal(proposal.id)
+    assert validated.state.value == "validated"
+    approved = services.mcp_authoring.approve(
+        proposal.id,
+        "reviewer",
+        "Validated against the installation",
+    )
+    assert approved.state.value == "approved"
+    merged = services.mcp_authoring.merge(
+        proposal.id,
+        "reviewer",
+        Role.DESIGNER,
+    )
+
+    assert merged.state.value == "merged"
+    updated = services.repository.get_revision(project.project.id)
+    assert updated.revision == 2
+    assert [scene.id for scene in updated.draft.scenes] == [
+        template.id,
+        "assistant-scene",
+    ]
+
+
+def test_mcp_rejected_and_stale_proposals_never_change_working_revision(
+    tmp_path: Path,
+) -> None:
+    services = _services(tmp_path, ControllerRuntime())
+    project = services.repository.create_project(
+        name="MCP conflict fixture",
+        draft=DraftProject.model_validate(_draft()),
+        actor="admin",
+        role=Role.ADMINISTRATOR,
+        occurred_at="2026-03-10T12:00:00+00:00",
+    )
+    template = project.draft.scenes[0]
+
+    rejected = services.mcp_authoring.propose_scene_outline(
+        project_id=project.project.id,
+        base_revision=1,
+        template_scene_id=template.id,
+        scene_id="rejected-scene",
+        name="Rejected scene",
+        duration_ms=1000,
+        client_id="assistant-one",
+        username="admin",
+    )
+    services.mcp_authoring.reject(rejected.id, "reviewer", "Not appropriate")
+    with pytest.raises(McpAuthoringError, match="requires explicit approval"):
+        services.mcp_authoring.merge(rejected.id, "reviewer", Role.DESIGNER)
+
+    stale = services.mcp_authoring.propose_scene_outline(
+        project_id=project.project.id,
+        base_revision=1,
+        template_scene_id=template.id,
+        scene_id="stale-scene",
+        name="Stale scene",
+        duration_ms=1000,
+        client_id="assistant-one",
+        username="admin",
+    )
+    services.mcp_authoring.validate_proposal(stale.id)
+    services.mcp_authoring.approve(stale.id, "reviewer")
+    services.repository.update_draft(
+        project_id=project.project.id,
+        expected_revision=1,
+        draft=project.draft,
+        actor="reviewer",
+        role=Role.DESIGNER,
+        occurred_at="2026-03-10T13:00:00+00:00",
+    )
+
+    with pytest.raises(McpAuthoringError, match="working revision changed"):
+        services.mcp_authoring.merge(stale.id, "reviewer", Role.DESIGNER)
+    current = services.repository.get_revision(project.project.id)
+    assert current.revision == 2
+    assert [scene.id for scene in current.draft.scenes] == [template.id]
+
+
+def test_mcp_endpoint_requires_project_token_and_exposes_no_live_tools(
+    tmp_path: Path,
+) -> None:
+    runtime = ControllerRuntime()
+    services = _services(tmp_path, runtime)
+    with TestClient(
+        create_app(runtime, gui_services=services),
+        base_url="http://localhost",
+    ) as client:
+        _login(client)
+        created_project = client.post(
+            "/api/gui/v1/projects",
+            json={"name": "MCP protocol fixture", "draft": _draft()},
+            headers=_mutation_headers(client),
+        )
+        assert created_project.status_code == 201
+        project_id = created_project.json()["project"]["id"]
+        expiry = (datetime.now(UTC) + timedelta(days=1)).isoformat()
+
+        created_token = client.post(
+            f"/api/gui/v1/projects/{project_id}/mcp-tokens",
+            json={
+                "client_id": "protocol-client",
+                "scopes": ["read"],
+                "expires_at": expiry,
+            },
+            headers=_mutation_headers(client),
+        )
+        assert created_token.status_code == 201
+        token = created_token.json()["token"]
+        assert token.startswith("cvmcp_")
+
+        listed = client.get(f"/api/gui/v1/projects/{project_id}/mcp-tokens")
+        assert listed.status_code == 200
+        assert listed.json()[0]["token"] is None
+
+        initialize_body = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-06-18",
+                "capabilities": {},
+                "clientInfo": {"name": "test-client", "version": "1.0"},
+            },
+        }
+        unauthenticated = client.post(
+            "/mcp/",
+            json=initialize_body,
+            headers={"Accept": "application/json, text/event-stream"},
+        )
+        assert unauthenticated.status_code == 401
+
+        authenticated_headers = {
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/json, text/event-stream",
+        }
+        initialized = client.post(
+            "/mcp/",
+            json=initialize_body,
+            headers=authenticated_headers,
+        )
+        assert initialized.status_code == 200
+        assert initialized.json()["result"]["serverInfo"]["name"] == "Cueverge Authoring"
+
+        tools = client.post(
+            "/mcp/",
+            json={"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
+            headers=authenticated_headers,
+        )
+        assert tools.status_code == 200
+        names = {tool["name"] for tool in tools.json()["result"]["tools"]}
+        assert "get_project_structure" in names
+        assert "propose_scene_outline" in names
+        assert not names.intersection(
+            {"publish", "activate", "enroll_device", "approve_proposal"}
+        )
+
+        project_structure = client.post(
+            "/mcp/",
+            json={
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "tools/call",
+                "params": {
+                    "name": "get_project_structure",
+                    "arguments": {},
+                },
+            },
+            headers=authenticated_headers,
+        )
+        assert project_structure.status_code == 200
+        assert project_structure.json()["result"]["isError"] is False
+
+        denied_proposal = client.post(
+            "/mcp/",
+            json={
+                "jsonrpc": "2.0",
+                "id": 4,
+                "method": "tools/call",
+                "params": {
+                    "name": "propose_scene_outline",
+                    "arguments": {
+                        "base_revision": 1,
+                        "template_scene_id": "scene-welcome",
+                        "scene_id": "unauthorized",
+                        "name": "Unauthorized",
+                        "duration_ms": 1000,
+                    },
+                },
+            },
+            headers=authenticated_headers,
+        )
+        assert denied_proposal.status_code == 200
+        assert denied_proposal.json()["result"]["isError"] is True
+        assert services.repository.get_revision(project_id).revision == 1
+        tool_events = [
+            event
+            for event in services.repository.list_audit_events()
+            if event.action == "mcp.tool.call"
+        ]
+        assert {event.target for event in tool_events[-2:]} == {
+            "get_project_structure",
+            "propose_scene_outline",
+        }
+
+
+def test_mcp_proposal_requires_browser_csrf_approval_before_merge(
+    tmp_path: Path,
+) -> None:
+    runtime = ControllerRuntime()
+    services = _services(tmp_path, runtime)
+    client = TestClient(create_app(runtime, gui_services=services))
+    _login(client)
+    created_project = client.post(
+        "/api/gui/v1/projects",
+        json={"name": "MCP review fixture", "draft": _draft()},
+        headers=_mutation_headers(client),
+    ).json()
+    project_id = created_project["project"]["id"]
+    template_id = created_project["draft"]["scenes"][0]["id"]
+    proposal = services.mcp_authoring.propose_scene_outline(
+        project_id=project_id,
+        base_revision=1,
+        template_scene_id=template_id,
+        scene_id="reviewed-scene",
+        name="Reviewed scene",
+        duration_ms=1500,
+        client_id="assistant-one",
+        username="admin",
+    )
+
+    assert (
+        client.post(
+            f"/api/gui/v1/projects/{project_id}/mcp-proposals/{proposal.id}/validate"
+        ).status_code
+        == 403
+    )
+    validate = client.post(
+        f"/api/gui/v1/projects/{project_id}/mcp-proposals/{proposal.id}/validate",
+        headers=_mutation_headers(client),
+    )
+    assert validate.status_code == 200
+    approve = client.post(
+        f"/api/gui/v1/projects/{project_id}/mcp-proposals/{proposal.id}/approve",
+        json={"reason": "Human-reviewed validation and diff"},
+        headers=_mutation_headers(client),
+    )
+    assert approve.status_code == 200
+    assert approve.json()["approved_by"] == "admin"
+    merged = client.post(
+        f"/api/gui/v1/projects/{project_id}/mcp-proposals/{proposal.id}/merge",
+        headers=_mutation_headers(client),
+    )
+    assert merged.status_code == 200
+    assert merged.json()["state"] == "merged"
+    assert services.repository.get_revision(project_id).revision == 2
+    proposal_events = [
+        event
+        for event in services.repository.list_audit_events()
+        if event.target == proposal.id
+    ]
+    assert {"mcp.proposal.validate", "mcp.proposal.approve", "mcp.proposal.merge"}.issubset(
+        {event.action for event in proposal_events}
     )
 
 
@@ -2156,6 +2503,102 @@ def test_publication_requires_approval_and_writes_reproducible_manifest(
                 simulation_mode=True,
             )
         )
+
+
+@pytest.mark.parametrize(
+    ("changes", "expected_code"),
+    [
+        ({"status": "quarantined", "scan_status": "quarantined"}, "asset_quarantined"),
+        (
+            {"status": "failed", "error": "ffprobe rejected the stream"},
+            "asset_processing_failed",
+        ),
+        ({"status": "uploading"}, "asset_processing_incomplete"),
+        ({"original_file_status": "missing"}, "asset_original_missing"),
+        ({"original_file_status": "size_mismatch"}, "asset_original_size_mismatch"),
+        ({"original_file_status": "pending"}, "asset_original_unverified"),
+        ({"digest_sha256": None}, "asset_checksum_missing"),
+    ],
+)
+def test_publication_reports_exact_asset_blocker_and_remediation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    changes: dict[str, object],
+    expected_code: str,
+) -> None:
+    services = _services(tmp_path, ControllerRuntime())
+    document = _draft()
+    document["scenes"][0]["media"]["asset"] = "asset-1"
+    revision = services.repository.create_project(
+        name="Asset diagnostics fixture",
+        draft=DraftProject.model_validate(document),
+        actor="admin",
+        role=Role.ADMINISTRATOR,
+        occurred_at="2026-10-16T12:00:00Z",
+    )
+    asset = StoredAsset(
+        id="asset-1",
+        project_id=revision.project.id,
+        name="Opening film",
+        status="ready",
+        current_revision=1,
+        metadata_revision=1,
+        owner=None,
+        license=None,
+        provenance=None,
+        review_status="approved",
+        expires_on=None,
+        folder=None,
+        tags=(),
+        favorite=False,
+        error=None,
+        digest_sha256="a" * 64,
+        size_bytes=1024,
+        media_type="video/mp4",
+        original_filename="opening.mp4",
+        scan_status="clean",
+        metadata={},
+        created_at="2026-10-16T12:00:00Z",
+        updated_at="2026-10-16T12:00:00Z",
+        original_file_status="available",
+    )
+    monkeypatch.setattr(
+        services.asset_upload,
+        "list_assets",
+        lambda _project_id: (replace(asset, **changes),),
+    )
+
+    diagnostics = services.publication.validate(
+        revision.project.id,
+        revision.revision,
+    )
+    diagnostic = next(item for item in diagnostics if item.code == expected_code)
+    assert "before publishing" in diagnostic.message
+
+
+def test_publication_reports_missing_asset_with_relink_remediation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    services = _services(tmp_path, ControllerRuntime())
+    document = _draft()
+    document["scenes"][0]["media"]["asset"] = "missing-asset"
+    revision = services.repository.create_project(
+        name="Missing asset fixture",
+        draft=DraftProject.model_validate(document),
+        actor="admin",
+        role=Role.ADMINISTRATOR,
+        occurred_at="2026-10-16T12:00:00Z",
+    )
+    monkeypatch.setattr(services.asset_upload, "list_assets", lambda _project_id: ())
+
+    diagnostics = services.publication.validate(
+        revision.project.id,
+        revision.revision,
+    )
+    diagnostic = next(item for item in diagnostics if item.code == "asset_missing")
+    assert "Relink" in diagnostic.message
+
 
 def test_render_job_api_requires_auth_csrf_and_reports_invalid_composition(
     tmp_path: Path,

@@ -20,6 +20,52 @@ physical installation. Review links contain high-entropy, hashed-at-rest
 tokens, expose only revision identity metadata, and stop resolving after their
 configured expiry.
 
+## MCP-assisted authoring
+
+The controller exposes the stateless Streamable HTTP MCP endpoint at `/mcp/`
+when the GUI authoring service is enabled. Terminate TLS at the trusted reverse
+proxy and configure its public HTTPS origin in `CUEVERGE_GUI_ALLOWED_ORIGINS`.
+Cueverge uses that origin for the MCP resource URL and restricts MCP Host and
+Origin headers to configured/local controller hosts.
+
+Create client tokens from a project's **MCP-assisted authoring** workspace.
+The token secret is displayed once, stored only as a SHA-256 digest, bound to
+one project and user, and limited to a maximum 90-day expiry. The safe default
+is the `read` scope. Additional independent scopes are:
+
+- `draft_edit`: create isolated proposals; never changes the working draft.
+- `simulation`: run bounded deterministic simulations without hardware.
+- `publish_prepare`: inspect publication readiness and package status.
+- `live_operation`: reserved for separately authorized operation; no MCP tool
+  currently publishes, activates hardware, enrolls devices, or grants access.
+
+Current local-user status, project membership, role, and live-output grant are
+rechecked on every MCP request. Disabling a user, removing project membership,
+reducing the role, or revoking a token therefore takes effect immediately.
+Rotate a client credential by creating a replacement, updating the client, and
+revoking the old token. Revoke all affected tokens immediately if a secret may
+have been disclosed.
+
+Model output, filenames, asset metadata, comments, and imported text remain
+untrusted data. MCP has no unrestricted filesystem, network, browser-internal,
+device-enrollment, publish, or activation tool. Proposals store a complete
+validated candidate draft, base revision, changed JSON paths, client/user
+identity, diagnostics, and simulation result separately from the working
+revision. A human designer or administrator must validate, approve with a
+rationale, and merge through the cookie/CSRF-protected GUI API. Merge fails
+closed if the working revision changed after proposal creation. Failed and
+rejected proposals never affect the working revision or live show.
+
+The server enforces a 256 KiB request limit, 60 tool calls per token per minute,
+four concurrent calls per token, 20 active proposals per project, 100 returned
+assets, five-minute timeline windows, 200 simulation steps, and ten minutes of
+simulated time. Audit history records token creation/revocation, each requested
+tool with an argument digest (not raw potentially sensitive content), proposal
+diffs and validation, human approval/rejection, merge, and final disposition.
+During an incident, revoke the token, disable the owning account if necessary,
+review `mcp.tool.call` and `mcp.proposal.*` audit events, and inspect every
+non-final proposal before restoring access.
+
 ## Operating modes
 
 Cueverge starts in `automatic` mode. `POST /api/v1/show/mode` accepts:
@@ -76,10 +122,12 @@ section explains the policy; the eventual Dockerfile and image-preflight test
 must consume or validate the manifest rather than maintaining an independent
 list.
 
-The eventual controller Dockerfile must install and version the non-Python
-tools used by enabled features. Keep this inventory synchronized with runtime
-subprocess calls and verify required executables during image build and
-container startup rather than discovering omissions after an upload:
+The controller Dockerfile derives its required and optional Debian package
+specifications from this inventory. The startup preflight reads the same file
+and fails closed when required executables, FFmpeg encoders/filters, FFprobe
+features, or required ClamAV definitions are unavailable. Keep the inventory
+synchronized with runtime subprocess calls rather than adding package or
+capability lists directly to Docker or shell files:
 
 | Tool | Image role | Requirement |
 | --- | --- | --- |
@@ -89,9 +137,11 @@ container startup rather than discovering omissions after an upload:
 | Node.js and npm | Building the React/Vite application | Build-stage only; do not retain them in the final controller image |
 | CA certificates | TLS connections to external services and devices | Required in the runtime image |
 
-Pin the base image and package versions or digests where practical, record
-`ffmpeg -version`, `ffprobe -version`, and scanner/version information in build
-provenance, and test the codecs and filters used by the generated artifacts.
+Base images are digest-pinned and required native package versions are pinned
+in the inventory. Update each package version and its base-image digest
+together after rebuilding and running the dependency inventory tests. Startup
+reports `ffmpeg`, `ffprobe`, and configured scanner versions and verifies the
+declared codecs, filters, and probe features used by generated artifacts.
 The Dockerfile must also create writable persistent mounts for GUI data,
 original assets, derived artifacts, logs, and other configured state; these
 must not live only in the container layer.

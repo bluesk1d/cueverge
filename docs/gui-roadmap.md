@@ -103,14 +103,14 @@ away from the current screen.
 - Every implementation change must update the applicable milestone Scope and
   Acceptance checkboxes and the milestone summary in this file in the same
   change.
-- Last backfilled against the repository and live GUI-01 deployment:
-  **2026-10-13**.
+- Last backfilled against the repository and live GUI-11 deployment:
+  **2026-10-16**.
 
 | Milestone | Complete | Status |
 | --- | ---: | --- |
-| GUI-00 | 11 / 12 | In progress |
+| GUI-00 | 12 / 12 | Complete |
 | GUI-01 | 13 / 13 | Complete |
-| GUI-02 | 10 / 11 | In progress |
+| GUI-02 | 11 / 11 | Complete |
 | GUI-03 | 33 / 39 | In progress |
 | GUI-04 | 28 / 28 | Complete |
 | GUI-05 | 25 / 27 | In progress |
@@ -118,8 +118,8 @@ away from the current screen.
 | GUI-07 | 19 / 19 | Complete |
 | GUI-08 | 9 / 10 | In progress |
 | GUI-09 | 17 / 17 | Complete |
-| GUI-10 | 0 / 10 | Not started |
-| GUI-11 | 0 / 13 | Not started |
+| GUI-10 | 10 / 10 | Complete |
+| GUI-11 | 13 / 13 | Complete |
 
 ## Milestone GUI-00: product contracts and secure foundation
 
@@ -130,11 +130,8 @@ Define the boundaries that every later editor feature relies on.
 - [x] Select a supported web architecture and deployment model. The controller may
   serve the built application, but frontend build concerns should remain
   separate from the Python engine package.
-- [ ] Define stable, versioned APIs for projects, drafts, validation, runtime
+- [x] Define stable, versioned APIs for projects, drafts, validation, runtime
   status, topology, assets, simulation, and publication.
-  **Partial:** versioned project, draft, compilation/validation, runtime,
-  topology, installation, device, activity, and operation APIs exist; asset,
-  simulation, and publication APIs remain.
 - [x] Add authenticated browser sessions, role-based authorization, CSRF and
   origin protection, rate limits, and an audit event model before allowing
   non-loopback access.
@@ -157,6 +154,15 @@ Define the boundaries that every later editor feature relies on.
 - [x] Every change and control command records actor, target, result, and time.
 - [x] A minimal draft can be compiled into a package accepted by the existing show
   loader without editor-only data leaking into runtime documents.
+
+GUI-00 is complete at 12/12. The `/api/gui/v1` contract now covers projects,
+draft revisions, compilation and validation, runtime status and operations,
+topology and installations, assets and resumable uploads, deterministic
+simulation scenarios, and immutable publication/package transitions. Browser
+sessions, project authorization, mutation CSRF, allowed-origin checks, device
+identity, typed capabilities, revision conflicts, audit attribution, schema
+migrations, import/export validation, and deployment health checks protect
+those surfaces.
 
 ## Milestone GUI-01: operator console and client management MVP
 
@@ -222,10 +228,16 @@ Create the durable authoring model and an After Effects-style project panel.
 
 - [x] A user can import visual and audio assets, inspect metadata and waveforms,
   organize them, and place references without knowing server file paths.
-- [ ] Publishing rejects missing, failed, quarantined, or incompatible required
+- [x] Publishing rejects missing, failed, quarantined, or incompatible required
   assets with precise diagnostics.
 - [x] Export followed by import preserves the project and asset references without
   exposing credentials or host-specific absolute paths.
+
+GUI-02 is complete at 11/11. Asset ingest, processing, governance, placement,
+portability, and project organization are complete. Publication fails closed
+with distinct remediation for missing, quarantined, failed, incomplete,
+unavailable, size-mismatched, unverified, checksum-missing, and
+decoder-incompatible required assets.
 
 ## Milestone GUI-03: visual installation mapper
 
@@ -382,6 +394,13 @@ Map logical show geometry onto multiple location photographs.
   canceling calibration cannot leave transient offsets active.
 - [x] Ambiguous, disconnected, out-of-range, or multiply assigned geometry blocks
   publication with a direct link to the offending object.
+
+GUI-03 remains at 33/39. Photo-based geometry, projector and pixel mapping,
+multi-view stage space, simulation, calibration records, and safe temporary
+session semantics are implemented. The six remaining scope and acceptance
+items require live dispatch and physical qualification for projector
+alignment, pixel identification/index chase, timing calibration, and bounded
+actuator-specific safety behavior.
 
 ## Milestone GUI-04: layered scene timeline MVP
 
@@ -592,6 +611,11 @@ clients.
 - [ ] A projector client can hold the decoded last frame without flashing black.
   A file declared gapless passes first/last frame and audio-boundary checks
   and loops on the target client without an unintended visible or audible gap.
+  **Partial:** the MPV client configures `keep-open=always` for last-frame hold
+  and gapless audio plus file looping for loop playback. Render verification
+  rejects first/last-frame, audio-boundary, timestamp, and GOP violations.
+  Target-client playback still needs on-hardware qualification proving there is
+  no decoder, display, or audio discontinuity.
 - [ ] An on-hardware rehearsal measures cross-projector start error and drift and
   blocks a seam-sensitive animation when the selected client group exceeds
   its declared synchronization tolerance.
@@ -600,6 +624,11 @@ clients.
   stale and produces a separately checksummed artifact.
 - [x] A failed or canceled bake cannot replace the last valid artifact, exhaust
   unbounded controller resources, or leave publication appearing ready.
+
+GUI-05 remains at 25/27. Deterministic composition, baking, verification,
+mapping, synchronization contracts, and client playback configuration are
+implemented. Completion requires target-hardware proof of gapless/last-frame
+behavior and measured multi-projector start error and drift enforcement.
 
 ## Milestone GUI-06: spatial addressable-light authoring
 
@@ -757,6 +786,11 @@ milestone rather than introducing controller-only semantics in GUI-08.
 - [x] A repeatable accelerated scenario demonstrates ambient operation, visitor
   interaction, protected scenes, return to idle, and client interruption.
 
+GUI-08 remains at 9/10. Semantic autonomous programs, audience rules,
+opportunities, encounters, templates, diagnostics, and accelerated simulation
+are complete. Scheduling and quiet-hours authoring remains intentionally
+blocked on a separate authoritative runtime scheduling model.
+
 ## Milestone GUI-09: rehearsal, publication, and rollback
 
 Turn an edited project into a controlled deployed artifact.
@@ -797,11 +831,6 @@ Turn an edited project into a controlled deployed artifact.
   configure optional ClamAV plus definition updates, keep frontend tooling in
   the build stage, and keep host display/audio dependencies such as `mpv` on
   media agents rather than in the headless controller image.
-  **Partial:** `deploy/controller-native-dependencies.json` now records runtime
-  packages, required ffmpeg encoders/filters/probe features, optional ClamAV
-  update policy, frontend build tooling, persistent paths, preflight commands,
-  and explicit controller-image exclusions. Dockerfile consumption, pinned
-  image/package versions, and executable startup preflight remain.
 - [x] Add backup/restore and disaster-recovery documentation for projects, assets,
   enrollment identities, and published packages.
 
@@ -825,6 +854,14 @@ prepares the checksummed artifact against one shared activation timestamp
 before any commit is issued. A failed prepare leaves the active show unchanged;
 a failed commit triggers rollback commands that atomically restore each
 client's saved prior activation before the controller changes package state.
+
+GUI-09 is complete at 17/17. The machine-readable native dependency inventory
+drives pinned required package installation and startup verification of
+executables, FFmpeg encoders and filters, FFprobe features, and optional ClamAV
+definitions. Builder/runtime base images are digest-pinned and installed native
+tool versions are reported at startup. Publication, staging, two-phase
+activation, rollback, cache safety, rehearsal, attribution, and disaster
+recovery are complete.
 
 ## Milestone GUI-10: collaboration and production hardening
 
@@ -881,26 +918,26 @@ underlying GUI APIs and transaction model are stable.
 
 ### Scope
 
-- [ ] Run an authenticated MCP server next to the controller's authoring service;
+- [x] Run an authenticated MCP server next to the controller's authoring service;
   do not expose browser internals or unrestricted filesystem/network tools.
-- [ ] Provide read tools for project structure, capabilities, schemas, asset
+- [x] Provide read tools for project structure, capabilities, schemas, asset
   metadata, scene summaries, timeline ranges, validation results, simulation
   results, and published revision status.
-- [ ] Provide proposal tools for creating or changing scenes, cues, mappings,
+- [x] Provide proposal tools for creating or changing scenes, cues, mappings,
   show logic, metadata, and simulation scenarios.
-- [ ] Apply proposals to a new draft transaction with a structured diff. Require
+- [x] Apply proposals to a new draft transaction with a structured diff. Require
   validation and explicit human approval before merging into the working
   revision.
-- [ ] Separate scopes for read, draft edit, simulation, publish preparation, and
+- [x] Separate scopes for read, draft edit, simulation, publish preparation, and
   live operation. Do not grant publish or live-output permission by default.
-- [ ] Treat asset metadata, filenames, comments, imported package text, and model
+- [x] Treat asset metadata, filenames, comments, imported package text, and model
   output as untrusted content. They cannot alter tool permissions or bypass
   validation and approval.
-- [ ] Add limits for tool-call count, payload size, asset access, timeline range,
+- [x] Add limits for tool-call count, payload size, asset access, timeline range,
   simulation duration, and concurrent work.
-- [ ] Record model/client identity, user identity, requested tools, resulting
+- [x] Record model/client identity, user identity, requested tools, resulting
   diffs, validation, approvals, and final disposition.
-- [ ] Provide high-level task tools such as:
+- [x] Provide high-level task tools such as:
   - create a scene outline from an approved brief
   - align cues to supplied markers or waveform events
   - suggest fixture/path mappings for operator review
@@ -910,15 +947,29 @@ underlying GUI APIs and transaction model are stable.
 
 ### Acceptance
 
-- [ ] An MCP client can create a useful proposed scene in an isolated draft, run
+- [x] An MCP client can create a useful proposed scene in an isolated draft, run
   validation and simulation, and present a human-readable diff.
-- [ ] The same client cannot read assets outside its project, enroll devices,
+- [x] The same client cannot read assets outside its project, enroll devices,
   publish, activate hardware, or bypass approval without separately granted
   scopes.
-- [ ] Rejected or failed proposals leave the working revision and live show
+- [x] Rejected or failed proposals leave the working revision and live show
   unchanged.
-- [ ] Every accepted change can be traced to its user, MCP client, proposal, and
+- [x] Every accepted change can be traced to its user, MCP client, proposal, and
   approval.
+
+GUI-11 is complete at 13/13. Cueverge serves authenticated, stateless MCP over
+Streamable HTTP with project-bound, hashed, expiring tokens and independently
+enforced read, proposal, simulation, publish-preparation, and reserved live
+scopes. Bounded read and proposal tools operate only on authoritative project
+models; there is no filesystem, arbitrary network, browser-internal, device
+enrollment, publication, activation, or model-driven approval tool. Candidate
+drafts, changed JSON paths, diagnostics, and deterministic no-hardware
+simulations remain isolated until a CSRF-protected human review validates,
+approves, and merges them. Revision conflicts fail closed. Per-token request,
+rate, concurrency, project asset, timeline, simulation, and active-proposal
+limits are enforced, and durable audit events attribute requests and final
+disposition to the user, MCP client, proposal, and human reviewer. The project
+workspace provides one-time token issuance/revocation and proposal review.
 
 ## Dependency order
 

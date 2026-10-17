@@ -67,6 +67,7 @@ from cueverge.gui.contracts import (
     CompilationResponse,
     ConnectionTestCheck,
     CreateInstallationRequest,
+    CreateMcpTokenRequest,
     CreateOutputArmRequest,
     CreatePairingTokenRequest,
     CreateProjectRequest,
@@ -100,6 +101,9 @@ from cueverge.gui.contracts import (
     MaintenancePreviewResponse,
     MappedPixelResponse,
     MapperDiagnosticResponse,
+    McpProposalDispositionRequest,
+    McpProposalResponse,
+    McpTokenResponse,
     ObjectOrganizationRequest,
     OperateActionRequest,
     OperateActionResponse,
@@ -192,6 +196,12 @@ from cueverge.gui.lighting_surface import (
     PixelPositionOverride as StoredPixelPositionOverride,
 )
 from cueverge.gui.mapper_export import MapperExportError
+from cueverge.gui.mcp_authoring import (
+    McpAuthoringError,
+    McpProposal,
+    McpScope,
+    McpToken,
+)
 from cueverge.gui.output_arming import OutputArmError, StoredOutputArm
 from cueverge.gui.passwords import hash_password
 from cueverge.gui.preview_evaluation import (
@@ -830,6 +840,237 @@ def create_gui_router(services: GuiServices) -> APIRouter:
             PresenceResponse.model_validate(item)
             for item in services.collaboration.list_presence(project_id, active_after)
         ]
+
+    @router.get(
+        "/projects/{project_id}/mcp-tokens",
+        response_model=list[McpTokenResponse],
+        dependencies=[project_reader],
+    )
+    def list_mcp_tokens(project_id: str) -> list[McpTokenResponse]:
+        return [
+            _mcp_token_response(item)
+            for item in services.mcp_store.list_tokens(project_id)
+        ]
+
+    @router.post(
+        "/projects/{project_id}/mcp-tokens",
+        response_model=McpTokenResponse,
+        status_code=201,
+    )
+    def create_mcp_token(
+        project_id: str,
+        body: CreateMcpTokenRequest,
+        identity: Annotated[AuthenticatedSession, project_commenter],
+    ) -> McpTokenResponse:
+        try:
+            expires_at = datetime.fromisoformat(body.expires_at)
+        except ValueError as error:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "invalid_mcp_token_expiry"},
+            ) from error
+        now = datetime.now(UTC)
+        if (
+            expires_at.tzinfo is None
+            or expires_at <= now
+            or expires_at > now + timedelta(days=90)
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "invalid_mcp_token_expiry"},
+            )
+        requested_scopes = tuple(McpScope(scope) for scope in body.scopes)
+        if McpScope.READ not in requested_scopes:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "mcp_read_scope_required"},
+            )
+        membership = services.collaboration.get_membership(
+            project_id,
+            identity.username,
+        )
+        allowed_scopes = _allowed_mcp_scopes(
+            identity.role,
+            membership.role if membership is not None else None,
+            membership.can_live_output if membership is not None else True,
+        )
+        if not set(requested_scopes).issubset(allowed_scopes):
+            raise HTTPException(
+                status_code=403,
+                detail={"code": "mcp_scope_not_permitted"},
+            )
+        occurred_at = _now_iso()
+        created = services.mcp_store.create_token(
+            client_id=body.client_id,
+            username=identity.username,
+            project_id=project_id,
+            scopes=requested_scopes,
+            expires_at=expires_at.isoformat(),
+            occurred_at=occurred_at,
+        )
+        record = created.record
+        services.repository.append_audit(
+            actor=identity.username,
+            action="mcp.token.create",
+            target=record.id,
+            result="success",
+            occurred_at=occurred_at,
+            authorization_context={
+                "project_id": project_id,
+                "client_id": body.client_id,
+                "scopes": list(body.scopes),
+            },
+        )
+        return _mcp_token_response(record, created.token)
+
+    @router.delete("/projects/{project_id}/mcp-tokens/{token_id}", status_code=204)
+    def revoke_mcp_token(
+        project_id: str,
+        token_id: str,
+        identity: Annotated[AuthenticatedSession, project_designer],
+    ) -> Response:
+        token = services.mcp_store.get_token(token_id)
+        if token is None or token.project_id != project_id:
+            raise HTTPException(
+                status_code=404,
+                detail={"code": "mcp_token_not_found"},
+            )
+        occurred_at = _now_iso()
+        services.mcp_store.revoke_token(token_id, occurred_at)
+        services.repository.append_audit(
+            actor=identity.username,
+            action="mcp.token.revoke",
+            target=token_id,
+            result="success",
+            occurred_at=occurred_at,
+            authorization_context={
+                "project_id": project_id,
+                "client_id": token.client_id,
+            },
+        )
+        return Response(status_code=204)
+
+    @router.get(
+        "/projects/{project_id}/mcp-proposals",
+        response_model=list[McpProposalResponse],
+        dependencies=[project_reader],
+    )
+    def list_mcp_proposals(project_id: str) -> list[McpProposalResponse]:
+        return [
+            _mcp_proposal_response(item)
+            for item in services.mcp_store.list_proposals(project_id)
+        ]
+
+    @router.get(
+        "/projects/{project_id}/mcp-proposals/{proposal_id}",
+        response_model=McpProposalResponse,
+        dependencies=[project_reader],
+    )
+    def get_mcp_proposal(
+        project_id: str,
+        proposal_id: str,
+    ) -> McpProposalResponse:
+        proposal = services.mcp_store.require_proposal(proposal_id)
+        if proposal.project_id != project_id:
+            raise HTTPException(
+                status_code=404,
+                detail={"code": "mcp_proposal_not_found"},
+            )
+        return _mcp_proposal_response(proposal)
+
+    @router.post(
+        "/projects/{project_id}/mcp-proposals/{proposal_id}/validate",
+        response_model=McpProposalResponse,
+    )
+    def validate_mcp_proposal(
+        project_id: str,
+        proposal_id: str,
+        identity: Annotated[AuthenticatedSession, project_designer],
+    ) -> McpProposalResponse:
+        proposal = _require_project_proposal(services, project_id, proposal_id)
+        try:
+            updated = services.mcp_authoring.validate_proposal(proposal.id)
+        except McpAuthoringError as error:
+            raise HTTPException(
+                status_code=409,
+                detail={"code": "mcp_proposal_validation_failed", "message": str(error)},
+            ) from error
+        _audit_mcp_proposal(services, identity, updated, "validate")
+        return _mcp_proposal_response(updated)
+
+    @router.post(
+        "/projects/{project_id}/mcp-proposals/{proposal_id}/approve",
+        response_model=McpProposalResponse,
+    )
+    def approve_mcp_proposal(
+        project_id: str,
+        proposal_id: str,
+        body: McpProposalDispositionRequest,
+        identity: Annotated[AuthenticatedSession, project_designer],
+    ) -> McpProposalResponse:
+        proposal = _require_project_proposal(services, project_id, proposal_id)
+        try:
+            updated = services.mcp_authoring.approve(
+                proposal.id,
+                identity.username,
+                body.reason,
+            )
+        except McpAuthoringError as error:
+            raise HTTPException(
+                status_code=409,
+                detail={"code": "mcp_proposal_approval_failed", "message": str(error)},
+            ) from error
+        _audit_mcp_proposal(services, identity, updated, "approve")
+        return _mcp_proposal_response(updated)
+
+    @router.post(
+        "/projects/{project_id}/mcp-proposals/{proposal_id}/reject",
+        response_model=McpProposalResponse,
+    )
+    def reject_mcp_proposal(
+        project_id: str,
+        proposal_id: str,
+        body: McpProposalDispositionRequest,
+        identity: Annotated[AuthenticatedSession, project_designer],
+    ) -> McpProposalResponse:
+        proposal = _require_project_proposal(services, project_id, proposal_id)
+        try:
+            updated = services.mcp_authoring.reject(
+                proposal.id,
+                identity.username,
+                body.reason,
+            )
+        except McpAuthoringError as error:
+            raise HTTPException(
+                status_code=409,
+                detail={"code": "mcp_proposal_rejection_failed", "message": str(error)},
+            ) from error
+        _audit_mcp_proposal(services, identity, updated, "reject")
+        return _mcp_proposal_response(updated)
+
+    @router.post(
+        "/projects/{project_id}/mcp-proposals/{proposal_id}/merge",
+        response_model=McpProposalResponse,
+    )
+    def merge_mcp_proposal(
+        project_id: str,
+        proposal_id: str,
+        identity: Annotated[AuthenticatedSession, project_designer],
+    ) -> McpProposalResponse:
+        proposal = _require_project_proposal(services, project_id, proposal_id)
+        try:
+            updated = services.mcp_authoring.merge(
+                proposal.id,
+                identity.username,
+                identity.role,
+            )
+        except McpAuthoringError as error:
+            raise HTTPException(
+                status_code=409,
+                detail={"code": "mcp_proposal_merge_failed", "message": str(error)},
+            ) from error
+        _audit_mcp_proposal(services, identity, updated, "merge")
+        return _mcp_proposal_response(updated)
 
     @router.post("/projects", response_model=ProjectDraftResponse, status_code=201)
     def create_project(
@@ -5157,3 +5398,112 @@ def _etag(revision: int) -> str:
 
 def _now_iso() -> str:
     return datetime.now(UTC).isoformat()
+
+
+def _allowed_mcp_scopes(
+    global_role: Role,
+    project_role: Role | None,
+    can_live_output: bool,
+) -> set[McpScope]:
+    effective_role = (
+        Role.ADMINISTRATOR
+        if global_role is Role.ADMINISTRATOR
+        else project_role
+    )
+    scopes = {McpScope.READ}
+    if effective_role in {
+        Role.DESIGNER,
+        Role.PUBLISHER,
+        Role.ADMINISTRATOR,
+    }:
+        scopes.add(McpScope.DRAFT_EDIT)
+    if effective_role in {
+        Role.DESIGNER,
+        Role.OPERATOR,
+        Role.PUBLISHER,
+        Role.ADMINISTRATOR,
+    }:
+        scopes.add(McpScope.SIMULATION)
+    if effective_role in {Role.PUBLISHER, Role.ADMINISTRATOR}:
+        scopes.add(McpScope.PUBLISH_PREPARE)
+    if can_live_output and effective_role in {Role.OPERATOR, Role.ADMINISTRATOR}:
+        scopes.add(McpScope.LIVE_OPERATION)
+    return scopes
+
+
+def _mcp_token_response(
+    token: McpToken,
+    secret: str | None = None,
+) -> McpTokenResponse:
+    return McpTokenResponse(
+        id=token.id,
+        client_id=token.client_id,
+        username=token.username,
+        project_id=token.project_id,
+        scopes=tuple(scope.value for scope in token.scopes),
+        expires_at=token.expires_at,
+        revoked_at=token.revoked_at,
+        created_at=token.created_at,
+        token=secret,
+    )
+
+
+def _mcp_proposal_response(proposal: McpProposal) -> McpProposalResponse:
+    return McpProposalResponse(
+        id=proposal.id,
+        project_id=proposal.project_id,
+        base_revision=proposal.base_revision,
+        title=proposal.title,
+        kind=proposal.kind,
+        changed_paths=proposal.changed_paths,
+        state=proposal.state.value,
+        client_id=proposal.client_id,
+        username=proposal.username,
+        validation=proposal.validation,
+        simulation=proposal.simulation,
+        approved_by=proposal.approved_by,
+        disposition_reason=proposal.disposition_reason,
+        created_at=proposal.created_at,
+        updated_at=proposal.updated_at,
+    )
+
+
+def _require_project_proposal(
+    services: GuiServices,
+    project_id: str,
+    proposal_id: str,
+) -> McpProposal:
+    try:
+        proposal = services.mcp_store.require_proposal(proposal_id)
+    except McpAuthoringError as error:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "mcp_proposal_not_found"},
+        ) from error
+    if proposal.project_id != project_id:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "mcp_proposal_not_found"},
+        )
+    return proposal
+
+
+def _audit_mcp_proposal(
+    services: GuiServices,
+    identity: AuthenticatedSession,
+    proposal: McpProposal,
+    action: str,
+) -> None:
+    services.repository.append_audit(
+        actor=identity.username,
+        action=f"mcp.proposal.{action}",
+        target=proposal.id,
+        result=proposal.state.value,
+        occurred_at=_now_iso(),
+        authorization_context={
+            "project_id": proposal.project_id,
+            "base_revision": proposal.base_revision,
+            "client_id": proposal.client_id,
+            "model_username": proposal.username,
+        },
+    )
