@@ -68,8 +68,11 @@ export interface ReviewLink {
 export type McpScope =
   | "read"
   | "draft_edit"
+  | "direct_edit"
   | "simulation"
   | "publish_prepare"
+  | "publish"
+  | "activate"
   | "live_operation";
 
 export interface McpToken {

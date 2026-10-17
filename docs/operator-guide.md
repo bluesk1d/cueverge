@@ -256,6 +256,36 @@ actual render/playback output. Package-relative media used outside the managed
 artifact workflow must also exist beneath the media agent's private asset
 root; importing a project JSON file does not copy those files.
 
+### 4. Optionally author through chat
+
+Open the project's **MCP-assisted authoring** workspace and create a named
+client token. Copy the secret once and connect the chat client to `/mcp/` on
+the controller's HTTPS origin using bearer authentication. Keep the token
+private; it is bound to your user and this project.
+
+Choose only the permissions the client needs:
+
+- **Create isolated draft proposals** keeps the existing human
+  validation/approval/merge workflow.
+- **Edit working drafts directly** lets chat save changes immediately as a new
+  revision, without a proposal or GUI confirmation. The client should read the
+  draft and revision first, then save the complete edited draft against that
+  revision. Conflicts require rereading and reconciling, not overwriting.
+- **Approve releases, publish, and stage packages** allows the client to approve
+  release metadata and publish/stage a validated revision.
+- **Activate staged packages** is separate and can affect physical output.
+  It requires publisher access plus a live-output grant, or global administrator
+  access. Keep it disabled unless the client is trusted to deploy output.
+
+The new permissions are unchecked by default; existing tokens do not gain them.
+Direct edits do not implicitly publish or activate. Publishing and activation
+still follow the checks and handover boundary in
+[Publishing and handing over](#publishing-and-handing-over): artifact activation
+does not replace the running controller scene catalog or start a scene.
+The proposal path remains available, although direct edits can make pending
+proposals stale. See [MCP-assisted authoring](operations.md#mcp-assisted-authoring)
+for exact tool names, scopes, and limits.
+
 ## Authoring scenes and timelines
 
 ### Start with a scene contract

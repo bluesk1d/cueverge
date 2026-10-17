@@ -17,7 +17,7 @@ from pydantic import JsonValue, ValidationError
 from cueverge.core.loader import load_show_package
 from cueverge.gui.compiler import CompilationError, DraftCompiler
 from cueverge.gui.contracts import DraftProject, Role
-from cueverge.gui.repository import GuiRepository, RevisionConflictError
+from cueverge.gui.repository import GuiRepository, RevisionConflictError, StoredRevision
 from cueverge.gui.simulation_scenarios import (
     SimulationScenarioService,
     StoredSimulationScenario,
@@ -35,9 +35,32 @@ MAX_ASSET_RESULTS = 100
 class McpScope(StrEnum):
     READ = "read"
     DRAFT_EDIT = "draft_edit"
+    DIRECT_EDIT = "direct_edit"
     SIMULATION = "simulation"
     PUBLISH_PREPARE = "publish_prepare"
+    PUBLISH = "publish"
+    ACTIVATE = "activate"
     LIVE_OPERATION = "live_operation"
+
+
+def allowed_mcp_scopes(
+    global_role: Role,
+    project_role: Role | None,
+    can_live_output: bool,
+) -> set[McpScope]:
+    effective_role = Role.ADMINISTRATOR if global_role is Role.ADMINISTRATOR else project_role
+    scopes = {McpScope.READ}
+    if effective_role in {Role.DESIGNER, Role.PUBLISHER, Role.ADMINISTRATOR}:
+        scopes.update({McpScope.DRAFT_EDIT, McpScope.DIRECT_EDIT})
+    if effective_role in {Role.DESIGNER, Role.OPERATOR, Role.PUBLISHER, Role.ADMINISTRATOR}:
+        scopes.add(McpScope.SIMULATION)
+    if effective_role in {Role.PUBLISHER, Role.ADMINISTRATOR}:
+        scopes.update({McpScope.PUBLISH_PREPARE, McpScope.PUBLISH})
+        if global_role is Role.ADMINISTRATOR or can_live_output:
+            scopes.add(McpScope.ACTIVATE)
+    if can_live_output and effective_role in {Role.OPERATOR, Role.ADMINISTRATOR}:
+        scopes.add(McpScope.LIVE_OPERATION)
+    return scopes
 
 
 class McpProposalState(StrEnum):
@@ -476,18 +499,9 @@ class McpAuthoringService:
         client_id: str,
         username: str,
     ) -> McpProposal:
-        current = self.repository.get_revision(project_id)
-        if current.revision != base_revision:
-            raise McpAuthoringError("base revision is not the current working revision")
-        try:
-            proposed_draft = DraftProject.model_validate(proposed_document)
-        except ValidationError as error:
-            raise McpAuthoringError(
-                f"proposed draft does not match the authoring schema: {error}"
-            ) from error
-        before = cast(dict[str, JsonValue], current.draft.model_dump(mode="json"))
-        after = cast(dict[str, JsonValue], proposed_draft.model_dump(mode="json"))
-        proposal_paths = changed_paths(before, after)
+        proposed_draft, proposal_paths = self._prepare_revision(
+            project_id, base_revision, proposed_document
+        )
         if not proposal_paths:
             raise McpAuthoringError("proposal does not change the working revision")
         return self.store.create_proposal(
@@ -500,6 +514,51 @@ class McpAuthoringService:
             client_id=client_id,
             username=username,
             occurred_at=_now_iso(),
+        )
+
+    def update_project_draft(
+        self,
+        *,
+        project_id: str,
+        base_revision: int,
+        proposed_document: dict[str, JsonValue],
+        username: str,
+        role: Role,
+    ) -> StoredRevision:
+        draft, paths = self._prepare_revision(project_id, base_revision, proposed_document)
+        if not paths:
+            raise McpAuthoringError("edit does not change the working revision")
+        try:
+            return self.repository.update_draft(
+                project_id=project_id,
+                expected_revision=base_revision,
+                draft=draft,
+                actor=username,
+                role=role,
+                occurred_at=_now_iso(),
+            )
+        except RevisionConflictError as error:
+            raise McpAuthoringError(
+                "working revision changed during editing; read the latest draft before retrying"
+            ) from error
+
+    def _prepare_revision(
+        self,
+        project_id: str,
+        base_revision: int,
+        proposed_document: dict[str, JsonValue],
+    ) -> tuple[DraftProject, tuple[str, ...]]:
+        current = self.repository.get_revision(project_id)
+        if current.revision != base_revision:
+            raise McpAuthoringError("base revision is not the current working revision")
+        try:
+            draft = DraftProject.model_validate(proposed_document)
+        except ValidationError as error:
+            raise McpAuthoringError(
+                f"proposed draft does not match the authoring schema: {error}"
+            ) from error
+        return draft, changed_paths(
+            current.draft.model_dump(mode="json"), draft.model_dump(mode="json")
         )
 
     def validate_proposal(self, proposal_id: str) -> McpProposal:

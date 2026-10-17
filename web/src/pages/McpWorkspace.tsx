@@ -16,16 +16,23 @@ import {
 
 const optionalScopes: { value: McpScope; label: string }[] = [
   { value: "draft_edit", label: "Create isolated draft proposals" },
+  { value: "direct_edit", label: "Edit working drafts directly (no proposal approval)" },
   { value: "simulation", label: "Run no-hardware simulations" },
   { value: "publish_prepare", label: "Read publication readiness" },
+  { value: "publish", label: "Approve releases, publish, and stage packages" },
+  { value: "activate", label: "Activate staged packages (live output)" },
 ];
 
 export function McpWorkspace({
   projectId,
   canDesign,
+  canPublish,
+  canActivate,
 }: {
   projectId: string;
   canDesign: boolean;
+  canPublish: boolean;
+  canActivate: boolean;
 }) {
   const [tokens, setTokens] = useState<McpToken[]>([]);
   const [proposals, setProposals] = useState<McpProposal[]>([]);
@@ -35,6 +42,22 @@ export function McpWorkspace({
   const [reason, setReason] = useState("Reviewed in the Cueverge GUI");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const scopePermissions: Partial<Record<McpScope, boolean>> = {
+    direct_edit: canDesign,
+    publish: canPublish,
+    activate: canActivate,
+  };
+
+  useEffect(() => {
+    setScopes((current) =>
+      current.filter(
+        (scope) =>
+          (scope !== "direct_edit" || canDesign) &&
+          (scope !== "publish" || canPublish) &&
+          (scope !== "activate" || canActivate),
+      ),
+    );
+  }, [canDesign, canPublish, canActivate]);
 
   const load = useCallback(async () => {
     const [nextTokens, nextProposals] = await Promise.all([
@@ -73,8 +96,9 @@ export function McpWorkspace({
       <summary>MCP-assisted authoring</summary>
       <p>
         Connect clients to <code>/mcp/</code>. Tokens are bound to this project.
-        Assistants can create isolated proposals, but only a human reviewer can
-        approve and merge them.
+        Proposal tokens require human approval and merge. Separately granted
+        direct-edit tokens can change working drafts immediately. Publishing and
+        live package activation each require their own scope.
       </p>
       {error && <p role="alert">{error}</p>}
       <div className="collaboration-grid">
@@ -129,6 +153,7 @@ export function McpWorkspace({
               <label key={scope.value}>
                 <input
                   checked={scopes.includes(scope.value)}
+                  disabled={scopePermissions[scope.value] === false}
                   type="checkbox"
                   onChange={(event) => toggleScope(scope.value, event.target.checked)}
                 />
@@ -136,6 +161,10 @@ export function McpWorkspace({
               </label>
             ))}
           </fieldset>
+          <p>
+            Direct editing, publishing, and activation bypass GUI review for those
+            actions. Grant these optional scopes only to trusted clients.
+          </p>
           <button
             disabled={busy || !clientId.trim()}
             onClick={() =>

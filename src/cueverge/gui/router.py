@@ -201,6 +201,7 @@ from cueverge.gui.mcp_authoring import (
     McpProposal,
     McpScope,
     McpToken,
+    allowed_mcp_scopes,
 )
 from cueverge.gui.output_arming import OutputArmError, StoredOutputArm
 from cueverge.gui.passwords import hash_password
@@ -889,7 +890,7 @@ def create_gui_router(services: GuiServices) -> APIRouter:
             project_id,
             identity.username,
         )
-        allowed_scopes = _allowed_mcp_scopes(
+        allowed_scopes = allowed_mcp_scopes(
             identity.role,
             membership.role if membership is not None else None,
             membership.can_live_output if membership is not None else True,
@@ -5398,37 +5399,6 @@ def _etag(revision: int) -> str:
 
 def _now_iso() -> str:
     return datetime.now(UTC).isoformat()
-
-
-def _allowed_mcp_scopes(
-    global_role: Role,
-    project_role: Role | None,
-    can_live_output: bool,
-) -> set[McpScope]:
-    effective_role = (
-        Role.ADMINISTRATOR
-        if global_role is Role.ADMINISTRATOR
-        else project_role
-    )
-    scopes = {McpScope.READ}
-    if effective_role in {
-        Role.DESIGNER,
-        Role.PUBLISHER,
-        Role.ADMINISTRATOR,
-    }:
-        scopes.add(McpScope.DRAFT_EDIT)
-    if effective_role in {
-        Role.DESIGNER,
-        Role.OPERATOR,
-        Role.PUBLISHER,
-        Role.ADMINISTRATOR,
-    }:
-        scopes.add(McpScope.SIMULATION)
-    if effective_role in {Role.PUBLISHER, Role.ADMINISTRATOR}:
-        scopes.add(McpScope.PUBLISH_PREPARE)
-    if can_live_output and effective_role in {Role.OPERATOR, Role.ADMINISTRATOR}:
-        scopes.add(McpScope.LIVE_OPERATION)
-    return scopes
 
 
 def _mcp_token_response(

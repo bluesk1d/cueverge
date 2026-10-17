@@ -534,8 +534,10 @@ function ProjectCard({
   );
   const canAuthor = ["designer", "publisher", "administrator"].includes(projectRole);
   const canPublish = ["publisher", "administrator"].includes(projectRole);
-  const updatePermissions = useCallback((role: Role) => {
+  const [canLiveOutput, setCanLiveOutput] = useState(session.role === "administrator");
+  const updatePermissions = useCallback((role: Role, liveOutput: boolean) => {
     setProjectRole(role);
+    setCanLiveOutput(liveOutput);
   }, []);
 
   const loadAssets = useCallback(async () => {
@@ -806,7 +808,12 @@ function ProjectCard({
             />
           </Suspense>
           <Suspense fallback={<p>Loading MCP authoring workspace…</p>}>
-            <McpWorkspace projectId={project.id} canDesign={canAuthor} />
+            <McpWorkspace
+              projectId={project.id}
+              canDesign={canAuthor}
+              canPublish={canPublish}
+              canActivate={canPublish && canLiveOutput}
+            />
           </Suspense>
           <ScenePresetOrganizer
             canEdit={canAuthor && !project.archived_at}

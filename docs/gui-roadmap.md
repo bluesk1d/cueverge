@@ -959,10 +959,13 @@ underlying GUI APIs and transaction model are stable.
 
 GUI-11 is complete at 13/13. Cueverge serves authenticated, stateless MCP over
 Streamable HTTP with project-bound, hashed, expiring tokens and independently
-enforced read, proposal, simulation, publish-preparation, and reserved live
-scopes. Bounded read and proposal tools operate only on authoritative project
-models; there is no filesystem, arbitrary network, browser-internal, device
-enrollment, publication, activation, or model-driven approval tool. Candidate
+enforced read, proposal, direct-edit, simulation, publish-preparation, publish,
+activate, and reserved live scopes. Direct-edit, publication, and activation
+are separately opted in and checked against current GUI-equivalent permissions;
+legacy tokens gain no permissions. Bounded tools operate only on authoritative
+project models; there is no unrestricted filesystem, arbitrary network,
+browser-internal, device-enrollment, access-administration, or scene-transport
+tool. Candidate
 drafts, changed JSON paths, diagnostics, and deterministic no-hardware
 simulations remain isolated until a CSRF-protected human review validates,
 approves, and merges them. Revision conflicts fail closed. Per-token request,
@@ -970,6 +973,11 @@ rate, concurrency, project asset, timeline, simulation, and active-proposal
 limits are enforced, and durable audit events attribute requests and final
 disposition to the user, MCP client, proposal, and human reviewer. The project
 workspace provides one-time token issuance/revocation and proposal review.
+Opt-in `direct_edit` creates a revision immediately with schema validation and
+optimistic concurrency rather than proposal merge. `publish` permits release
+approval, validated publication, and staging; `activate` additionally requires
+live-output authorization and permits staged artifact activation, not controller
+catalog replacement. Proposal approval remains a human-only GUI operation.
 
 ## Dependency order
 
@@ -1052,7 +1060,8 @@ to overlook:
 - Preflight, staging, rehearsal, immutable publication, and disaster recovery.
 - Role separation between designer, operator, and publisher.
 - Accessibility, keyboard-first editing, performance budgets, and observability.
-- A scoped proposal-and-approval MCP workflow rather than direct LLM control.
+- A scoped proposal-and-approval MCP workflow, with independent opt-in scopes
+  for direct draft editing, publication/staging, and artifact activation.
 
 ## Deliberately deferred
 

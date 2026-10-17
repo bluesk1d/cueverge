@@ -256,7 +256,7 @@ def test_mcp_rejected_and_stale_proposals_never_change_working_revision(
     assert [scene.id for scene in current.draft.scenes] == [template.id]
 
 
-def test_mcp_endpoint_requires_project_token_and_exposes_no_live_tools(
+def test_mcp_endpoint_requires_project_token_and_enforces_tool_scopes(
     tmp_path: Path,
 ) -> None:
     runtime = ControllerRuntime()
@@ -338,8 +338,16 @@ def test_mcp_endpoint_requires_project_token_and_exposes_no_live_tools(
         names = {tool["name"] for tool in tools.json()["result"]["tools"]}
         assert "get_project_structure" in names
         assert "propose_scene_outline" in names
+        assert {
+            "get_project_draft",
+            "update_project_draft",
+            "update_revision_release",
+            "publish_revision",
+            "stage_published_package",
+            "activate_published_package",
+        }.issubset(names)
         assert not names.intersection(
-            {"publish", "activate", "enroll_device", "approve_proposal"}
+            {"enroll_device", "approve_proposal", "start_scene", "stop_scene"}
         )
 
         project_structure = client.post(
@@ -449,6 +457,332 @@ def test_mcp_proposal_requires_browser_csrf_approval_before_merge(
     assert {"mcp.proposal.validate", "mcp.proposal.approve", "mcp.proposal.merge"}.issubset(
         {event.action for event in proposal_events}
     )
+
+
+@pytest.mark.parametrize(
+    ("global_role", "project_role", "live_output", "allowed"),
+    [
+        (Role.VIEWER, Role.VIEWER, False, set()),
+        (Role.VIEWER, Role.OPERATOR, True, set()),
+        (Role.VIEWER, Role.DESIGNER, False, {McpScope.DIRECT_EDIT}),
+        (
+            Role.VIEWER,
+            Role.PUBLISHER,
+            False,
+            {McpScope.DIRECT_EDIT, McpScope.PUBLISH},
+        ),
+        (
+            Role.VIEWER,
+            Role.PUBLISHER,
+            True,
+            {McpScope.DIRECT_EDIT, McpScope.PUBLISH, McpScope.ACTIVATE},
+        ),
+        (
+            Role.VIEWER,
+            Role.ADMINISTRATOR,
+            False,
+            {McpScope.DIRECT_EDIT, McpScope.PUBLISH},
+        ),
+        (
+            Role.ADMINISTRATOR,
+            None,
+            False,
+            {McpScope.DIRECT_EDIT, McpScope.PUBLISH, McpScope.ACTIVATE},
+        ),
+    ],
+)
+def test_mcp_privileged_scope_issuance_matches_current_project_permissions(
+    tmp_path: Path,
+    global_role: Role,
+    project_role: Role | None,
+    live_output: bool,
+    allowed: set[McpScope],
+) -> None:
+    runtime, services, project_id = _mcp_fixture(tmp_path)
+    services.collaboration.upsert_user(
+        "member", PASSWORD_HASH, global_role, False, datetime.now(UTC).isoformat()
+    )
+    if project_role is not None:
+        services.collaboration.put_membership(
+            project_id, "member", project_role, live_output, datetime.now(UTC).isoformat()
+        )
+    with TestClient(
+        create_app(runtime, gui_services=services), base_url="http://localhost"
+    ) as client:
+        login = client.post(
+            "/api/gui/v1/auth/login",
+            json={"username": "member", "password": PASSWORD},
+            headers={"Origin": ORIGIN},
+        )
+        assert login.status_code == 200
+        for scope in (McpScope.DIRECT_EDIT, McpScope.PUBLISH, McpScope.ACTIVATE):
+            created = client.post(
+                f"/api/gui/v1/projects/{project_id}/mcp-tokens",
+                json={
+                    "client_id": "permission-fixture",
+                    "scopes": ["read", scope.value],
+                    "expires_at": (datetime.now(UTC) + timedelta(days=1)).isoformat(),
+                },
+                headers=_mutation_headers(client),
+            )
+            if scope in allowed:
+                assert created.status_code == 201
+                assert set(created.json()["scopes"]) == {"read", scope.value}
+                authorized = _mcp_tool(client, created.json()["token"], "get_project_structure")
+                assert authorized["isError"] is False
+            else:
+                assert created.status_code == 403
+                assert created.json()["detail"]["code"] == "mcp_scope_not_permitted"
+
+
+def test_mcp_direct_edit_is_immediate_revisioned_and_schema_validated(tmp_path: Path) -> None:
+    runtime, services, project_id = _mcp_fixture(tmp_path)
+    direct_token = _mcp_token(services, project_id, (McpScope.READ, McpScope.DIRECT_EDIT))
+    proposal_token = _mcp_token(services, project_id, (McpScope.READ, McpScope.DRAFT_EDIT))
+    with TestClient(
+        create_app(runtime, gui_services=services), base_url="http://localhost"
+    ) as client:
+        read = _mcp_tool(client, proposal_token, "get_project_draft")
+        assert read["isError"] is False
+        draft = read["structuredContent"]["draft"]
+        assert read["structuredContent"]["revision"] == 1
+        draft["scenes"][0]["name"] = "Changed through chat"
+        draft["editor_metadata"]["chat_note"] = "No proposal required"
+
+        denied = _mcp_tool(
+            client, proposal_token, "update_project_draft", base_revision=1, draft=draft
+        )
+        assert denied["isError"] is True
+        assert "direct_edit" in denied["content"][0]["text"]
+        assert services.repository.get_revision(project_id).revision == 1
+
+        invalid = _mcp_tool(
+            client,
+            direct_token,
+            "update_project_draft",
+            base_revision=1,
+            draft={**draft, "schema_version": 999},
+        )
+        assert invalid["isError"] is True
+        assert services.repository.get_revision(project_id).revision == 1
+
+        updated = _mcp_tool(
+            client, direct_token, "update_project_draft", base_revision=1, draft=draft
+        )
+        assert updated["isError"] is False
+        result = updated["structuredContent"]
+        assert result["revision"] == 2
+        assert result["base_revision"] == 1
+        assert result["requires_human_approval"] is False
+        assert "/scenes/0/name" in result["changed_paths"]
+        assert services.repository.get_revision(project_id).draft.scenes[0].name == (
+            "Changed through chat"
+        )
+        assert services.repository.get_revision(project_id, 1).draft.scenes[0].name == "Ambient"
+        assert services.mcp_store.list_proposals(project_id) == ()
+        assert services.publication.list(project_id) == ()
+
+        unchanged = _mcp_tool(
+            client, direct_token, "update_project_draft", base_revision=2, draft=draft
+        )
+        assert unchanged["isError"] is True
+        stale = _mcp_tool(
+            client, direct_token, "update_project_draft", base_revision=1, draft=draft
+        )
+        assert stale["isError"] is True
+        assert "base revision" in stale["content"][0]["text"]
+        assert services.repository.get_revision(project_id).revision == 2
+        audit = [
+            item
+            for item in services.repository.list_audit_events()
+            if item.action == "mcp.draft.update"
+        ]
+        assert len(audit) == 1
+        assert audit[0].actor == "admin"
+        assert audit[0].authorization_context["mcp_client_id"] == "chat-fixture"
+        assert audit[0].authorization_context["created_revision"] == 2
+
+
+@pytest.mark.parametrize(
+    "scopes",
+    [
+        (McpScope.READ,),
+        (McpScope.READ, McpScope.DRAFT_EDIT),
+        (McpScope.READ, McpScope.SIMULATION, McpScope.PUBLISH_PREPARE, McpScope.LIVE_OPERATION),
+    ],
+)
+def test_mcp_existing_scopes_do_not_gain_direct_edit_or_deployment(
+    tmp_path: Path, scopes: tuple[McpScope, ...]
+) -> None:
+    runtime, services, project_id = _mcp_fixture(tmp_path)
+    token = _mcp_token(services, project_id, scopes)
+    calls = [
+        ("update_project_draft", {"base_revision": 1, "draft": _draft()}),
+        ("update_revision_release", {"revision": 1, "approval_state": "approved"}),
+        ("publish_revision", {"revision": 1}),
+        ("stage_published_package", {"package_id": "not-a-package"}),
+        ("activate_published_package", {"package_id": "not-a-package"}),
+    ]
+    with TestClient(
+        create_app(runtime, gui_services=services), base_url="http://localhost"
+    ) as client:
+        for name, arguments in calls:
+            denied = _mcp_tool(client, token, name, **arguments)
+            assert denied["isError"] is True
+            assert "MCP scope required" in denied["content"][0]["text"]
+    assert services.repository.get_revision(project_id).revision == 1
+    assert services.publication.release(project_id, 1).approval_state == "draft"
+    assert services.publication.list(project_id) == ()
+
+
+def test_mcp_publication_and_activation_preserve_validation_and_project_isolation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime, services, project_id = _mcp_fixture(tmp_path)
+    publisher = _mcp_token(services, project_id, (McpScope.READ, McpScope.PUBLISH))
+    activator = _mcp_token(services, project_id, (McpScope.READ, McpScope.ACTIVATE))
+    with TestClient(
+        create_app(runtime, gui_services=services), base_url="http://localhost"
+    ) as client:
+        unapproved = _mcp_tool(client, publisher, "publish_revision", revision=1)
+        assert unapproved["isError"] is True
+        assert "approved" in unapproved["content"][0]["text"]
+        approved = _mcp_tool(
+            client,
+            publisher,
+            "update_revision_release",
+            revision=1,
+            approval_state="approved",
+            name="Chat release",
+            summary="Explicit publisher approval",
+        )
+        assert approved["isError"] is False
+        assert approved["structuredContent"]["approved_by"] == "admin"
+        blocked = _mcp_tool(client, publisher, "publish_revision", revision=1)
+        assert blocked["isError"] is True
+        assert "publication validation failed" in blocked["content"][0]["text"]
+        assert services.publication.list(project_id) == ()
+
+        monkeypatch.setattr(
+            services.publication,
+            "validate",
+            lambda _project_id, _revision: (
+                PublicationDiagnostic("validation_complete", "info", "Fixture validation passed."),
+            ),
+        )
+        published = _mcp_tool(client, publisher, "publish_revision", revision=1)
+        assert published["isError"] is False
+        package_id = published["structuredContent"]["id"]
+        assert published["structuredContent"]["state"] == "published"
+        assert services.publication.get(package_id).manifest["revision_name"] == "Chat release"
+        not_staged = _mcp_tool(
+            client, activator, "activate_published_package", package_id=package_id
+        )
+        assert not_staged["isError"] is True
+        assert "staged" in not_staged["content"][0]["text"]
+        staged = _mcp_tool(client, publisher, "stage_published_package", package_id=package_id)
+        assert staged["isError"] is False
+        assert staged["structuredContent"]["state"] == "staged"
+
+        denied = _mcp_tool(client, publisher, "activate_published_package", package_id=package_id)
+        assert denied["isError"] is True
+        denied_publish = _mcp_tool(client, activator, "publish_revision", revision=1)
+        assert denied_publish["isError"] is True
+        simulated = _mcp_tool(
+            client,
+            activator,
+            "activate_published_package",
+            package_id=package_id,
+            simulation_mode=True,
+        )
+        assert simulated["isError"] is True
+        assert "simulation mode" in simulated["content"][0]["text"]
+        assert services.publication.get(package_id).state == "staged"
+        activated = _mcp_tool(
+            client, activator, "activate_published_package", package_id=package_id
+        )
+        assert activated["isError"] is False
+        assert activated["structuredContent"]["state"] == "active"
+
+        foreign = services.repository.create_project(
+            name="Other project",
+            draft=DraftProject.model_validate(_draft()),
+            actor="admin",
+            role=Role.ADMINISTRATOR,
+            occurred_at=datetime.now(UTC).isoformat(),
+        )
+        services.publication.update_release(
+            project_id=foreign.project.id,
+            revision=1,
+            name=None,
+            summary=None,
+            approval_state="approved",
+            actor="admin",
+            occurred_at=datetime.now(UTC).isoformat(),
+        )
+        foreign_package = services.publication.publish(
+            project_id=foreign.project.id,
+            revision=1,
+            actor="admin",
+            occurred_at=datetime.now(UTC).isoformat(),
+        )
+        for token, name in (
+            (publisher, "stage_published_package"),
+            (activator, "activate_published_package"),
+        ):
+            outside = _mcp_tool(client, token, name, package_id=foreign_package.id)
+            assert outside["isError"] is True
+            assert "outside the token project" in outside["content"][0]["text"]
+        assert services.publication.get(foreign_package.id).state == "published"
+        assert {
+            "mcp.revision.release.update",
+            "mcp.package.publish",
+            "mcp.package.stage",
+            "mcp.package.activate",
+        }.issubset({item.action for item in services.repository.list_audit_events()})
+
+
+@pytest.mark.parametrize("change", ["disabled", "project_role", "live_output", "revoked"])
+def test_mcp_new_privileges_are_rechecked_for_every_request(tmp_path: Path, change: str) -> None:
+    runtime, services, project_id = _mcp_fixture(tmp_path)
+    now = datetime.now(UTC).isoformat()
+    services.collaboration.upsert_user("member", PASSWORD_HASH, Role.VIEWER, False, now)
+    services.collaboration.put_membership(project_id, "member", Role.PUBLISHER, True, now)
+    token = _mcp_token(
+        services,
+        project_id,
+        (McpScope.READ, McpScope.DIRECT_EDIT, McpScope.PUBLISH, McpScope.ACTIVATE),
+        username="member",
+    )
+    with TestClient(
+        create_app(runtime, gui_services=services), base_url="http://localhost"
+    ) as client:
+        assert _mcp_tool(client, token, "get_project_draft")["isError"] is False
+        if change == "disabled":
+            services.collaboration.upsert_user("member", PASSWORD_HASH, Role.VIEWER, True, now)
+        elif change == "project_role":
+            services.collaboration.put_membership(project_id, "member", Role.DESIGNER, True, now)
+        elif change == "live_output":
+            services.collaboration.put_membership(project_id, "member", Role.PUBLISHER, False, now)
+        else:
+            record = services.mcp_store.verify_token(token, now)
+            assert record is not None
+            services.mcp_store.revoke_token(record.id, now)
+        denied = client.post(
+            "/mcp/",
+            json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {"name": "get_project_draft", "arguments": {}},
+            },
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Accept": "application/json, text/event-stream",
+            },
+        )
+        assert denied.status_code == 401
+        assert services.repository.get_revision(project_id).revision == 1
 
 
 def test_data_root_backup_restores_projects_and_audit_history(tmp_path: Path) -> None:
@@ -3124,6 +3458,54 @@ class _FixtureEndpointDiscovery(EndpointDiscoveryService):
                 protocol=DiscoveryProtocolRange(minimum=2, maximum=2),
             ),
         )
+
+
+def _mcp_fixture(tmp_path: Path) -> tuple[ControllerRuntime, GuiServices, str]:
+    runtime = ControllerRuntime()
+    services = _services(tmp_path, runtime)
+    project = services.repository.create_project(
+        name="MCP direct authoring fixture",
+        draft=DraftProject.model_validate(_draft()),
+        actor="admin",
+        role=Role.ADMINISTRATOR,
+        occurred_at=datetime.now(UTC).isoformat(),
+    )
+    return runtime, services, project.project.id
+
+
+def _mcp_token(
+    services: GuiServices,
+    project_id: str,
+    scopes: tuple[McpScope, ...],
+    *,
+    username: str = "admin",
+) -> str:
+    return services.mcp_store.create_token(
+        client_id="chat-fixture",
+        username=username,
+        project_id=project_id,
+        scopes=scopes,
+        expires_at=(datetime.now(UTC) + timedelta(days=1)).isoformat(),
+        occurred_at=datetime.now(UTC).isoformat(),
+    ).token
+
+
+def _mcp_tool(client: TestClient, token: str, tool_name: str, **arguments: Any) -> dict[str, Any]:
+    response = client.post(
+        "/mcp/",
+        json={
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": tool_name, "arguments": arguments},
+        },
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/json, text/event-stream",
+        },
+    )
+    assert response.status_code == 200
+    return cast(dict[str, Any], response.json()["result"])
 
 
 def _services(

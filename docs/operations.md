@@ -43,10 +43,25 @@ one project and user, and limited to a maximum 90-day expiry. The safe default
 is the `read` scope. Additional independent scopes are:
 
 - `draft_edit`: create isolated proposals; never changes the working draft.
+- `direct_edit`: save a working draft immediately as a new revision, without a
+  proposal or human approval/merge. Requires designer, publisher, or administrator
+  project access.
 - `simulation`: run bounded deterministic simulations without hardware.
 - `publish_prepare`: inspect publication readiness and package status.
-- `live_operation`: reserved for separately authorized operation; no MCP tool
-  currently publishes, activates hardware, enrolls devices, or grants access.
+- `publish`: update release metadata/approval, publish a validated immutable
+  revision, and stage its artifacts. Requires publisher or administrator access.
+- `activate`: activate a staged package's artifacts. Requires publisher or
+  administrator project access **and** that project's live-output grant; global
+  administrators bypass those membership checks, as in the GUI.
+- `live_operation`: reserved; it does not grant direct editing, publishing,
+  activation, scene transport, device enrollment, or access administration.
+
+All optional scopes start unchecked. The three new write/deployment scopes are
+independent: `direct_edit` does not grant `publish` or `activate`, and `publish`
+does not grant `activate`. Existing tokens gain no new permissions. Issue a new
+token with the intended scopes, update the client, and revoke its old token.
+Grant these permissions only to trusted clients: direct edits and release
+approvals can happen through chat without a subsequent GUI confirmation.
 
 Current local-user status, project membership, role, and live-output grant are
 rechecked on every MCP request. Disabling a user, removing project membership,
@@ -57,13 +72,45 @@ have been disclosed.
 
 Model output, filenames, asset metadata, comments, and imported text remain
 untrusted data. MCP has no unrestricted filesystem, network, browser-internal,
-device-enrollment, publish, or activation tool. Proposals store a complete
-validated candidate draft, base revision, changed JSON paths, client/user
+device-enrollment, access-administration, or scene-transport tool. Proposals store a complete
+schema-validated candidate draft, base revision, changed JSON paths, client/user
 identity, diagnostics, and simulation result separately from the working
 revision. A human designer or administrator must validate, approve with a
 rationale, and merge through the cookie/CSRF-protected GUI API. Merge fails
 closed if the working revision changed after proposal creation. Failed and
 rejected proposals never affect the working revision or live show.
+
+### Direct editing and deployment through chat
+
+1. Use `get_project_draft` to read the complete working draft and revision,
+   and `get_authoring_schema` for its authoritative JSON Schema.
+2. With `direct_edit`, call `update_project_draft(base_revision, draft)` with the
+   **complete** edited draft. It uses the same schema and transactional revision
+   checks as GUI draft saves, creates a new immutable revision, and returns its
+   revision and changed paths. Invalid, unchanged, or stale edits are rejected.
+   On a conflict, reread and reconcile; do not blindly retry against a newer
+   revision. Draft saves do not themselves compile, publish, or affect live output.
+3. With `publish_prepare`, `publish`, or `activate`, inspect
+   `get_publication_status` for release metadata, validation, and package states.
+4. With `publish`, call `update_revision_release` for an explicit revision,
+   providing release metadata and `approval_state="approved"` when ready.
+   Then call `publish_revision(revision)`. Existing structural, semantic, asset,
+   capability, bake, and cache validation still applies; a scope cannot bypass it.
+5. With `publish`, call `stage_published_package(package_id)`. With the separate
+   `activate` scope, call `activate_published_package(package_id)` to activate
+   staged artifacts. Cross-project package IDs are rejected, and
+   `simulation_mode=true` refuses activation.
+
+Activation can change physical device output. Follow the same supervised
+physical-rehearsal and safety procedures as GUI activation. It does **not**
+replace the running controller scene catalog, start a scene, or restart the
+controller. Catalog handover still requires an administrator to update
+`CUEVERGE_SHOW_PACKAGE` and recreate/restart the controller.
+
+The proposal/validation/simulation/human-merge workflow remains available with
+`draft_edit`. A direct edit can make an outstanding proposal stale; that
+proposal must still pass its original human review and revision-conflict checks.
+Direct editing and release approval never implicitly approve or merge a proposal.
 
 The server enforces a 256 KiB request limit, 60 tool calls per token per minute,
 four concurrent calls per token, 20 active proposals per project, 100 returned
@@ -72,8 +119,10 @@ simulated time. Audit history records token creation/revocation, each requested
 tool with an argument digest (not raw potentially sensitive content), proposal
 diffs and validation, human approval/rejection, merge, and final disposition.
 During an incident, revoke the token, disable the owning account if necessary,
-review `mcp.tool.call` and `mcp.proposal.*` audit events, and inspect every
-non-final proposal before restoring access.
+review `mcp.tool.call`, `mcp.draft.update`, `mcp.revision.release.update`,
+`mcp.package.*`, and `mcp.proposal.*` audit events, and inspect edited revisions,
+release approvals, deployed packages, and every non-final proposal before
+restoring access.
 
 ## Operating modes
 

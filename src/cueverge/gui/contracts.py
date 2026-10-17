@@ -1030,8 +1030,11 @@ class PresenceResponse(GuiModel):
 McpScopeValue = Literal[
     "read",
     "draft_edit",
+    "direct_edit",
     "simulation",
     "publish_prepare",
+    "publish",
+    "activate",
     "live_operation",
 ]
 

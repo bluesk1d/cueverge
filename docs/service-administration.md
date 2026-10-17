@@ -512,15 +512,29 @@ Review links expose revision identity metadata only; they are not a full
 anonymous show preview. GUI-created links expire after seven days.
 
 MCP tokens are project/user bound, shown once, stored as digests, and expire
-within 90 days. Start with `read` scope. Draft proposals, simulation, and
-publication preparation have independent scopes. No current MCP tool
-publishes, activates hardware, enrolls devices, or grants access, including
-when a `live_operation` token scope is present.
+within 90 days. Start with `read` scope. Draft proposals (`draft_edit`),
+direct draft saves (`direct_edit`), simulation, publication preparation,
+publication/staging (`publish`), and live package activation (`activate`) have
+independent scopes. The new scopes are unchecked by default and existing tokens
+receive no additional permissions. Direct editing requires authoring access;
+publication requires publisher access; activation additionally requires a
+project live-output grant. Global administrators retain the GUI's membership
+bypass. User status, current roles, grants, expiry, and revocation are enforced
+on subsequent requests through a shared scope policy.
 
 Humans validate, approve with a rationale, and merge proposals in the GUI.
-Merging fails if the working revision has changed. Revoke compromised tokens,
-review `mcp.tool.call` and `mcp.proposal.*` audit entries, and inspect pending
-proposals. See [MCP-assisted authoring](operations.md#mcp-assisted-authoring)
+Merging fails if the working revision has changed. Separately scoped direct
+edits save a new revision without proposal approval. Publication tokens can
+approve release metadata in chat; package validation, staging prerequisites,
+and simulation-mode activation restrictions are not bypassed. MCP activation
+deploys media artifacts, not the running controller scene catalog, and no MCP
+tool starts scenes, enrolls devices, or grants access. `live_operation` remains
+reserved and does not imply any of the new scopes.
+
+Revoke compromised tokens, review `mcp.tool.call`, `mcp.draft.update`,
+`mcp.revision.release.update`, `mcp.package.*`, and `mcp.proposal.*` audit entries,
+and inspect affected revisions, deployments, and pending proposals.
+See [MCP-assisted authoring](operations.md#mcp-assisted-authoring)
 for scopes, limits, and the incident procedure.
 
 ## Monitoring and routine maintenance
