@@ -34,6 +34,10 @@ Cueverge uses that origin for the MCP resource URL and restricts MCP Host and
 Origin headers to configured/local controller hosts.
 
 Create client tokens from a project's **MCP-assisted authoring** workspace.
+Token creation/revocation and human proposal-review actions are authenticated
+GUI mutations and must include the session's `X-CSRF-Token` header. A
+`csrf_failed` 403 is not an MCP bearer-token or device-certificate failure;
+keep CSRF protection enabled and check the browser request/session.
 The token secret is displayed once, stored only as a SHA-256 digest, bound to
 one project and user, and limited to a maximum 90-day expiry. The safe default
 is the `read` scope. Additional independent scopes are:

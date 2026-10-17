@@ -274,14 +274,22 @@ def test_mcp_endpoint_requires_project_token_and_exposes_no_live_tools(
         assert created_project.status_code == 201
         project_id = created_project.json()["project"]["id"]
         expiry = (datetime.now(UTC) + timedelta(days=1)).isoformat()
+        token_body = {
+            "client_id": "protocol-client",
+            "scopes": ["read"],
+            "expires_at": expiry,
+        }
+        without_csrf = client.post(
+            f"/api/gui/v1/projects/{project_id}/mcp-tokens",
+            json=token_body,
+            headers={"Origin": ORIGIN},
+        )
+        assert without_csrf.status_code == 403
+        assert without_csrf.json()["detail"]["code"] == "csrf_failed"
 
         created_token = client.post(
             f"/api/gui/v1/projects/{project_id}/mcp-tokens",
-            json={
-                "client_id": "protocol-client",
-                "scopes": ["read"],
-                "expires_at": expiry,
-            },
+            json=token_body,
             headers=_mutation_headers(client),
         )
         assert created_token.status_code == 201

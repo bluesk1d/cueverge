@@ -2299,6 +2299,7 @@ export async function createMcpToken(
     `/api/gui/v1/projects/${encodeURIComponent(projectId)}/mcp-tokens`,
     {
       method: "POST",
+      headers: mutationHeaders(),
       body: JSON.stringify({
         client_id: clientId,
         scopes,
@@ -2314,7 +2315,7 @@ export async function revokeMcpToken(
 ): Promise<void> {
   await request<void>(
     `/api/gui/v1/projects/${encodeURIComponent(projectId)}/mcp-tokens/${encodeURIComponent(tokenId)}`,
-    { method: "DELETE" },
+    { method: "DELETE", headers: mutationHeaders() },
   );
 }
 
@@ -2336,6 +2337,7 @@ async function transitionMcpProposal(
     `/api/gui/v1/projects/${encodeURIComponent(projectId)}/mcp-proposals/${encodeURIComponent(proposalId)}/${action}`,
     {
       method: "POST",
+      headers: mutationHeaders(),
       body:
         action === "approve" || action === "reject"
           ? JSON.stringify({ reason })

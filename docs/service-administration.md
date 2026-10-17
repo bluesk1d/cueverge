@@ -92,11 +92,96 @@ do not deploy old `/api/v1/...` integration examples.
 
 ### Using the published image on a NAS
 
+For Caddy reaching the NAS over its LAN address, use the standalone
+[NAS Compose file](../compose.nas.yaml). It pins the verified published image
+and maps:
+
+| NAS endpoint / volume | Container target | Purpose |
+| --- | --- | --- |
+| `192.0.2.10:7000/tcp` | `8000/tcp` | HTTP upstream for Caddy; GUI, API, and `/mcp/` |
+| `192.0.2.10:7443/tcp` | `7443/tcp` | Direct mTLS media-agent transport, when enabled |
+| NAS folder `/share/Container/mounts/cueverge` | `/var/lib/cueverge` | Database, originals/photos, derived artifacts, renders, packages, and device CA |
+
+Copy the Compose file and your private `.env.controller.local` to the NAS,
+authenticate Docker to GHCR as described below, then run:
+
+```bash
+docker compose --env-file .env.controller.local -f compose.nas.yaml config --quiet
+docker compose --env-file .env.controller.local -f compose.nas.yaml pull
+docker compose --env-file .env.controller.local -f compose.nas.yaml run \
+  --rm --no-deps --user 0:0 --entrypoint /bin/sh controller -ec '
+    mkdir -p /var/lib/cueverge/gui
+    chown cueverge:cueverge /var/lib/cueverge
+    chown -R cueverge:cueverge /var/lib/cueverge/gui
+  '
+docker compose --env-file .env.controller.local -f compose.nas.yaml up -d
+docker compose --env-file .env.controller.local -f compose.nas.yaml ps
+```
+
+Keep the password hash single-quoted in the environment file so its `$`
+characters are literal. Do not commit or share that file. The stack requires
+an administrator hash, enables secure cookies, and defaults to the HTTPS
+origin `https://controller.example.com`. The published image and application run as
+an unprivileged user. The one-time initialization command runs as root only
+to prepare the mounted application directory; it uses the image's account
+names rather than guessing a NAS UID/GID. It preserves existing files.
+Back up this NAS folder and do not delete or empty it when updating.
+
+A bind mount hides the directories and ownership prepared inside the image;
+unlike a fresh Docker-managed volume, it does not copy them into the host
+folder. If the controller repeatedly logs
+`GUI data root is unavailable or not writable: /var/lib/cueverge/gui`, stop
+the controller first, run the initialization command above, then start it
+again and inspect the logs:
+
+```bash
+docker compose --env-file .env.controller.local -f compose.nas.yaml stop controller
+# Run the one-time initialization command above while the controller is stopped.
+docker compose --env-file .env.controller.local -f compose.nas.yaml up -d controller
+docker compose --env-file .env.controller.local -f compose.nas.yaml logs --tail=100 controller
+```
+
+Do not run the ordinary controller as root or use world-writable permissions
+as a workaround. If the NAS rejects `chown` or access still fails, inspect
+the shared folder's ACL and filesystem permissions; a read-only mount or
+NAS-enforced ACL cannot be corrected by an application setting.
+
+Caddy's upstream for this deployment is:
+
+```caddyfile
+controller.example.com {
+    reverse_proxy 192.0.2.10:7000
+}
+```
+
+Caddy must be able to reach that NAS address from its container. Preserve the
+public request Host; Caddy does this by default for this HTTP upstream. Do not
+forward port 7000 from the internet or use its LAN HTTP address as the browser
+URL when secure cookies are enabled.
+
+The 7443 mapping is reserved but enrollment and its listener remain disabled
+by default. To enable devices, configure both enable flags, confirm verified
+TLS termination, and supply a private CA-key password as described under
+[device enrollment](#enrolling-and-maintaining-media-hosts). Devices connect
+directly to `wss://192.0.2.10:7443/api/device/v2/agent/ws`; do not put an
+ordinary TLS-terminating Caddy HTTP proxy in front of this mTLS listener.
+If device operation is not needed, the 7443 port mapping can be removed.
+
+No controller-side mpv, media-agent host directories, Docker socket, DDP
+inbound port, or MQTT broker port is needed for this GUI/MCP deployment.
+Private show mounts and hardware output/observation adapters remain separate
+opt-in configuration.
+
 Controller images are published manually by the
 [Publish controller image workflow](../.github/workflows/publish-image.yml).
 It checks AMD64 startup, native dependency preflight, frontend availability,
 and the MCP authentication boundary before pushing a multi-platform image for
 `linux/amd64` and `linux/arm64`.
+
+Both GitHub workflows use Node.js 24-based actions. GitHub-hosted runners
+support these actions; a self-hosted runner must be version 2.327.1 or newer.
+This is separate from the controller's frontend build, which uses Node.js 22
+in its build stage.
 
 The registry image is `ghcr.io/bluesk1d/cueverge:latest`. Each publication also
 has a `sha-<full-git-commit>` tag, and the workflow summary records the exact
