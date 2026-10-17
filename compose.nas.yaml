@@ -2,7 +2,7 @@ name: cueverge
 
 services:
   controller:
-    image: ghcr.io/bluesk1d/cueverge@sha256:488907c17a5d109ced0131b85944c1b5b7addf8f45859ef51cd7555f54136e64
+    image: ghcr.io/bluesk1d/cueverge@sha256:f12593af86f0eb0b8d89d1645a86d42212e13a5a12c0947c1826cf66b727b2d1
     restart: unless-stopped
     init: true
     ports:
