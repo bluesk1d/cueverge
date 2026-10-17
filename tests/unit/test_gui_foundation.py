@@ -92,9 +92,7 @@ def test_observability_reports_api_storage_and_browser_errors(tmp_path: Path) ->
         "occurred_at": "2026-03-10T12:00:00+00:00",
     }
     assert any(
-        event.action == "browser.error"
-        and event.actor == "admin"
-        and event.target == "timeline"
+        event.action == "browser.error" and event.actor == "admin" and event.target == "timeline"
         for event in services.repository.list_audit_events()
     )
 
@@ -450,9 +448,7 @@ def test_mcp_proposal_requires_browser_csrf_approval_before_merge(
     assert merged.json()["state"] == "merged"
     assert services.repository.get_revision(project_id).revision == 2
     proposal_events = [
-        event
-        for event in services.repository.list_audit_events()
-        if event.target == proposal.id
+        event for event in services.repository.list_audit_events() if event.target == proposal.id
     ]
     assert {"mcp.proposal.validate", "mcp.proposal.approve", "mcp.proposal.merge"}.issubset(
         {event.action for event in proposal_events}
@@ -788,9 +784,7 @@ def test_mcp_new_privileges_are_rechecked_for_every_request(tmp_path: Path, chan
 def test_data_root_backup_restores_projects_and_audit_history(tmp_path: Path) -> None:
     source_root = tmp_path / "source"
     runtime = ControllerRuntime()
-    source_client = TestClient(
-        create_app(runtime, gui_services=_services(source_root, runtime))
-    )
+    source_client = TestClient(create_app(runtime, gui_services=_services(source_root, runtime)))
     _login(source_client)
     created = source_client.post(
         "/api/gui/v1/projects",
@@ -828,8 +822,7 @@ def test_compilation_meets_documented_maximum_scene_budget(
     draft_document = _draft()
     template = draft_document["scenes"][0]
     draft_document["scenes"] = [
-        {**template, "id": f"scene-{index:03}", "name": f"Scene {index:03}"}
-        for index in range(250)
+        {**template, "id": f"scene-{index:03}", "name": f"Scene {index:03}"} for index in range(250)
     ]
     draft = DraftProject.model_validate(draft_document)
 
@@ -924,8 +917,7 @@ def test_hundred_step_simulation_meets_documented_budget(tmp_path: Path) -> None
 
     started = time.perf_counter()
     result = client.post(
-        f"/api/gui/v1/projects/{project_id}/simulation-scenarios/"
-        f"{scenario.json()['id']}/run",
+        f"/api/gui/v1/projects/{project_id}/simulation-scenarios/{scenario.json()['id']}/run",
         headers=_mutation_headers(client),
     )
 
@@ -979,9 +971,7 @@ def test_local_accounts_project_roles_collaboration_and_live_output(
         headers={"Origin": ORIGIN},
     )
     assert reviewer_login.status_code == 200
-    assert [item["id"] for item in reviewer.get("/api/gui/v1/projects").json()] == [
-        project_id
-    ]
+    assert [item["id"] for item in reviewer.get("/api/gui/v1/projects").json()] == [project_id]
     comment = reviewer.post(
         f"/api/gui/v1/projects/{project_id}/comments",
         json={"revision": 1, "object_id": "ambient", "body": "Raise the contrast."},
@@ -1038,9 +1028,10 @@ def test_local_accounts_project_roles_collaboration_and_live_output(
         ).status_code
         == 204
     )
-    assert reviewer.get(f"/api/gui/v1/projects/{project_id}/presence").json()[0][
-        "location"
-    ] == "timeline:ambient"
+    assert (
+        reviewer.get(f"/api/gui/v1/projects/{project_id}/presence").json()[0]["location"]
+        == "timeline:ambient"
+    )
 
     operator = TestClient(create_app(runtime, gui_services=services))
     assert (
@@ -2833,9 +2824,7 @@ def test_publication_requires_approval_and_writes_reproducible_manifest(
     assert manifest["revision_name"] == "Opening night"
     assert manifest["package_digest_sha256"] == package.digest_sha256
 
-    staged = asyncio.run(
-        services.publication.stage(package.id, "2026-10-16T12:04:00Z")
-    )
+    staged = asyncio.run(services.publication.stage(package.id, "2026-10-16T12:04:00Z"))
     assert staged.state == "staged"
     with pytest.raises(PublicationError, match="simulation mode"):
         asyncio.run(

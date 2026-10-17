@@ -46,20 +46,16 @@ class GuiObservability:
         p95_index = max(0, min(request_count - 1, int(request_count * 0.95) - 1))
         latency = ApiLatencySnapshot(
             request_count=request_count,
-            error_count=sum(
-                count for status, count in statuses.items() if status >= 400
-            ),
+            error_count=sum(count for status, count in statuses.items() if status >= 400),
             mean_ms=round(sum(latencies) / request_count, 2) if request_count else 0,
             p95_ms=round(latencies[p95_index], 2) if request_count else 0,
             maximum_ms=round(latencies[-1], 2) if request_count else 0,
         )
         render_states = Counter(
-            str(row["state"])
-            for row in self._query("SELECT state FROM render_jobs")
+            str(row["state"]) for row in self._query("SELECT state FROM render_jobs")
         )
         asset_states = Counter(
-            str(row["status"])
-            for row in self._query("SELECT status FROM assets")
+            str(row["status"]) for row in self._query("SELECT status FROM assets")
         )
         publication_states = Counter(
             str(row["state"])
@@ -71,9 +67,7 @@ class GuiObservability:
         simulation_runs = sum(event.action == "simulation_scenario.run" for event in audits)
         return {
             "api_latency": latency.__dict__,
-            "http_status_counts": {
-                str(status): count for status, count in statuses.items()
-            },
+            "http_status_counts": {str(status): count for status, count in statuses.items()},
             "background_jobs": dict(render_states),
             "asset_states": dict(asset_states),
             "websocket_health": {

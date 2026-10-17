@@ -76,16 +76,10 @@ def _validate_autonomous_show(draft: DraftProject) -> None:
     scene_ids = {scene.id for scene in draft.scenes}
     if draft.program is not None:
         referenced = {draft.program.initial_scene_id}
-        referenced.update(
-            entry.scene_id
-            for pool in draft.program.pools
-            for entry in pool.scenes
-        )
+        referenced.update(entry.scene_id for pool in draft.program.pools for entry in pool.scenes)
         missing = referenced.difference(scene_ids)
         if missing:
-            raise ValueError(
-                f"show program references unknown scenes: {sorted(missing)}"
-            )
+            raise ValueError(f"show program references unknown scenes: {sorted(missing)}")
     if draft.opportunities is not None:
         missing = {
             opportunity.scene_id
@@ -105,9 +99,7 @@ def _validate_autonomous_show(draft: DraftProject) -> None:
         )
         missing = referenced.difference(scene_ids)
         if missing:
-            raise ValueError(
-                f"encounter references unknown scenes: {sorted(missing)}"
-            )
+            raise ValueError(f"encounter references unknown scenes: {sorted(missing)}")
 
 
 def _validate_composition_graph(
@@ -1451,9 +1443,7 @@ class SimulationStepRequest(GuiModel):
             "output_failure": (self.resource, "resource"),
         }
         if self.kind in required and required[self.kind][0] is None:
-            raise ValueError(
-                f"{self.kind} simulation step requires {required[self.kind][1]}"
-            )
+            raise ValueError(f"{self.kind} simulation step requires {required[self.kind][1]}")
         if self.kind == "output_failure" and self.failed is None:
             raise ValueError("output_failure simulation step requires failed")
         return self

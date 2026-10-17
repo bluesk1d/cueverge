@@ -307,20 +307,14 @@ def preview_stage_lighting_samples(
                 render_width - 1,
                 max(
                     0,
-                    round(
-                        (_number(pixel.get("stage_x")) / logical_width)
-                        * (render_width - 1)
-                    ),
+                    round((_number(pixel.get("stage_x")) / logical_width) * (render_width - 1)),
                 ),
             )
             y = min(
                 render_height - 1,
                 max(
                     0,
-                    round(
-                        (_number(pixel.get("stage_y")) / logical_height)
-                        * (render_height - 1)
-                    ),
+                    round((_number(pixel.get("stage_y")) / logical_height) * (render_height - 1)),
                 ),
             )
             requested = frame[y, x, :3].astype(np.uint8)

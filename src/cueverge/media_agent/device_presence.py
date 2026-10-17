@@ -646,9 +646,7 @@ def _sha256_file(path: Path) -> str:
 
 def _validate_deployment_command(
     command: (
-        DeviceArtifactStageCommand
-        | DeviceArtifactActivateCommand
-        | DeviceArtifactCleanupCommand
+        DeviceArtifactStageCommand | DeviceArtifactActivateCommand | DeviceArtifactCleanupCommand
     ),
     session_id: UUID,
     welcome: DeviceWelcome,
@@ -681,9 +679,7 @@ def _update_cache_state(
             "supports_pinning": True,
             "supports_resumable_transfer": True,
             "pinned_digests": sorted(
-                set(protected_digests)
-                | {digest}
-                | ({active_digest} if active_digest else set())
+                set(protected_digests) | {digest} | ({active_digest} if active_digest else set())
             ),
             "transfers": [],
         }
@@ -750,9 +746,7 @@ def _ensure_cache_capacity(
         (
             path
             for path in asset_root.iterdir()
-            if path.is_file()
-            and len(path.name) == 64
-            and path.name not in protected
+            if path.is_file() and len(path.name) == 64 and path.name not in protected
         ),
         key=lambda path: (path.stat().st_mtime_ns, path.name),
     )

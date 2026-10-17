@@ -174,18 +174,16 @@ def _rasterize_triangle(
         np.arange(minimum_y, maximum_y + 1, dtype=np.float64) + 0.5,
     )
     first, second, third = destination
-    denominator = (second[1] - third[1]) * (first[0] - third[0]) + (
-        third[0] - second[0]
-    ) * (first[1] - third[1])
+    denominator = (second[1] - third[1]) * (first[0] - third[0]) + (third[0] - second[0]) * (
+        first[1] - third[1]
+    )
     if abs(float(denominator)) < 1e-12:
         raise ProjectorSimulationError("subdivided projector triangle is degenerate")
     first_weight = (
-        (second[1] - third[1]) * (x_grid - third[0])
-        + (third[0] - second[0]) * (y_grid - third[1])
+        (second[1] - third[1]) * (x_grid - third[0]) + (third[0] - second[0]) * (y_grid - third[1])
     ) / denominator
     second_weight = (
-        (third[1] - first[1]) * (x_grid - third[0])
-        + (first[0] - third[0]) * (y_grid - third[1])
+        (third[1] - first[1]) * (x_grid - third[0]) + (first[0] - third[0]) * (y_grid - third[1])
     ) / denominator
     third_weight = 1 - first_weight - second_weight
     inside = (first_weight >= -1e-9) & (second_weight >= -1e-9) & (third_weight >= -1e-9)
@@ -220,9 +218,7 @@ def _bilinear_sample(
     x_fraction = (x - left)[:, None]
     y_fraction = (y - top)[:, None]
     top_pixels = source[top, left] * (1 - x_fraction) + source[top, right] * x_fraction
-    bottom_pixels = (
-        source[bottom, left] * (1 - x_fraction) + source[bottom, right] * x_fraction
-    )
+    bottom_pixels = source[bottom, left] * (1 - x_fraction) + source[bottom, right] * x_fraction
     return cast(
         NDArray[np.uint8],
         np.clip(
@@ -271,16 +267,11 @@ def _multiply(
         tuple[tuple[float, float, float], ...],
         tuple(
             tuple(
-                float(
-                    sum(
-                        left[row][pivot] * right[pivot][column]
-                        for pivot in range(3)
-                    )
-                )
+                float(sum(left[row][pivot] * right[pivot][column] for pivot in range(3)))
                 for column in range(3)
             )
             for row in range(3)
-        )
+        ),
     )
 
 

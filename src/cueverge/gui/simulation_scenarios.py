@@ -114,9 +114,7 @@ class SimulationScenarioService:
                 elif kind == "operator_start":
                     await simulation.operator_start(_string(step.get("scene_id")))
                 elif kind == "request_scene":
-                    decisions.append(
-                        await simulation.request_scene(_string(step.get("scene_id")))
-                    )
+                    decisions.append(await simulation.request_scene(_string(step.get("scene_id"))))
                 elif kind == "disconnect":
                     simulation.disconnect_agent(_optional_string(step.get("agent_id")))
                 elif kind == "reconnect":
@@ -131,9 +129,7 @@ class SimulationScenarioService:
                         simulation.report_position()
                         simulation.runtime.render_frame()
                 else:
-                    raise SimulationScenarioError(
-                        f"unsupported simulation step kind: {kind}"
-                    )
+                    raise SimulationScenarioError(f"unsupported simulation step kind: {kind}")
             status = _deterministic_status(simulation.runtime.status())
             actual = cast(
                 dict[str, JsonValue],
@@ -142,8 +138,7 @@ class SimulationScenarioService:
                     "scene_history": list(simulation.scene_history),
                     "request_decisions": decisions,
                     "lighting_frame_counts": {
-                        resource: len(sink.frames)
-                        for resource, sink in simulation.sinks.items()
+                        resource: len(sink.frames) for resource, sink in simulation.sinks.items()
                     },
                     "lighting_frame_digests": {
                         resource: _frame_digest(sink.frames)
@@ -185,10 +180,7 @@ class SimulationScenarioService:
             project_id=_string(value.get("project_id")),
             name=_string(value.get("name")),
             source_revision=_integer(value.get("source_revision")),
-            steps=tuple(
-                cast(dict[str, JsonValue], step)
-                for step in steps
-            ),
+            steps=tuple(cast(dict[str, JsonValue], step) for step in steps),
             expected=cast(dict[str, JsonValue], expected),
             created_at=_string(value.get("created_at")),
             updated_at=_string(value.get("updated_at")),

@@ -86,13 +86,9 @@ def test_native_dependency_preflight_rejects_missing_declared_capability(
 ) -> None:
     repository_root = Path(__file__).parents[2]
     inventory = json.loads(
-        (repository_root / "deploy/controller-native-dependencies.json").read_text(
-            encoding="utf-8"
-        )
+        (repository_root / "deploy/controller-native-dependencies.json").read_text(encoding="utf-8")
     )
-    inventory["runtime"]["ffmpeg_capabilities"]["encoders"].append(
-        "cueverge_missing_encoder"
-    )
+    inventory["runtime"]["ffmpeg_capabilities"]["encoders"].append("cueverge_missing_encoder")
     invalid_inventory = tmp_path / "invalid-inventory.json"
     invalid_inventory.write_text(json.dumps(inventory), encoding="utf-8")
 
@@ -107,7 +103,4 @@ def test_native_dependency_preflight_rejects_missing_declared_capability(
         text=True,
     )
     assert completed.returncode == 1
-    assert (
-        "required FFmpeg encoder is unavailable: cueverge_missing_encoder"
-        in completed.stderr
-    )
+    assert "required FFmpeg encoder is unavailable: cueverge_missing_encoder" in completed.stderr

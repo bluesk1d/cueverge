@@ -365,9 +365,7 @@ class McpAuthoringStore:
             project_id=str(row["project_id"]),
             scopes=tuple(McpScope(value) for value in json.loads(row["scopes_json"])),
             expires_at=str(row["expires_at"]),
-            revoked_at=(
-                str(row["revoked_at"]) if row["revoked_at"] is not None else None
-            ),
+            revoked_at=(str(row["revoked_at"]) if row["revoked_at"] is not None else None),
             created_at=str(row["created_at"]),
         )
 
@@ -379,9 +377,7 @@ class McpAuthoringStore:
             base_revision=int(row["base_revision"]),
             title=str(row["title"]),
             kind=str(row["kind"]),
-            proposed_draft=DraftProject.model_validate(
-                json.loads(row["proposed_draft_json"])
-            ),
+            proposed_draft=DraftProject.model_validate(json.loads(row["proposed_draft_json"])),
             changed_paths=tuple(json.loads(row["changed_paths_json"])),
             state=McpProposalState(str(row["state"])),
             client_id=str(row["client_id"]),
@@ -392,13 +388,9 @@ class McpAuthoringStore:
                 if row["simulation_json"] is not None
                 else None
             ),
-            approved_by=(
-                str(row["approved_by"]) if row["approved_by"] is not None else None
-            ),
+            approved_by=(str(row["approved_by"]) if row["approved_by"] is not None else None),
             disposition_reason=(
-                str(row["disposition_reason"])
-                if row["disposition_reason"] is not None
-                else None
+                str(row["disposition_reason"]) if row["disposition_reason"] is not None else None
             ),
             created_at=str(row["created_at"]),
             updated_at=str(row["updated_at"]),
@@ -458,11 +450,7 @@ class McpAuthoringService:
         if any(scene.id == scene_id for scene in revision.draft.scenes):
             raise McpAuthoringError("scene ID already exists")
         template = next(
-            (
-                scene
-                for scene in revision.draft.scenes
-                if scene.id == template_scene_id
-            ),
+            (scene for scene in revision.draft.scenes if scene.id == template_scene_id),
             None,
         )
         if template is None:
@@ -698,9 +686,7 @@ class McpAuthoringService:
                 occurred_at=_now_iso(),
             )
         except RevisionConflictError as error:
-            raise McpAuthoringError(
-                "working revision changed after proposal creation"
-            ) from error
+            raise McpAuthoringError("working revision changed after proposal creation") from error
         return self.store.update_proposal(
             proposal_id,
             state=McpProposalState.MERGED,

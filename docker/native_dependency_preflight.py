@@ -23,9 +23,7 @@ def apt_packages(
         if not package["required"] and not include_optional:
             continue
         version = package.get("version")
-        packages.append(
-            f"{package['name']}={version}" if version is not None else package["name"]
-        )
+        packages.append(f"{package['name']}={version}" if version is not None else package["name"])
     return tuple(packages)
 
 

@@ -163,8 +163,7 @@ class StoredDeviceArtifact:
 
 
 ArtifactInventoryRow = (
-    tuple[str, int, bool]
-    | tuple[str, int, bool, bool, Literal["verified", "corrupt"], int]
+    tuple[str, int, bool] | tuple[str, int, bool, bool, Literal["verified", "corrupt"], int]
 )
 
 
@@ -812,8 +811,7 @@ class GuiRepository:
                 )
             if "state" not in artifact_columns:
                 connection.execute(
-                    "ALTER TABLE device_artifacts ADD COLUMN state TEXT NOT NULL "
-                    "DEFAULT 'verified'"
+                    "ALTER TABLE device_artifacts ADD COLUMN state TEXT NOT NULL DEFAULT 'verified'"
                 )
             if "last_used_unix_ms" not in artifact_columns:
                 connection.execute(

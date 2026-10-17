@@ -186,9 +186,7 @@ def test_agent_evicts_only_unprotected_lru_and_redownloads_corrupt_artifact(
     assert (asset_root / digest).read_bytes() == content
     assert (asset_root / rollback_digest).read_bytes() == rollback_content
     assert not (asset_root / evictable_digest).exists()
-    state = json.loads(
-        (asset_root / ".cueverge-cache-state.json").read_text(encoding="utf-8")
-    )
+    state = json.loads((asset_root / ".cueverge-cache-state.json").read_text(encoding="utf-8"))
     assert state["pinned_digests"] == sorted([digest, rollback_digest])
 
 
@@ -234,9 +232,12 @@ def test_agent_two_phase_activation_restores_previous_state_on_rollback(
             update={"phase": "commit", "request_id": uuid4()},
         )
     )
-    assert json.loads(
-        (asset_root / ".cueverge-activation.json").read_text(encoding="utf-8")
-    )["digest_sha256"] == digest
+    assert (
+        json.loads((asset_root / ".cueverge-activation.json").read_text(encoding="utf-8"))[
+            "digest_sha256"
+        ]
+        == digest
+    )
 
     client._activate_artifact(
         command.model_copy(
@@ -248,9 +249,7 @@ def test_agent_two_phase_activation_restores_previous_state_on_rollback(
         )
     )
     assert (
-        json.loads(
-            (asset_root / ".cueverge-activation.json").read_text(encoding="utf-8")
-        )
+        json.loads((asset_root / ".cueverge-activation.json").read_text(encoding="utf-8"))
         == previous_state
     )
 

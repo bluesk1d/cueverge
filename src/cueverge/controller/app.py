@@ -77,9 +77,7 @@ def create_app(
         try:
             async with AsyncExitStack() as stack:
                 if mcp_app is not None:
-                    await stack.enter_async_context(
-                        mcp_app.router.lifespan_context(mcp_app)
-                    )
+                    await stack.enter_async_context(mcp_app.router.lifespan_context(mcp_app))
                 yield
         finally:
             if asset_recovery is not None:
@@ -93,6 +91,7 @@ def create_app(
     app = FastAPI(title="Cueverge Controller", version="0.1.0", lifespan=lifespan)
     app.state.runtime = controller
     if configured_gui is not None:
+
         @app.middleware("http")
         async def observe_gui_api(
             request: Request,

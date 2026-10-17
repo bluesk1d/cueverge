@@ -145,9 +145,9 @@ class PublicationService:
 
     def diff(self, project_id: str, base_revision: int, candidate_revision: int) -> tuple[str, ...]:
         base = self.repository.get_revision(project_id, base_revision).draft.model_dump(mode="json")
-        candidate = self.repository.get_revision(
-            project_id, candidate_revision
-        ).draft.model_dump(mode="json")
+        candidate = self.repository.get_revision(project_id, candidate_revision).draft.model_dump(
+            mode="json"
+        )
         return tuple(_changed_paths(base, candidate))
 
     def validate(self, project_id: str, revision: int) -> tuple[PublicationDiagnostic, ...]:
@@ -298,16 +298,13 @@ class PublicationService:
                         "and artifact cache capabilities."
                     ),
                 )
-            elif artifact_ids and (
-                "h264" not in media.codecs or "mp4" not in media.containers
-            ):
+            elif artifact_ids and ("h264" not in media.codecs or "mp4" not in media.containers):
                 add(
                     "decoder_profile_incompatible",
                     f"Client {device.display_name} cannot decode the baked H.264/MP4 profile.",
                 )
             if cache is not None and (
-                not cache.supports_pinning
-                or not cache.supports_resumable_transfer
+                not cache.supports_pinning or not cache.supports_resumable_transfer
             ):
                 add(
                     "cache_safety_unsupported",
@@ -315,8 +312,7 @@ class PublicationService:
                 )
 
         statuses = {
-            status.device_id: status
-            for status in self.repository.list_device_artifact_statuses()
+            status.device_id: status for status in self.repository.list_device_artifact_statuses()
         }
         required_by_device: dict[str, dict[str, int]] = {}
         for artifact_id in artifact_ids:
@@ -337,9 +333,7 @@ class PublicationService:
                     and isinstance(digest, str)
                     and isinstance(size_bytes, int)
                 ):
-                    required_by_device.setdefault(assignment.device_id, {})[
-                        digest
-                    ] = size_bytes
+                    required_by_device.setdefault(assignment.device_id, {})[digest] = size_bytes
         for assignment in assignments.values():
             if assignment.resource not in installation_resources:
                 continue
@@ -440,9 +434,7 @@ class PublicationService:
                 "size_bytes": asset.size_bytes,
             }
             for asset in self.assets.list_assets(project_id)
-            if not asset.unused
-            and asset.digest_sha256 is not None
-            and asset.size_bytes is not None
+            if not asset.unused and asset.digest_sha256 is not None and asset.size_bytes is not None
         ]
         file_manifest = [
             {
@@ -468,9 +460,7 @@ class PublicationService:
             "assets": cast(list[JsonValue], asset_manifest),
             "render_artifact_ids": list(artifact_ids),
             "required_capabilities": ["artifact_cache", "media_playback"],
-            "validation": [
-                cast(JsonValue, item.__dict__) for item in diagnostics
-            ],
+            "validation": [cast(JsonValue, item.__dict__) for item in diagnostics],
         }
         digest = hashlib.sha256(
             json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode()
@@ -718,9 +708,7 @@ def _published(row: sqlite3.Row) -> PublishedPackage:
         created_at=str(row["created_at"]),
         staged_at=str(row["staged_at"]) if row["staged_at"] is not None else None,
         activated_at=str(row["activated_at"]) if row["activated_at"] is not None else None,
-        deactivated_at=(
-            str(row["deactivated_at"]) if row["deactivated_at"] is not None else None
-        ),
+        deactivated_at=(str(row["deactivated_at"]) if row["deactivated_at"] is not None else None),
     )
 
 

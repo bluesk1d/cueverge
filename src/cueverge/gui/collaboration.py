@@ -183,9 +183,7 @@ class CollaborationStore:
             raise RuntimeError("project membership write did not persist")
         return membership
 
-    def get_membership(
-        self, project_id: str, username: str
-    ) -> ProjectMembership | None:
+    def get_membership(self, project_id: str, username: str) -> ProjectMembership | None:
         with self._connect() as connection:
             row = connection.execute(
                 """
@@ -389,9 +387,7 @@ class CollaborationStore:
                 (project_id, username, location, occurred_at),
             )
 
-    def list_presence(
-        self, project_id: str, active_after: str
-    ) -> tuple[dict[str, object], ...]:
+    def list_presence(self, project_id: str, active_after: str) -> tuple[dict[str, object], ...]:
         with self._connect() as connection:
             rows = connection.execute(
                 """
@@ -422,9 +418,7 @@ class CollaborationStore:
         result.pop("token_hash", None)
         return result
 
-    def _list_records(
-        self, table: str, project_id: str
-    ) -> tuple[dict[str, object], ...]:
+    def _list_records(self, table: str, project_id: str) -> tuple[dict[str, object], ...]:
         if table not in {"project_comments", "project_change_requests"}:
             raise ValueError("unsupported collaboration table")
         with self._connect() as connection:

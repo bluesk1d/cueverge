@@ -620,9 +620,7 @@ def create_mcp_app(services: GuiServices) -> Starlette:
             "state": proposal.state.value,
             "validation": list(proposal.validation),
             "simulation_mismatches": (
-                proposal.simulation.get("mismatches", [])
-                if proposal.simulation is not None
-                else []
+                proposal.simulation.get("mismatches", []) if proposal.simulation is not None else []
             ),
             "next_action": (
                 "human approval required"

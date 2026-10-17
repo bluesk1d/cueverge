@@ -179,9 +179,7 @@ class ArtifactDeploymentService:
             artifact_id=artifact_id,
             resources=prepared.resources,
             staged_device_ids=(),
-            activated_device_ids=tuple(
-                sorted(item[0] for item in commit_requests)
-            ),
+            activated_device_ids=tuple(sorted(item[0] for item in commit_requests)),
         )
 
     async def _rollback_activation(

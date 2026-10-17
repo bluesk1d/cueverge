@@ -404,9 +404,7 @@ def create_gui_router(services: GuiServices) -> APIRouter:
     project_designer = Depends(
         require_project_roles(Role.DESIGNER, Role.PUBLISHER, Role.ADMINISTRATOR)
     )
-    project_publisher = Depends(
-        require_project_roles(Role.PUBLISHER, Role.ADMINISTRATOR)
-    )
+    project_publisher = Depends(require_project_roles(Role.PUBLISHER, Role.ADMINISTRATOR))
     project_administrator = Depends(require_project_roles(Role.ADMINISTRATOR))
 
     @router.post("/auth/login", response_model=SessionResponse)
@@ -650,8 +648,7 @@ def create_gui_router(services: GuiServices) -> APIRouter:
         identity: Annotated[AuthenticatedSession, project_designer],
     ) -> CommentResponse:
         if not any(
-            item["id"] == comment_id
-            for item in services.collaboration.list_comments(project_id)
+            item["id"] == comment_id for item in services.collaboration.list_comments(project_id)
         ):
             raise HTTPException(status_code=404, detail={"code": "comment_not_found"})
         occurred_at = _now_iso()
@@ -848,10 +845,7 @@ def create_gui_router(services: GuiServices) -> APIRouter:
         dependencies=[project_reader],
     )
     def list_mcp_tokens(project_id: str) -> list[McpTokenResponse]:
-        return [
-            _mcp_token_response(item)
-            for item in services.mcp_store.list_tokens(project_id)
-        ]
+        return [_mcp_token_response(item) for item in services.mcp_store.list_tokens(project_id)]
 
     @router.post(
         "/projects/{project_id}/mcp-tokens",
@@ -871,11 +865,7 @@ def create_gui_router(services: GuiServices) -> APIRouter:
                 detail={"code": "invalid_mcp_token_expiry"},
             ) from error
         now = datetime.now(UTC)
-        if (
-            expires_at.tzinfo is None
-            or expires_at <= now
-            or expires_at > now + timedelta(days=90)
-        ):
+        if expires_at.tzinfo is None or expires_at <= now or expires_at > now + timedelta(days=90):
             raise HTTPException(
                 status_code=422,
                 detail={"code": "invalid_mcp_token_expiry"},
@@ -958,8 +948,7 @@ def create_gui_router(services: GuiServices) -> APIRouter:
     )
     def list_mcp_proposals(project_id: str) -> list[McpProposalResponse]:
         return [
-            _mcp_proposal_response(item)
-            for item in services.mcp_store.list_proposals(project_id)
+            _mcp_proposal_response(item) for item in services.mcp_store.list_proposals(project_id)
         ]
 
     @router.get(
@@ -1948,9 +1937,7 @@ def create_gui_router(services: GuiServices) -> APIRouter:
         candidate_revision: int,
     ) -> RevisionDiffResponse:
         try:
-            changed = services.publication.diff(
-                project_id, base_revision, candidate_revision
-            )
+            changed = services.publication.diff(project_id, base_revision, candidate_revision)
         except ProjectNotFoundError as error:
             raise HTTPException(status_code=404, detail={"code": "revision_not_found"}) from error
         return RevisionDiffResponse(
@@ -1974,8 +1961,7 @@ def create_gui_router(services: GuiServices) -> APIRouter:
         except ProjectNotFoundError as error:
             raise HTTPException(status_code=404, detail={"code": "revision_not_found"}) from error
         responses = tuple(
-            PublicationDiagnosticResponse.model_validate(item.__dict__)
-            for item in diagnostics
+            PublicationDiagnosticResponse.model_validate(item.__dict__) for item in diagnostics
         )
         return PublicationValidationResponse(
             project_id=project_id,
@@ -2231,9 +2217,7 @@ def create_gui_router(services: GuiServices) -> APIRouter:
             revision = services.repository.get_revision(project_id)
             installation_id = revision.draft.editor_metadata.get("installation_id")
             if not isinstance(installation_id, str):
-                raise ProjectorRenderError(
-                    "stage lighting preview requires installation ID"
-                )
+                raise ProjectorRenderError("stage lighting preview requires installation ID")
             mapper_export = services.mapper_export.export(installation_id)
             assignments = {
                 assignment.resource: assignment
@@ -2400,8 +2384,7 @@ def create_gui_router(services: GuiServices) -> APIRouter:
                 name=body.name,
                 source_revision=revision.revision,
                 steps=tuple(
-                    cast(dict[str, JsonValue], step.model_dump(mode="json"))
-                    for step in body.steps
+                    cast(dict[str, JsonValue], step.model_dump(mode="json")) for step in body.steps
                 ),
                 expected=body.expected,
             )
@@ -3133,9 +3116,7 @@ def create_gui_router(services: GuiServices) -> APIRouter:
         try:
             mapping = services.projector_mapping.get(geometry_id)
             if mapping.content_asset_id is None:
-                raise ProjectorSimulationError(
-                    "projector mapping has no managed review content"
-                )
+                raise ProjectorSimulationError("projector mapping has no managed review content")
             photo_view = next(
                 (view for view in mapping.photo_views if view.photo_id == photo_id),
                 None,

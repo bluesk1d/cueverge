@@ -52,9 +52,7 @@ def evaluate_preview_state(
         try:
             asset = assets.get_asset(source_id)
         except AssetUploadError:
-            degraded_resources.append(
-                {"source_id": source_id, "reason": "asset_missing"}
-            )
+            degraded_resources.append({"source_id": source_id, "reason": "asset_missing"})
             continue
         if asset.status != "ready":
             degraded_resources.append(
@@ -122,8 +120,7 @@ def _scene_sources(scene: dict[str, object]) -> list[str]:
         {
             asset
             for record in records
-            if isinstance(record, dict)
-            and isinstance((asset := record.get("asset")), str)
+            if isinstance(record, dict) and isinstance((asset := record.get("asset")), str)
         }
     )
 
