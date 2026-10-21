@@ -1,5 +1,6 @@
 import hashlib
 import json
+import math
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import cast
@@ -23,9 +24,10 @@ from cueverge.gui.projector_renderer import (
     ProjectorRenderError,
     prepare_media_layers,
 )
-from cueverge.gui.render_encoder import EncoderProfile, encode_output_set
+from cueverge.gui.render_encoder import EncoderProfile, LightingMember, encode_output_set
 from cueverge.gui.stage_coverage import StageCoverage
 from cueverge.gui.sync_rehearsal import SyncAdmission
+from cueverge.lighting.sequence import MAX_SEQUENCE_BYTES
 
 
 @dataclass(frozen=True)
@@ -41,6 +43,7 @@ class PreparedStageOutput:
     source_checksums: dict[str, str]
     calibration_revisions: dict[str, int]
     media_end_behavior: str
+    lighting_members: tuple[LightingMember, ...]
 
 
 def prepare_stage_composition(
@@ -97,6 +100,13 @@ def prepare_stage_composition(
         (duration_ms * frame_rate_numerator + 1000 * frame_rate_denominator - 1)
         // (1000 * frame_rate_denominator),
     )
+    lighting_surfaces = selected_stage_lighting_surfaces(composition, mapper_export)
+    pixel_count = sum(len(_list(surface.get("pixels"))) for surface in lighting_surfaces)
+    if pixel_count:
+        if frame_rate_numerator > 60 * frame_rate_denominator:
+            raise ProjectorRenderError("mixed stage lighting supports at most 60 fps")
+        if pixel_count * frame_count * 3 > MAX_SEQUENCE_BYTES:
+            raise ProjectorRenderError("stage lighting exceeds the 256 MiB sequence budget")
     stage_frames = tuple(
         compose_visual_frame(
             stage_layers,
@@ -107,9 +117,17 @@ def prepare_stage_composition(
         )[0]
         for index in range(frame_count)
     )
+    lighting_members = _prepare_stage_lighting(
+        stage_frames,
+        lighting_surfaces,
+        logical_width,
+        logical_height,
+    )
     projectors = [_mapping(item) for item in _list(mapper_export.get("projectors"))]
-    if len(projectors) < 2:
-        raise ProjectorRenderError("stage render requires at least two projectors")
+    if not projectors or (len(projectors) < 2 and not lighting_members):
+        raise ProjectorRenderError(
+            "stage render requires two projectors or a projector with selected LED surfaces"
+        )
     projector_by_geometry = {
         _string(projector.get("geometry_id")): projector for projector in projectors
     }
@@ -238,6 +256,98 @@ def prepare_stage_composition(
         source_checksums=prepared.source_checksums,
         calibration_revisions=calibration_revisions,
         media_end_behavior=_string(settings.get("media_end_behavior")),
+        lighting_members=lighting_members,
+    )
+
+
+def selected_stage_lighting_surfaces(
+    composition: dict[str, object],
+    mapper_export: dict[str, object],
+) -> tuple[dict[str, object], ...]:
+    selected = composition.get("stage_lighting_surfaces", [])
+    if (
+        not isinstance(selected, list)
+        or not all(isinstance(item, str) and item for item in selected)
+        or len(selected) != len(set(selected))
+    ):
+        raise ProjectorRenderError("stage lighting selection must contain unique semantic IDs")
+    surfaces = {
+        _string(_mapping(raw).get("semantic_id")): _mapping(raw)
+        for raw in _list(mapper_export.get("lighting_surfaces"))
+    }
+    if set(selected).difference(surfaces):
+        raise ProjectorRenderError("selected stage lighting surface is not mapped")
+    return tuple(surfaces[str(semantic_id)] for semantic_id in selected)
+
+
+def _sample_stage_surface(
+    frame: np.ndarray,
+    surface: dict[str, object],
+    width: float,
+    height: float,
+) -> list[dict[str, object]]:
+    brightness = _number(surface.get("brightness_limit"))
+    if not math.isfinite(brightness) or not 0 <= brightness <= 1:
+        raise ProjectorRenderError("stage lighting brightness is invalid")
+    samples: list[dict[str, object]] = []
+    for raw in _list(surface.get("pixels")):
+        pixel = _mapping(raw)
+        x, y = _number(pixel.get("stage_x")), _number(pixel.get("stage_y"))
+        output_index = _integer(pixel.get("output_index"))
+        if not (0 <= x <= width and 0 <= y <= height) or output_index < 0:
+            raise ProjectorRenderError(
+                "stage lighting pixel is outside the composition or unmapped"
+            )
+        requested = frame[
+            round(y / height * (frame.shape[0] - 1)),
+            round(x / width * (frame.shape[1] - 1)),
+            :3,
+        ]
+        color = np.rint(requested.astype(np.float32) * brightness).astype(np.uint8)
+        samples.append(
+            {
+                "output_index": output_index,
+                "requested_color": requested.tolist(),
+                "color": color.tolist(),
+            }
+        )
+    if not samples:
+        raise ProjectorRenderError("selected stage lighting surface has no mapped pixels")
+    return samples
+
+
+def _prepare_stage_lighting(
+    frames: tuple[np.ndarray, ...],
+    surfaces: tuple[dict[str, object], ...],
+    width: float,
+    height: float,
+) -> tuple[LightingMember, ...]:
+    if not surfaces:
+        return ()
+    indices: dict[str, list[int]] = {}
+    buffers: dict[str, bytearray] = {}
+    for frame in frames:
+        grouped: dict[str, dict[int, list[int]]] = {}
+        srgb = working_to_srgb8(frame)
+        for surface in surfaces:
+            resource = _string(surface.get("resource"))
+            samples = grouped.setdefault(resource, {})
+            for sample in _sample_stage_surface(srgb, surface, width, height):
+                index = _integer(sample["output_index"])
+                if index in samples:
+                    raise ProjectorRenderError("stage lighting surfaces overlap physical indices")
+                samples[index] = cast(list[int], sample["color"])
+        for resource, samples in grouped.items():
+            indices[resource] = sorted(samples)
+            buffers.setdefault(resource, bytearray()).extend(
+                channel for index in indices[resource] for channel in samples[index]
+            )
+    mapping_digest = hashlib.sha256(
+        json.dumps(surfaces, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    return tuple(
+        LightingMember(resource, tuple(indices[resource]), bytes(data), mapping_digest)
+        for resource, data in sorted(buffers.items())
     )
 
 
@@ -259,6 +369,9 @@ def preview_stage_lighting_samples(
     if timestamp_ms < 0 or timestamp_ms >= duration_ms:
         raise ProjectorRenderError("stage lighting preview timestamp is outside duration")
     settings = _mapping(composition.get("render_settings"))
+    numerator = _integer(settings.get("frame_rate_numerator"))
+    period = 1000 * _integer(settings.get("frame_rate_denominator"))
+    frame_timestamp_ms = (timestamp_ms * numerator // period) * period // numerator
     render_width = _integer(settings.get("render_width"))
     render_height = _integer(settings.get("render_height"))
     logical_width = _number(composition.get("width"))
@@ -285,14 +398,19 @@ def preview_stage_lighting_samples(
     frame = working_to_srgb8(
         compose_visual_frame(
             stage_layers,
-            timestamp_ms=timestamp_ms,
+            timestamp_ms=frame_timestamp_ms,
             output_width=render_width,
             output_height=render_height,
             background_rgb=_hex_rgb(_string(settings.get("output_background_color"))),
         )[0]
     )
     surfaces: list[dict[str, object]] = []
-    for raw_surface in _list(mapper_export.get("lighting_surfaces")):
+    preview_surfaces = (
+        selected_stage_lighting_surfaces(composition, mapper_export)
+        if "stage_lighting_surfaces" in composition
+        else tuple(_mapping(raw) for raw in _list(mapper_export.get("lighting_surfaces")))
+    )
+    for raw_surface in preview_surfaces:
         surface = _mapping(raw_surface)
         resource = _string(surface.get("resource"))
         mapped_brightness = max(0.0, min(1.0, _number(surface.get("brightness_limit"))))
@@ -300,31 +418,17 @@ def preview_stage_lighting_samples(
             0.0,
             min(1.0, device_reported_scales.get(resource, 1.0)),
         )
-        samples: list[dict[str, object]] = []
-        for raw_pixel in _list(surface.get("pixels")):
-            pixel = _mapping(raw_pixel)
-            x = min(
-                render_width - 1,
-                max(
+        samples = _sample_stage_surface(frame, surface, logical_width, logical_height)
+        for sample in samples:
+            requested = np.asarray(sample["requested_color"], dtype=np.float32)
+            sample["color"] = (
+                np.clip(
+                    np.rint(requested * mapped_brightness * device_scale),
                     0,
-                    round((_number(pixel.get("stage_x")) / logical_width) * (render_width - 1)),
-                ),
-            )
-            y = min(
-                render_height - 1,
-                max(
-                    0,
-                    round((_number(pixel.get("stage_y")) / logical_height) * (render_height - 1)),
-                ),
-            )
-            requested = frame[y, x, :3].astype(np.uint8)
-            delivered = np.rint(requested.astype(np.float32) * mapped_brightness * device_scale)
-            samples.append(
-                {
-                    "output_index": _integer(pixel.get("output_index")),
-                    "requested_color": requested.tolist(),
-                    "color": np.clip(delivered, 0, 255).astype(np.uint8).tolist(),
-                }
+                    255,
+                )
+                .astype(np.uint8)
+                .tolist()
             )
         surfaces.append(
             {
@@ -338,6 +442,7 @@ def preview_stage_lighting_samples(
     return {
         "composition_id": composition_id,
         "timestamp_ms": timestamp_ms,
+        "frame_timestamp_ms": frame_timestamp_ms,
         "source": "shared_stage_compositor",
         "surfaces": surfaces,
         "hardware_command_sent": False,
@@ -384,6 +489,7 @@ def render_stage_composition(
         source_checksums=prepared.source_checksums,
         calibration_revisions=prepared.calibration_revisions,
         media_end_behavior=prepared.media_end_behavior,
+        lighting_members=prepared.lighting_members,
         ffmpeg=ffmpeg,
     )
 

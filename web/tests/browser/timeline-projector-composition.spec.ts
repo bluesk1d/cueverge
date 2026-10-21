@@ -217,6 +217,81 @@ test("projector-native edit returns to root and maps through every photo view", 
   }
 });
 
+test("installation overlay saves LED selection and queues one mixed bake", async ({ page }) => {
+  let saved: Record<string, unknown> | null = null;
+  const document = draft();
+  const composition = document.editor_metadata.compositions["projector-composition"];
+  composition.space_kind = "stage";
+  composition.name = "House overlay";
+  composition.width = 8;
+  composition.height = 4;
+  let bakeRequests = 0;
+  await page.route("**/api/gui/v1/**", async (route) => {
+    const request = route.request();
+    const pathname = new URL(request.url()).pathname;
+    if (pathname.endsWith("/projects/demo-project/draft")) {
+      if (request.method() === "PUT") saved = request.postDataJSON();
+      return route.fulfill({ json: {
+        ...draftResponse(saved), draft: saved ?? document,
+      } });
+    }
+    if (pathname.endsWith("/mapper-export")) {
+      return route.fulfill({ json: {
+        resources: [],
+        fixtures: [], paths: [], zones: [],
+        projectors: [{
+          resource: "projector.left", geometry_id: geometryId,
+          native_width: 64, native_height: 36, stage_extent: [0, 0, 8, 4],
+          photo_instances: [], mesh_vertices: [], mesh_triangles: [],
+        }],
+        lighting_surfaces: [{
+          semantic_id: "roofline", resource: "wled-001",
+          local_width: 8, local_height: 4, stage_matrix: [1, 0, 0, 1, 0, 0],
+          pixels: [], local_points: [],
+        }],
+      } });
+    }
+    if (pathname.endsWith("/stage-coverage")) {
+      return route.fulfill({ json: emptyCoverage() });
+    }
+    if (pathname.endsWith("/render-jobs")) {
+      if (request.method() === "POST") {
+        bakeRequests += 1;
+        expect(request.postDataJSON()).toEqual({ composition_id: "projector-composition" });
+        return route.fulfill({ status: 202, json: renderJob("queued") });
+      }
+      return route.fulfill({ json: [] });
+    }
+    if (pathname.endsWith("/stage-lighting-preview")) {
+      return route.fulfill({ json: {
+        composition_id: "projector-composition", timestamp_ms: 0,
+        source: "shared_stage_compositor", surfaces: [], hardware_command_sent: false,
+      } });
+    }
+    if (pathname.endsWith("/photos") || pathname.endsWith("/geometry") || pathname.endsWith("/assets")) {
+      return route.fulfill({ json: [] });
+    }
+    return route.fulfill({ status: 404, json: { detail: "fixture route missing" } });
+  });
+  await page.goto("/demo.html");
+  await page.getByRole("button", { name: "Shows", exact: true }).click();
+  await page.getByText("Timeline editor", { exact: true }).click();
+  await page.getByLabel("Editing space").selectOption("projector-composition");
+  await expect(page.getByLabel("Include LED surface roofline")).not.toBeChecked();
+  await page.getByLabel("Include LED surface roofline").check();
+  await expect(page.getByRole("button", { name: "Bake installation overlay" })).toBeEnabled();
+  await expect(
+    page.getByRole("group", { name: "Installation overlay LED outputs" }).getByRole("status"),
+  ).toContainText("client-group activation alone");
+  await page.getByRole("button", { name: "Save timeline" }).click();
+  await expect.poll(() => saved).not.toBeNull();
+  expect((saved as {
+    editor_metadata: { compositions: Record<string, { stage_lighting_surfaces: string[] }> };
+  }).editor_metadata.compositions["projector-composition"].stage_lighting_surfaces).toEqual(["roofline"]);
+  await page.getByRole("button", { name: "Bake installation overlay" }).click();
+  await expect.poll(() => bakeRequests).toBe(1);
+});
+
 function draftResponse(saved: Record<string, unknown> | null) {
   return {
     project: {

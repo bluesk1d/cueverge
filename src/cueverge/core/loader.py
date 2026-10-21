@@ -90,6 +90,9 @@ def _bind_spatial_sequences(root: Path, scenes: dict[str, LoadedScene]) -> None:
                     cached.reference.digest_sha256 != reference.digest_sha256
                     or cached.reference.output_indices != reference.output_indices
                     or cached.reference.frame_count != reference.frame_count
+                    or cached.reference.frame_rate != reference.frame_rate
+                    or cached.reference.frame_rate_denominator != reference.frame_rate_denominator
+                    or cached.reference.duration_ms != reference.duration_ms
                 ):
                     raise ValueError("lighting sequence path has conflicting metadata")
                 sequence = LoadedLightingSequence(reference, cached.data)

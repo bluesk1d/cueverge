@@ -134,6 +134,16 @@ def _validate_composition_graph(
             raise ValueError("composition must declare a supported logical editing space")
         if value.get("space_kind") == "lighting_surface":
             _validate_lighting_composition_settings(value.get("lighting_settings"))
+        stage_surfaces = value.get("stage_lighting_surfaces", [])
+        if (
+            not isinstance(stage_surfaces, list)
+            or not all(isinstance(item, str) and item for item in stage_surfaces)
+            or len(stage_surfaces) != len(set(stage_surfaces))
+            or len(stage_surfaces) > 100
+        ):
+            raise ValueError("stage lighting surfaces must be up to 100 unique semantic IDs")
+        if stage_surfaces and value.get("space_kind") != "stage":
+            raise ValueError("only stage compositions can select stage lighting surfaces")
         if not isinstance(value.get("target_id"), str) or not value["target_id"]:
             raise ValueError("composition editing space requires a target ID")
         for dimension in ("width", "height"):

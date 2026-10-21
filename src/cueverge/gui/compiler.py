@@ -105,6 +105,7 @@ class DraftCompiler:
                 key
                 for key, value in _object_map(draft.editor_metadata.get("compositions")).items()
                 if value.get("space_kind") == "lighting_surface"
+                or (value.get("space_kind") == "stage" and value.get("stage_lighting_surfaces"))
             }
             missing_bakes = lighting_compositions.difference(lighting_artifacts or {})
             if missing_bakes:
@@ -161,36 +162,50 @@ def _install_lighting_sequences(
             if any(_number(value, 0) != 0 for value in _object(context.get("placement")).values()):
                 raise CompilationError("lighting sequence instances cannot override placement")
             source = artifacts[composition_id]
-            manifest = json.loads((source / "manifest.json").read_text(encoding="utf-8"))
+            manifest_path = (
+                source / "manifest.json"
+                if (source / "manifest.json").exists()
+                else source / "render-manifest.json"
+            )
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             if manifest.get("source_revision") != revision:
                 raise CompilationError("lighting bake belongs to a different draft revision")
             if manifest.get("composition_id") != composition_id:
                 raise CompilationError("lighting bake belongs to a different composition")
-            relative = f"runtime/lighting/{composition_id.encode().hex()}.rgb"
-            reference = LightingSequenceReference.model_validate(
-                {
-                    **{
-                        key: manifest[key]
-                        for key in (
-                            "resource",
-                            "output_indices",
-                            "frame_rate",
-                            "frame_count",
-                            "duration_ms",
-                            "digest_sha256",
-                        )
-                    },
-                    "path": "frames.rgb",
-                    "scene_id": record["scene_id"],
-                    "offset_ms": context["offset_ms"],
-                    "time_scale": context["time_scale"],
-                }
+            sequences = (
+                manifest["lighting_sequences"]
+                if manifest_path.name == "render-manifest.json"
+                else [{**manifest, "path": "frames.rgb"}]
             )
-            load_lighting_sequence(source, reference)
-            destination = root / relative
-            destination.parent.mkdir(exist_ok=True)
-            shutil.copyfile(source / "frames.rgb", destination)
-            references.append({**reference.model_dump(mode="json"), "path": relative})
+            if not isinstance(sequences, list) or not sequences:
+                raise CompilationError("stage bake contains no lighting sequences")
+            for index, sequence in enumerate(sequences):
+                relative = f"runtime/lighting/{composition_id.encode().hex()}-{index}.rgb"
+                reference = LightingSequenceReference.model_validate(
+                    {
+                        **{
+                            key: sequence[key]
+                            for key in (
+                                "resource",
+                                "output_indices",
+                                "frame_rate",
+                                "frame_count",
+                                "duration_ms",
+                                "digest_sha256",
+                                "path",
+                            )
+                        },
+                        "frame_rate_denominator": sequence.get("frame_rate_denominator", 1),
+                        "scene_id": record["scene_id"],
+                        "offset_ms": context["offset_ms"],
+                        "time_scale": context["time_scale"],
+                    }
+                )
+                load_lighting_sequence(source, reference)
+                destination = root / relative
+                destination.parent.mkdir(exist_ok=True)
+                shutil.copyfile(source / reference.path, destination)
+                references.append({**reference.model_dump(mode="json"), "path": relative})
             attached.add(composition_id)
     if attached != set(artifacts):
         raise CompilationError(

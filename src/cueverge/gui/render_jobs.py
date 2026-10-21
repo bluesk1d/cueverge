@@ -4,7 +4,7 @@ import shutil
 import sqlite3
 import threading
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal, cast
@@ -20,7 +20,7 @@ from cueverge.gui.projector_overlap import (
 from cueverge.gui.projector_renderer import render_projector_composition
 from cueverge.gui.repository import GuiRepository
 from cueverge.gui.stage_coverage import StageCoverage, StageCoverageService
-from cueverge.gui.stage_renderer import render_stage_composition
+from cueverge.gui.stage_renderer import render_stage_composition, selected_stage_lighting_surfaces
 from cueverge.gui.sync_rehearsal import SyncAdmission, SyncRehearsalService
 
 MAX_RENDER_RESERVATION_BYTES = 10 * 1024 * 1024 * 1024
@@ -337,6 +337,21 @@ class RenderJobService:
                 if current != inputs:
                     raise RenderJobError("lighting mapping changed during baking; retry the bake")
             elif composition.get("space_kind") == "stage":
+                inputs = self._render_inputs(
+                    revision.draft.editor_metadata,
+                    job.composition_id,
+                    job.project_id,
+                )
+                if (
+                    _cache_key(
+                        composition=inputs.composition,
+                        source_checksums=inputs.source_checksums,
+                        source_revision=job.source_revision,
+                        environment=inputs.environment,
+                    )
+                    != job.cache_key
+                ):
+                    raise RenderJobError("stage mapping changed after queuing; retry the bake")
                 mapper, coverage, overlaps, admission = self._stage_inputs(
                     revision.draft.editor_metadata,
                 )
@@ -352,6 +367,15 @@ class RenderJobService:
                     sync_admission=admission,
                     output_directory=self.output_root / "sets",
                 )
+                if (
+                    self._render_inputs(
+                        revision.draft.editor_metadata,
+                        job.composition_id,
+                        job.project_id,
+                    )
+                    != inputs
+                ):
+                    raise RenderJobError("stage mapping changed during baking; retry the bake")
             else:
                 manifest = render_projector_composition(
                     project_id=job.project_id,
@@ -488,7 +512,7 @@ class RenderJobService:
                 raise RenderJobError("media layer source ID is invalid")
             asset = (
                 self.assets.get_original(source_id)[0]
-                if space_kind == "lighting_surface"
+                if space_kind in {"lighting_surface", "stage"}
                 else self.assets.get_asset(source_id)
             )
             if asset.project_id != project_id or asset.digest_sha256 is None:
@@ -508,11 +532,14 @@ class RenderJobService:
                 ),
             }
         if space_kind == "stage":
-            mapper, _, overlaps, admission = self._stage_inputs(editor_metadata)
+            mapper, coverage, overlaps, admission = self._stage_inputs(editor_metadata)
+            selected_stage_lighting_surfaces(composition, mapper)
             if not admission.allowed:
                 raise RenderJobError(f"{admission.code}: {admission.message}")
             environment = {
                 "mapper_export": mapper,
+                "transform_layers": layers,
+                "coverage": asdict(coverage),
                 "overlaps": [
                     {
                         "id": overlap.id,
@@ -532,7 +559,11 @@ class RenderJobService:
         for composition_id, raw in _mapping(
             stored.draft.editor_metadata.get("compositions")
         ).items():
-            if _mapping(raw).get("space_kind") != "lighting_surface":
+            composition = _mapping(raw)
+            if composition.get("space_kind") != "lighting_surface" and not (
+                composition.get("space_kind") == "stage"
+                and composition.get("stage_lighting_surfaces")
+            ):
                 continue
             inputs = self._render_inputs(stored.draft.editor_metadata, composition_id, project_id)
             key = _cache_key(
@@ -582,12 +613,21 @@ class RenderJobService:
                 _string(_mapping(item).get("resource")) for item in _list(mapper.get("projectors"))
             )
         )
-        context = self.resource_context(resources)
-        admission = self.sync_rehearsal.evaluate(
-            resources=resources,
-            current_context=context,
-            now=_now(),
-        )
+        if len(resources) == 1:
+            admission = SyncAdmission(
+                True,
+                "single_projector_stage",
+                "No cross-projector synchronization is needed. "
+                "Rehearse LED/projector latency before live use.",
+                None,
+            )
+        else:
+            context = self.resource_context(resources)
+            admission = self.sync_rehearsal.evaluate(
+                resources=resources,
+                current_context=context,
+                now=_now(),
+            )
         return mapper, coverage, overlaps, admission
 
     def resource_context(
@@ -645,7 +685,8 @@ def _estimate_reservation(composition: dict[str, object]) -> int:
     )
     raw_video = width * height * 4 * frame_count
     raw_audio = duration_ms * 48 * 2 * 4
-    return (raw_video + raw_audio) * 2
+    lighting = 256 * 1024 * 1024 if composition.get("stage_lighting_surfaces") else 0
+    return (raw_video + raw_audio) * 2 + lighting
 
 
 def _cache_key(

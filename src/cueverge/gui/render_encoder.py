@@ -15,6 +15,7 @@ from cueverge.gui.render_verification import (
     VERIFICATION_POLICY_REVISION,
     validate_loop_boundary,
 )
+from cueverge.lighting.sequence import MAX_SEQUENCE_BYTES, LightingSequenceReference
 
 
 class RenderEncodingError(RuntimeError):
@@ -42,6 +43,14 @@ class EncodedMember:
     audio_boundary: dict[str, object] | None
 
 
+@dataclass(frozen=True)
+class LightingMember:
+    resource: str
+    output_indices: tuple[int, ...]
+    data: bytes
+    mapping_digest: str
+
+
 def encode_output_set(
     *,
     output_directory: Path,
@@ -58,12 +67,15 @@ def encode_output_set(
     source_checksums: dict[str, str],
     calibration_revisions: dict[str, int],
     media_end_behavior: str,
+    lighting_members: tuple[LightingMember, ...] = (),
     ffmpeg: str = "ffmpeg",
 ) -> dict[str, object]:
     if not members or audio_owner not in members:
         raise RenderEncodingError("output set requires an audio-owner member")
     if media_end_behavior not in {"stop", "hold_last_frame", "loop"}:
         raise RenderEncodingError("media end behavior is invalid")
+    if sum(len(member.data) for member in lighting_members) > MAX_SEQUENCE_BYTES:
+        raise RenderEncodingError("stage lighting exceeds the 256 MiB sequence budget")
     if media_end_behavior == "loop":
         reference_frames = members[audio_owner]
         loop_validation = validate_loop_boundary(
@@ -176,6 +188,34 @@ def encode_output_set(
                 for member in encoded
             ],
         }
+        sequences: list[dict[str, object]] = []
+        for index, lighting in enumerate(lighting_members):
+            filename = f"lighting-{index + 1:04d}.rgb"
+            reference = LightingSequenceReference(
+                scene_id="bake",
+                resource=lighting.resource,
+                output_indices=lighting.output_indices,
+                path=filename,
+                digest_sha256=hashlib.sha256(lighting.data).hexdigest(),
+                frame_rate=frame_rate_numerator,
+                frame_rate_denominator=frame_rate_denominator,
+                frame_count=len(members[audio_owner]),
+                duration_ms=duration_ms,
+            )
+            expected_size = reference.frame_count * len(reference.output_indices) * 3
+            if len(lighting.data) != expected_size:
+                raise RenderEncodingError("stage lighting data does not match frame count")
+            (temporary_directory / filename).write_bytes(lighting.data)
+            sequences.append(
+                {
+                    **reference.model_dump(
+                        mode="json", exclude={"scene_id", "offset_ms", "time_scale"}
+                    ),
+                    "mapping_digest": lighting.mapping_digest,
+                }
+            )
+        if sequences:
+            manifest["lighting_sequences"] = sequences
         manifest_path = temporary_directory / "render-manifest.json"
         manifest_path.write_text(
             json.dumps(manifest, indent=2, sort_keys=True) + "\n",

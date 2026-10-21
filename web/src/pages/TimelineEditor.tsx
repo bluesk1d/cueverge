@@ -116,6 +116,7 @@ type Composition = {
   height: number;
   local_time_offset_ms: number;
   children: string[];
+  stage_lighting_surfaces: string[];
   safe_points_ms: number[];
   protected_intervals: { start_ms: number; end_ms: number }[];
   render_settings: {
@@ -667,6 +668,19 @@ export function TimelineEditor({
   }, [projectId, hasPendingRenderJobs]);
 
   useEffect(() => {
+    if (
+      composition?.space_kind === "stage" &&
+      stageProjectorResources.length === 1 &&
+      composition.stage_lighting_surfaces.length > 0
+    ) {
+      setSyncAdmission({
+        allowed: true,
+        code: "single_projector_stage",
+        message: "No cross-projector synchronization is needed. Rehearse LED/projector latency before live use.",
+        rehearsal: null,
+      });
+      return;
+    }
     if (composition?.space_kind !== "stage" || stageProjectorResources.length < 2) {
       setSyncAdmission(null);
       return;
@@ -694,7 +708,10 @@ export function TimelineEditor({
     return () => {
       active = false;
     };
-  }, [composition?.id, composition?.space_kind, stageProjectorResources.join("|")]);
+  }, [
+    composition?.id, composition?.space_kind,
+    composition?.stage_lighting_surfaces.length, stageProjectorResources.join("|"),
+  ]);
 
   useEffect(() => {
     setSafePoints([
@@ -3433,6 +3450,49 @@ export function TimelineEditor({
             <div className="timeline-render-jobs">
               <strong>Controller render jobs</strong>
               {composition.space_kind === "stage" && (
+                <fieldset aria-label="Installation overlay LED outputs">
+                  <legend>Installation-wide overlay</legend>
+                  <small>
+                    Projectors render the shared stage. Selected LED surfaces sample
+                    the same animation at their calibrated stage positions. Save the
+                    timeline before baking.
+                  </small>
+                  {(mapperExport?.lighting_surfaces ?? []).map((surface) => (
+                    <label key={surface.semantic_id}>
+                      <input
+                        type="checkbox"
+                        aria-label={`Include LED surface ${surface.semantic_id}`}
+                        disabled={!canEdit}
+                        checked={composition.stage_lighting_surfaces.includes(surface.semantic_id)}
+                        onChange={(event) => {
+                          const checked = event.target.checked;
+                          setCompositions((current) => ({
+                            ...current,
+                            [composition.id]: {
+                              ...current[composition.id],
+                              stage_lighting_surfaces: checked
+                                ? [...current[composition.id].stage_lighting_surfaces, surface.semantic_id]
+                                : current[composition.id].stage_lighting_surfaces.filter(
+                                    (id) => id !== surface.semantic_id,
+                                  ),
+                            },
+                          }));
+                        }}
+                      />
+                      {surface.semantic_id} · {surface.resource}
+                    </label>
+                  ))}
+                  {composition.stage_lighting_surfaces.length > 0 && (
+                    <small role="status">
+                      Bake produces projector videos and LED sequences together.
+                      Publish the package to include controller LED playback;
+                      client-group activation alone does not install LED sequences.
+                      Rehearse mixed-device latency before live use.
+                    </small>
+                  )}
+                </fieldset>
+              )}
+              {composition.space_kind === "stage" && (
                 <div className="timeline-sync-rehearsal">
                   <strong>Cross-projector rehearsal evidence</strong>
                   <small>
@@ -3548,7 +3608,9 @@ export function TimelineEditor({
                   }
                 }}
               >
-                Start controller render
+                {composition.stage_lighting_surfaces.length > 0
+                  ? "Bake installation overlay"
+                  : "Start controller render"}
               </button>
               {renderJobs
                 .filter((job) => job.composition_id === composition.id)
@@ -5144,6 +5206,7 @@ export function TimelineEditor({
                     children: [],
                     safe_points_ms: [],
                     protected_intervals: [],
+                    stage_lighting_surfaces: [],
                     render_settings: defaultRenderSettings(
                       newCompositionSpace === "projector_native"
                         ? [newCompositionWidth, newCompositionHeight]
@@ -7889,6 +7952,7 @@ function compositionMap(value: unknown): Record<string, Composition> {
               0,
             ),
             children: stringArray(composition.children),
+            stage_lighting_surfaces: stringArray(composition.stage_lighting_surfaces),
             safe_points_ms: numberArray(composition.safe_points_ms),
             protected_intervals: intervalArray(
               composition.protected_intervals,

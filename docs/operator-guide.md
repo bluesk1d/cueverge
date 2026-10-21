@@ -419,6 +419,39 @@ For schema details and creative planning, see the
 
 ### Render and inspect compositions
 
+#### Installation-wide baked overlays
+
+Use a **Shared stage** composition to author one image, video, or GIF across
+projectors and LEDs. Place the media once in stage coordinates, then select
+the mapped LED surfaces under **Installation-wide overlay**. Unselected
+surfaces keep their existing lighting behavior. LED stage coordinates must
+fall within the composition; out-of-bounds samples fail the bake rather than
+silently sampling the edge.
+
+Save the timeline and choose **Bake installation overlay**. One job creates
+the projector videos and RGB sequences from the same stage frames, at the
+composition's frame rate (up to 60 fps for mixed output, including fractional
+rates such as 30000/1001). Projector warps, masks, and overlap corrections
+apply only to projector video; LEDs sample the stage before those corrections,
+with each lighting surface's brightness limit applied.
+
+A mixed stage can use one projector or a synchronized projector group.
+Multiple projectors retain their existing synchronization-rehearsal gate.
+Do not also target the same LED indices with an overlapping lighting-surface
+composition: publication rejects competing spatial sequences.
+
+Publish the package to include the LED sequences in the controller package
+and the matching videos in the media-agent artifact set. **Stage and activate
+client group** alone only installs projector media, not controller LED data.
+The existing controller package handover/restart is still required; publication
+does not hot-reload the controller scene catalog.
+
+Rehearse on the actual installation before live use. Common baked timestamps
+do not compensate for projector decoding/display latency, LED transport latency,
+or physical color differences. This workflow is baked playback, not live media
+streaming, and the photo remains a calibrated authoring reference rather than
+an automatic reconstruction of the house's depth.
+
 #### Spatial LED media overlays
 
 Open a mapped **Lighting surface** composition. Add an image, video, or GIF

@@ -1,3 +1,4 @@
+import copy
 import hashlib
 import json
 import subprocess
@@ -8,17 +9,28 @@ from typing import cast
 
 import av
 import numpy as np
+import pytest
 from PIL import Image
+from pydantic import ValidationError
 
+from cueverge.controller.runtime import ControllerRuntime
+from cueverge.core.loader import ShowPackageError, load_show_package
+from cueverge.gui.artifact_deployment import ArtifactDeploymentService
 from cueverge.gui.asset_upload import AssetUploadService
-from cueverge.gui.contracts import DraftProject
+from cueverge.gui.compiler import DraftCompiler
+from cueverge.gui.contracts import DraftProject, Role
 from cueverge.gui.projector_overlap import StoredProjectorOverlap
+from cueverge.gui.projector_renderer import ProjectorRenderError
+from cueverge.gui.publication import PublicationService
+from cueverge.gui.render_jobs import RenderJobError, RenderJobService
 from cueverge.gui.render_verification import compare_rgb_frames
+from cueverge.gui.repository import GuiRepository
 from cueverge.gui.stage_coverage import StageCoverage, StageRegion
 from cueverge.gui.stage_renderer import (
     preview_stage_composition_member,
     preview_stage_lighting_samples,
     render_stage_composition,
+    selected_stage_lighting_surfaces,
 )
 from cueverge.gui.sync_rehearsal import SyncAdmission
 
@@ -143,7 +155,366 @@ def test_stage_runner_creates_lockstep_projector_set_with_one_audio_owner(
     assert lighting_preview["hardware_command_sent"] is False
 
 
+@pytest.mark.parametrize(
+    ("numerator", "denominator", "projector_count"),
+    [(2, 1, 2), (30000, 1001, 2), (2, 1, 1)],
+)
+def test_installation_overlay_bakes_one_animation_for_projectors_and_leds(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    numerator: int,
+    denominator: int,
+    projector_count: int,
+) -> None:
+    first = np.zeros((36, 128, 3), dtype=np.uint8)
+    first[:, :64] = [255, 0, 0]
+    first[:, 64:] = [0, 255, 0]
+    second = np.zeros_like(first)
+    second[:, :64] = [0, 0, 255]
+    second[:, 64:] = [255, 255, 0]
+    gif = tmp_path / "flag.gif"
+    Image.fromarray(first).save(
+        gif,
+        save_all=True,
+        append_images=[Image.fromarray(second)],
+        duration=[500, 500],
+    )
+    assets = cast(AssetUploadService, _FixtureAssets({"ghost": ("image/gif", gif)}))
+    document = _draft()
+    document["installation"] = {
+        "schema_version": 1,
+        "resources": [
+            {"resource": name, "kind": "media_agent", "target": name}
+            for name in ("projector.left", "projector.right")
+        ]
+        + [
+            {"resource": "lights", "kind": "pixel_output", "target": "memory", "pixel_count": 10},
+        ],
+    }
+    metadata = cast(dict[str, object], document["editor_metadata"])
+    compositions = cast(dict[str, dict[str, object]], metadata["compositions"])
+    composition = compositions["stage-composition"]
+    composition["stage_lighting_surfaces"] = ["stage-pixels", "right-pixels"]
+    settings = cast(dict[str, object], composition["render_settings"])
+    settings["frame_rate_numerator"] = numerator
+    settings["frame_rate_denominator"] = denominator
+    layers = cast(dict[str, list[dict[str, object]]], metadata["timeline_transform_layers"])
+    layers["stage-composition"] = [
+        {
+            **_visual_layer(),
+            "kind": "video",
+            "playback": "loop",
+            "keyframes": [
+                {
+                    **cast(list[dict[str, object]], _visual_layer()["keyframes"])[0],
+                    "opacity": 1,
+                }
+            ],
+        }
+    ]
+    metadata["timeline_tracks"] = {
+        "stage-composition": [
+            {
+                "id": "stage-track",
+                "name": "Overlay",
+                "kind": "group",
+                "resource_binding": "projector.left",
+            }
+        ]
+    }
+    if projector_count == 1:
+        scene = cast(list[dict[str, object]], document["scenes"])[0]
+        cast(list[str], scene["resources"]).remove("projector.right")
+        scene["media"] = cast(list[dict[str, object]], scene["media"])[:1]
+    draft = DraftProject.model_validate(document)
+    mapper = _mapper_export()
+    mapper["projectors"] = cast(list[dict[str, object]], mapper["projectors"])[:projector_count]
+    surface = cast(list[dict[str, object]], mapper["lighting_surfaces"])[0]
+    pixel = cast(list[dict[str, object]], surface["pixels"])[0]
+    pixel.update({"output_index": 8, "stage_x": 1, "stage_y": 3})
+    right = copy.deepcopy(surface)
+    right["semantic_id"] = "right-pixels"
+    cast(list[dict[str, object]], right["pixels"])[0].update(
+        {
+            "output_index": 2,
+            "stage_x": 7.5,
+        }
+    )
+    mapper["lighting_surfaces"] = [surface, right]
+    manifest = render_stage_composition(
+        project_id="demo-project",
+        source_revision=2,
+        draft=draft,
+        composition_id="stage-composition",
+        assets=assets,
+        mapper_export=mapper,
+        coverage=_coverage(),
+        overlaps=(),
+        sync_admission=SyncAdmission(True, "test", "test", None),
+        output_directory=tmp_path / "renders",
+    )
+    artifact = tmp_path / "renders" / str(manifest["activation_identity"])
+    sequences = cast(list[dict[str, object]], manifest["lighting_sequences"])
+    assert len(sequences) == 1
+    assert sequences[0]["output_indices"] == [2, 8]
+    assert sequences[0]["frame_rate"] == numerator
+    assert sequences[0]["frame_rate_denominator"] == denominator
+    assert manifest["frame_rate"] == {"numerator": numerator, "denominator": denominator}
+    compiled = DraftCompiler(tmp_path / "compiled").compile(
+        project_id="demo-project",
+        revision=2,
+        draft=draft,
+        lighting_artifacts={"stage-composition": artifact},
+    )
+    catalog = load_show_package(compiled.package_root)
+    output = catalog.require("ambient").lighting_outputs[0]
+    runtime = ControllerRuntime(catalog=catalog)
+    for timestamp in (0, 500, 900):
+        preview = preview_stage_lighting_samples(
+            project_id="demo-project",
+            draft=draft,
+            composition_id="stage-composition",
+            timestamp_ms=timestamp,
+            assets=assets,
+            mapper_export=mapper,
+            device_reported_scales={},
+        )
+        rendered = runtime._render_lighting_output(
+            output,
+            render_position_ms=timestamp,
+            rendered_at=runtime.clock(),
+            duration_ms=1000,
+        )
+        for sampled_surface in cast(list[dict[str, object]], preview["surfaces"]):
+            sample = cast(list[dict[str, object]], sampled_surface["samples"])[0]
+            assert list(rendered[cast(int, sample["output_index"])]) == sample["color"]
+        assert rendered[0] == (0, 0, 0)
+        projector = preview_stage_composition_member(
+            project_id="demo-project",
+            source_revision=2,
+            draft=draft,
+            composition_id="stage-composition",
+            assets=assets,
+            mapper_export=mapper,
+            coverage=_coverage(),
+            overlaps=(),
+            resource="projector.left",
+            timestamp_ms=timestamp,
+        )
+        # Projector preview conforms to lossy YUV; LED calibration halves the source RGB.
+        assert np.max(np.abs(np.asarray(rendered[8]) - projector[27, 12, :3] * 0.5)) <= 3
+    assert output.spatial_sequences[0].frame(1000) is None
+    assert output.spatial_sequences[0].frame(-1) is None
+    repository = GuiRepository(tmp_path / "publication.sqlite3")
+    repository.migrate()
+    stored = repository.create_project(
+        name="House overlay",
+        draft=draft,
+        actor="admin",
+        role=Role.ADMINISTRATOR,
+        occurred_at="2026-10-21T18:00:00Z",
+    )
+    repository.update_draft(
+        project_id=stored.project.id,
+        expected_revision=1,
+        draft=draft,
+        actor="admin",
+        role=Role.ADMINISTRATOR,
+        occurred_at="2026-10-21T18:01:00Z",
+    )
+    jobs = cast(
+        RenderJobService,
+        SimpleNamespace(
+            lighting_artifacts=lambda _project_id, _revision: {"stage-composition": artifact},
+            list=lambda _project_id: [
+                SimpleNamespace(
+                    source_revision=2,
+                    state="completed",
+                    composition_id="stage-composition",
+                    artifact_id=artifact.name,
+                ),
+                SimpleNamespace(
+                    source_revision=2,
+                    state="completed",
+                    composition_id="stage-composition",
+                    artifact_id="obsolete-stage-bake",
+                ),
+            ],
+        ),
+    )
+    publication = PublicationService(
+        repository=repository,
+        compiler=DraftCompiler(tmp_path / "publication-compiled"),
+        assets=cast(AssetUploadService, SimpleNamespace(list_assets=lambda _: [])),
+        render_jobs=jobs,
+        deployment=cast(ArtifactDeploymentService, object()),
+        output_root=tmp_path / "published",
+    )
+    publication.update_release(
+        project_id=stored.project.id,
+        revision=2,
+        name="Flag",
+        summary="Mixed artifact selection",
+        approval_state="approved",
+        actor="admin",
+        occurred_at="2026-10-21T18:02:00Z",
+    )
+    # Device/asset admission is tested separately; exercise publication's artifact selection here.
+    monkeypatch.setattr(publication, "validate", lambda _project_id, _revision: ())
+    published = publication.publish(
+        project_id=stored.project.id,
+        revision=2,
+        actor="admin",
+        occurred_at="2026-10-21T18:03:00Z",
+    )
+    assert published.manifest["render_artifact_ids"] == [artifact.name]
+    reference = output.spatial_sequences[0].reference
+    (compiled.package_root / reference.path).write_bytes(
+        b"x" * len(output.spatial_sequences[0].data)
+    )
+    with pytest.raises(ShowPackageError, match="checksum"):
+        load_show_package(compiled.package_root)
+
+
+def test_stage_lighting_selection_rejects_missing_duplicate_and_out_of_bounds_surfaces(
+    tmp_path: Path,
+) -> None:
+    document = _draft()
+    metadata = cast(dict[str, object], document["editor_metadata"])
+    composition = cast(dict[str, dict[str, object]], metadata["compositions"])["stage-composition"]
+    composition["stage_lighting_surfaces"] = ["stage-pixels", "stage-pixels"]
+    with pytest.raises(ValidationError, match="unique"):
+        DraftProject.model_validate(document)
+    composition["stage_lighting_surfaces"] = ["not-mapped"]
+    with pytest.raises(ProjectorRenderError, match="not mapped"):
+        selected_stage_lighting_surfaces(composition, _mapper_export())
+    composition["stage_lighting_surfaces"] = ["stage-pixels"]
+    cast(dict[str, list[dict[str, object]]], metadata["timeline_transform_layers"])[
+        "stage-composition"
+    ] = [_visual_layer()]
+    image = tmp_path / "ghost.png"
+    Image.fromarray(np.full((36, 128, 3), 255, dtype=np.uint8)).save(image)
+    mapper = _mapper_export()
+    surface = cast(list[dict[str, object]], mapper["lighting_surfaces"])[0]
+    cast(list[dict[str, object]], surface["pixels"])[0]["stage_x"] = 9
+    with pytest.raises(ProjectorRenderError, match="outside"):
+        preview_stage_lighting_samples(
+            project_id="demo-project",
+            draft=DraftProject.model_validate(document),
+            composition_id="stage-composition",
+            timestamp_ms=0,
+            assets=cast(
+                AssetUploadService,
+                _FixtureAssets(
+                    {
+                        "ghost": ("image/png", image),
+                        "audio": ("image/png", image),
+                    }
+                ),
+            ),
+            mapper_export=mapper,
+            device_reported_scales={},
+        )
+
+
+def test_mixed_bake_cache_tracks_layers_and_mapping_and_preserves_last_valid_set(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = GuiRepository(tmp_path / "gui.sqlite3")
+    repository.migrate()
+    document = _draft()
+    metadata = cast(dict[str, object], document["editor_metadata"])
+    composition = cast(dict[str, dict[str, object]], metadata["compositions"])["stage-composition"]
+    composition["stage_lighting_surfaces"] = ["stage-pixels"]
+    stored = repository.create_project(
+        name="House overlay",
+        draft=DraftProject.model_validate(document),
+        actor="admin",
+        role=Role.ADMINISTRATOR,
+        occurred_at="2026-10-21T18:00:00Z",
+    )
+    image = tmp_path / "ghost.png"
+    Image.fromarray(np.full((36, 128, 3), 255, dtype=np.uint8)).save(image)
+    audio = tmp_path / "audio.wav"
+    _write_wave(audio)
+    assets = _FixtureAssets({"ghost": ("image/png", image), "audio": ("audio/wav", audio)})
+    assets.project_id = stored.project.id
+    service = RenderJobService(repository, cast(AssetUploadService, assets), tmp_path / "renders")
+    mapper = _mapper_export()
+    monkeypatch.setattr(service, "_ensure_worker", lambda: None)
+    monkeypatch.setattr(
+        service,
+        "_stage_inputs",
+        lambda _: (
+            copy.deepcopy(mapper),
+            _coverage(),
+            (),
+            SyncAdmission(True, "test", "test", None),
+        ),
+    )
+    first = service.create(
+        project_id=stored.project.id,
+        composition_id="stage-composition",
+        actor="admin",
+    )
+    claimed = service._next_job()
+    assert claimed is not None
+    service._process(claimed)
+    completed = service.get(first.id)
+    assert completed.state == "completed", completed.error
+    assert service.lighting_artifacts(stored.project.id, 1)["stage-composition"].name == (
+        completed.artifact_id
+    )
+    cached = service.create(
+        project_id=stored.project.id,
+        composition_id="stage-composition",
+        actor="admin",
+    )
+    assert cached.state == "completed"
+    assert cached.artifact_id == completed.artifact_id
+    changed = copy.deepcopy(stored.draft.editor_metadata)
+    layer_map = cast(dict[str, list[dict[str, object]]], changed["timeline_transform_layers"])
+    layer_map["stage-composition"][0]["playback"] = "loop"
+    assert service._render_inputs(changed, "stage-composition", stored.project.id) != (
+        service._render_inputs(stored.draft.editor_metadata, "stage-composition", stored.project.id)
+    )
+    surface = cast(list[dict[str, object]], mapper["lighting_surfaces"])[0]
+    surface["brightness_limit"] = 0.25
+    with pytest.raises(RenderJobError, match="current bake"):
+        service.lighting_artifacts(stored.project.id, 1)
+
+    replacement = service.create(
+        project_id=stored.project.id,
+        composition_id="stage-composition",
+        actor="admin",
+    )
+    calls = 0
+
+    def changing_stage_inputs(
+        _: object,
+    ) -> tuple[dict[str, object], StageCoverage, tuple[StoredProjectorOverlap, ...], SyncAdmission]:
+        nonlocal calls
+        calls += 1
+        if calls == 3:
+            surface["brightness_limit"] = 0.75
+        return copy.deepcopy(mapper), _coverage(), (), SyncAdmission(True, "test", "test", None)
+
+    monkeypatch.setattr(service, "_stage_inputs", changing_stage_inputs)
+    claimed = service._next_job()
+    assert claimed is not None
+    service._process(claimed)
+    failed = service.get(replacement.id)
+    assert failed.state == "failed"
+    assert failed.error is not None and "changed during" in failed.error
+    assert (
+        service.active_artifact_id(stored.project.id, "stage-composition") == completed.artifact_id
+    )
+
+
 class _FixtureAssets:
+    project_id = "demo-project"
+
     def __init__(self, sources: dict[str, tuple[str, Path]]) -> None:
         self.sources = sources
 
@@ -151,7 +522,7 @@ class _FixtureAssets:
         media_type, path = self.sources[asset_id]
         return (
             SimpleNamespace(
-                project_id="demo-project",
+                project_id=self.project_id,
                 digest_sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
                 media_type=media_type,
             ),

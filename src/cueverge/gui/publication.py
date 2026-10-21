@@ -231,8 +231,9 @@ class PublicationService:
                 )
 
         compositions = _object_map(draft.editor_metadata.get("compositions"))
+        lighting_artifacts: dict[str, Path] = {}
         try:
-            self.render_jobs.lighting_artifacts(project_id, revision)
+            lighting_artifacts = self.render_jobs.lighting_artifacts(project_id, revision)
         except (RenderJobError, MapperExportError, ValueError, OSError) as error:
             add("lighting_bake_stale", str(error))
         jobs = self.render_jobs.list(project_id)
@@ -255,7 +256,11 @@ class PublicationService:
                     f"Composition {composition_id} has no successful bake for revision {revision}.",
                 )
             elif _object_map(compositions[composition_id]).get("space_kind") != "lighting_surface":
-                artifact_ids.add(cast(str, job.artifact_id))
+                artifact_ids.add(
+                    lighting_artifacts[composition_id].name
+                    if composition_id in lighting_artifacts
+                    else cast(str, job.artifact_id)
+                )
 
         assignments = {
             assignment.resource: assignment
@@ -415,11 +420,12 @@ class PublicationService:
                 "publication validation failed: " + "; ".join(item.message for item in errors)
             )
         stored = self.repository.get_revision(project_id, revision)
+        lighting_artifacts = self.render_jobs.lighting_artifacts(project_id, revision)
         compiled = self.compiler.compile(
             project_id=project_id,
             revision=revision,
             draft=stored.draft,
-            lighting_artifacts=self.render_jobs.lighting_artifacts(project_id, revision),
+            lighting_artifacts=lighting_artifacts,
         )
         jobs = self.render_jobs.list(project_id)
         compositions = _object_map(stored.draft.editor_metadata.get("compositions"))
@@ -433,6 +439,10 @@ class PublicationService:
                     and job.artifact_id is not None
                     and _object_map(compositions.get(job.composition_id)).get("space_kind")
                     != "lighting_surface"
+                    and (
+                        job.composition_id not in lighting_artifacts
+                        or job.artifact_id == lighting_artifacts[job.composition_id].name
+                    )
                 }
             )
         )

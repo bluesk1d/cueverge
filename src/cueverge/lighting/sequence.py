@@ -17,7 +17,8 @@ class LightingSequenceReference(BaseModel):
     path: str
     digest_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     output_indices: tuple[int, ...] = Field(min_length=1, max_length=65536)
-    frame_rate: int = Field(ge=1, le=60)
+    frame_rate: int = Field(ge=1, le=240000)
+    frame_rate_denominator: int = Field(default=1, ge=1, le=1001)
     frame_count: int = Field(gt=0)
     duration_ms: int = Field(gt=0)
     offset_ms: int = Field(default=0, ge=0)
@@ -30,7 +31,10 @@ class LightingSequenceReference(BaseModel):
             or self.output_indices[0] < 0
         ):
             raise ValueError("sequence indices must be unique, nonnegative and ordered")
-        if self.frame_count != (self.duration_ms * self.frame_rate + 999) // 1000:
+        period = 1000 * self.frame_rate_denominator
+        if self.frame_rate > 60 * self.frame_rate_denominator:
+            raise ValueError("lighting sequence frame rate exceeds 60 fps")
+        if self.frame_count != (self.duration_ms * self.frame_rate + period - 1) // period:
             raise ValueError("sequence frame count does not match duration")
         if self.frame_count * len(self.output_indices) * 3 > MAX_SEQUENCE_BYTES:
             raise ValueError("lighting sequence exceeds the 256 MiB budget")
@@ -49,7 +53,9 @@ class LoadedLightingSequence:
         local_ms = (position_ms - self.reference.offset_ms) / self.reference.time_scale
         if local_ms < 0 or local_ms >= self.reference.duration_ms:
             return None
-        index = int(local_ms * self.reference.frame_rate / 1000)
+        index = int(
+            local_ms * self.reference.frame_rate / (1000 * self.reference.frame_rate_denominator)
+        )
         stride = len(self.reference.output_indices) * 3
         return self.data[index * stride : (index + 1) * stride]
 

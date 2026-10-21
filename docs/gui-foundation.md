@@ -386,6 +386,32 @@ the database and object manifest, then promotes atomically; it never silently
 overwrites a healthy newer revision. Backup retention is configured per backup
 target and does not shorten the live store's 30-day trash guarantee.
 
+### Installation-wide mixed output bakes
+
+Stage compositions may opt into mapped LED surfaces with the
+`stage_lighting_surfaces` array of semantic IDs. The default is empty, preserving
+projector-only rendering. The stage compositor evaluates each frame once;
+projector outputs apply their native warps/masks/blending, while selected LED
+surfaces sample the unwarped stage frame using calibrated stage positions.
+Sampling is nearest-neighbor on the stage raster, followed by surface brightness;
+device/output brightness limits still apply during controller playback.
+
+One render set atomically contains projector MP4 members and checksummed RGB
+sidecars described by `lighting_sequences` in the render manifest. RGB sequences
+are grouped by physical output resource with sorted indices; duplicate ownership,
+unmapped samples, and aggregate LED data above 256 MiB are rejected. LED timing
+uses the stage frame-rate numerator and denominator, with a 60 fps limit.
+Stage lighting previews quantize timestamps to the same frame lattice as bakes.
+
+Render cache inputs include transform layers, mapper export, coverage, overlaps,
+and synchronization evidence. Mapping changes during a job prevent promotion.
+Compilation/publication requires current mixed bakes and copies their verified
+RGB sidecars into the controller package. Publication selects projector members
+from that same mixed artifact identity, not from a different successful bake of
+the revision. Existing runtime sequence overlap and integrity checks remain in
+force. Single-projector mixed stages need no cross-projector rehearsal; groups
+retain the existing admission gate. Neither case certifies mixed-device latency.
+
 ### Installation photo viewpoints
 
 GUI-03 installation photos are installation-owned, revisioned records whose
