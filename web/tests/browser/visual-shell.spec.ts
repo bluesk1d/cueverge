@@ -43,6 +43,20 @@ for (const viewport of viewports) {
     expect(photosBox).not.toBeNull();
     expect(photosBox!.y - (topologyBox!.y + topologyBox!.height)).toBeGreaterThanOrEqual(12);
 
+    for (const node of await topologyPanel.locator(".topology-node").all()) {
+      const header = node.locator("header");
+      const title = await header.locator("h3").boundingBox();
+      const status = await header.locator(".status-text").boundingBox();
+      expect(title).not.toBeNull();
+      expect(status).not.toBeNull();
+      expect(status!.y - (title!.y + title!.height)).toBeGreaterThanOrEqual(8);
+      const statusText = header.locator(".status-text strong");
+      expect(await statusText.evaluate((element) =>
+        element.scrollWidth <= element.clientWidth &&
+        element.scrollHeight <= element.clientHeight,
+      )).toBe(true);
+    }
+
     await page.getByRole("button", { name: "Operate", exact: true }).click();
     await expect(page.getByRole("heading", { name: "Show controls" })).toBeVisible();
     await expect(page.getByRole("heading", { name: "Runtime counters" })).toBeVisible();

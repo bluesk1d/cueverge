@@ -61,6 +61,14 @@ Implement tokens as CSS custom properties, with Tailwind semantic aliases if use
 
 **Spacing:** 4px base grid; 8/12/16/24px common spacing. Card radius 10px, control radius 7px, panel borders 1px. Avoid excessive gradients, glow, heavy shadows, and large dashboard-style icon tiles.
 
+Text inputs, selects, and textareas share the dark control surface, border, radius,
+and visible keyboard focus. Stack field labels above controls with a 6px gap;
+keep checkbox and radio labels inline. Textareas resize vertically without
+widening their panels. Topology cards place connection status below the device
+identity and wrap long names and statuses rather than compressing them together.
+Workspace layout rules apply in normal and forced-color modes; reserve
+forced-color overrides for system colors and contrast.
+
 **Layout targets:** Desktop design reference 1440×900 and 2560×1440; sidebar 224px expanded, 64px collapsed; top header 56px; content padding 20–24px. Resizable editor panels have minimum widths and persisted local preferences. Breakpoints should be content-driven rather than simply matching the reference image dimensions.
 
 ## 4. Component vocabulary

@@ -206,6 +206,7 @@ test("linked LED views preserve physical order and support pre-live preview", as
   await mapper.getByRole("button", { name: "Stop traversal preview" }).click();
   await expect(canvas).not.toHaveClass(/geometry-canvas--traversal/);
 
+  await mapper.getByText("Advanced calibration", { exact: true }).click();
   await mapper.getByLabel("Pixel correction output").selectOption("102");
   await mapper.getByLabel("Corrected pixel local X").fill("1.2");
   await mapper.getByLabel("Corrected pixel local Y").fill("0.4");

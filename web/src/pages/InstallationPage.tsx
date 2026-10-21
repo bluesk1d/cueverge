@@ -229,6 +229,9 @@ export function InstallationPage({
           projectorResources={installation.resources
             .filter((resource) => resource.kind === "media_agent")
             .map((resource) => resource.resource)}
+          pixelResources={installation.resources.filter(
+            (resource) => resource.kind === "pixel_output",
+          )}
           canEdit={
             session !== undefined &&
             ["designer", "publisher", "administrator"].includes(session.role)
@@ -256,11 +259,13 @@ export function InstallationPage({
 function InstallationPhotos({
   installationId,
   projectorResources,
+  pixelResources,
   canEdit,
   canPreview,
 }: {
   installationId: string;
   projectorResources: string[];
+  pixelResources: InstallationStatus["resources"];
   canEdit: boolean;
   canPreview: boolean;
 }) {
@@ -386,6 +391,7 @@ function InstallationPhotos({
           <GeometryMapper
             installationId={installationId}
             projectorResources={projectorResources}
+            pixelResources={pixelResources}
             photos={photos}
             geometry={geometry}
             imageAssets={imageAssets}
@@ -552,6 +558,7 @@ type SimulationPreviewMode =
 function GeometryMapper({
   installationId,
   projectorResources,
+  pixelResources,
   photos,
   geometry,
   imageAssets,
@@ -564,6 +571,7 @@ function GeometryMapper({
 }: {
   installationId: string;
   projectorResources: string[];
+  pixelResources: InstallationStatus["resources"];
   photos: InstallationPhoto[];
   geometry: InstallationGeometry[];
   imageAssets: AssetRecord[];
@@ -588,6 +596,9 @@ function GeometryMapper({
   const [direction, setDirection] = useState<"forward" | "reverse">("forward");
   const [startIndex, setStartIndex] = useState("");
   const [pixelCount, setPixelCount] = useState("");
+  const [creationMethod, setCreationMethod] = useState<"trace" | "generate">("trace");
+  const [allocationResources, setAllocationResources] = useState<Record<string, string>>({});
+  const [allocationCheckError, setAllocationCheckError] = useState(false);
   const [stagePoints, setStagePoints] = useState("");
   const [traversalPreview, setTraversalPreview] = useState(false);
   const [simulationOverlay, setSimulationOverlay] = useState(false);
@@ -693,7 +704,7 @@ function GeometryMapper({
     mesh_triangles: [] as [number, number, number][],
   });
   const [lightingValues, setLightingValues] = useState({
-    resource: "wled-001",
+    resource: pixelResources[0]?.resource ?? "",
     local_width: 1,
     local_height: 1,
     local_points: [[0, 0], [1, 1]] as [number, number][],
@@ -773,6 +784,76 @@ function GeometryMapper({
     kind,
   );
   const wiringDiagnostics = geometryDiagnostics(visible);
+  const firstPixel = Number(startIndex);
+  const numberOfPixels = Number(pixelCount);
+  const selectedPixelOutput = pixelResources.find(
+    (resource) => resource.resource === lightingValues.resource,
+  );
+  const validPixelRange =
+    startIndex.trim() !== "" &&
+    pixelCount.trim() !== "" &&
+    Number.isSafeInteger(firstPixel) &&
+    firstPixel >= 0 &&
+    Number.isSafeInteger(numberOfPixels) &&
+    numberOfPixels > 0 &&
+    Number.isSafeInteger(firstPixel + numberOfPixels);
+  const exceedsOutput =
+    validPixelRange &&
+    selectedPixelOutput?.pixel_count != null &&
+    firstPixel + numberOfPixels > selectedPixelOutput.pixel_count;
+  const overlappingSegments = validPixelRange
+    ? geometry.filter(
+        (item, index, all) =>
+          item.kind === "pixel_segment" &&
+          item.semantic_id !== (editing?.semantic_id ?? linkedSemanticId) &&
+          item.start_index !== null &&
+          item.pixel_count !== null &&
+          allocationResources[item.id] === lightingValues.resource &&
+          all.findIndex(
+            (candidate) => candidate.semantic_id === item.semantic_id,
+          ) === index &&
+          firstPixel < item.start_index + item.pixel_count &&
+          firstPixel + numberOfPixels > item.start_index,
+      )
+    : [];
+  const canGenerate =
+    pixelGenerator === "individual" ||
+    (pixelGenerator === "import"
+      ? generateNormalizedPixelLayout("import", 0, 0, importedPoints).length > 0
+      : pixelGenerator === "grid"
+        ? Number.isInteger(generatorRows) && generatorRows >= 2 && generatorRows <= 100 &&
+          Number.isInteger(generatorColumns) && generatorColumns >= 2 && generatorColumns <= 500
+        : Number.isSafeInteger(numberOfPixels) && numberOfPixels >= 2 &&
+          (pixelGenerator !== "ring" || numberOfPixels <= 500));
+
+  useEffect(() => {
+    if (kind !== "pixel_segment") {
+      return;
+    }
+    let cancelled = false;
+    setAllocationCheckError(false);
+    void Promise.all(
+      geometry
+        .filter((item) => item.kind === "pixel_segment")
+        .map(async (item) => {
+          try {
+            return [item.id, (await getLightingSurface(item.id)).resource] as const;
+          } catch {
+            if (!cancelled) {
+              setAllocationCheckError(true);
+            }
+            return [item.id, ""] as const;
+          }
+        }),
+    ).then((entries) => {
+      if (!cancelled) {
+        setAllocationResources(Object.fromEntries(entries));
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [geometry, kind]);
 
   useEffect(() => {
     if (!simulationOverlay) {
@@ -809,6 +890,7 @@ function GeometryMapper({
   }, [geometry, simulationOverlay]);
 
   async function beginEdit(item: InstallationGeometry) {
+    setCreationMethod("trace");
     setEditing(item);
     setPhotoId(item.photo_id);
     setKind(item.kind);
@@ -915,6 +997,8 @@ function GeometryMapper({
     setPoints([]);
     setMapping(undefined);
     setLightingSurface(undefined);
+    setLinkedSemanticId(null);
+    setTraversalPreview(false);
   }
 
   async function loadSuggestion(suggestion: GeometrySuggestion) {
@@ -1000,10 +1084,13 @@ function GeometryMapper({
   }
 
   function generatePixelLayout() {
+    if (!canGenerate) {
+      return;
+    }
     const generated = generateNormalizedPixelLayout(
       pixelGenerator,
       generatorRows,
-      generatorColumns,
+      pixelGenerator === "grid" ? generatorColumns : numberOfPixels,
       importedPoints,
     );
     setKind("pixel_segment");
@@ -1011,9 +1098,11 @@ function GeometryMapper({
     const count =
       pixelGenerator === "grid"
         ? generatorRows * generatorColumns
+        : pixelGenerator === "import"
+          ? generated.length
         : pixelGenerator === "individual"
           ? 1
-          : Math.max(1, generatorColumns);
+          : numberOfPixels;
     setPixelCount(String(count));
     setLightingSurface(undefined);
     setLightingValues((current) => ({
@@ -1149,14 +1238,16 @@ function GeometryMapper({
   return (
     <section className="geometry-mapper">
       <div className="geometry-mapper__tools">
-        <strong>Visual Mapper</strong>
-        <select value={photo?.id} onChange={(event) => setPhotoId(event.target.value)}>
+        <label>
+          Viewpoint
+          <select value={photo?.id} onChange={(event) => setPhotoId(event.target.value)}>
           {photos.map((candidate) => (
             <option key={candidate.id} value={candidate.id}>
               {candidate.viewpoint} · {candidate.name}
             </option>
           ))}
-        </select>
+          </select>
+        </label>
         <button
           aria-pressed={simulationOverlay}
           onClick={() => setSimulationOverlay((current) => !current)}
@@ -1165,6 +1256,8 @@ function GeometryMapper({
         </button>
         {simulationOverlay && (
           <>
+            <label>
+            Simulation preview mode
             <select
               aria-label="Simulation preview mode"
               value={simulationPreviewMode}
@@ -1181,9 +1274,12 @@ function GeometryMapper({
               <option value="selected_output">Selected device / output</option>
               <option value="full_installation">Full mapped installation</option>
             </select>
+            </label>
             {["logical_composition", "parent_context"].includes(
               simulationPreviewMode,
             ) && (
+              <label>
+              Semantic context
               <select
                 aria-label="Simulation semantic context"
                 value={simulationTarget}
@@ -1196,10 +1292,13 @@ function GeometryMapper({
                   </option>
                 ))}
               </select>
+              </label>
             )}
             {["native_projector", "selected_output"].includes(
               simulationPreviewMode,
             ) && (
+              <label>
+              Output context
               <select
                 aria-label="Simulation output context"
                 value={simulationTarget}
@@ -1213,6 +1312,7 @@ function GeometryMapper({
                 ))}
                 <option value="lighting">Mapped lighting outputs</option>
               </select>
+              </label>
             )}
             <small aria-label="Simulation context status">
               {simulationPreviewMode.replaceAll("_", " ")} · scene time 0 ms
@@ -1226,6 +1326,8 @@ function GeometryMapper({
                 : "Show side-by-side viewpoint"}
             </button>
             {sideBySideSimulation && (
+              <label>
+              Secondary viewpoint
               <select
                 aria-label="Secondary simulation viewpoint"
                 value={secondaryPhoto?.id ?? ""}
@@ -1239,14 +1341,25 @@ function GeometryMapper({
                     </option>
                   ))}
               </select>
+              </label>
             )}
           </>
         )}
-        {canEdit && (
-          <>
+      </div>
+      <div className={`geometry-mapper__workspace${canEdit ? "" : " geometry-mapper__workspace--readonly"}`}>
+      {canEdit && (
+      <aside className="geometry-mapper__inspector" aria-label="Geometry properties">
+        <div className="geometry-mapper__fields">
+          <h3>{kind === "pixel_segment" ? "Segment properties" : "Geometry properties"}</h3>
+          <label>
+            Geometry type
             <select
               value={kind}
-              onChange={(event) => setKind(event.target.value as InstallationGeometryKind)}
+              onChange={(event) => {
+                reset();
+                setKind(event.target.value as InstallationGeometryKind);
+                setCreationMethod("trace");
+              }}
             >
               {GEOMETRY_KINDS.map((value) => (
                 <option key={value} value={value}>
@@ -1254,14 +1367,128 @@ function GeometryMapper({
                 </option>
               ))}
             </select>
+          </label>
+          <label>
+            Geometry name
+            <input
+              placeholder={kind === "pixel_segment" ? "e.g. garage-eave" : "Name this geometry"}
+              value={name}
+              onChange={(event) => setName(event.target.value)}
+            />
+          </label>
+          {kind === "pixel_segment" && (
+          <>
+            <fieldset className="geometry-mapper__method">
+              <legend>Creation method</legend>
+              <div className="geometry-mapper__actions">
+                <button
+                  aria-pressed={creationMethod === "trace"}
+                  onClick={() => setCreationMethod("trace")}
+                >
+                  Trace on photo
+                </button>
+                <button
+                  aria-pressed={creationMethod === "generate"}
+                  onClick={() => setCreationMethod("generate")}
+                >
+                  Generate layout
+                </button>
+              </div>
+            </fieldset>
+            <label>
+              Output resource
+              <select
+                value={lightingValues.resource}
+                onChange={(event) =>
+                  setLightingValues((current) => ({ ...current, resource: event.target.value }))
+                }
+              >
+                <option value="">Select an output</option>
+                {pixelResources.map((resource) => (
+                  <option key={resource.resource} value={resource.resource}>
+                    {resource.resource}{resource.pixel_count === null ? "" : ` · ${resource.pixel_count} pixels`}
+                  </option>
+                ))}
+                {lightingValues.resource && !selectedPixelOutput && (
+                  <option value={lightingValues.resource}>{lightingValues.resource} (not configured)</option>
+                )}
+              </select>
+            </label>
+            <div className="geometry-mapper__pair">
+              <label>
+                First pixel index
+                <input min="0" step="1" type="number" value={startIndex} onChange={(event) => setStartIndex(event.target.value)} aria-describedby="mapper-pixel-index-help" />
+              </label>
+              <label>
+                Pixel count
+                <input
+                  min="1"
+                  step="1"
+                  type="number"
+                  value={pixelCount}
+                  readOnly={creationMethod === "generate" && ["grid", "individual", "import"].includes(pixelGenerator)}
+                  onChange={(event) => setPixelCount(event.target.value)}
+                />
+              </label>
+            </div>
+            <small id="mapper-pixel-index-help">Zero-based: the first LED is 0. Enter a count, not an end index.</small>
+            {validPixelRange && (
+              <p className="geometry-mapper__allocation" role="status">
+                Pixels {firstPixel}–{firstPixel + numberOfPixels - 1} · {numberOfPixels} LEDs
+              </p>
+            )}
+            {startIndex !== "" && pixelCount !== "" && !validPixelRange && (
+              <small role="alert">Use a whole-number first index of 0 or more and a positive whole-number pixel count.</small>
+            )}
+            {exceedsOutput && (
+              <small role="alert">This range exceeds {lightingValues.resource}: valid indices are 0–{selectedPixelOutput!.pixel_count! - 1}.</small>
+            )}
+            {overlappingSegments.map((item) => (
+              <small className="asset-diagnostic--warning" key={item.id}>
+                Pixel allocation overlaps {item.name} on {lightingValues.resource}.
+              </small>
+            ))}
+            {allocationCheckError && (
+              <small className="asset-diagnostic--warning">
+                Some existing LED allocations could not be checked. Review output ranges before saving.
+              </small>
+            )}
+            <label>
+              Strand ID
+              <input value={lightingValues.strand_id} placeholder="e.g. lower" onChange={(event) => setLightingValues((current) => ({ ...current, strand_id: event.target.value }))} />
+            </label>
+          </>
+          )}
+          {(kind === "pixel_segment" || kind === "path") && (
+            <>
+              <label>
+                Wiring direction
+                <select value={direction} onChange={(event) => setDirection(event.target.value as "forward" | "reverse")}>
+                  <option value="forward">First point → last point</option>
+                  <option value="reverse">Last point → first point</option>
+                </select>
+              </label>
+              <button aria-pressed={traversalPreview} onClick={() => setTraversalPreview((current) => !current)}>
+                {traversalPreview ? "Stop traversal preview" : "Preview traversal"}
+              </button>
+              <small>Canvas only. No hardware commands are sent.</small>
+            </>
+          )}
+          {kind === "pixel_segment" && creationMethod === "generate" && (
+            <section className="geometry-mapper__fields geometry-mapper__generator" aria-label="Layout generator">
+            <h4>Generate pixel layout</h4>
+            <label>
+            Layout shape
             <select
               aria-label="Pixel layout generator"
               value={pixelGenerator}
-              onChange={(event) =>
-                setPixelGenerator(
-                  event.target.value as typeof pixelGenerator,
-                )
-              }
+              onChange={(event) => {
+                const next = event.target.value as typeof pixelGenerator;
+                setPixelGenerator(next);
+                if (next === "grid") setPixelCount(String(generatorRows * generatorColumns));
+                if (next === "individual") setPixelCount("1");
+                if (next === "import") setPixelCount("");
+              }}
             >
               <option value="row">Pixel row</option>
               <option value="grid">Serpentine grid</option>
@@ -1270,88 +1497,93 @@ function GeometryMapper({
               <option value="individual">Individual pixel</option>
               <option value="import">Import coordinates</option>
             </select>
+            </label>
             {pixelGenerator === "grid" && (
+              <div className="geometry-mapper__pair">
+              <label>
+              Rows
               <input
                 aria-label="Pixel rows"
                 min="2"
+                max="100"
                 type="number"
                 value={generatorRows}
-                onChange={(event) => setGeneratorRows(Number(event.target.value))}
+                onChange={(event) => {
+                  setGeneratorRows(Number(event.target.value));
+                  setPixelCount(String(Number(event.target.value) * generatorColumns));
+                }}
               />
-            )}
-            {!["individual", "import"].includes(pixelGenerator) && (
+              </label>
+              <label>
+              Pixels per row
               <input
-                aria-label="Generated pixel count"
                 min="2"
+                max="500"
                 type="number"
                 value={generatorColumns}
-                onChange={(event) => setGeneratorColumns(Number(event.target.value))}
+                onChange={(event) => {
+                  setGeneratorColumns(Number(event.target.value));
+                  setPixelCount(String(generatorRows * Number(event.target.value)));
+                }}
               />
+              </label>
+              </div>
             )}
             {pixelGenerator === "import" && (
+              <label>
+              Normalized coordinates
               <textarea
                 aria-label="Imported normalized coordinates"
                 placeholder={"0.1,0.1\n0.9,0.9"}
                 rows={2}
                 value={importedPoints}
-                onChange={(event) => setImportedPoints(event.target.value)}
+                onChange={(event) => {
+                  setImportedPoints(event.target.value);
+                  setPixelCount(String(generateNormalizedPixelLayout("import", 0, 0, event.target.value).length));
+                }}
               />
+              <small>One x,y pair per line; each coordinate must be between 0 and 1.</small>
+              </label>
             )}
-            <button onClick={generatePixelLayout}>Generate pixel layout</button>
+            <small>
+              {pixelGenerator === "grid" ? "Pixel count is rows × pixels per row." : pixelGenerator === "import" ? "Pixel count is calculated from valid coordinate pairs." : pixelGenerator === "individual" ? "Creates one pixel." : "Uses the Pixel count above; rings support 2–500 pixels."}
+              {" "}Generating replaces the current drawing.
+            </small>
+            <button disabled={!canGenerate} onClick={generatePixelLayout}>Generate pixel layout</button>
+            </section>
+          )}
+          <details className="geometry-mapper__group">
+            <summary>Appearance</summary>
+            <div className="geometry-mapper__fields">
+            <label>
+            Geometry color
             <input
-              aria-label="Geometry name"
-              placeholder="Geometry name"
-              value={name}
-              onChange={(event) => setName(event.target.value)}
-            />
-            <textarea
-              aria-label="Shared stage points"
-              placeholder={"Stage x,y per line\n0,0\n1,0"}
-              rows={2}
-              value={stagePoints}
-              onChange={(event) => setStagePoints(event.target.value)}
-            />
-            <input
-              aria-label="Geometry color"
               type="color"
               value={color}
               onChange={(event) => setColor(event.target.value)}
             />
+            </label>
             <label><input type="checkbox" checked={labelVisible} onChange={(event) => setLabelVisible(event.target.checked)} />Labels</label>
             <label><input type="checkbox" checked={locked} onChange={(event) => setLocked(event.target.checked)} />Locked</label>
             <label><input type="checkbox" checked={hidden} onChange={(event) => setHidden(event.target.checked)} />Hidden</label>
-            <input aria-label="Layer order" type="number" value={zIndex} onChange={(event) => setZIndex(Number(event.target.value))} />
-            <label><input type="checkbox" checked={snap} onChange={(event) => setSnap(event.target.checked)} />Snap to 1% grid</label>
-            <label>Zoom <input type="range" min="1" max="4" step="0.25" value={zoom} onChange={(event) => setZoom(Number(event.target.value))} /></label>
-            <label>Pan X <input type="range" min="-500" max="500" value={panX} onChange={(event) => setPanX(Number(event.target.value))} /></label>
-            <label>Pan Y <input type="range" min="-300" max="300" value={panY} onChange={(event) => setPanY(Number(event.target.value))} /></label>
-            {(kind === "pixel_segment" || kind === "path") && (
-              <select value={direction} onChange={(event) => setDirection(event.target.value as "forward" | "reverse")}>
-                <option value="forward">Forward direction</option>
-                <option value="reverse">Reverse direction</option>
-              </select>
-            )}
-            {kind === "pixel_segment" && (
-              <>
-                <input aria-label="Pixel start index" min="0" type="number" value={startIndex} onChange={(event) => setStartIndex(event.target.value)} />
-                <input aria-label="Pixel count" min="1" type="number" value={pixelCount} onChange={(event) => setPixelCount(event.target.value)} />
-              </>
-            )}
-            <button onClick={() => setTraversalPreview((current) => !current)}>
-              {traversalPreview ? "Stop traversal preview" : "Preview traversal"}
-            </button>
+            <label>Layer order<input type="number" value={zIndex} onChange={(event) => setZIndex(Number(event.target.value))} /></label>
+            </div>
+          </details>
+          <details className="geometry-mapper__group">
+            <summary>Grouping &amp; associations</summary>
+            <div className="geometry-mapper__fields">
             {!editing && (
+              <label>
+              Link geometry across viewpoints
               <select
-                aria-label="Link geometry across viewpoints"
                 value={linkedSemanticId ?? ""}
                 onChange={(event) => setLinkedSemanticId(event.target.value || null)}
               >
                 <option value="">Create new semantic object</option>
                 {geometry
+                  .filter((item) => item.kind === kind && item.photo_id !== photo?.id)
                   .filter(
                     (item, index, all) =>
-                      item.kind === kind &&
-                      item.photo_id !== photo?.id &&
                       all.findIndex(
                         (candidate) => candidate.semantic_id === item.semantic_id,
                       ) === index,
@@ -1362,36 +1594,34 @@ function GeometryMapper({
                     </option>
                   ))}
               </select>
+              </label>
             )}
-            <button
-              disabled={
-                !name.trim() ||
-                !points.length ||
-                (kind === "projector_surface" &&
-                  (!mappingValues.resource ||
-                    (mappingValues.surface_model === "planar"
-                      ? points.length !== 4
-                      : points.length < 5 ||
-                        mappingValues.mesh_vertices.length < 4 ||
-                        mappingValues.mesh_triangles.length < 2))) ||
-                (kind === "pixel_segment" &&
-                  (!startIndex || !pixelCount || Number(pixelCount) < 1))
-              }
-              onClick={() => void save()}
-            >
-              {editing ? "Update geometry" : "Save geometry"}
-            </button>
-            <button onClick={reset}>Clear points</button>
-            <button
-              disabled={!points.length}
-              onClick={() => setPoints((current) => current.slice(0, -1))}
-            >
-              Undo point
-            </button>
-          </>
-        )}
-      </div>
+            {kind === "pixel_segment" && (
+              <>
+                {([["fixture_id", "Fixture ID"], ["group_id", "Group ID"], ["path_id", "Ordered path ID"]] as const).map(([field, label]) => (
+                  <label key={field}>{label}<input value={lightingValues[field]} onChange={(event) => setLightingValues((current) => ({ ...current, [field]: event.target.value }))} /></label>
+                ))}
+              </>
+            )}
+            {editing && <small>Semantic object: {editing.semantic_id}</small>}
+            </div>
+          </details>
+          <details className="geometry-mapper__group">
+            <summary>Shared stage coordinates</summary>
+            <label>
+              Shared stage points
+              <textarea
+                placeholder={"Stage x,y per line\n0,0\n1,0"}
+                rows={2}
+                value={stagePoints}
+                onChange={(event) => setStagePoints(event.target.value)}
+              />
+            </label>
+          </details>
+        </div>
       {canEdit && kind === "projector_surface" && (
+        <details className="geometry-mapper__group" open>
+        <summary>Projector mapping</summary>
         <div className="projector-mapping-controls">
           <label>
             Projector resource
@@ -1745,19 +1975,13 @@ function GeometryMapper({
               Preview alignment grid for 15 seconds
             </button>
           )}
-          {alignmentPreview && (
-            <small role="status">
-              Simulation preview recorded until{" "}
-              {new Date(alignmentPreview.expires_at).toLocaleTimeString()}; no hardware command was sent.
-            </small>
-          )}
           {mapping?.fit_diagnostics.map((diagnostic) => (
             <small className="asset-diagnostic--warning" key={diagnostic}>
               {diagnostic}
             </small>
           ))}
-          {previewError && <small role="alert">{previewError}</small>}
         </div>
+        </details>
       )}
       {canEdit &&
         editing?.kind === "projector_surface" &&
@@ -1877,14 +2101,19 @@ function GeometryMapper({
           </div>
         )}
       {canEdit && kind === "pixel_segment" && (
+          <>
+            {lightingSurface && (
+              <small>
+                {lightingSurface.pixels.length} pixels mapped from output index{" "}
+                {lightingSurface.pixels[0]?.output_index} to{" "}
+                {lightingSurface.pixels.at(-1)?.output_index}.
+              </small>
+            )}
+            <details className="geometry-mapper__group">
+            <summary>Advanced calibration</summary>
             <div className="projector-mapping-controls">
               {(
                 [
-                  ["resource", "Output resource"],
-                  ["fixture_id", "Fixture ID"],
-                  ["group_id", "Group ID"],
-                  ["path_id", "Ordered path ID"],
-                  ["strand_id", "Strand ID"],
                   ["calibration_id", "Calibration ID"],
                 ] as const
               ).map(([field, label]) => (
@@ -1946,11 +2175,6 @@ function GeometryMapper({
               ))}
               {lightingSurface && (
                 <>
-                  <small>
-                    {lightingSurface.pixels.length} pixels mapped from output index{" "}
-                    {lightingSurface.pixels[0]?.output_index} to{" "}
-                    {lightingSurface.pixels.at(-1)?.output_index}.
-                  </small>
                   <div className="pixel-correction-controls">
                     <label>
                       Pixel correction
@@ -2071,7 +2295,13 @@ function GeometryMapper({
                   </div>
                 </>
               )}
-              {canPreview && (
+            </div>
+            </details>
+            {canPreview && (
+              <details className="geometry-mapper__group">
+                <summary>Maintenance preview</summary>
+                <div className="geometry-mapper__fields">
+                <p>Records a 15-second index-chase simulation for {lightingValues.resource || "the selected output"}. Requires maintenance mode and idle playback. No physical LEDs are driven.</p>
                 <button
                   disabled={!lightingValues.resource}
                   onClick={async () => {
@@ -2087,15 +2317,19 @@ function GeometryMapper({
                     }
                   }}
                 >
-                  Preview pixel index chase for 15 seconds
+                  Record index-chase simulation
                 </button>
-              )}
-            </div>
+                </div>
+              </details>
+            )}
+          </>
           )}
       {canPreview &&
         editing &&
         (editing.kind === "projector_surface" ||
           editing.kind === "pixel_segment") && (
+          <details className="geometry-mapper__group">
+          <summary>Timing calibration</summary>
           <div
             className="timing-calibration-panel"
             tabIndex={timingSession?.state === "active" ? 0 : -1}
@@ -2229,6 +2463,70 @@ function GeometryMapper({
               </div>
             ))}
           </div>
+          </details>
+        )}
+        {alignmentPreview && (
+          <div className="geometry-mapper__fields" role="status">
+            <small>
+              Simulation preview recorded for {alignmentPreview.resource} until{" "}
+              {new Date(alignmentPreview.expires_at).toLocaleTimeString()}; no hardware command was sent.
+            </small>
+            <button onClick={() => setAlignmentPreview(null)}>Dismiss preview record</button>
+          </div>
+        )}
+        {previewError && <small role="alert">{previewError}</small>}
+        <div className="geometry-mapper__actions geometry-mapper__save">
+          <button
+            className="primary-button"
+            disabled={
+              !name.trim() ||
+              !points.length ||
+              (kind === "projector_surface" &&
+                (!mappingValues.resource ||
+                  (mappingValues.surface_model === "planar"
+                    ? points.length !== 4
+                    : points.length < 5 ||
+                      mappingValues.mesh_vertices.length < 4 ||
+                      mappingValues.mesh_triangles.length < 2))) ||
+              (kind === "pixel_segment" &&
+                (!lightingValues.resource || !validPixelRange || exceedsOutput))
+            }
+            onClick={() => void save()}
+          >
+            {editing ? "Update geometry" : kind === "pixel_segment" ? "Save segment" : "Save geometry"}
+          </button>
+          <button onClick={reset}>Cancel</button>
+        </div>
+      </aside>
+      )}
+      <div className="geometry-mapper__drawing">
+        {canEdit && (
+          <>
+            <p className="geometry-mapper__instruction">
+              {kind === "pixel_segment"
+                ? creationMethod === "trace"
+                  ? "Click the first pixel, then trace the strand in wiring order. Two points are enough for a straight section."
+                  : "Set the layout shape and pixel allocation, then generate. Drag points to position the layout on the photo."
+                : kind === "projector_surface"
+                  ? "Click the surface corners in order: top left, top right, bottom right, bottom left."
+                  : "Click the photo to place geometry points. Drag a point to adjust it."}
+            </p>
+            <div className="geometry-mapper__canvas-tools" aria-label="Drawing controls">
+              <button disabled={!points.length} onClick={() => setPoints((current) => current.slice(0, -1))}>Undo point</button>
+              <button disabled={!points.length} onClick={() => {
+                setPoints([]);
+                setLightingSurface(undefined);
+              }}>Clear points</button>
+              <label><input type="checkbox" checked={snap} onChange={(event) => setSnap(event.target.checked)} />Snap to 1% grid</label>
+              <label>Zoom<input type="range" min="1" max="4" step="0.25" value={zoom} onChange={(event) => setZoom(Number(event.target.value))} /></label>
+              <button onClick={() => { setZoom(1); setPanX(0); setPanY(0); }}>Fit view</button>
+              <details>
+                <summary>Pan view</summary>
+                <label>Pan X<input type="range" min="-500" max="500" value={panX} onChange={(event) => setPanX(Number(event.target.value))} /></label>
+                <label>Pan Y<input type="range" min="-300" max="300" value={panY} onChange={(event) => setPanY(Number(event.target.value))} /></label>
+              </details>
+            </div>
+          </>
         )}
       {stageCoverage && stageCoverage.regions.length > 0 && (
         <section className="stage-coverage">
@@ -2599,6 +2897,8 @@ function GeometryMapper({
       {wiringDiagnostics.map((diagnostic) => (
         <small className="asset-diagnostic--warning" key={diagnostic}>{diagnostic}</small>
       ))}
+      </div>
+      </div>
       {visibleSuggestions.length > 0 && (
         <ul className="geometry-list geometry-suggestion-list">
           {visibleSuggestions.map((suggestion) => (

@@ -165,14 +165,32 @@ For a planar projector surface:
 
 For lighting:
 
-- Use the layout generator appropriate to the wiring: row, grid, ring,
-  outline, individual points, or imported points.
-- Set the actual resource, count, start index, local points, stage transform,
-  and traversal direction.
+- Select **pixel segment** under **Geometry type** in the properties inspector.
+  Give it a **Geometry name** and choose its configured **Output resource**.
+- Use **Trace on photo** for existing strands: click the first pixel's location,
+  then trace the strand in wiring order. Two points define a straight section;
+  additional points define bends. Use **Undo point**, **Clear points**, and
+  **Fit view** in the drawing toolbar without clearing the segment's properties.
+- Enter **First pixel index** (zero-based), **Pixel count**, and an optional
+  **Strand ID**. The allocation summary displays the inclusive first and last
+  indices. Out-of-range allocations cannot be saved; overlaps on the same output
+  are warnings, excluding linked views of the same semantic object.
+- Alternatively, choose **Generate layout** for a row, grid, ring, outline,
+  individual pixel, or imported coordinates. It uses the same **Pixel count**;
+  grids and imports calculate their count. Generating replaces the current drawing.
+- Use **Appearance** for labels/color/layering, **Grouping & associations** for
+  fixture/group/path IDs and cross-view linking, **Shared stage coordinates**
+  for shared points, and **Advanced calibration** for local dimensions, pixel
+  corrections, stage transforms, brightness, and timing.
+- Choose **Wiring direction** and **Preview traversal** to check ordering on
+  the canvas, then **Save segment** (or **Update geometry** when editing).
+  These editing and traversal controls do not send hardware commands.
 - Pixel segment ranges use half-open intervals: `[start, end)` includes
   `start` but excludes `end`. An eight-pixel output has indices 0 through 7.
-- Preview traversal and check direction against the physical wiring in an
-  authorized physical test. Drawing a path does not change wiring order.
+- **Maintenance preview** records an index-chase simulation for the selected
+  output and duration. It requires maintenance mode and idle playback but does
+  not drive physical LEDs. Verify actual wiring in a separate authorized physical
+  test. Drawing a path does not change wiring order.
 
 For shared-stage content across projectors, define stage coverage and overlap
 calibration consistently. Review seams, masks, crop, brightness/color matching,
