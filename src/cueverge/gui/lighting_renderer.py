@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from itertools import pairwise
 from typing import Literal, cast
 
@@ -6,6 +6,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from cueverge.gui.frame_compositor import PreparedVisualLayer, compose_visual_frame
+from cueverge.gui.spatial_effects import SpatialRipple
 from cueverge.lighting.sink import FrameSink, RenderedFrame
 
 SamplingMode = Literal["nearest", "bilinear", "area"]
@@ -29,6 +30,7 @@ class LightingFrame:
     output_indices: tuple[int, ...]
     normalized_channel_load: float
     clipped_pixels: int
+    canvas: FloatCanvas | None = None
 
 
 @dataclass(frozen=True)
@@ -166,8 +168,11 @@ def evaluate_composed_lighting_frame(
         paths=paths,
         fixtures=fixtures,
         base_canvas=base,
+        local_width=local_width,
+        local_height=local_height,
+        stage_matrix=stage_matrix,
     )
-    return evaluate_lighting_canvas(
+    frame = evaluate_lighting_canvas(
         canvas,
         local_width=local_width,
         local_height=local_height,
@@ -176,6 +181,7 @@ def evaluate_composed_lighting_frame(
         gamma=gamma,
         brightness=brightness,
     )
+    return replace(frame, canvas=canvas)
 
 
 def map_stage_canvas_to_surface(
@@ -240,6 +246,9 @@ def render_lighting_layers(
     paths: dict[str, tuple[tuple[float, float], ...]] | None = None,
     fixtures: dict[str, tuple[tuple[float, float], ...]] | None = None,
     base_canvas: FloatCanvas | None = None,
+    local_width: float = 1,
+    local_height: float = 1,
+    stage_matrix: tuple[float, float, float, float, float, float] | None = None,
 ) -> FloatCanvas:
     if canvas_width <= 0 or canvas_height <= 0:
         raise ValueError("lighting canvas dimensions must be positive")
@@ -273,6 +282,10 @@ def render_lighting_layers(
                 progress,
                 canvas_width,
                 canvas_height,
+                elapsed_ms=timestamp_ms - start,
+                local_width=local_width,
+                local_height=local_height,
+                stage_matrix=stage_matrix,
             )
         elif mode == "path":
             source = _render_path(
@@ -429,6 +442,11 @@ def _render_spatial(
     progress: float,
     width: int,
     height: int,
+    *,
+    elapsed_ms: int = 0,
+    local_width: float = 1,
+    local_height: float = 1,
+    stage_matrix: tuple[float, float, float, float, float, float] | None = None,
 ) -> FloatCanvas:
     primitive = _string(payload.get("primitive"))
     first = np.asarray(_color(payload.get("color")), dtype=np.float32)
@@ -442,6 +460,21 @@ def _render_spatial(
     )
     x = raw_x.astype(np.float32, copy=False)
     y = raw_y.astype(np.float32, copy=False)
+    if primitive == "ripple":
+        ripple = SpatialRipple.model_validate(payload)
+        x, y = x * local_width, y * local_height
+        if ripple.coordinate_space == "stage":
+            if stage_matrix is None:
+                raise ValueError("stage ripple requires a calibrated surface transform")
+            a, b, c, d, e, f = stage_matrix
+            stage_x = (a * x + c * y + e).astype(np.float32)
+            stage_y = (b * x + d * y + f).astype(np.float32)
+            x, y = stage_x, stage_y
+        elapsed = elapsed_ms if ripple.repeat_ms is None else elapsed_ms % ripple.repeat_ms
+        radius = elapsed * ripple.speed / 1000
+        distance = np.hypot(x - ripple.origin[0], y - ripple.origin[1])
+        ring_intensity = np.clip(1 - np.abs(distance - radius) / (ripple.ring_width / 2), 0, 1)
+        return cast(FloatCanvas, (ring_intensity[..., None] * first).astype(np.float32))
     if primitive == "solid":
         return np.broadcast_to(first, (height, width, 3)).copy()
     if primitive == "linear_gradient":

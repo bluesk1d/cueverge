@@ -5,6 +5,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from cueverge.lighting.sequence import LoadedLightingSequence
+
 
 class FrozenModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -367,6 +369,7 @@ class LoadedLightingOutput(FrozenModel):
     lighting_target_precedence: int = 0
     lighting_cues: tuple["LoadedLightingCue", ...] = ()
     color: tuple[int, int, int]
+    spatial_sequences: tuple[LoadedLightingSequence, ...] = ()
 
 
 class LoadedScene(FrozenModel):

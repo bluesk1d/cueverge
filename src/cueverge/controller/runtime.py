@@ -1001,6 +1001,33 @@ class ControllerRuntime:
         duration_ms: int,
     ) -> tuple[tuple[int, int, int], ...]:
         lighting = output.definition
+        if output.spatial_sequences:
+            baseline = self._render_persistent_baseline(rendered_at, output)
+            pixels = list(
+                LightingTimeline(
+                    pixel_count=output.pixel_count,
+                    cues=output.lighting_cues,
+                ).render(render_position_ms, base_frame=baseline)
+            )
+            for sequence in output.spatial_sequences:
+                frame = sequence.frame(render_position_ms)
+                if frame is None:
+                    continue
+                for offset, index in enumerate(sequence.reference.output_indices):
+                    pixels[index] = (
+                        frame[offset * 3],
+                        frame[offset * 3 + 1],
+                        frame[offset * 3 + 2],
+                    )
+            looks = self._lighting_looks_for(lighting.resource)
+            limit = min(
+                lighting.brightness_limit,
+                looks.definition.brightness_limit if looks is not None else 1,
+            )
+            return tuple(
+                (round(red * limit), round(green * limit), round(blue * limit))
+                for red, green, blue in pixels
+            )
         if lighting.timeline:
             base_frame = self._render_persistent_baseline(rendered_at, output)
             looks = self._lighting_looks_for(lighting.resource)

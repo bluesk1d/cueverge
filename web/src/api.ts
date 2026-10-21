@@ -731,6 +731,7 @@ export interface ArtifactDeployment {
 }
 
 export interface LightingPreview {
+  canvas_png_base64?: string;
   composition_id: string;
   timestamp_ms: number;
   surface_semantic_id: string;
@@ -1539,7 +1540,7 @@ export async function getLightingPreview(
 ): Promise<LightingPreview> {
   return request<LightingPreview>(
     `/api/gui/v1/projects/${encodeURIComponent(projectId)}/compositions/` +
-      `${encodeURIComponent(compositionId)}/lighting-preview?timestamp_ms=${timestampMs}`,
+      `${encodeURIComponent(compositionId)}/lighting-preview?timestamp_ms=${timestampMs}&include_canvas=true`,
   );
 }
 

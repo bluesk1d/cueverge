@@ -38,6 +38,7 @@ import {
   StageLightingPreview,
 } from "../api";
 import { VirtualizedList } from "../components/VirtualizedList";
+import { SurfaceMediaOverlay } from "../components/SurfaceMediaOverlay";
 
 type TrackKind =
   | "media_output"
@@ -191,6 +192,7 @@ type TransformLayer = {
   duration_ms: number;
   in_point_ms: number;
   out_point_ms: number;
+  playback?: "hold" | "loop" | "once";
   z_index: number;
   fade_in_ms: number;
   fade_out_ms: number;
@@ -268,6 +270,14 @@ type LightingAuthorLayer = {
     position: [number, number];
     size: [number, number];
     radius: number;
+  } | {
+    primitive: "ripple";
+    coordinate_space: "surface_local" | "stage";
+    origin: [number, number];
+    speed: number;
+    ring_width: number;
+    color: string;
+    repeat_ms: number | null;
   };
   path?: {
     path_id: string;
@@ -428,6 +438,9 @@ export function TimelineEditor({
   const restoringHistoryRef = useRef(false);
   const [historyVersion, setHistoryVersion] = useState(0);
   const [renderJobs, setRenderJobs] = useState<RenderJob[]>([]);
+  const hasPendingRenderJobs = renderJobs.some(
+    (job) => job.state === "queued" || job.state === "running",
+  );
   const [renderJobError, setRenderJobError] = useState<string | null>(null);
   const [selectedArtifactId, setSelectedArtifactId] = useState("");
   const [renderPreviewMode, setRenderPreviewMode] = useState<
@@ -651,7 +664,7 @@ export function TimelineEditor({
         clearTimeout(timeout);
       }
     };
-  }, [projectId]);
+  }, [projectId, hasPendingRenderJobs]);
 
   useEffect(() => {
     if (composition?.space_kind !== "stage" || stageProjectorResources.length < 2) {
@@ -1779,9 +1792,16 @@ export function TimelineEditor({
       {composition?.space_kind === "lighting_surface" && mapperExport && (
         <LightingSurfaceCompositionPreview
           composition={composition}
+          installationId={installationId}
           mapperExport={mapperExport}
           projectId={projectId}
           timestampMs={Math.min(localPlayhead, composition.duration_ms - 1)}
+          onMoveMedia={canEdit && selectedTransformLayer && selectedTransformKeyframe
+            ? (position) => updateTransformKeyframe(
+                selectedTransformLayer.id, selectedTransformKeyframe.id,
+                (keyframe) => ({ ...keyframe, position }),
+              )
+            : undefined}
         />
       )}
       <div
@@ -3778,6 +3798,35 @@ export function TimelineEditor({
         )}
         {composition?.space_kind === "lighting_surface" && (
           <section className="timeline-lighting-authoring">
+            <strong>Spatial media overlays</strong>
+            <small>
+              Add an image, video, or animated GIF below, then position it in surface-local
+              coordinates. Save the revision before previewing or baking. Preview never sends output.
+            </small>
+            <button
+              disabled={!canEdit || renderJobs.some(
+                (job) => job.composition_id === composition.id &&
+                  (job.state === "queued" || job.state === "running"),
+              )}
+              onClick={async () => {
+                try {
+                  const job = await createRenderJob(projectId, composition.id);
+                  setRenderJobs((current) => [job, ...current.filter((item) => item.id !== job.id)]);
+                  setRenderJobError(null);
+                } catch (error) {
+                  setRenderJobError(error instanceof Error ? error.message : "Lighting bake failed.");
+                }
+              }}
+            >
+              Bake LED animation
+            </button>
+            {renderJobs.filter((job) => job.composition_id === composition.id).slice(0, 3).map((job) => (
+              <small key={job.id} role={job.state === "failed" ? "alert" : undefined}>
+                LED bake · revision {job.source_revision} · {job.state}
+                {job.error ? ` · ${job.error}` : ""}
+              </small>
+            ))}
+            {renderJobError && <small role="alert">{renderJobError}</small>}
             <strong>Lighting author layers</strong>
             {spaceLightingLayers.map((layer) => (
               <button
@@ -3916,11 +3965,20 @@ export function TimelineEditor({
                               ? {
                                   ...layer,
                                   spatial: {
-                                    ...layer.spatial,
-                                    primitive: event.target
-                                      .value as NonNullable<
-                                      LightingAuthorLayer["spatial"]
-                                    >["primitive"],
+                                    ...(event.target.value === "ripple"
+                                      ? {
+                                          primitive: "ripple" as const,
+                                          coordinate_space: "surface_local" as const,
+                                          origin: [composition.width / 2, composition.height / 2] as [number, number],
+                                          speed: 1, ring_width: 0.5,
+                                          color: layer.spatial.color, repeat_ms: null,
+                                        }
+                                      : {
+                                          primitive: event.target.value as Exclude<NonNullable<LightingAuthorLayer["spatial"]>["primitive"], "ripple">,
+                                          color: layer.spatial.color, end_color: "#000000",
+                                          seed: 1, position: [0.5, 0.5] as [number, number],
+                                          size: [0.25, 0.25] as [number, number], radius: 0.5,
+                                        }),
                                   },
                                 }
                               : layer,
@@ -3933,8 +3991,21 @@ export function TimelineEditor({
                       <option value="radial_gradient">Radial gradient</option>
                       <option value="shape">Shape</option>
                       <option value="procedural_noise">Procedural noise</option>
+                      <option value="ripple">2D expanding ripple</option>
                     </select>
                   </label>
+                )}
+                {selectedLightingLayer.spatial?.primitive === "ripple" && (
+                  <RippleEffectEditor
+                    disabled={!canEdit}
+                    effect={selectedLightingLayer.spatial}
+                    onChange={(spatial) => setLightingAuthorLayers((current) => ({
+                      ...current,
+                      [editingSpaceId]: spaceLightingLayers.map((layer) =>
+                        layer.id === selectedLightingLayer.id ? { ...layer, spatial } : layer,
+                      ),
+                    }))}
+                  />
                 )}
                 {selectedLightingLayer.path && (
                   <label>
@@ -4111,6 +4182,23 @@ export function TimelineEditor({
                 }
               />
             </label>
+            {selectedTransformLayer.kind !== "audio" && (
+              <label>
+                Media playback
+                <select
+                  aria-label="Media playback"
+                  disabled={!canEdit}
+                  value={selectedTransformLayer.playback ?? "hold"}
+                  onChange={(event) => updateTransformLayer(selectedTransformLayer.id, (layer) => ({
+                    ...layer, playback: event.target.value as TransformLayer["playback"],
+                  }))}
+                >
+                  <option value="hold">Hold last frame</option>
+                  <option value="loop">Loop source</option>
+                  <option value="once">Play once, then transparent</option>
+                </select>
+              </label>
+            )}
             <label>
               Layer duration
               <input
@@ -4706,10 +4794,24 @@ export function TimelineEditor({
             </select>
             <input
               aria-label="New transform layer source"
+              list="timeline-overlay-assets"
               placeholder="Asset or composition ID"
               value={newTransformSource}
-              onChange={(event) => setNewTransformSource(event.target.value)}
+              onChange={(event) => {
+                setNewTransformSource(event.target.value);
+                const asset = assets.find((item) => item.id === event.target.value);
+                if (asset?.media_type === "image/gif" || asset?.media_type?.startsWith("video/")) {
+                  setNewTransformKind("video");
+                } else if (asset?.media_type?.startsWith("image/")) {
+                  setNewTransformKind("image");
+                }
+              }}
             />
+            <datalist id="timeline-overlay-assets">
+              {assets.filter((asset) => asset.status === "ready").map((asset) => (
+                <option key={asset.id} value={asset.id}>{asset.name} · {asset.media_type}</option>
+              ))}
+            </datalist>
             <select
               aria-label="New transform layer track"
               value={newTransformTrack}
@@ -4741,6 +4843,17 @@ export function TimelineEditor({
                 localPlayhead + newTransformDuration > duration
               }
               onClick={() => {
+                const asset = assets.find((item) => item.id === newTransformSource.trim());
+                const keyframe = defaultTransformKeyframe(0);
+                if (composition?.space_kind === "lighting_surface" && asset?.metadata) {
+                  const sourceWidth = numberValue(asset.metadata.width, 0);
+                  const sourceHeight = numberValue(asset.metadata.height, 0);
+                  if (sourceWidth > 0 && sourceHeight > 0) {
+                    const scale = Math.min(composition.width / sourceWidth, composition.height / sourceHeight);
+                    keyframe.position = [composition.width / 2, composition.height / 2];
+                    keyframe.scale = [scale, scale];
+                  }
+                }
                 const layer: TransformLayer = {
                   layer_schema_version: 1,
                   id: crypto.randomUUID(),
@@ -4752,6 +4865,8 @@ export function TimelineEditor({
                   duration_ms: newTransformDuration,
                   in_point_ms: 0,
                   out_point_ms: newTransformDuration,
+                  playback: composition?.space_kind === "lighting_surface" && newTransformKind === "video"
+                    ? "loop" : "hold",
                   z_index: spaceTransformLayers.length,
                   fade_in_ms: 0,
                   fade_out_ms: 0,
@@ -4775,7 +4890,7 @@ export function TimelineEditor({
                   keyframes:
                     newTransformKind === "audio"
                       ? []
-                      : [defaultTransformKeyframe(0)],
+                      : [keyframe],
                 };
                 setTransformLayers((current) => ({
                   ...current,
@@ -5931,17 +6046,40 @@ function applySceneOperationalPolicy(
 
 function LightingSurfaceCompositionPreview({
   composition,
+  installationId,
   mapperExport,
   projectId,
   timestampMs,
+  onMoveMedia,
 }: {
   composition: Composition;
+  installationId: string | null;
   mapperExport: InstallationMapperExport;
   projectId: string;
   timestampMs: number;
+  onMoveMedia?: (position: [number, number]) => void;
 }) {
   const [preview, setPreview] = useState<LightingPreview | null>(null);
   const [previewError, setPreviewError] = useState<string | null>(null);
+  const [photos, setPhotos] = useState<InstallationPhoto[]>([]);
+  const [geometry, setGeometry] = useState<InstallationGeometry[]>([]);
+  const [photoError, setPhotoError] = useState<string | null>(null);
+  useEffect(() => {
+    if (!installationId) return;
+    let active = true;
+    Promise.all([getInstallationPhotos(installationId), getInstallationGeometry(installationId)])
+      .then(([photoResult, geometryResult]) => {
+        if (active) {
+          setPhotos(photoResult);
+          setGeometry(geometryResult);
+          setPhotoError(null);
+        }
+      })
+      .catch((error: unknown) => {
+        if (active) setPhotoError(error instanceof Error ? error.message : "Photo preview failed.");
+      });
+    return () => { active = false; };
+  }, [installationId]);
   useEffect(() => {
     let active = true;
     void getLightingPreview(projectId, composition.id, timestampMs)
@@ -5992,7 +6130,23 @@ function LightingSurfaceCompositionPreview({
         aria-label="Lighting surface local composition canvas"
         role="img"
         viewBox="0 0 800 400"
+        onPointerDown={(event) => {
+          const matrix = event.currentTarget.getScreenCTM();
+          if (!onMoveMedia || !matrix) return;
+          const point = new DOMPoint(event.clientX, event.clientY).matrixTransform(matrix.inverse());
+          if (point.x >= 0 && point.x <= 800 && point.y >= 0 && point.y <= 400) {
+            onMoveMedia([point.x / 800 * width, point.y / 400 * height]);
+          }
+        }}
       >
+        {preview?.canvas_png_base64 && (
+          <image
+            href={`data:image/png;base64,${preview.canvas_png_base64}`}
+            width="800"
+            height="400"
+            preserveAspectRatio="none"
+          />
+        )}
         {surface.local_points.length >= 3 && (
           <polygon
             className="lighting-composition-boundary"
@@ -6039,6 +6193,7 @@ function LightingSurfaceCompositionPreview({
       <small>
         Stage transform: {surface.stage_matrix.join(", ")}
       </small>
+      {onMoveMedia && <small>Click the logical canvas to position selected media; numeric controls remain available.</small>}
       {preview && (
         <small aria-label="Lighting preview diagnostics">
           {preview.sampling} sampling · normalized channel load{" "}
@@ -6074,6 +6229,13 @@ function LightingSurfaceCompositionPreview({
         </small>
       )}
       {previewError && <small role="alert">{previewError}</small>}
+      {photoError && <small role="alert">{photoError}</small>}
+      <IntegratedPhotoPreview
+        geometry={geometry}
+        mapperExport={{ ...mapperExport, lighting_surfaces: [surface] }}
+        photos={photos}
+        previewBySurface={new Map(preview ? [[surface.semantic_id, preview]] : [])}
+      />
     </section>
   );
 }
@@ -6543,9 +6705,18 @@ function IntegratedPhotoPreview({
               <image
                 height="600"
                 href={installationPhotoUrl(photo.id)}
-                preserveAspectRatio="xMidYMid slice"
+                preserveAspectRatio="none"
                 width="1000"
               />
+              {mapperExport.lighting_surfaces.map((surface) => {
+                const preview = previewBySurface.get(surface.semantic_id);
+                const boundary = photoGeometry.find((item) =>
+                  item.semantic_id === surface.semantic_id && item.points.length >= 4,
+                );
+                return preview && "canvas_png_base64" in preview && preview.canvas_png_base64 && boundary
+                  ? <SurfaceMediaOverlay key={surface.semantic_id} png={preview.canvas_png_base64} corners={boundary.points} />
+                  : null;
+              })}
               {photoGeometry
                 .filter((item) => item.kind === "projector_surface")
                 .map((item) => (
@@ -6923,6 +7094,61 @@ function defaultTransformKeyframe(timeMs: number): TransformKeyframe {
   };
 }
 
+function RippleEffectEditor({
+  effect, disabled, onChange,
+}: {
+  effect: Extract<NonNullable<LightingAuthorLayer["spatial"]>, { primitive: "ripple" }>;
+  disabled: boolean;
+  onChange: (value: Extract<NonNullable<LightingAuthorLayer["spatial"]>, { primitive: "ripple" }>) => void;
+}) {
+  return (
+    <fieldset disabled={disabled}>
+      <legend>2D ripple · installation distance units</legend>
+      <label>
+        Coordinate space
+        <select
+          aria-label="Ripple coordinate space"
+          value={effect.coordinate_space}
+          onChange={(event) => onChange({
+            ...effect, coordinate_space: event.target.value as typeof effect.coordinate_space,
+          })}
+        >
+          <option value="surface_local">Surface local</option>
+          <option value="stage">Shared stage</option>
+        </select>
+      </label>
+      <NumberVectorEditor
+        label="Ripple origin" disabled={disabled} value={effect.origin}
+        onChange={(value) => onChange({ ...effect, origin: [value[0], value[1]] })}
+      />
+      {(["speed", "ring_width"] as const).map((field) => (
+        <label key={field}>
+          {field === "speed" ? "Speed (units/second)" : "Ring width (units)"}
+          <input
+            aria-label={`Ripple ${field}`} type="number" min="0.001" step="0.1"
+            value={effect[field]}
+            onChange={(event) => onChange({ ...effect, [field]: Number(event.target.value) })}
+          />
+        </label>
+      ))}
+      <label>
+        Color
+        <input
+          aria-label="Ripple color" type="color" value={effect.color}
+          onChange={(event) => onChange({ ...effect, color: event.target.value })}
+        />
+      </label>
+      <label>
+        Repeat interval ms (0 = once)
+        <input
+          aria-label="Ripple repeat interval" type="number" min="0" value={effect.repeat_ms ?? 0}
+          onChange={(event) => onChange({ ...effect, repeat_ms: Number(event.target.value) || null })}
+        />
+      </label>
+    </fieldset>
+  );
+}
+
 function interpolationFor(
   kind: TransformKeyframe["interpolation"]["kind"],
 ): TransformKeyframe["interpolation"] {
@@ -6976,6 +7202,8 @@ function transformLayerMap(value: unknown): Record<string, TransformLayer[]> {
                     duration_ms: durationMs,
                     in_point_ms: numberValue(layer.in_point_ms, 0),
                     out_point_ms: numberValue(layer.out_point_ms, durationMs),
+                    playback: layer.playback === "loop" || layer.playback === "once"
+                      ? layer.playback : "hold",
                     z_index: numberValue(layer.z_index, 0),
                     fade_in_ms: numberValue(layer.fade_in_ms, 0),
                     fade_out_ms: numberValue(layer.fade_out_ms, 0),

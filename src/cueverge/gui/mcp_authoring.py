@@ -619,6 +619,10 @@ class McpAuthoringService:
             revision=proposal.base_revision,
             draft=proposal.proposed_draft,
         )
+        if (compiled.package_root / "runtime/lighting-bake-required.json").exists():
+            raise McpAuthoringError(
+                "use preview_spatial_proposal for unmerged lighting; runtime simulation needs bakes"
+            )
         scenario = StoredSimulationScenario(
             id=f"mcp-{proposal.id}",
             project_id=proposal.project_id,

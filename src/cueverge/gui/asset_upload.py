@@ -23,6 +23,7 @@ ALLOWED_MEDIA_TYPES = {
     "audio/ogg",
     "audio/wav",
     "image/jpeg",
+    "image/gif",
     "image/png",
     "image/webp",
     "video/mp4",
@@ -817,6 +818,11 @@ class AssetUploadService:
                 digest,
             )
         review_type, review_suffix = REVIEW_ARTIFACT_TYPES[family]
+        if media_type == "image/gif":
+            review = directory / "review.gif"
+            shutil.copyfile(source, review)
+            artifacts["review"] = self._artifact_metadata(review, media_type, digest)
+            return artifacts
         review = directory / f"review{review_suffix}"
         if family == "video":
             review_arguments = [
@@ -1105,6 +1111,8 @@ def _last_diagnostic(value: str) -> str:
 
 
 def _artifact_suffix(kind: str, media_type: str) -> str:
+    if kind == "review" and media_type == "image/gif":
+        return ".gif"
     if kind == "thumbnail" and media_type == THUMBNAIL_ARTIFACT_TYPE[0]:
         return THUMBNAIL_ARTIFACT_TYPE[1]
     if kind == "waveform" and media_type == WAVEFORM_ARTIFACT_TYPE[0]:

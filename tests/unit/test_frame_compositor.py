@@ -1,4 +1,5 @@
 import wave
+from dataclasses import replace
 from pathlib import Path
 
 import av
@@ -14,6 +15,7 @@ from cueverge.gui.frame_compositor import (
     compose_visual_frame,
     composite_over,
     conform_preview_pixel_format,
+    decode_animated_image,
     decode_audio_stereo_48k,
     decode_still,
     decode_video_frame,
@@ -29,6 +31,76 @@ from cueverge.gui.frame_compositor import (
     to_working_rgba,
     working_to_srgb8,
 )
+
+
+def test_gif_frames_preserve_disposal_transparency_variable_timing_and_looping(
+    tmp_path: Path,
+) -> None:
+    first = Image.new("P", (2, 2))
+    first.putpalette([0, 0, 0, 255, 0, 0, 0, 255, 0] + [0] * (768 - 9))
+    second = first.copy()
+    first.putpixel((0, 0), 1)
+    second.putpixel((1, 1), 2)
+    source = tmp_path / "overlay.gif"
+    first.save(
+        source,
+        save_all=True,
+        append_images=[second],
+        duration=[100, 300],
+        loop=0,
+        transparency=0,
+        disposal=2,
+        optimize=False,
+    )
+    frames, duration = decode_animated_image(
+        str(source),
+        alpha_interpretation="straight",
+        source_color_space="srgb",
+    )
+    assert duration == 400
+    assert [frame.pts_ms for frame in frames] == [0, 100]
+    assert frames[0].image[0, 0].tolist() == [1, 0, 0, 1]
+    assert frames[1].image[0, 0].tolist() == [0, 0, 0, 0]
+    assert frames[1].image[1, 1].tolist() == [0, 1, 0, 1]
+    layer = PreparedVisualLayer(
+        id="gif",
+        source=frames,
+        source_kind="video",
+        start_ms=0,
+        duration_ms=1000,
+        in_point_ms=0,
+        z_index=0,
+        fade_in_ms=0,
+        fade_out_ms=0,
+        playback="loop",
+        source_duration_ms=duration,
+        keyframes=(
+            {
+                "time_ms": 0,
+                "position": [0, 0],
+                "scale": [1, 1],
+                "rotation_deg": 0,
+                "anchor": [0, 0],
+                "opacity": 1,
+                "crop": [0, 0, 0, 0],
+                "interpolation": {"kind": "hold"},
+            },
+        ),
+    )
+
+    def render(timestamp: int, playback: str = "loop") -> np.ndarray:
+        return compose_visual_frame(
+            (replace(layer, playback=playback),),
+            timestamp_ms=timestamp,
+            output_width=2,
+            output_height=2,
+            background_rgb=(0, 0, 0),
+        )[1]
+
+    assert np.array_equal(render(0), render(400))
+    assert not np.array_equal(render(99), render(100))
+    assert np.array_equal(render(100), render(399))
+    assert not render(400, "once")[..., :3].any()
 
 
 def test_straight_and_premultiplied_sources_match_in_working_space() -> None:

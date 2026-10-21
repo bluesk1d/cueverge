@@ -31,17 +31,100 @@ from cueverge.core.models import (
     SegmentReference,
     ShowProgramDefinition,
 )
+from cueverge.lighting.sequence import (
+    MAX_SEQUENCE_BYTES,
+    LightingSequenceReference,
+    LoadedLightingSequence,
+    load_lighting_sequence,
+)
 
 
 class ShowPackageError(ValueError):
     pass
 
 
+def _bind_spatial_sequences(root: Path, scenes: dict[str, LoadedScene]) -> None:
+    manifest = root / "runtime/lighting-sequences.json"
+    if not manifest.exists():
+        return
+    try:
+        records = json.loads(manifest.read_text(encoding="utf-8"))
+        if not isinstance(records, list):
+            raise ValueError("lighting sequence manifest must be a list")
+        grouped: dict[tuple[str, str], list[LoadedLightingSequence]] = {}
+        loaded: dict[str, LoadedLightingSequence] = {}
+        total_bytes = 0
+        for record in records:
+            reference = LightingSequenceReference.model_validate(record)
+            scene = scenes.get(reference.scene_id)
+            if scene is None:
+                raise ValueError("lighting sequence references an unknown scene")
+            output = next(
+                (
+                    item
+                    for item in scene.lighting_outputs
+                    if item.definition.resource == reference.resource
+                ),
+                None,
+            )
+            if output is None or reference.output_indices[-1] >= output.pixel_count:
+                raise ValueError("lighting sequence output mapping is invalid")
+            if (
+                reference.offset_ms + reference.duration_ms * reference.time_scale
+                > scene.definition.duration_ms
+            ):
+                raise ValueError("lighting sequence extends beyond its scene")
+            key = (reference.scene_id, reference.resource)
+            for previous in grouped.get(key, []):
+                other = previous.reference
+                if (
+                    set(reference.output_indices).intersection(other.output_indices)
+                    and reference.offset_ms < other.offset_ms + other.duration_ms * other.time_scale
+                    and other.offset_ms
+                    < reference.offset_ms + reference.duration_ms * reference.time_scale
+                ):
+                    raise ValueError("lighting sequences overlap the same physical pixels")
+            cached = loaded.get(reference.path)
+            if cached is not None:
+                if (
+                    cached.reference.digest_sha256 != reference.digest_sha256
+                    or cached.reference.output_indices != reference.output_indices
+                    or cached.reference.frame_count != reference.frame_count
+                ):
+                    raise ValueError("lighting sequence path has conflicting metadata")
+                sequence = LoadedLightingSequence(reference, cached.data)
+            else:
+                total_bytes += reference.frame_count * len(reference.output_indices) * 3
+                if total_bytes > MAX_SEQUENCE_BYTES:
+                    raise ValueError("package lighting sequences exceed the 256 MiB budget")
+                sequence = load_lighting_sequence(root, reference)
+                loaded[reference.path] = sequence
+            grouped.setdefault(key, []).append(sequence)
+        for scene_id, scene in list(scenes.items()):
+            scenes[scene_id] = scene.model_copy(
+                update={
+                    "lighting_outputs": tuple(
+                        output.model_copy(
+                            update={
+                                "spatial_sequences": tuple(
+                                    grouped.get((scene_id, output.definition.resource), [])
+                                ),
+                            }
+                        )
+                        for output in scene.lighting_outputs
+                    ),
+                }
+            )
+    except (OSError, ValueError, TypeError) as error:
+        raise ShowPackageError(f"invalid spatial lighting package: {error}") from error
+
+
 def load_show_package(package_root: Path) -> SceneCatalog:
     root = package_root.resolve()
     if not root.is_dir():
         raise ShowPackageError(f"show package directory does not exist: {root}")
-
+    if (root / "runtime/lighting-bake-required.json").exists():
+        raise ShowPackageError("spatial lighting requires current bakes before runtime playback")
     installation = _validate_json(
         root / "installation.json",
         InstallationDefinition,
@@ -51,13 +134,13 @@ def load_show_package(package_root: Path) -> SceneCatalog:
     scene_files = sorted(root.glob("scenes/*.json"))
     if not scene_files:
         raise ShowPackageError(f"show package has no scene files: {root / 'scenes'}")
-
     scenes: dict[str, LoadedScene] = {}
     for scene_file in scene_files:
         scene = _validate_scene(scene_file)
         if scene.id in scenes:
             raise ShowPackageError(f"duplicate scene id: {scene.id}")
         scenes[scene.id] = _bind_scene(scene, bindings)
+    _bind_spatial_sequences(root, scenes)
     for loaded_scene in scenes.values():
         lifecycle_references = {
             loaded_scene.definition.completion.target_scene_id,

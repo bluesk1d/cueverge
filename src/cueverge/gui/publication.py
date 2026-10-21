@@ -13,7 +13,8 @@ from pydantic import JsonValue
 from cueverge.gui.artifact_deployment import ArtifactDeploymentService
 from cueverge.gui.asset_upload import AssetUploadService
 from cueverge.gui.compiler import DraftCompiler
-from cueverge.gui.render_jobs import RenderJobService
+from cueverge.gui.mapper_export import MapperExportError
+from cueverge.gui.render_jobs import RenderJobError, RenderJobService
 from cueverge.gui.repository import GuiRepository
 from cueverge.protocol.device_v2 import ArtifactCacheCapability, MediaPlaybackCapability
 
@@ -230,6 +231,10 @@ class PublicationService:
                 )
 
         compositions = _object_map(draft.editor_metadata.get("compositions"))
+        try:
+            self.render_jobs.lighting_artifacts(project_id, revision)
+        except (RenderJobError, MapperExportError, ValueError, OSError) as error:
+            add("lighting_bake_stale", str(error))
         jobs = self.render_jobs.list(project_id)
         artifact_ids: set[str] = set()
         for composition_id in sorted(compositions):
@@ -249,7 +254,7 @@ class PublicationService:
                     "current_bake_missing",
                     f"Composition {composition_id} has no successful bake for revision {revision}.",
                 )
-            else:
+            elif _object_map(compositions[composition_id]).get("space_kind") != "lighting_surface":
                 artifact_ids.add(cast(str, job.artifact_id))
 
         assignments = {
@@ -414,8 +419,10 @@ class PublicationService:
             project_id=project_id,
             revision=revision,
             draft=stored.draft,
+            lighting_artifacts=self.render_jobs.lighting_artifacts(project_id, revision),
         )
         jobs = self.render_jobs.list(project_id)
+        compositions = _object_map(stored.draft.editor_metadata.get("compositions"))
         artifact_ids = tuple(
             sorted(
                 {
@@ -424,6 +431,8 @@ class PublicationService:
                     if job.source_revision == revision
                     and job.state == "completed"
                     and job.artifact_id is not None
+                    and _object_map(compositions.get(job.composition_id)).get("space_kind")
+                    != "lighting_surface"
                 }
             )
         )

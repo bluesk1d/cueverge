@@ -79,7 +79,7 @@ class MapperExportService:
             surfaces = []
             for row in connection.execute(
                 """
-                SELECT s.*, g.semantic_id
+                SELECT s.*, g.semantic_id, g.name
                 FROM lighting_surfaces AS s
                 JOIN installation_geometry AS g ON g.id = s.geometry_id
                 WHERE g.installation_id = ?
@@ -91,6 +91,7 @@ class MapperExportService:
                 surfaces.append(
                     {
                         "semantic_id": str(row["semantic_id"]),
+                        "name": str(row["name"]),
                         "resource": str(row["resource"]),
                         "local_width": float(row["local_width"]),
                         "local_height": float(row["local_height"]),

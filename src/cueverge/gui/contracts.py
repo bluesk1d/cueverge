@@ -15,6 +15,7 @@ from cueverge.core.models import (
     SceneDefinitionV2,
     ShowProgramDefinition,
 )
+from cueverge.gui.spatial_effects import SpatialRipple
 from cueverge.protocol.device_v2 import DeviceCapabilityDocument, DeviceKind
 
 
@@ -499,9 +500,12 @@ def _validate_lighting_author_layers(
                     "radial_gradient",
                     "shape",
                     "procedural_noise",
+                    "ripple",
                 }:
                     raise ValueError("spatial lighting primitive is unsupported")
-                if not isinstance(payload.get("seed"), int):
+                if payload.get("primitive") == "ripple":
+                    SpatialRipple.model_validate(payload)
+                elif not isinstance(payload.get("seed"), int):
                     raise ValueError("spatial lighting seed must be an integer")
             elif mode == "path":
                 if (
@@ -558,7 +562,11 @@ def _validate_transform_layers(
     for space_id, values in raw_layers.items():
         if not isinstance(values, list):
             raise ValueError(f"transform layers for {space_id} must be a list")
-        if values and space_id in compositions:
+        if (
+            values
+            and space_id in compositions
+            and compositions[space_id].get("space_kind") != "lighting_surface"
+        ):
             _validate_render_settings(compositions[space_id].get("render_settings"))
         audio_mix_orders: set[int] = set()
         for value in values:
@@ -575,6 +583,8 @@ def _validate_transform_layers(
             kind = value.get("kind")
             if kind not in {"image", "video", "audio", "composition"}:
                 raise ValueError("transform layer kind is unsupported")
+            if value.get("playback", "hold") not in {"hold", "loop", "once"}:
+                raise ValueError("media playback must be hold, loop, or once")
             source_id = value.get("source_id")
             if not isinstance(source_id, str) or not source_id:
                 raise ValueError("transform layer source ID is required")

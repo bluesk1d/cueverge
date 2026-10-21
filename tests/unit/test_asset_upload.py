@@ -1,9 +1,12 @@
 import hashlib
 import json
+import shutil
 import subprocess
+from io import BytesIO
 from pathlib import Path
 
 import pytest
+from PIL import Image
 from pydantic import SecretStr
 
 import cueverge.gui.asset_upload as asset_upload_module
@@ -16,6 +19,48 @@ from cueverge.gui.asset_upload import (
 from cueverge.gui.config import GuiConfig
 from cueverge.gui.contracts import DraftProject, Role
 from cueverge.gui.repository import GuiRepository
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg is required")
+def test_gif_upload_preserves_animated_review_and_inspects_duration(tmp_path: Path) -> None:
+    _, service, project_id = _service(tmp_path)
+    output = BytesIO()
+    Image.new("RGB", (2, 2), "red").save(
+        output,
+        format="GIF",
+        save_all=True,
+        append_images=[Image.new("RGB", (2, 2), "green")],
+        duration=[100, 300],
+        loop=0,
+    )
+    content = output.getvalue()
+    asset, upload = service.begin(
+        project_id=project_id,
+        name="Animated overlay",
+        original_filename="overlay.gif",
+        media_type="image/gif",
+        total_bytes=len(content),
+        expected_sha256=hashlib.sha256(content).hexdigest(),
+        actor="admin",
+        role=Role.ADMINISTRATOR,
+        occurred_at="2026-10-21T18:00:00Z",
+    )
+    service.append(
+        upload_id=upload.id,
+        offset=0,
+        chunk=content,
+        actor="admin",
+        role=Role.ADMINISTRATOR,
+        occurred_at="2026-10-21T18:00:01Z",
+    )
+    service.process_asset(asset.id, occurred_at="2026-10-21T18:00:02Z")
+    processed = service.get_asset(asset.id)
+    assert processed.status == "ready", processed.error
+    assert processed.metadata is not None
+    assert processed.metadata["duration_ms"] == 400
+    review, media_type = service.get_artifact(asset.id, "review")
+    assert media_type == "image/gif"
+    assert review.read_bytes() == content
 
 
 def test_chunked_upload_resumes_verifies_and_deduplicates(tmp_path: Path) -> None:

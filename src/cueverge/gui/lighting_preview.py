@@ -1,6 +1,11 @@
+import base64
 from collections import Counter
 from dataclasses import replace
+from io import BytesIO
 from typing import cast
+
+import numpy as np
+from PIL import Image
 
 from cueverge.gui.asset_upload import AssetUploadService
 from cueverge.gui.contracts import DraftProject
@@ -11,7 +16,7 @@ from cueverge.gui.lighting_renderer import (
     estimate_device_delivered_colors,
     evaluate_composed_lighting_frame,
 )
-from cueverge.gui.projector_renderer import prepare_media_layers
+from cueverge.gui.projector_renderer import PreparedMedia, prepare_media_layers
 
 
 class LightingPreviewError(RuntimeError):
@@ -27,6 +32,8 @@ def evaluate_lighting_preview(
     assets: AssetUploadService,
     mapper_export: dict[str, object],
     device_reported_scale: float | None = None,
+    prepared_media: PreparedMedia | None = None,
+    include_canvas: bool = False,
 ) -> dict[str, object]:
     metadata = cast(dict[str, object], draft.editor_metadata)
     composition = _mapping(_mapping(metadata.get("compositions")).get(composition_id))
@@ -48,7 +55,7 @@ def evaluate_lighting_preview(
     raw_raster = _mapping(metadata.get("timeline_transform_layers")).get(composition_id, [])
     if not isinstance(raw_raster, list):
         raise LightingPreviewError("lighting raster layers are invalid")
-    prepared = prepare_media_layers(
+    prepared = prepared_media or prepare_media_layers(
         project_id=project_id,
         raw_layers=raw_raster,
         assets=assets,
@@ -121,6 +128,7 @@ def evaluate_lighting_preview(
             pixels=pixels,
             paths=paths,
             fixtures=fixture_points,
+            stage_matrix=stage_matrix,
             sampling=sampling,
             gamma=_number(settings.get("gamma")),
             brightness=_number(settings.get("brightness"))
@@ -139,7 +147,7 @@ def evaluate_lighting_preview(
         author_layer_count=len(author_layers) + len(raster_layers),
         sampling=sampling,
     )
-    return {
+    result: dict[str, object] = {
         "composition_id": composition_id,
         "timestamp_ms": timestamp_ms,
         "surface_semantic_id": surface.get("semantic_id"),
@@ -180,6 +188,16 @@ def evaluate_lighting_preview(
         ],
         "hardware_command_sent": False,
     }
+    if include_canvas:
+        if frame.canvas is None:
+            raise LightingPreviewError("lighting canvas is unavailable")
+        output = BytesIO()
+        Image.fromarray(np.rint(np.clip(frame.canvas, 0, 1) * 255).astype(np.uint8)).save(
+            output,
+            format="PNG",
+        )
+        result["canvas_png_base64"] = base64.b64encode(output.getvalue()).decode("ascii")
+    return result
 
 
 def resolve_lighting_preview_surface(

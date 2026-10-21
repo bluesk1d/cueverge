@@ -1,9 +1,10 @@
+import base64
 import hashlib
 import json
 from collections import defaultdict
 from datetime import UTC, datetime
 from threading import Lock
-from typing import Any, cast
+from typing import Any, Literal, cast
 from urllib.parse import urlsplit
 
 from mcp.server import MCPServer
@@ -12,6 +13,7 @@ from mcp.server.auth.provider import AccessToken, TokenVerifier
 from mcp.server.auth.settings import AuthSettings
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.server.transport_security import TransportSecuritySettings
+from mcp.types import CallToolResult, ImageContent, TextContent
 from pydantic import AnyHttpUrl, JsonValue, ValidationError
 from starlette.applications import Starlette
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
@@ -20,8 +22,12 @@ from starlette.responses import JSONResponse, Response
 
 from cueverge.gui.artifact_deployment import ArtifactDeploymentError
 from cueverge.gui.compiler import CompilationError
-from cueverge.gui.contracts import Role, UpdateRevisionReleaseRequest
+from cueverge.gui.contracts import DraftProject, Role, UpdateRevisionReleaseRequest
 from cueverge.gui.device_session import DeviceSessionError
+from cueverge.gui.lighting_preview import (
+    evaluate_lighting_preview,
+    resolve_lighting_preview_surface,
+)
 from cueverge.gui.mcp_authoring import (
     MAX_ASSET_RESULTS,
     MAX_MCP_PAYLOAD_BYTES,
@@ -35,6 +41,13 @@ from cueverge.gui.mcp_authoring import (
 from cueverge.gui.publication import ApprovalState, PublicationError, PublishedPackage
 from cueverge.gui.repository import ProjectNotFoundError
 from cueverge.gui.service import GuiServices
+from cueverge.gui.spatial_authoring import (
+    layout_digest,
+    lighting_preview_png,
+    propose_effect_draft,
+    spatial_context,
+)
+from cueverge.gui.spatial_effects import SpatialRipple, spatial_effect_catalog
 
 MAX_CONCURRENT_CALLS_PER_TOKEN = 4
 
@@ -279,6 +292,116 @@ def create_mcp_app(services: GuiServices) -> Starlette:
                     for resource in revision.draft.installation.resources
                 ],
             },
+        )
+
+    @server.tool()
+    def get_spatial_layout(pixel_offset: int = 0, pixel_limit: int = 0) -> dict[str, JsonValue]:
+        """Read named LED surfaces, stage geometry, calibration and paged logical samples."""
+        token = _authorize(services, McpScope.READ)
+        revision = services.repository.get_revision(token.project_id)
+        return {
+            "project_id": token.project_id,
+            "revision": revision.revision,
+            **spatial_context(
+                revision.draft,
+                _spatial_mapper(services, revision.draft),
+                pixel_offset=pixel_offset,
+                pixel_limit=pixel_limit,
+            ),
+        }
+
+    @server.tool()
+    def get_spatial_effect_catalog() -> dict[str, object]:
+        """Read typed procedural effect schemas; never invent effect fields or distance units."""
+        _authorize(services, McpScope.READ)
+        return spatial_effect_catalog()
+
+    @server.tool()
+    def propose_spatial_effect(
+        base_revision: int,
+        title: str,
+        expected_layout_digest: str,
+        composition_ids: list[str],
+        effect: SpatialRipple,
+        start_ms: int,
+        duration_ms: int,
+        blend_mode: Literal["replace", "add", "max", "multiply"] = "add",
+        opacity: float = 1,
+    ) -> dict[str, JsonValue]:
+        """Propose a geometric ripple without changing the draft or sending hardware commands."""
+        token = _authorize(services, McpScope.DRAFT_EDIT)
+        revision = services.repository.get_revision(token.project_id)
+        if revision.revision != base_revision:
+            raise McpAuthoringError("working revision changed; fetch project context again")
+        proposed = propose_effect_draft(
+            revision.draft,
+            _spatial_mapper(services, revision.draft),
+            expected_layout_digest=expected_layout_digest,
+            composition_ids=composition_ids,
+            effect=effect,
+            start_ms=start_ms,
+            duration_ms=duration_ms,
+            blend_mode=blend_mode,
+            opacity=opacity,
+        )
+        proposal = services.mcp_authoring.propose_project_revision(
+            project_id=token.project_id,
+            base_revision=base_revision,
+            title=title,
+            kind="timeline_change",
+            proposed_document=proposed.model_dump(mode="json"),
+            client_id=token.client_id,
+            username=token.username,
+        )
+        _audit(services, token, "mcp.proposal.create", proposal.id, "success")
+        return _proposal_result(proposal)
+
+    @server.tool()
+    def preview_spatial_proposal(
+        proposal_id: str,
+        composition_id: str,
+        timestamp_ms: int,
+    ) -> CallToolResult:
+        """Preview isolated lighting as a logical LED image; never send live output."""
+        token = _authorize(services, McpScope.SIMULATION)
+        proposal = _proposal_for_token(services, token, proposal_id)
+        current = services.repository.get_revision(token.project_id)
+        if current.revision != proposal.base_revision:
+            raise McpAuthoringError("proposal is stale relative to the working revision")
+        draft = proposal.proposed_draft
+        if draft.editor_metadata.get("installation_id") != current.draft.editor_metadata.get(
+            "installation_id"
+        ):
+            raise McpAuthoringError("proposal cannot preview another installation")
+        mapper = _spatial_mapper(services, current.draft)
+        expected = draft.editor_metadata.get("spatial_layout_digest")
+        if expected is not None and expected != layout_digest(mapper):
+            raise McpAuthoringError("installation changed since proposal creation")
+        preview = evaluate_lighting_preview(
+            project_id=token.project_id,
+            draft=draft,
+            composition_id=composition_id,
+            timestamp_ms=timestamp_ms,
+            assets=services.asset_upload,
+            mapper_export=mapper,
+        )
+        if len(json.dumps(preview).encode()) > 200 * 1024:
+            raise McpAuthoringError("preview exceeds the 200 KiB response budget")
+        surface = resolve_lighting_preview_surface(
+            draft=draft,
+            composition_id=composition_id,
+            mapper_export=mapper,
+        )
+        return CallToolResult(
+            content=[
+                TextContent(type="text", text=json.dumps(preview)),
+                ImageContent(
+                    type="image",
+                    mime_type="image/png",
+                    data=base64.b64encode(lighting_preview_png(preview, surface)).decode("ascii"),
+                ),
+            ],
+            structured_content=preview,
         )
 
     @server.tool()
@@ -713,6 +836,13 @@ def _proposal_for_token(
     if proposal.project_id != token.project_id:
         raise McpAuthoringError("proposal is outside the token project")
     return proposal
+
+
+def _spatial_mapper(services: GuiServices, draft: DraftProject) -> dict[str, object]:
+    installation_id = draft.editor_metadata.get("installation_id")
+    if not isinstance(installation_id, str):
+        raise McpAuthoringError("project has no mapped installation")
+    return services.mapper_export.export(installation_id)
 
 
 def _token_currently_authorized(

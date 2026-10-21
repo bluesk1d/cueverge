@@ -7,7 +7,7 @@ from typing import Literal, cast
 import av
 import numpy as np
 from numpy.typing import NDArray
-from PIL import Image
+from PIL import Image, ImageSequence
 
 AlphaInterpretation = Literal["opaque", "straight", "premultiplied"]
 SourceColorSpace = Literal["srgb", "bt709", "linear_srgb"]
@@ -34,9 +34,67 @@ class TimedVideoFrame:
 
 
 @dataclass(frozen=True)
+class VideoFrameSource:
+    path: str
+    duration_ms: int
+    alpha_interpretation: AlphaInterpretation
+    source_color_space: SourceColorSpace
+
+    def frame_at(self, timestamp_ms: int) -> FloatImage:
+        timestamp_ms = min(timestamp_ms, self.duration_ms - 1)
+        with av.open(self.path, mode="r") as container:
+            stream = container.streams.video[0]
+            if stream.time_base is None:
+                raise ValueError("video stream has no time base")
+            container.seek(
+                int(timestamp_ms / 1000 / stream.time_base),
+                stream=stream,
+                backward=True,
+                any_frame=False,
+            )
+            selected: av.VideoFrame | None = None
+            for frame in container.decode(stream):
+                if not isinstance(frame, av.VideoFrame) or frame.pts is None:
+                    raise ValueError("video frame has no presentation timestamp")
+                if round(float(frame.pts * stream.time_base) * 1000) > timestamp_ms:
+                    break
+                selected = frame
+            if selected is None:
+                raise ValueError("video timestamp precedes the first decodable frame")
+            if selected.width * selected.height * 16 > 256 * 1024 * 1024:
+                raise ValueError("video frame exceeds the 256 MiB decode budget")
+            return decode_video_frame(
+                selected,
+                alpha_interpretation=self.alpha_interpretation,
+                source_color_space=self.source_color_space,
+            )
+
+
+def prepare_video_source(
+    path: str,
+    *,
+    alpha_interpretation: AlphaInterpretation,
+    source_color_space: SourceColorSpace,
+) -> VideoFrameSource:
+    with av.open(path, mode="r") as container:
+        if not container.streams.video:
+            raise ValueError("video source has no video stream")
+        stream = container.streams.video[0]
+        if stream.duration is not None and stream.time_base is not None:
+            duration_ms = round(float(stream.duration * stream.time_base) * 1000)
+        elif container.duration is not None:
+            duration_ms = round(container.duration / 1000)
+        else:
+            raise ValueError("video source has no inspected duration")
+    if duration_ms <= 0:
+        raise ValueError("video source duration must be positive")
+    return VideoFrameSource(path, duration_ms, alpha_interpretation, source_color_space)
+
+
+@dataclass(frozen=True)
 class PreparedVisualLayer:
     id: str
-    source: FloatImage | tuple[TimedVideoFrame, ...]
+    source: FloatImage | tuple[TimedVideoFrame, ...] | VideoFrameSource
     source_kind: Literal["image", "video"]
     start_ms: int
     duration_ms: int
@@ -45,6 +103,39 @@ class PreparedVisualLayer:
     fade_in_ms: int
     fade_out_ms: int
     keyframes: tuple[dict[str, object], ...]
+    playback: Literal["hold", "loop", "once"] = "hold"
+    source_duration_ms: int | None = None
+
+
+def decode_animated_image(
+    path: str,
+    *,
+    alpha_interpretation: AlphaInterpretation,
+    source_color_space: SourceColorSpace,
+) -> tuple[tuple[TimedVideoFrame, ...], int]:
+    frames: list[TimedVideoFrame] = []
+    timestamp_ms = 0
+    decoded_bytes = 0
+    with Image.open(path) as image:
+        for frame in ImageSequence.Iterator(image):
+            decoded_bytes += frame.width * frame.height * 16
+            if decoded_bytes > 256 * 1024 * 1024:
+                raise ValueError("animated image exceeds the 256 MiB decoded frame budget")
+            duration = frame.info.get("duration")
+            if not isinstance(duration, int) or duration <= 0:
+                raise ValueError("animated image frames require positive durations")
+            frames.append(
+                TimedVideoFrame(
+                    pts_ms=timestamp_ms,
+                    image=to_working_rgba(
+                        np.asarray(frame.convert("RGBA"), dtype=np.uint8),
+                        alpha_interpretation=alpha_interpretation,
+                        source_color_space=source_color_space,
+                    ),
+                )
+            )
+            timestamp_ms += duration
+    return tuple(frames), timestamp_ms
 
 
 @dataclass(frozen=True)
@@ -64,6 +155,8 @@ def decode_still(
     source_color_space: SourceColorSpace,
 ) -> FloatImage:
     with Image.open(path) as image:
+        if image.width * image.height * 16 > 256 * 1024 * 1024:
+            raise ValueError("image exceeds the 256 MiB decoded frame budget")
         rgba = np.asarray(image.convert("RGBA"), dtype=np.uint8)
     return to_working_rgba(
         rgba,
@@ -93,6 +186,7 @@ def decode_video_frames(
     source_color_space: SourceColorSpace,
 ) -> tuple[TimedVideoFrame, ...]:
     decoded: list[TimedVideoFrame] = []
+    decoded_bytes = 0
     with av.open(path, mode="r") as container:
         video_streams = [stream for stream in container.streams if stream.type == "video"]
         if not video_streams:
@@ -105,6 +199,11 @@ def decode_video_frames(
                 raise ValueError("video stream yielded a non-video frame")
             if frame.pts is None:
                 raise ValueError("decoded video frame has no presentation timestamp")
+            decoded_bytes += frame.width * frame.height * 16
+            if decoded_bytes > 256 * 1024 * 1024:
+                raise ValueError(
+                    "video exceeds the 256 MiB decoded frame budget; use a smaller proxy"
+                )
             decoded.append(
                 TimedVideoFrame(
                     pts_ms=round(float(frame.pts * stream.time_base) * 1000),
@@ -306,8 +405,17 @@ def compose_visual_frame(
         if local_time < 0 or local_time >= layer.duration_ms:
             continue
         source_time = layer.in_point_ms + local_time
+        if layer.source_kind == "video" and layer.playback != "hold":
+            if layer.source_duration_ms is None or layer.source_duration_ms <= 0:
+                raise ValueError("timed media playback requires a source duration")
+            if layer.playback == "loop":
+                source_time %= layer.source_duration_ms
+            elif source_time >= layer.source_duration_ms:
+                continue
         source = (
-            layer.source
+            layer.source.frame_at(source_time)
+            if isinstance(layer.source, VideoFrameSource)
+            else layer.source
             if layer.source_kind == "image"
             else select_video_frame(
                 cast(tuple[TimedVideoFrame, ...], layer.source),

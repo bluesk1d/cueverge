@@ -2823,8 +2823,15 @@ p {
   font-size: 12px;
 }
 
-.geometry-mapper__canvas-tools input[type="range"] {
-  width: 100px;
+.geometry-mapper__canvas-tools button[aria-pressed="true"] {
+  border-color: var(--cv-primary);
+  color: var(--cv-primary);
+}
+
+.geometry-mapper__canvas-tools output {
+  min-width: 4ch;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
 }
 
 @container (max-width: 850px) {
@@ -2997,6 +3004,23 @@ p {
   background: #05080d;
   border: 1px solid var(--cv-border);
   cursor: crosshair;
+  touch-action: none;
+  user-select: none;
+}
+
+.geometry-canvas:focus-visible {
+  outline: 2px solid var(--cv-primary);
+  outline-offset: 2px;
+}
+
+.geometry-canvas--hand,
+.geometry-canvas--hand .geometry-corner-handle {
+  cursor: grab;
+}
+
+.geometry-canvas--panning,
+.geometry-canvas--panning .geometry-corner-handle {
+  cursor: grabbing;
 }
 
 .stage-coverage {

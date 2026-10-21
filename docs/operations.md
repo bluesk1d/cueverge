@@ -82,6 +82,41 @@ rejected proposals never affect the working revision or live show.
 
 ### Direct editing and deployment through chat
 
+For geometry-aware LED authoring, MCP also provides:
+
+- `get_spatial_layout`: project-bound named surfaces, local/stage transforms,
+  LED coverage, calibration revisions, semantic landmarks, existing
+  compositions/layers, and a layout digest. Logical samples are opt-in and
+  paginated with `pixel_offset` and `pixel_limit` (maximum 500); normal
+  authoring context omits physical indices.
+- `get_spatial_effect_catalog`: authoritative parameter schemas. The initial
+  procedural effect is a true expanding 2D `ripple`, distinct from the
+  existing ordered-strip ripple.
+- `propose_spatial_effect`: adds a typed ripple to 1-16 mapped lighting
+  compositions in an isolated proposal. Supply the base revision and
+  `expected_layout_digest`; stale geometry is rejected. An effect is placed
+  above existing author layers by precedence. Use stage coordinates to share
+  one origin and propagation speed across surfaces. Coordinates and speeds
+  use installation units, which must not be assumed to be metres.
+- `preview_spatial_proposal`: requires `simulation`, evaluates the isolated
+  candidate at an explicit timestamp, and returns diagnostics, samples, and a
+  logical LED PNG image. It sends no hardware commands, rejects stale
+  revisions/layouts, and does not merge or activate anything.
+
+For example, resolve "front of house" and "front door" from the spatial context,
+select the corresponding lighting compositions, propose a stage-space ripple,
+and preview representative timestamps before normal validation, human
+approval and merge. Ambiguous origins, missing geometry, and units require
+clarification rather than invented coordinates. The existing
+`propose_project_revision` tool can also propose image/video/GIF transform
+layers; use ready project asset IDs and the normal transform schema.
+
+After merging, save/bake each affected lighting composition in the timeline.
+Full runtime simulation/publication needs current bakes; use the spatial
+preview tool to inspect unmerged lighting proposals. Preview responses are
+bounded to 200 KiB of structured diagnostics; spatial context is also bounded
+to 100 surfaces. Scope grants and the human approval boundary are unchanged.
+
 1. Use `get_project_draft` to read the complete working draft and revision,
    and `get_authoring_schema` for its authoritative JSON Schema.
 2. With `direct_edit`, call `update_project_draft(base_revision, draft)` with the
@@ -348,7 +383,7 @@ the supplied image. Paths below are relative to that GUI data root:
   state, and audit history.
 - `assets/`: original uploads, installation reference images, and generated
   review artifacts.
-- `renders/`: immutable baked projector artifacts.
+- `renders/`: immutable baked projector artifacts and LED frame sequences.
 - `compiled/` and `published/`: reproducible compiled and published packages.
 - `device-ca/`: the controller device CA and signing key material.
 - `simulation-scenarios/`: saved deterministic rehearsal inputs.

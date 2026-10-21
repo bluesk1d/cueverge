@@ -1836,8 +1836,12 @@ def create_gui_router(services: GuiServices) -> APIRouter:
                 project_id=project_id,
                 revision=revision.revision,
                 draft=revision.draft,
+                lighting_artifacts=services.render_jobs.lighting_artifacts(
+                    project_id,
+                    revision.revision,
+                ),
             )
-        except CompilationError as error:
+        except (CompilationError, RenderJobError, MapperExportError, AssetUploadError) as error:
             services.repository.append_audit(
                 actor=identity.username,
                 action="project.compile",
@@ -1860,7 +1864,9 @@ def create_gui_router(services: GuiServices) -> APIRouter:
                             "message": diagnostic.message,
                             "object_ids": diagnostic.object_ids,
                         }
-                        for diagnostic in error.diagnostics
+                        for diagnostic in (
+                            error.diagnostics if isinstance(error, CompilationError) else ()
+                        )
                     ],
                 },
             ) from error
@@ -2166,6 +2172,7 @@ def create_gui_router(services: GuiServices) -> APIRouter:
         project_id: str,
         composition_id: str,
         timestamp_ms: int,
+        include_canvas: bool = False,
     ) -> dict[str, object]:
         try:
             revision = services.repository.get_revision(project_id)
@@ -2203,11 +2210,23 @@ def create_gui_router(services: GuiServices) -> APIRouter:
                 assets=services.asset_upload,
                 mapper_export=mapper_export,
                 device_reported_scale=device_reported_scale,
+                include_canvas=include_canvas,
             )
         except ProjectNotFoundError as error:
             raise HTTPException(
                 status_code=404,
                 detail={"code": "project_not_found"},
+            ) from error
+        except (
+            LightingPreviewError,
+            ProjectorRenderError,
+            AssetUploadError,
+            MapperExportError,
+            ValueError,
+        ) as error:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "lighting_preview_invalid", "message": str(error)},
             ) from error
 
     @router.get(
@@ -2433,12 +2452,23 @@ def create_gui_router(services: GuiServices) -> APIRouter:
                 project_id=project_id,
                 revision=revision.revision,
                 draft=revision.draft,
+                lighting_artifacts=services.render_jobs.lighting_artifacts(
+                    project_id,
+                    revision.revision,
+                ),
             )
             result = await services.simulation_scenarios.run(
                 scenario,
                 load_show_package(compiled.package_root),
             )
-        except (ProjectNotFoundError, SimulationScenarioError) as error:
+        except (
+            ProjectNotFoundError,
+            SimulationScenarioError,
+            RenderJobError,
+            MapperExportError,
+            AssetUploadError,
+            CompilationError,
+        ) as error:
             raise HTTPException(
                 status_code=422,
                 detail={"code": "simulation_scenario_invalid", "message": str(error)},

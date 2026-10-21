@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, cast
 
+import numpy as np
+
 from cueverge.gui.asset_upload import AssetUploadService
 from cueverge.gui.contracts import DraftProject
 from cueverge.gui.frame_compositor import (
@@ -14,12 +16,14 @@ from cueverge.gui.frame_compositor import (
     PreparedVisualLayer,
     SourceColorSpace,
     TimedVideoFrame,
+    VideoFrameSource,
     compose_visual_frame,
     conform_preview_pixel_format,
+    decode_animated_image,
     decode_audio_stereo_48k,
     decode_still,
-    decode_video_frames,
     mix_audio_layers,
+    prepare_video_source,
 )
 from cueverge.gui.render_encoder import EncoderProfile, encode_output_set
 
@@ -174,6 +178,7 @@ def prepare_media_layers(
     visual_layers: list[PreparedVisualLayer] = []
     audio_layers: list[AudioLayerBuffer] = []
     source_checksums: dict[str, str] = {}
+    decoded_bytes = 0
     for item in raw_layers:
         layer = _mapping(item)
         source_id = _string(layer.get("source_id"))
@@ -184,6 +189,7 @@ def prepare_media_layers(
         assert asset.digest_sha256 is not None
         assert asset.media_type is not None
         source_checksums[source_id] = asset.digest_sha256
+        source_duration_ms: int | None = None
         if kind == "audio":
             if not asset.media_type.startswith(("audio/", "video/")):
                 raise ProjectorRenderError("audio layer source has no audio media")
@@ -210,8 +216,15 @@ def prepare_media_layers(
             continue
         alpha = _alpha_interpretation(layer.get("alpha_interpretation"))
         color_space = _source_color_space(layer.get("source_color_space"))
-        source: FloatImage | tuple[TimedVideoFrame, ...]
-        if kind == "image":
+        source: FloatImage | tuple[TimedVideoFrame, ...] | VideoFrameSource
+        if kind in {"image", "video"} and asset.media_type == "image/gif":
+            source, source_duration_ms = decode_animated_image(
+                str(path),
+                alpha_interpretation=alpha,
+                source_color_space=color_space,
+            )
+            kind = "video"
+        elif kind == "image":
             if not asset.media_type.startswith("image/"):
                 raise ProjectorRenderError("image layer source is not an image")
             source = decode_still(
@@ -222,11 +235,12 @@ def prepare_media_layers(
         elif kind == "video":
             if not asset.media_type.startswith("video/"):
                 raise ProjectorRenderError("video layer source is not a video")
-            source = decode_video_frames(
+            source = prepare_video_source(
                 str(path),
                 alpha_interpretation=alpha,
                 source_color_space=color_space,
             )
+            source_duration_ms = source.duration_ms
         else:
             raise ProjectorRenderError(
                 f"media layer kind {kind!r} is not supported by the projector runner"
@@ -234,6 +248,12 @@ def prepare_media_layers(
         keyframes = layer.get("keyframes")
         if not isinstance(keyframes, list):
             raise ProjectorRenderError("visual layer keyframes are invalid")
+        if isinstance(source, np.ndarray):
+            decoded_bytes += source.nbytes
+        elif isinstance(source, tuple):
+            decoded_bytes += sum(frame.image.nbytes for frame in source)
+        if decoded_bytes > 256 * 1024 * 1024:
+            raise ProjectorRenderError("media layers exceed the 256 MiB decoded frame budget")
         visual_layers.append(
             PreparedVisualLayer(
                 id=_string(layer.get("id")),
@@ -246,6 +266,11 @@ def prepare_media_layers(
                 fade_in_ms=_integer(layer.get("fade_in_ms")),
                 fade_out_ms=_integer(layer.get("fade_out_ms")),
                 keyframes=tuple(_mapping(keyframe) for keyframe in keyframes),
+                playback=cast(
+                    "Literal['hold', 'loop', 'once']",
+                    layer.get("playback", "hold"),
+                ),
+                source_duration_ms=source_duration_ms,
             )
         )
     return PreparedMedia(

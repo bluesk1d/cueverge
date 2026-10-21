@@ -152,6 +152,20 @@ The reference uploaded for this walkthrough was a generated courtyard diagram.*
 5. Keep photo coordinates, physical/shared-stage coordinates, native
    projector pixels, and lighting-local coordinates distinct.
 
+Navigate the reference image with **Hand** and drag, or temporarily pan using
+**Space + drag** or the middle mouse button. **Draw** restores point placement
+and handle editing. The mouse wheel zooms around the cursor; trackpad pinch
+zooms and two-finger scrolling pans. Wheel-device detection is heuristic:
+small pixel-scroll deltas pan, while larger vertical wheel steps zoom.
+**Shift + wheel** explicitly pans on any device. On touchscreens, use two
+fingers to pan and pinch to zoom; one finger follows the selected tool.
+Navigation never changes saved geometry and is also available to read-only users.
+
+Use **-**, **+**, and **Fit view** in the canvas toolbar to navigate without
+gestures. With the canvas focused, arrow keys pan, **+/-** zoom, and **0**
+fits the view. Zoom ranges from 50% to 800%; **Fit view** resets zoom and pan
+without clearing points. Changing the reference photo also resets the view.
+
 For a planar projector surface:
 
 - Select its **Projector resource** and actual native width/height.
@@ -404,6 +418,41 @@ For schema details and creative planning, see the
 [show creator guide](show-creator-guide.md) and [scene schema](scene-schema.md).
 
 ### Render and inspect compositions
+
+#### Spatial LED media overlays
+
+Open a mapped **Lighting surface** composition. Add an image, video, or GIF
+using **New transform layer source** (the asset picker lists ready uploads).
+GIF assets use timed frames rather than a still image. Newly added video/GIF
+lighting overlays loop by default; **Media playback** can instead hold the last
+frame or play once and become transparent. The layer's interval controls how
+long it contributes to the composition.
+
+Use position, scale, rotation, opacity, crop and transform keyframes to place
+and animate the source. Clicking the logical lighting canvas positions the
+selected media keyframe. Save the timeline to refresh backend evaluation.
+The logical canvas shows the composed content, while installation-photo
+previews show both a translucent source reference on four-corner surfaces and
+the resulting sampled LED colors. The translucent reference is not a claim
+that the installation has a dense video display.
+
+Choose **Bake LED animation** after saving. Lighting bakes run at 30 fps and
+contain final sampled/calibrated RGB values in verified physical order. They
+are included in compiled/published controller packages, not sent as videos to
+media agents. Media, draft, geometry or calibration changes require a current
+bake before compilation/publication. Missing bakes cannot silently fall back
+to a strip effect at runtime.
+
+A **2D expanding ripple** lighting author layer can generate content without
+media. Its origin, speed and ring width use installation distance units, not
+strip indices or photo pixels. Use **Shared stage** for a common origin across
+surfaces. These units are not assumed to be metres.
+
+Preview and baking send no hardware commands. The existing explicit package
+handover/controller restart and live-output permissions still apply. Published
+package activation alone does not replace the controller's scene catalog.
+
+#### Projector media renders
 
 For content that requires a baked render:
 

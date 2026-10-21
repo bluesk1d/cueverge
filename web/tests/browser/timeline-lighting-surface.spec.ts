@@ -3,14 +3,52 @@ import { expect, test } from "@playwright/test";
 let savedDraft: Record<string, unknown> | null = null;
 
 test("lighting surface composition edits in logical local space", async ({ page }) => {
+  savedDraft = null;
   await page.route("**/api/gui/v1/**", async (route) => {
     const request = route.request();
     const url = new URL(route.request().url());
+    if (url.pathname.endsWith("/installation-photos/front-photo/content")) {
+      return route.fulfill({
+        contentType: "image/png",
+        body: Buffer.from(
+          "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAFklEQVR4nGP8z8DAwMDAxMDAwMDAAAANHQEDasKb6QAAAABJRU5ErkJggg==",
+          "base64",
+        ),
+      });
+    }
     if (url.pathname.endsWith("/projects/demo-project/assets")) {
-      return route.fulfill({ json: [] });
+      return route.fulfill({ json: [{
+        id: "overlay-gif", name: "Ghost GIF", status: "ready", media_type: "image/gif",
+        project_id: "demo-project", current_revision: 1, metadata_revision: 1,
+        owner: null, license: null, provenance: null, review_status: "unreviewed",
+        expires_on: null, folder: null, tags: [], favorite: false, error: null,
+        digest_sha256: "a".repeat(64), size_bytes: 100,
+        original_filename: "overlay.gif", scan_status: "clean",
+        original_file_status: "available", artifact_faults: [], references: [], unused: false,
+        created_at: "2026-10-21T18:00:00Z", updated_at: "2026-10-21T18:00:00Z",
+        metadata: { width: 2, height: 2, duration_ms: 400 },
+      }] });
     }
     if (url.pathname.endsWith("/projects/demo-project/render-jobs")) {
+      if (request.method() === "POST") {
+        return route.fulfill({ json: {
+          id: "led-bake", composition_id: "lighting-composition", source_revision: 2,
+          state: "completed", progress: 1, error: null, artifact_id: "lighting-artifact",
+        } });
+      }
       return route.fulfill({ json: [] });
+    }
+    if (url.pathname.endsWith("/demo-installation/photos")) {
+      return route.fulfill({ json: [{
+        id: "front-photo", name: "House front", installation_id: "demo-installation",
+      }] });
+    }
+    if (url.pathname.endsWith("/demo-installation/geometry")) {
+      return route.fulfill({ json: [{
+        id: "front-geometry", semantic_id: "facade-surface", kind: "pixel_segment",
+        photo_id: "front-photo", hidden: false,
+        points: [{ x: 0.1, y: 0.1 }, { x: 0.9, y: 0.1 }, { x: 0.9, y: 0.9 }, { x: 0.1, y: 0.9 }],
+      }] });
     }
     if (url.pathname.endsWith("/compositions/lighting-composition/lighting-preview")) {
       const timestampMs = Number(url.searchParams.get("timestamp_ms"));
@@ -40,6 +78,20 @@ test("lighting surface composition edits in logical local space", async ({ page 
   await expect(
     page.getByRole("img", { name: "Lighting surface local composition canvas" }),
   ).toBeVisible();
+  await expect(page.getByRole("img", { name: "Integrated simulation on House front" })).toBeVisible();
+  const photoHref = await page
+    .getByRole("img", { name: "Integrated simulation on House front" })
+    .locator("image")
+    .first()
+    .getAttribute("href");
+  expect(photoHref).not.toBeNull();
+  await expect.poll(() => page.evaluate(async (href) => {
+    const image = new Image();
+    image.src = href;
+    await image.decode();
+    return image.naturalWidth;
+  }, photoHref!)).toBe(2);
+  await expect(page.getByLabel("Spatial media overlay on installation photo")).toBeVisible();
   await expect(page.getByText(/local 4×2/)).toBeVisible();
   await expect(page.getByText(/3 calibrated samples/)).toBeVisible();
   await expect(page.getByText(/physical indices remain installation diagnostics only/)).toBeVisible();
@@ -124,6 +176,26 @@ test("lighting surface composition edits in logical local space", async ({ page 
     false,
     true,
   ]);
+
+  await addLightingLayer(page, "Front door ripple", "spatial");
+  await page.getByLabel("Spatial lighting primitive").selectOption("ripple");
+  await page.getByLabel("Ripple coordinate space").selectOption("stage");
+  await page.getByLabel("Ripple speed").fill("2");
+  await page.getByLabel("Ripple ring_width").fill("0.6");
+  await page.getByLabel("New transform layer name").fill("Ghost overlay");
+  await page.getByLabel("New transform layer source").fill("overlay-gif");
+  await expect(page.getByLabel("New transform layer kind")).toHaveValue("video");
+  await page.getByLabel("New transform layer track").selectOption("surface-track");
+  await page.getByLabel("New transform layer duration").fill("1000");
+  await page.getByRole("button", { name: "Add transform layer", exact: true }).click();
+  await expect(page.getByLabel("Media playback")).toHaveValue("loop");
+  await expect(page.getByLabel("Position 1")).toHaveValue("2");
+  await expect(page.getByLabel("Position 2")).toHaveValue("1");
+  await page.getByRole("button", { name: "Save timeline" }).click();
+  await expect.poll(() => JSON.stringify(savedDraft)).toContain('"ring_width":0.6');
+  await expect.poll(() => JSON.stringify(savedDraft)).toContain('"playback":"loop"');
+  await page.getByRole("button", { name: "Bake LED animation" }).click();
+  await expect(page.getByText("LED bake · revision 2 · completed")).toBeVisible();
 });
 
 async function addLightingLayer(
@@ -296,6 +368,7 @@ function mapperExport() {
 
 function lightingPreview(timestampMs: number) {
   return {
+    canvas_png_base64: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aUgAAAABJRU5ErkJggg==",
     composition_id: "lighting-composition",
     timestamp_ms: timestampMs,
     surface_semantic_id: "facade-surface",

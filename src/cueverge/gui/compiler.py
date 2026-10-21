@@ -44,6 +44,7 @@ class DraftCompiler:
         project_id: str,
         revision: int,
         draft: DraftProject,
+        lighting_artifacts: dict[str, Path] | None = None,
     ) -> CompiledPackage:
         project_root = self.output_root / project_id
         project_root.mkdir(parents=True, exist_ok=True)
@@ -68,10 +69,21 @@ class DraftCompiler:
                     )
             runtime_root = temporary_root / "runtime"
             runtime_root.mkdir()
+            graph = _compile_composition_graph(draft)
             _write_json(
                 runtime_root / "composition-graph.json",
-                _compile_composition_graph(draft),
+                graph,
             )
+            if lighting_artifacts:
+                try:
+                    _install_lighting_sequences(
+                        temporary_root,
+                        graph,
+                        lighting_artifacts,
+                        revision,
+                    )
+                except (OSError, ValueError, KeyError) as error:
+                    raise CompilationError(f"invalid lighting bake: {error}") from error
             _write_json(
                 runtime_root / "render-pipeline.json",
                 render_pipeline_manifest(),
@@ -89,6 +101,17 @@ class DraftCompiler:
                 catalog = load_show_package(temporary_root)
             except ShowPackageError as error:
                 raise CompilationError(str(error)) from error
+            lighting_compositions = {
+                key
+                for key, value in _object_map(draft.editor_metadata.get("compositions")).items()
+                if value.get("space_kind") == "lighting_surface"
+            }
+            missing_bakes = lighting_compositions.difference(lighting_artifacts or {})
+            if missing_bakes:
+                _write_json(
+                    runtime_root / "lighting-bake-required.json",
+                    {"composition_ids": sorted(missing_bakes)},
+                )
             files = tuple(
                 str(path.relative_to(temporary_root))
                 for path in sorted(path for path in temporary_root.rglob("*") if path.is_file())
@@ -116,6 +139,64 @@ def _write_json(path: Path, value: object) -> None:
         json.dumps(value, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
+
+
+def _install_lighting_sequences(
+    root: Path,
+    graph: dict[str, object],
+    artifacts: dict[str, Path],
+    revision: int,
+) -> None:
+    from cueverge.lighting.sequence import LightingSequenceReference, load_lighting_sequence
+
+    references: list[dict[str, object]] = []
+    attached: set[str] = set()
+    for scene in _list_items(graph.get("scenes")):
+        record = _object(scene)
+        for raw_context in _list_items(record.get("contexts")):
+            context = _object(raw_context)
+            composition_id = str(context.get("editing_space_id"))
+            if composition_id not in artifacts:
+                continue
+            if any(_number(value, 0) != 0 for value in _object(context.get("placement")).values()):
+                raise CompilationError("lighting sequence instances cannot override placement")
+            source = artifacts[composition_id]
+            manifest = json.loads((source / "manifest.json").read_text(encoding="utf-8"))
+            if manifest.get("source_revision") != revision:
+                raise CompilationError("lighting bake belongs to a different draft revision")
+            if manifest.get("composition_id") != composition_id:
+                raise CompilationError("lighting bake belongs to a different composition")
+            relative = f"runtime/lighting/{composition_id.encode().hex()}.rgb"
+            reference = LightingSequenceReference.model_validate(
+                {
+                    **{
+                        key: manifest[key]
+                        for key in (
+                            "resource",
+                            "output_indices",
+                            "frame_rate",
+                            "frame_count",
+                            "duration_ms",
+                            "digest_sha256",
+                        )
+                    },
+                    "path": "frames.rgb",
+                    "scene_id": record["scene_id"],
+                    "offset_ms": context["offset_ms"],
+                    "time_scale": context["time_scale"],
+                }
+            )
+            load_lighting_sequence(source, reference)
+            destination = root / relative
+            destination.parent.mkdir(exist_ok=True)
+            shutil.copyfile(source / "frames.rgb", destination)
+            references.append({**reference.model_dump(mode="json"), "path": relative})
+            attached.add(composition_id)
+    if attached != set(artifacts):
+        raise CompilationError(
+            "every lighting composition must be attached to a scene before publication"
+        )
+    _write_json(root / "runtime/lighting-sequences.json", references)
 
 
 def _package_digest(root: Path, files: tuple[str, ...]) -> str:
@@ -614,6 +695,12 @@ def _list_map(value: object) -> dict[str, list[Any]]:
 
 def _object(value: object) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
+
+
+def _list_items(value: object) -> list[Any]:
+    if not isinstance(value, list):
+        raise CompilationError("compiled composition graph requires lists")
+    return value
 
 
 def _string_items(value: object) -> tuple[str, ...]:

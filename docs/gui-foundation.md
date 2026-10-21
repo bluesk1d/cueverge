@@ -1138,6 +1138,40 @@ the hardware result.
 
 ### Spatial lighting composition foundation
 
+Lighting-surface media layers accept timed GIFs as well as images and videos.
+GIF decoding coalesces disposal/transparency and preserves variable frame
+durations; `playback` explicitly selects `hold` (the schema default), `loop`,
+or `once` (transparent after the source ends). The GUI defaults new timed
+lighting overlays to `loop`. GIF review artifacts retain the original animated
+GIF rather than flattening to JPEG. Video evaluation seeks to presentation
+timestamps without retaining the complete decoded clip. Still/GIF retained
+frames and individual video frames have explicit 256 MiB decode budgets.
+
+Lighting render jobs reuse the preview evaluator and prepare source layers
+once. They stream 30 fps RGB frames into immutable, content-addressed
+artifacts, with a 256 MiB sequence limit, progress, cancellation and mapping
+freshness checks. Cache keys cover source checksums, the saved revision,
+layers, composition settings and mapper export. Publication rejects stale
+bakes and copies checksummed sequences into the controller package; LED
+sequences are not media-agent deployment members.
+
+The package loader validates sequence size, checksum, pixel indices,
+scene intervals and conflicting overlaps before playback, with a total
+256 MiB loaded-sequence budget. Controller rendering selects frames from
+authoritative scene/output time, respecting composition offsets and time
+scales. Baked samples replace mapped indices over timeline/persistent
+baselines; unmapped pixels retain those baselines. Legacy synthetic sweeps
+are not used as the background of a spatial output. Output-level brightness
+limits still apply. Unbaked structural proposal packages carry an explicit
+marker that the runtime loader rejects.
+
+The procedural spatial `ripple` computes distance in surface-local or shared
+stage coordinates and supports origin, speed, ring width, color and optional
+repeat interval. It uses the same raster composition/sampling/calibration
+pipeline as media overlays, not ordered-strip ripple semantics. MCP exposes
+bounded layout context, the typed effect schema, isolated proposals and
+no-hardware image previews; see [MCP-assisted authoring](operations.md#mcp-assisted-authoring).
+
 GUI-06 begins by reusing GUI-04 composition navigation for lighting surfaces.
 The photo-free mapper export now includes each mapped pixel's authoritative
 surface-local coordinate in addition to stage position, plus surface-local

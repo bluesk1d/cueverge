@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import { OutputTraversalPreview } from "../components/OutputTraversalPreview";
+import { GeometryCanvas } from "../components/GeometryCanvas";
 import { photoPixelPoints } from "../components/pixel-traversal";
 import {
   Cable,
@@ -666,15 +667,10 @@ function GeometryMapper({
       item.second_geometry_id === overlapSecondId,
   );
   const [snap, setSnap] = useState(true);
-  const [zoom, setZoom] = useState(1);
-  const [panX, setPanX] = useState(0);
-  const [panY, setPanY] = useState(0);
   const [mapping, setMapping] = useState<ProjectorMapping | undefined>();
   const [lightingSurface, setLightingSurface] = useState<LightingSurface | undefined>();
-  const [dragIndex, setDragIndex] = useState<number | null>(null);
   const [alignmentPreview, setAlignmentPreview] = useState<MaintenancePreview | null>(null);
   const [previewError, setPreviewError] = useState<string | null>(null);
-  const suppressClick = useRef(false);
   const [mappingValues, setMappingValues] = useState({
     resource: projectorResources[0] ?? "",
     native_width: 1920,
@@ -2540,13 +2536,6 @@ function GeometryMapper({
                 setLightingSurface(undefined);
               }}>Clear points</button>
               <label><input type="checkbox" checked={snap} onChange={(event) => setSnap(event.target.checked)} />Snap to 1% grid</label>
-              <label>Zoom<input type="range" min="1" max="4" step="0.25" value={zoom} onChange={(event) => setZoom(Number(event.target.value))} /></label>
-              <button onClick={() => { setZoom(1); setPanX(0); setPanY(0); }}>Fit view</button>
-              <details>
-                <summary>Pan view</summary>
-                <label>Pan X<input type="range" min="-500" max="500" value={panX} onChange={(event) => setPanX(Number(event.target.value))} /></label>
-                <label>Pan Y<input type="range" min="-300" max="300" value={panY} onChange={(event) => setPanY(Number(event.target.value))} /></label>
-              </details>
             </div>
           </>
         )}
@@ -2705,19 +2694,12 @@ function GeometryMapper({
               ))}
           </div>
         )}
-        <svg
-          aria-label={`Geometry editor for ${photo.name}`}
+        <GeometryCanvas
+          key={photo.id}
+          label={`Geometry editor for ${photo.name}`}
           className={`geometry-canvas${traversalPreview ? " geometry-canvas--traversal" : ""}${traversalPreview && kind === "path" ? " geometry-canvas--path-traversal" : ""}${simulationOverlay ? " geometry-canvas--simulation" : ""}`}
-          role="img"
-          viewBox={`${panX} ${panY} ${1000 / zoom} ${600 / zoom}`}
-          onClick={(event) => {
-            if (!canEdit) {
-              return;
-            }
-            if (suppressClick.current) {
-              suppressClick.current = false;
-              return;
-            }
+          canEdit={canEdit}
+          onPlacePoint={(point) => {
             const maximum =
               kind === "fixture"
                 ? 1
@@ -2727,72 +2709,30 @@ function GeometryMapper({
             if (points.length >= maximum) {
               return;
             }
-            const bounds = event.currentTarget.getBoundingClientRect();
+            const precision = snap ? 100 : 10000;
             setPoints((current) => [
               ...current,
               {
-                x: Math.max(
-                  0,
-                  Math.min(
-                    1,
-                    Math.round(
-                      ((panX +
-                        ((event.clientX - bounds.left) / bounds.width) * (1000 / zoom)) /
-                        1000) *
-                        (snap ? 100 : 10000),
-                    ) / (snap ? 100 : 10000),
-                  ),
-                ),
-                y: Math.max(
-                  0,
-                  Math.min(
-                    1,
-                    Math.round(
-                      ((panY +
-                        ((event.clientY - bounds.top) / bounds.height) * (600 / zoom)) /
-                        600) *
-                        (snap ? 100 : 10000),
-                    ) / (snap ? 100 : 10000),
-                  ),
-                ),
+                x: Math.max(0, Math.min(1, Math.round(point.x * precision) / precision)),
+                y: Math.max(0, Math.min(1, Math.round(point.y * precision) / precision)),
               },
             ]);
           }}
-          onPointerMove={(event) => {
-            if (dragIndex === null) {
-              return;
-            }
-            const bounds = event.currentTarget.getBoundingClientRect();
+          onMovePoint={(index, point) => {
             const next = {
-              x: Math.max(
-                0,
-                Math.min(
-                  1,
-                  (panX + ((event.clientX - bounds.left) / bounds.width) * (1000 / zoom)) /
-                    1000,
-                ),
-              ),
-              y: Math.max(
-                0,
-                Math.min(
-                  1,
-                  (panY + ((event.clientY - bounds.top) / bounds.height) * (600 / zoom)) /
-                    600,
-                ),
-              ),
+              x: Math.max(0, Math.min(1, point.x)),
+              y: Math.max(0, Math.min(1, point.y)),
             };
             if (snap) {
               next.x = Math.round(next.x * 100) / 100;
               next.y = Math.round(next.y * 100) / 100;
             }
             setPoints((current) =>
-              current.map((point, index) => (index === dragIndex ? next : point)),
+              current.map((point, pointIndex) => (pointIndex === index ? next : point)),
             );
-            suppressClick.current = true;
           }}
-          onPointerUp={() => setDragIndex(null)}
-          onPointerLeave={() => setDragIndex(null)}
         >
+          {(zoom) => <>
           <image
             width="1000"
             height="600"
@@ -2891,11 +2831,8 @@ function GeometryMapper({
                   className="geometry-corner-handle"
                   cx={point.x * 1000}
                   cy={point.y * 600}
-                  r="10"
-                  onPointerDown={(event) => {
-                    event.stopPropagation();
-                    setDragIndex(index);
-                  }}
+                  r={10 / zoom}
+                  data-geometry-point={index}
                 />
                 {kind === "projector_surface" && (
                   <text
@@ -2910,7 +2847,8 @@ function GeometryMapper({
             ))}
             </>
           )}
-        </svg>
+          </>}
+        </GeometryCanvas>
         {simulationOverlay && sideBySideSimulation && secondaryPhoto && (
           <SimulationPhotoCanvas
             geometry={secondarySimulationGeometry}

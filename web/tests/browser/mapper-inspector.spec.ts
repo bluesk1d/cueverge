@@ -31,7 +31,7 @@ test("tracing uses visible labels, one pixel count, and preserves save payloads"
 
   await traceLine(page);
   await inspector.getByRole("button", { name: "Preview traversal", exact: true }).click();
-  await expect(mapper.locator(".geometry-canvas")).toHaveClass(/geometry-canvas--traversal/);
+  await expect(mapper.getByRole("img", { name: "Geometry editor for Front view" })).toHaveClass(/geometry-canvas--traversal/);
   expect(writes.maintenance).toBe(0);
   await inspector.getByRole("button", { name: "Save segment", exact: true }).click();
   await expect.poll(() => writes.geometry).toMatchObject({
@@ -142,6 +142,139 @@ async function traceLine(page: Page) {
   await canvas.click({ position: { x: bounds!.width * 0.1, y: bounds!.height * 0.3 } });
   await canvas.click({ position: { x: bounds!.width * 0.8, y: bounds!.height * 0.3 } });
 }
+
+test("wheel zoom anchors the cursor and placement uses the transformed SVG coordinates", async ({ page }) => {
+  await setupMapper(page);
+  const canvas = page.getByRole("img", { name: "Geometry editor for Front view" });
+  await canvas.scrollIntoViewIfNeeded();
+  const bounds = (await canvas.boundingBox())!;
+  const cursor = { x: Math.round(bounds.x + bounds.width * 0.7), y: Math.round(bounds.y + bounds.height * 0.4) };
+  const worldAtCursor = () => canvas.evaluate((element, cursor) => {
+    const svg = element as SVGSVGElement;
+    return new DOMPoint(cursor.x, cursor.y).matrixTransform(svg.getScreenCTM()!.inverse()).toJSON();
+  }, cursor);
+  const before = await worldAtCursor();
+  await page.mouse.move(cursor.x, cursor.y);
+  await page.mouse.wheel(0, -100);
+  await expect(page.getByLabel("Canvas zoom")).not.toHaveText("100%");
+  const after = await worldAtCursor();
+  expect(after.x).toBeCloseTo(before.x, 3);
+  expect(after.y).toBeCloseTo(before.y, 3);
+  await page.mouse.click(cursor.x, cursor.y);
+  const handle = canvas.locator(".geometry-corner-handle");
+  await expect(handle).toHaveCount(1);
+  expect(Number(await handle.getAttribute("cx"))).toBeCloseTo(Math.round(before.x / 10) * 10, 3);
+  expect(Number(await handle.getAttribute("cy"))).toBeCloseTo(Math.round(before.y / 6) * 6, 3);
+
+  const radius = Number(await handle.getAttribute("r"));
+  const zoom = Number((await page.getByLabel("Canvas zoom").textContent())!.replace("%", "")) / 100;
+  expect(radius * zoom).toBeCloseTo(10, 1);
+  await page.getByRole("button", { name: "Fit view", exact: true }).click();
+  await expect(canvas).toHaveAttribute("viewBox", "0 0 1000 600");
+  await expect(handle).toHaveCount(1);
+});
+
+test("Hand, Space and middle-button drags pan without creating or moving points", async ({ page }) => {
+  await setupMapper(page);
+  const canvas = page.getByRole("img", { name: "Geometry editor for Front view" });
+  await traceLine(page);
+  const original = await canvas.locator(".geometry-corner-handle").evaluateAll(
+    (handles) => handles.map((handle) => [handle.getAttribute("cx"), handle.getAttribute("cy")]),
+  );
+  const bounds = (await canvas.boundingBox())!;
+  const x = bounds.x + bounds.width * 0.5;
+  const y = bounds.y + bounds.height * 0.5;
+  for (const method of ["hand", "space", "middle"]) {
+    await page.getByRole("button", { name: "Fit view", exact: true }).click();
+    await page.getByRole("button", { name: method === "hand" ? "Hand" : "Draw", exact: true }).click();
+    await canvas.focus();
+    await page.mouse.move(x, y);
+    if (method === "space") await page.keyboard.down("Space");
+    const button = method === "middle" ? "middle" : "left";
+    await page.mouse.down({ button });
+    await page.mouse.move(x + 50, y + 25, { steps: 4 });
+    await page.mouse.up({ button });
+    if (method === "space") await page.keyboard.up("Space");
+    await expect(canvas).not.toHaveAttribute("viewBox", "0 0 1000 600");
+    expect(await canvas.locator(".geometry-corner-handle").evaluateAll(
+      (handles) => handles.map((handle) => [handle.getAttribute("cx"), handle.getAttribute("cy")]),
+    )).toEqual(original);
+  }
+  await page.getByRole("button", { name: "Fit view", exact: true }).click();
+  await page.getByRole("button", { name: "Draw", exact: true }).click();
+  await page.mouse.click(x, y);
+  await expect(canvas.locator(".geometry-corner-handle")).toHaveCount(3);
+});
+
+test("point dragging survives leaving the canvas and works after zoom and letterboxing", async ({ page }) => {
+  await setupMapper(page);
+  const canvas = page.getByRole("img", { name: "Geometry editor for Front view" });
+  // Force letterboxing to verify screen-to-world conversion rather than rect ratios.
+  await canvas.evaluate((element) => { (element as SVGSVGElement).style.height = "420px"; });
+  await traceLine(page);
+  await page.getByRole("button", { name: "Zoom in", exact: true }).click();
+  const handle = canvas.locator(".geometry-corner-handle").first();
+  const start = (await handle.boundingBox())!;
+  await page.mouse.move(start.x + start.width / 2, start.y + start.height / 2);
+  await page.mouse.down();
+  const bounds = (await canvas.boundingBox())!;
+  await page.mouse.move(bounds.x - 20, bounds.y - 20, { steps: 3 });
+  await page.mouse.move(bounds.x + bounds.width * 0.5, bounds.y + bounds.height * 0.5, { steps: 3 });
+  await page.mouse.up();
+  await expect(canvas.locator(".geometry-corner-handle")).toHaveCount(2);
+  await expect(handle).toHaveAttribute("cx", "500");
+  await expect(handle).toHaveAttribute("cy", "300");
+});
+
+test("trackpad scrolling pans, pinch zooms, and keyboard navigation has bounded zoom", async ({ page }) => {
+  await setupMapper(page);
+  const canvas = page.getByRole("img", { name: "Geometry editor for Front view" });
+  await canvas.scrollIntoViewIfNeeded();
+  const bounds = (await canvas.boundingBox())!;
+  await page.mouse.move(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
+  await page.mouse.wheel(12, 8);
+  await expect(canvas).not.toHaveAttribute("viewBox", "0 0 1000 600");
+  await expect(page.getByLabel("Canvas zoom")).toHaveText("100%");
+  await page.keyboard.down("Control");
+  await page.mouse.wheel(0, -20);
+  await page.keyboard.up("Control");
+  await expect(page.getByLabel("Canvas zoom")).not.toHaveText("100%");
+  await canvas.focus();
+  await page.keyboard.press("0");
+  await expect(canvas).toHaveAttribute("viewBox", "0 0 1000 600");
+  await page.keyboard.press("ArrowRight");
+  await expect(canvas).toHaveAttribute("viewBox", "40 0 1000 600");
+  for (let index = 0; index < 20; index++) await page.keyboard.press("+");
+  await expect(page.getByLabel("Canvas zoom")).toHaveText("800%");
+  await expect(page.getByRole("button", { name: "Zoom in", exact: true })).toBeDisabled();
+  for (let index = 0; index < 20; index++) await page.keyboard.press("-");
+  await expect(page.getByLabel("Canvas zoom")).toHaveText("50%");
+  await expect(page.getByRole("button", { name: "Zoom out", exact: true })).toBeDisabled();
+  await expect(canvas.locator(".geometry-corner-handle")).toHaveCount(0);
+});
+
+test("two-finger touch pans and pinches without a stray geometry point", async ({ page }) => {
+  await setupMapper(page);
+  const canvas = page.getByRole("img", { name: "Geometry editor for Front view" });
+  await canvas.scrollIntoViewIfNeeded();
+  const bounds = (await canvas.boundingBox())!;
+  const x = bounds.x + bounds.width / 2;
+  const y = bounds.y + bounds.height / 2;
+  const session = await page.context().newCDPSession(page);
+  await session.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: x - 40, y, id: 1 }, { x: x + 40, y, id: 2 }] });
+  await session.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: x - 70, y: y + 20, id: 1 }, { x: x + 90, y: y + 20, id: 2 }] });
+  await session.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+  await expect(page.getByLabel("Canvas zoom")).not.toHaveText("100%");
+  await expect(canvas).not.toHaveAttribute("viewBox", "0 0 1000 600");
+  await expect(canvas.locator(".geometry-corner-handle")).toHaveCount(0);
+  await session.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y, id: 1 }] });
+  await session.send("Input.dispatchTouchEvent", { type: "touchCancel", touchPoints: [] });
+  await expect(canvas.locator(".geometry-corner-handle")).toHaveCount(0);
+  await session.detach();
+  await page.getByRole("button", { name: "Fit view", exact: true }).click();
+  await canvas.click({ position: { x: bounds.width / 2, y: bounds.height / 2 } });
+  await expect(canvas.locator(".geometry-corner-handle")).toHaveCount(1);
+});
 
 async function setupMapper(page: Page) {
   const writes = {

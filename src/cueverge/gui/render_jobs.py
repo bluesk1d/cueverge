@@ -11,6 +11,7 @@ from typing import Literal, cast
 from uuid import uuid4
 
 from cueverge.gui.asset_upload import AssetUploadService
+from cueverge.gui.lighting_bake import render_lighting_composition
 from cueverge.gui.mapper_export import MapperExportService
 from cueverge.gui.projector_overlap import (
     ProjectorOverlapService,
@@ -301,7 +302,41 @@ class RenderJobService:
             composition = _mapping(
                 _mapping(revision.draft.editor_metadata.get("compositions")).get(job.composition_id)
             )
-            if composition.get("space_kind") == "stage":
+            if composition.get("space_kind") == "lighting_surface":
+                inputs = self._render_inputs(
+                    revision.draft.editor_metadata,
+                    job.composition_id,
+                    job.project_id,
+                )
+                if (
+                    _cache_key(
+                        composition=inputs.composition,
+                        source_checksums=inputs.source_checksums,
+                        source_revision=job.source_revision,
+                        environment=inputs.environment,
+                    )
+                    != job.cache_key
+                ):
+                    raise RenderJobError("lighting mapping changed after the bake was queued")
+                manifest = render_lighting_composition(
+                    project_id=job.project_id,
+                    source_revision=job.source_revision,
+                    draft=revision.draft,
+                    composition_id=job.composition_id,
+                    assets=self.assets,
+                    mapper_export=_mapping(inputs.environment["mapper_export"]),
+                    output_directory=self.output_root / "sets",
+                    should_cancel=lambda: self._cancel_requested(job.id),
+                    on_progress=lambda value: self._set_progress(job.id, value),
+                )
+                current = self._render_inputs(
+                    revision.draft.editor_metadata,
+                    job.composition_id,
+                    job.project_id,
+                )
+                if current != inputs:
+                    raise RenderJobError("lighting mapping changed during baking; retry the bake")
+            elif composition.get("space_kind") == "stage":
                 mapper, coverage, overlaps, admission = self._stage_inputs(
                     revision.draft.editor_metadata,
                 )
@@ -334,7 +369,10 @@ class RenderJobService:
             self._set_progress(job.id, 0.95)
             self._promote(job, manifest, output_path)
         except Exception as error:
-            self._mark_failed(job.id, str(error))
+            if self._cancel_requested(job.id):
+                self._mark_canceled(job.id)
+            else:
+                self._mark_failed(job.id, str(error))
 
     def _promote(
         self,
@@ -437,10 +475,10 @@ class RenderJobService:
         if not composition:
             raise RenderJobError("composition does not exist")
         space_kind = composition.get("space_kind")
-        if space_kind not in {"projector_native", "stage"}:
+        if space_kind not in {"projector_native", "stage", "lighting_surface"}:
             raise RenderJobError("composition space cannot be rendered")
         layers = _mapping(editor_metadata.get("timeline_transform_layers")).get(composition_id, [])
-        if not isinstance(layers, list) or not layers:
+        if not isinstance(layers, list) or (not layers and space_kind != "lighting_surface"):
             raise RenderJobError("composition has no media layers")
         checksums: dict[str, str] = {}
         for item in layers:
@@ -448,11 +486,27 @@ class RenderJobService:
             source_id = layer.get("source_id")
             if not isinstance(source_id, str):
                 raise RenderJobError("media layer source ID is invalid")
-            asset = self.assets.get_asset(source_id)
+            asset = (
+                self.assets.get_original(source_id)[0]
+                if space_kind == "lighting_surface"
+                else self.assets.get_asset(source_id)
+            )
             if asset.project_id != project_id or asset.digest_sha256 is None:
                 raise RenderJobError("media layer source is unavailable")
             checksums[source_id] = asset.digest_sha256
         environment: dict[str, object] = {}
+        if space_kind == "lighting_surface":
+            installation_id = editor_metadata.get("installation_id")
+            if not isinstance(installation_id, str) or self.mapper_export is None:
+                raise RenderJobError("lighting bake requires a mapped installation")
+            environment = {
+                "mapper_export": self.mapper_export.export(installation_id),
+                "transform_layers": layers,
+                "author_layers": _mapping(editor_metadata.get("lighting_author_layers")).get(
+                    composition_id,
+                    [],
+                ),
+            }
         if space_kind == "stage":
             mapper, _, overlaps, admission = self._stage_inputs(editor_metadata)
             if not admission.allowed:
@@ -471,6 +525,35 @@ class RenderJobService:
                 ),
             }
         return RenderInputs(composition, checksums, environment)
+
+    def lighting_artifacts(self, project_id: str, revision: int) -> dict[str, Path]:
+        stored = self.repository.get_revision(project_id, revision)
+        artifacts: dict[str, Path] = {}
+        for composition_id, raw in _mapping(
+            stored.draft.editor_metadata.get("compositions")
+        ).items():
+            if _mapping(raw).get("space_kind") != "lighting_surface":
+                continue
+            inputs = self._render_inputs(stored.draft.editor_metadata, composition_id, project_id)
+            key = _cache_key(
+                composition=inputs.composition,
+                source_checksums=inputs.source_checksums,
+                source_revision=revision,
+                environment=inputs.environment,
+            )
+            with self._connect() as connection:
+                row = connection.execute(
+                    "SELECT output_path FROM render_artifacts "
+                    "WHERE project_id = ? AND cache_key = ?",
+                    (project_id, key),
+                ).fetchone()
+            if row is None or not Path(str(row["output_path"])).is_dir():
+                raise RenderJobError(
+                    f"lighting composition {composition_id} needs a current bake; "
+                    "media, authoring or installation calibration may have changed"
+                )
+            artifacts[composition_id] = Path(str(row["output_path"]))
+        return artifacts
 
     def _stage_inputs(
         self,
@@ -548,6 +631,8 @@ class RenderJobService:
 
 
 def _estimate_reservation(composition: dict[str, object]) -> int:
+    if composition.get("space_kind") == "lighting_surface":
+        return 256 * 1024 * 1024
     settings = _mapping(composition.get("render_settings"))
     width = _integer(settings.get("render_width"))
     height = _integer(settings.get("render_height"))

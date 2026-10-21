@@ -3465,6 +3465,163 @@ def _mcp_fixture(tmp_path: Path) -> tuple[ControllerRuntime, GuiServices, str]:
     return runtime, services, project.project.id
 
 
+def test_mcp_spatial_context_proposal_and_image_preview_are_isolated(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime, services, project_id = _mcp_fixture(tmp_path)
+    installation_id = services.repository.get_runtime_installation().id
+    document = _draft(
+        editor_metadata={
+            "installation_id": installation_id,
+            "compositions": {
+                "front": {
+                    "id": "front",
+                    "name": "Front of house",
+                    "space_kind": "lighting_surface",
+                    "target_id": "facade",
+                    "width": 4,
+                    "height": 2,
+                    "duration_ms": 4000,
+                    "children": [],
+                    "lighting_settings": {
+                        "canvas_width": 8,
+                        "canvas_height": 4,
+                        "sampling": "nearest",
+                        "gamma": 1,
+                        "brightness": 1,
+                    },
+                },
+            },
+            "scene_compositions": {"ambient": ["front"]},
+        }
+    )
+    services.repository.update_draft(
+        project_id=project_id,
+        expected_revision=1,
+        draft=DraftProject.model_validate(document),
+        actor="admin",
+        role=Role.ADMINISTRATOR,
+        occurred_at=datetime.now(UTC).isoformat(),
+    )
+    mapper: dict[str, Any] = {
+        "lighting_surfaces": [
+            {
+                "semantic_id": "facade",
+                "name": "Front of house",
+                "resource": "roofline.demo",
+                "local_width": 4,
+                "local_height": 2,
+                "stage_matrix": [1, 0, 0, 1, 0, 0],
+                "brightness_limit": 0.5,
+                "mapping_revision": 1,
+                "calibration_id": "calibrated",
+                "pixels": [
+                    {
+                        "output_index": 7,
+                        "local_x": 1,
+                        "local_y": 1,
+                        "stage_x": 1,
+                        "stage_y": 1,
+                        "footprint_width": 0.1,
+                        "footprint_height": 0.1,
+                    },
+                    {
+                        "output_index": 0,
+                        "local_x": 3,
+                        "local_y": 1,
+                        "stage_x": 3,
+                        "stage_y": 1,
+                        "footprint_width": 0.1,
+                        "footprint_height": 0.1,
+                    },
+                ],
+            }
+        ],
+        "fixtures": [{"semantic_id": "front-door", "name": "Front door", "stage_points": [[1, 1]]}],
+        "paths": [],
+    }
+    monkeypatch.setattr(services.mapper_export, "export", lambda _: mapper)
+    token = _mcp_token(
+        services,
+        project_id,
+        (McpScope.READ, McpScope.DRAFT_EDIT, McpScope.SIMULATION),
+    )
+    read_only = _mcp_token(services, project_id, (McpScope.READ,))
+    with TestClient(
+        create_app(runtime, gui_services=services), base_url="http://localhost"
+    ) as client:
+        context = _mcp_tool(client, token, "get_spatial_layout", pixel_limit=1)
+        assert context["isError"] is False
+        layout = context["structuredContent"]
+        assert layout["surfaces"][0]["name"] == "Front of house"
+        assert layout["pixel_page"]["next_offset"] == 1
+        catalog = _mcp_tool(client, token, "get_spatial_effect_catalog")
+        assert "ripple" in catalog["structuredContent"]["effects"]
+        arguments = {
+            "base_revision": 2,
+            "title": "Front door ripple",
+            "expected_layout_digest": layout["layout_digest"],
+            "composition_ids": ["front"],
+            "effect": {
+                "primitive": "ripple",
+                "coordinate_space": "stage",
+                "origin": [1, 1],
+                "speed": 1,
+                "ring_width": 1,
+                "color": "#4080FF",
+            },
+            "start_ms": 0,
+            "duration_ms": 4000,
+        }
+        assert (
+            _mcp_tool(client, read_only, "propose_spatial_effect", **arguments)["isError"] is True
+        )
+        result = _mcp_tool(client, token, "propose_spatial_effect", **arguments)
+        assert result["isError"] is False
+        proposal_id = result["structuredContent"]["proposal_id"]
+        assert result["structuredContent"]["requires_human_approval"] is True
+        assert services.repository.get_revision(project_id).revision == 2
+        assert services.repository.get_revision(project_id).draft == DraftProject.model_validate(
+            document
+        )
+        preview = _mcp_tool(
+            client,
+            token,
+            "preview_spatial_proposal",
+            proposal_id=proposal_id,
+            composition_id="front",
+            timestamp_ms=500,
+        )
+        assert preview["isError"] is False
+        assert preview["structuredContent"]["hardware_command_sent"] is False
+        assert preview["content"][1]["type"] == "image"
+        assert preview["content"][1]["mimeType"] == "image/png"
+        assert (
+            _mcp_tool(
+                client,
+                read_only,
+                "preview_spatial_proposal",
+                proposal_id=proposal_id,
+                composition_id="front",
+                timestamp_ms=500,
+            )["isError"]
+            is True
+        )
+        mapper["lighting_surfaces"][0]["mapping_revision"] = 2
+        assert (
+            _mcp_tool(
+                client,
+                token,
+                "preview_spatial_proposal",
+                proposal_id=proposal_id,
+                composition_id="front",
+                timestamp_ms=500,
+            )["isError"]
+            is True
+        )
+
+
 def _mcp_token(
     services: GuiServices,
     project_id: str,
@@ -3504,29 +3661,47 @@ def test_physical_output_test_api_streams_and_disarms_without_publishing(tmp_pat
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as receiver:
         receiver.bind(("127.0.0.1", 0))
         receiver.settimeout(1)
-        runtime = ControllerRuntime(sink=FrameSinkRouter({
-            "roofline.demo": DdpUdpSink(
-                "127.0.0.1", port=receiver.getsockname()[1], expected_pixel_count=8,
-            ),
-        }))
+        runtime = ControllerRuntime(
+            sink=FrameSinkRouter(
+                {
+                    "roofline.demo": DdpUdpSink(
+                        "127.0.0.1",
+                        port=receiver.getsockname()[1],
+                        expected_pixel_count=8,
+                    ),
+                }
+            )
+        )
         services = _services(tmp_path, runtime)
         with TestClient(create_app(runtime, gui_services=services)) as client:
             assert client.get("/api/gui/v1/maintenance/output-tests").status_code == 401
             _login(client)
             body = {
-                "resource": "roofline.demo", "confirmation": "roofline.demo",
-                "duration_seconds": 5, "speed": 30, "use_mapping": False,
+                "resource": "roofline.demo",
+                "confirmation": "roofline.demo",
+                "duration_seconds": 5,
+                "speed": 30,
+                "use_mapping": False,
             }
-            assert client.post(
-                "/api/gui/v1/maintenance/output-tests", json=body,
-                headers={"Origin": ORIGIN},
-            ).status_code == 403
-            assert client.post(
-                "/api/gui/v1/maintenance/output-tests", json=body,
-                headers=_mutation_headers(client),
-            ).status_code == 409
+            assert (
+                client.post(
+                    "/api/gui/v1/maintenance/output-tests",
+                    json=body,
+                    headers={"Origin": ORIGIN},
+                ).status_code
+                == 403
+            )
+            assert (
+                client.post(
+                    "/api/gui/v1/maintenance/output-tests",
+                    json=body,
+                    headers=_mutation_headers(client),
+                ).status_code
+                == 409
+            )
             client.post(
-                "/api/gui/v1/operate/actions", json={"action": "maintenance"},
+                "/api/gui/v1/operate/actions",
+                json={"action": "maintenance"},
                 headers=_mutation_headers(client),
             )
             available = client.get("/api/gui/v1/maintenance/output-tests").json()
@@ -3538,7 +3713,8 @@ def test_physical_output_test_api_streams_and_disarms_without_publishing(tmp_pat
             )
             assert rejected.status_code == 422
             started = client.post(
-                "/api/gui/v1/maintenance/output-tests", json=body,
+                "/api/gui/v1/maintenance/output-tests",
+                json=body,
                 headers=_mutation_headers(client),
             )
             assert started.status_code == 201, started.text
@@ -3546,19 +3722,31 @@ def test_physical_output_test_api_streams_and_disarms_without_publishing(tmp_pat
             assert test["simulation_only"] is False
             assert test["frames_sent"] >= 1
             assert receiver.recv(1024)[10:13] == bytes([255, 255, 255])
-            assert client.post(
-                "/api/gui/v1/maintenance/output-tests", json=body,
-                headers=_mutation_headers(client),
-            ).status_code == 409
-            assert client.post(
-                "/api/gui/v1/maintenance/output-arms",
-                json={key: body[key] for key in ("resource", "confirmation", "duration_seconds")},
-                headers=_mutation_headers(client),
-            ).status_code == 409
-            assert client.post(
-                "/api/gui/v1/maintenance/output-tests/not-the-current-test/stop",
-                headers=_mutation_headers(client),
-            ).status_code == 404
+            assert (
+                client.post(
+                    "/api/gui/v1/maintenance/output-tests",
+                    json=body,
+                    headers=_mutation_headers(client),
+                ).status_code
+                == 409
+            )
+            assert (
+                client.post(
+                    "/api/gui/v1/maintenance/output-arms",
+                    json={
+                        key: body[key] for key in ("resource", "confirmation", "duration_seconds")
+                    },
+                    headers=_mutation_headers(client),
+                ).status_code
+                == 409
+            )
+            assert (
+                client.post(
+                    "/api/gui/v1/maintenance/output-tests/not-the-current-test/stop",
+                    headers=_mutation_headers(client),
+                ).status_code
+                == 404
+            )
             stopped = client.post(
                 f"/api/gui/v1/maintenance/output-arms/{test['arm_id']}/stop",
                 headers=_mutation_headers(client),
@@ -3579,26 +3767,37 @@ def test_physical_output_tests_require_operator_role(tmp_path: Path, role: Role)
     services = _services(tmp_path, runtime, role=role)
     with TestClient(create_app(runtime, gui_services=services)) as client:
         _login(client)
-        assert client.post(
-            "/api/gui/v1/maintenance/output-tests",
-            json={"resource": "roofline.demo", "confirmation": "roofline.demo"},
-            headers=_mutation_headers(client),
-        ).status_code == 403
-        assert client.post(
-            "/api/gui/v1/maintenance/output-tests/any/stop",
-            headers=_mutation_headers(client),
-        ).status_code == 403
+        assert (
+            client.post(
+                "/api/gui/v1/maintenance/output-tests",
+                json={"resource": "roofline.demo", "confirmation": "roofline.demo"},
+                headers=_mutation_headers(client),
+            ).status_code
+            == 403
+        )
+        assert (
+            client.post(
+                "/api/gui/v1/maintenance/output-tests/any/stop",
+                headers=_mutation_headers(client),
+            ).status_code
+            == 403
+        )
 
 
 def test_physical_test_overview_excludes_unconfigured_or_mismatched_drivers(tmp_path: Path) -> None:
-    runtime = ControllerRuntime(sink=FrameSinkRouter({
-        "roofline.demo": DdpUdpSink("127.0.0.1", expected_pixel_count=99),
-    }))
+    runtime = ControllerRuntime(
+        sink=FrameSinkRouter(
+            {
+                "roofline.demo": DdpUdpSink("127.0.0.1", expected_pixel_count=99),
+            }
+        )
+    )
     with TestClient(create_app(runtime, gui_services=_services(tmp_path, runtime))) as client:
         _login(client)
         assert client.get("/api/gui/v1/maintenance/output-tests").json()["outputs"] == []
         client.post(
-            "/api/gui/v1/operate/actions", json={"action": "maintenance"},
+            "/api/gui/v1/operate/actions",
+            json={"action": "maintenance"},
             headers=_mutation_headers(client),
         )
         rejected = client.post(
