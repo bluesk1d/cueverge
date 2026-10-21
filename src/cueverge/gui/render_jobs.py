@@ -101,8 +101,11 @@ class RenderJobService:
         project_id: str,
         composition_id: str,
         actor: str,
+        expected_revision: int | None = None,
     ) -> StoredRenderJob:
         revision = self.repository.get_revision(project_id)
+        if expected_revision is not None and revision.revision != expected_revision:
+            raise RenderJobError("working revision changed; fetch project context before baking")
         inputs = self._render_inputs(
             revision.draft.editor_metadata,
             composition_id,

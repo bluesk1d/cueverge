@@ -6,6 +6,7 @@ import wave
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
+from unittest.mock import patch
 
 import av
 import numpy as np
@@ -19,6 +20,7 @@ from cueverge.gui.artifact_deployment import ArtifactDeploymentService
 from cueverge.gui.asset_upload import AssetUploadService
 from cueverge.gui.compiler import DraftCompiler
 from cueverge.gui.contracts import DraftProject, Role
+from cueverge.gui.frame_compositor import compose_visual_frame
 from cueverge.gui.projector_overlap import StoredProjectorOverlap
 from cueverge.gui.projector_renderer import ProjectorRenderError
 from cueverge.gui.publication import PublicationService
@@ -289,18 +291,26 @@ def test_installation_overlay_bakes_one_animation_for_projectors_and_leds(
             sample = cast(list[dict[str, object]], sampled_surface["samples"])[0]
             assert list(rendered[cast(int, sample["output_index"])]) == sample["color"]
         assert rendered[0] == (0, 0, 0)
-        projector = preview_stage_composition_member(
-            project_id="demo-project",
-            source_revision=2,
-            draft=draft,
-            composition_id="stage-composition",
-            assets=assets,
-            mapper_export=mapper,
-            coverage=_coverage(),
-            overlaps=(),
-            resource="projector.left",
-            timestamp_ms=timestamp,
-        )
+        with patch(
+            "cueverge.gui.stage_renderer.compose_visual_frame", wraps=compose_visual_frame
+        ) as compose:
+            projector = preview_stage_composition_member(
+                project_id="demo-project",
+                source_revision=2,
+                draft=draft,
+                composition_id="stage-composition",
+                assets=assets,
+                mapper_export=mapper,
+                coverage=_coverage(),
+                overlaps=(),
+                resource="projector.left",
+                timestamp_ms=timestamp,
+            )
+            assert compose.call_count == 1
+            frame_index = timestamp * numerator // (1000 * denominator)
+            assert compose.call_args.kwargs["timestamp_ms"] == (
+                frame_index * 1000 * denominator // numerator
+            )
         # Projector preview conforms to lossy YUV; LED calibration halves the source RGB.
         assert np.max(np.abs(np.asarray(rendered[8]) - projector[27, 12, :3] * 0.5)) <= 3
     assert output.spatial_sequences[0].frame(1000) is None

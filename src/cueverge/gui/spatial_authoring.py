@@ -28,9 +28,19 @@ def spatial_context(
     if pixel_offset < 0 or pixel_limit < 0 or pixel_limit > 500:
         raise McpAuthoringError("pixel offset must be nonnegative and limit must be 0..500")
     surfaces = cast(list[dict[str, object]], mapper.get("lighting_surfaces", []))
-    if len(surfaces) > 100:
+    projectors = cast(list[dict[str, object]], mapper.get("projectors", []))
+    if len(surfaces) + len(projectors) > 100:
         raise McpAuthoringError("spatial context exceeds 100 surfaces; narrow the installation")
     points: list[tuple[float, float]] = []
+    for projector in projectors:
+        x, y, width, height = cast(list[float], projector["stage_extent"])
+        points.extend([(x, y), (x + width, y + height)])
+    for section in ("fixtures", "paths", "zones"):
+        for record in cast(list[dict[str, object]], mapper.get(section, [])):
+            points.extend(
+                (float(point[0]), float(point[1]))
+                for point in cast(list[list[float]], record.get("stage_points", []))
+            )
     summaries: list[dict[str, object]] = []
     detailed: list[dict[str, object]] = []
     total = 0
@@ -87,10 +97,13 @@ def spatial_context(
         "units": "installation units; do not assume metres or photo pixels",
         "stage_bounds": _bounds(points),
         "surfaces": summaries,
+        "projectors": projectors,
+        "zones": mapper.get("zones", []),
         "landmarks": mapper.get("fixtures", []),
         "paths": mapper.get("paths", []),
         "compositions": draft.editor_metadata.get("compositions", {}),
         "existing_layers": draft.editor_metadata.get("lighting_author_layers", {}),
+        "existing_media_layers": draft.editor_metadata.get("timeline_transform_layers", {}),
         "pixel_page": {
             "offset": pixel_offset,
             "limit": pixel_limit,

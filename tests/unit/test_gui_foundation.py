@@ -1,4 +1,6 @@
 import asyncio
+import base64
+import copy
 import hashlib
 import json
 import shutil
@@ -339,6 +341,15 @@ def test_mcp_endpoint_requires_project_token_and_enforces_tool_scopes(
         names = {tool["name"] for tool in tools.json()["result"]["tools"]}
         assert "get_project_structure" in names
         assert "propose_scene_outline" in names
+        assert {
+            "get_spatial_layout",
+            "get_spatial_effect_catalog",
+            "preview_composition",
+            "create_render_job",
+            "get_render_jobs",
+            "get_render_job",
+            "cancel_render_job",
+        }.issubset(names)
         assert {
             "get_project_draft",
             "update_project_draft",
@@ -3597,6 +3608,36 @@ def test_mcp_spatial_context_proposal_and_image_preview_are_isolated(
         assert preview["structuredContent"]["hardware_command_sent"] is False
         assert preview["content"][1]["type"] == "image"
         assert preview["content"][1]["mimeType"] == "image/png"
+        canvas = _mcp_tool(
+            client,
+            token,
+            "preview_composition",
+            proposal_id=proposal_id,
+            composition_id="front",
+            timestamp_ms=500,
+            pixel_limit=0,
+        )
+        assert canvas["isError"] is False
+        assert canvas["structuredContent"]["samples"] == []
+        assert canvas["structuredContent"]["sample_page"]["total"] == 2
+        assert canvas["structuredContent"]["image_size"] == [8, 4]
+        page = _mcp_tool(
+            client,
+            token,
+            "preview_composition",
+            proposal_id=proposal_id,
+            composition_id="front",
+            timestamp_ms=500,
+            pixel_offset=1,
+            pixel_limit=1,
+        )["structuredContent"]
+        assert len(page["samples"]) == 1
+        assert page["sample_page"] == {
+            "offset": 1,
+            "limit": 1,
+            "total": 2,
+            "next_offset": None,
+        }
         assert (
             _mcp_tool(
                 client,
@@ -3609,6 +3650,16 @@ def test_mcp_spatial_context_proposal_and_image_preview_are_isolated(
             is True
         )
         mapper["lighting_surfaces"][0]["mapping_revision"] = 2
+        stale = _mcp_tool(
+            client,
+            token,
+            "preview_composition",
+            proposal_id=proposal_id,
+            composition_id="front",
+            timestamp_ms=500,
+        )
+        assert stale["isError"] is True
+        assert "installation changed" in stale["content"][0]["text"]
         assert (
             _mcp_tool(
                 client,
@@ -3620,6 +3671,534 @@ def test_mcp_spatial_context_proposal_and_image_preview_are_isolated(
             )["isError"]
             is True
         )
+
+
+def test_mcp_shared_stage_discovery_authoring_preview_and_bake_parity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime, services, project_id = _mcp_fixture(tmp_path)
+    installation_id = services.repository.get_runtime_installation().id
+    image = tmp_path / "flag.gif"
+    Image.new("RGB", (64, 32), "red").save(
+        image,
+        save_all=True,
+        append_images=[Image.new("RGB", (64, 32), "blue")],
+        duration=[500, 500],
+        loop=0,
+    )
+    asset = SimpleNamespace(
+        id="flag",
+        name="Flag",
+        status="ready",
+        project_id=project_id,
+        media_type="image/gif",
+        digest_sha256=hashlib.sha256(image.read_bytes()).hexdigest(),
+        size_bytes=image.stat().st_size,
+        owner=None,
+        license=None,
+        review_status="approved",
+        tags=(),
+        metadata={"width": 64, "height": 32, "duration_ms": 1000, "private_path": "/not-exposed"},
+    )
+    monkeypatch.setattr(services.asset_upload, "get_original", lambda _: (asset, image))
+    monkeypatch.setattr(services.asset_upload, "list_assets", lambda _: (asset,))
+    monkeypatch.setattr(services.render_jobs, "_ensure_worker", lambda: None)
+    mapper: dict[str, Any] = {
+        "projectors": [
+            {
+                "geometry_id": "projector-front",
+                "resource": "projector.demo",
+                "native_width": 64,
+                "native_height": 32,
+                "stage_extent": [0, 0, 8, 4],
+                "surface_model": "planar",
+                "mesh_vertices": [],
+                "mesh_triangles": [],
+                "calibration_revision": 1,
+                "brightness_limit": 1,
+            }
+        ],
+        "lighting_surfaces": [
+            {
+                "semantic_id": "facade",
+                "resource": "roofline.demo",
+                "name": "Facade",
+                "local_width": 8,
+                "local_height": 4,
+                "local_points": [[0, 0], [8, 4]],
+                "stage_matrix": [1, 0, 0, 1, 0, 0],
+                "brightness_limit": 1,
+                "mapping_revision": 1,
+                "calibration_id": "calibrated",
+                "pixels": [
+                    {
+                        "output_index": 0,
+                        "local_x": 2,
+                        "local_y": 1,
+                        "stage_x": 2,
+                        "stage_y": 1,
+                        "footprint_width": 0.1,
+                        "footprint_height": 0.1,
+                    }
+                ],
+            }
+        ],
+        "fixtures": [],
+        "paths": [],
+        "zones": [],
+    }
+    monkeypatch.setattr(services.mapper_export, "export", lambda _: copy.deepcopy(mapper))
+    editor = _mcp_token(
+        services,
+        project_id,
+        (McpScope.READ, McpScope.DIRECT_EDIT, McpScope.SIMULATION),
+    )
+    reader = _mcp_token(services, project_id, (McpScope.READ,))
+    proposer = _mcp_token(
+        services,
+        project_id,
+        (McpScope.READ, McpScope.DRAFT_EDIT, McpScope.SIMULATION),
+    )
+    publisher = _mcp_token(services, project_id, (McpScope.READ, McpScope.PUBLISH))
+    foreign = services.repository.create_project(
+        name="Other project",
+        draft=DraftProject.model_validate(_draft()),
+        actor="admin",
+        role=Role.ADMINISTRATOR,
+        occurred_at=datetime.now(UTC).isoformat(),
+    )
+    foreign_token = _mcp_token(
+        services,
+        foreign.project.id,
+        (McpScope.READ, McpScope.DIRECT_EDIT, McpScope.SIMULATION),
+    )
+    profile = {
+        "preset_id": "legacy_h264",
+        "container": "mp4",
+        "video_codec": "h264",
+        "video_profile": "baseline",
+        "video_level": "3.1",
+        "pixel_format": "yuv420p",
+        "max_video_bitrate_kbps": 1000,
+        "audio_codec": "aac",
+        "audio_sample_rate": 48000,
+        "audio_channel_layout": "stereo",
+        "loudness_target_lufs": -16,
+        "keyframe_interval_frames": 2,
+        "b_frames": 0,
+        "hardware_decoder_compatibility": "h264_baseline_level_3_1_yuv420p",
+    }
+    document = _draft(
+        editor_metadata={
+            "installation_id": installation_id,
+            "compositions": {
+                "stage": {
+                    "id": "stage",
+                    "name": "House flag",
+                    "space_kind": "stage",
+                    "target_id": "shared-stage",
+                    "width": 8,
+                    "height": 4,
+                    "duration_ms": 1000,
+                    "stage_lighting_surfaces": ["facade"],
+                    "children": [],
+                    "render_settings": {
+                        "render_pipeline_revision": 1,
+                        "render_width": 64,
+                        "render_height": 32,
+                        "frame_rate_numerator": 2,
+                        "frame_rate_denominator": 1,
+                        "working_color_space": "linear_srgb",
+                        "working_alpha_mode": "premultiplied",
+                        "scaling_filter": "lanczos",
+                        "output_background_color": "#000000",
+                        "media_end_behavior": "hold_last_frame",
+                        "output_profile": profile,
+                    },
+                }
+            },
+            "scene_compositions": {"ambient": ["stage"]},
+            "timeline_tracks": {
+                "stage": [
+                    {
+                        "id": "stage-track",
+                        "name": "Overlay",
+                        "kind": "group",
+                        "resource_binding": "projector.demo",
+                    }
+                ]
+            },
+            "timeline_transform_layers": {
+                "stage": [
+                    {
+                        "layer_schema_version": 1,
+                        "id": "flag-layer",
+                        "name": "Flag",
+                        "kind": "video",
+                        "source_id": "flag",
+                        "track_id": "stage-track",
+                        "start_ms": 0,
+                        "duration_ms": 1000,
+                        "in_point_ms": 0,
+                        "out_point_ms": 1000,
+                        "z_index": 0,
+                        "fade_in_ms": 0,
+                        "fade_out_ms": 0,
+                        "playback": "loop",
+                        "alpha_interpretation": "straight",
+                        "source_color_space": "srgb",
+                        "scaling_behavior": "stretch",
+                        "keyframes": [
+                            {
+                                "id": "flag-frame",
+                                "time_ms": 0,
+                                "position": [4, 2],
+                                "scale": [1, 1],
+                                "rotation_deg": 0,
+                                "anchor": [0.5, 0.5],
+                                "opacity": 1,
+                                "crop": [0, 0, 0, 0],
+                                "interpolation": {"kind": "linear"},
+                            }
+                        ],
+                    }
+                ]
+            },
+        }
+    )
+    document["scenes"] = [
+        {
+            "schema_version": 2,
+            "id": "ambient",
+            "name": "Ambient",
+            "mode": "media_synchronized",
+            "duration_ms": 4000,
+            "resources": ["projector.demo", "roofline.demo"],
+            "clock_source": "media",
+            "media": [
+                {
+                    "id": "media",
+                    "resource": "projector.demo",
+                    "asset": None,
+                    "required": True,
+                    "start_delay_ms": 0,
+                }
+            ],
+            "lighting": [
+                {
+                    "id": "lights",
+                    "resource": "roofline.demo",
+                    "required": True,
+                    "effect": "synthetic_sweep",
+                }
+            ],
+        }
+    ]
+    with TestClient(
+        create_app(runtime, gui_services=services), base_url="http://localhost"
+    ) as client:
+        capabilities = _mcp_tool(client, editor, "get_capabilities")["structuredContent"]
+        assert capabilities["mcp_contract_version"] == 2
+        assert capabilities["features"]["mixed_output_bakes"] is True
+        assert capabilities["permissions"]["can_bake"] is True
+        assert not _mcp_tool(client, reader, "get_capabilities")["structuredContent"][
+            "permissions"
+        ]["can_bake"]
+        assert (
+            _mcp_tool(
+                client, reader, "preview_composition", composition_id="stage", timestamp_ms=0
+            )["isError"]
+            is True
+        )
+        schema = _mcp_tool(client, reader, "get_authoring_schema")["structuredContent"]
+        assert "compositions" in schema["properties"]["editor_metadata"]["properties"]
+        assert "stage_lighting_surfaces" in schema["$defs"]["Composition"]["properties"]
+        assert (
+            schema["$defs"]["RenderSettings"]["properties"]["output_profile"]["discriminator"][
+                "propertyName"
+            ]
+            == "preset_id"
+        )
+        from cueverge.gui.authoring_schema import SpatialMetadata
+
+        SpatialMetadata.model_validate(document["editor_metadata"])
+        assert schema["$defs"]["MediaLayer"]["properties"]["playback"]["enum"] == [
+            "hold",
+            "loop",
+            "once",
+        ]
+        metadata = _mcp_tool(client, reader, "list_asset_metadata")["structuredContent"]
+        assert metadata["assets"][0]["metadata"] == {"width": 64, "height": 32, "duration_ms": 1000}
+        updated = _mcp_tool(
+            client,
+            editor,
+            "update_project_draft",
+            base_revision=1,
+            draft=document,
+        )
+        assert updated["isError"] is False
+        assert updated["structuredContent"]["revision"] == 2
+        layout = _mcp_tool(
+            client,
+            reader,
+            "get_spatial_layout",
+            include_photo_geometry=True,
+        )["structuredContent"]
+        assert layout["stage_bounds"] == [0, 0, 8, 4]
+        assert layout["projectors"][0]["calibration_revision"] == 1
+        assert layout["existing_media_layers"]["stage"][0]["source_id"] == "flag"
+        assert layout["photos"] == []
+        assert layout["photo_geometry"] == []
+        timeline = _mcp_tool(
+            client,
+            reader,
+            "get_timeline_range",
+            scene_id="stage",
+            start_ms=100,
+            end_ms=600,
+        )["structuredContent"]
+        assert timeline["transform_layers"][0]["id"] == "flag-layer"
+        for resource in (None, "projector.demo"):
+            preview = _mcp_tool(
+                client,
+                editor,
+                "preview_composition",
+                composition_id="stage",
+                timestamp_ms=500,
+                resource=resource,
+                pixel_limit=1,
+            )
+            assert preview["isError"] is False
+            assert preview["content"][1]["type"] == "image"
+            assert preview["content"][1]["mimeType"] == "image/png"
+            decoded = Image.open(BytesIO(base64.b64decode(preview["content"][1]["data"])))
+            assert decoded.size == (64, 32)
+            assert preview["structuredContent"]["surfaces"][0]["samples"][0]["color"] == [0, 0, 255]
+            assert preview["structuredContent"]["hardware_command_sent"] is False
+        for arguments in (
+            {"timestamp_ms": -1},
+            {"timestamp_ms": 1000},
+            {"timestamp_ms": 0, "resource": "other"},
+            {"timestamp_ms": 0, "pixel_limit": 501},
+        ):
+            assert (
+                _mcp_tool(
+                    client,
+                    editor,
+                    "preview_composition",
+                    composition_id="stage",
+                    **arguments,
+                )["isError"]
+                is True
+            )
+        for token in (reader, proposer):
+            assert (
+                _mcp_tool(
+                    client,
+                    token,
+                    "create_render_job",
+                    base_revision=2,
+                    composition_id="stage",
+                )["isError"]
+                is True
+            )
+        assert (
+            _mcp_tool(
+                client,
+                editor,
+                "create_render_job",
+                base_revision=1,
+                composition_id="stage",
+            )["isError"]
+            is True
+        )
+        queued = _mcp_tool(
+            client,
+            editor,
+            "create_render_job",
+            base_revision=2,
+            composition_id="stage",
+        )["structuredContent"]
+        job_id = queued["id"]
+        assert queued["state"] == "queued"
+        assert queued["hardware_command_sent"] is False
+        assert (
+            _mcp_tool(
+                client,
+                reader,
+                "get_render_job",
+                job_id=job_id,
+                include_artifact=True,
+            )["isError"]
+            is True
+        )
+        for tool_name in ("get_render_job", "cancel_render_job"):
+            assert _mcp_tool(client, foreign_token, tool_name, job_id=job_id)["isError"] is True
+        assert _mcp_tool(client, reader, "cancel_render_job", job_id=job_id)["isError"] is True
+        page = _mcp_tool(client, reader, "get_render_jobs", limit=1)["structuredContent"]
+        assert page["total"] == 1
+        assert page["jobs"][0]["id"] == job_id
+        assert _mcp_tool(client, reader, "get_render_jobs", limit=101)["isError"] is True
+        canceled = _mcp_tool(client, publisher, "cancel_render_job", job_id=job_id)
+        assert canceled["structuredContent"]["state"] == "canceled"
+        queued = _mcp_tool(
+            client,
+            publisher,
+            "create_render_job",
+            base_revision=2,
+            composition_id="stage",
+        )["structuredContent"]
+        job = services.render_jobs._next_job()
+        assert job is not None
+        services.render_jobs._process(job)
+        completed = _mcp_tool(
+            client,
+            reader,
+            "get_render_job",
+            job_id=queued["id"],
+            include_artifact=True,
+        )
+        assert completed["isError"] is False
+        assert completed["structuredContent"]["state"] == "completed"
+        artifact = completed["structuredContent"]["artifact"]
+        assert artifact["members"][0]["resource"] == "projector.demo"
+        assert artifact["lighting_sequences"][0]["resource"] == "roofline.demo"
+        assert (
+            services.render_jobs.lighting_artifacts(project_id, 2)["stage"].name
+            == (completed["structuredContent"]["artifact_id"])
+        )
+        changed = copy.deepcopy(document)
+        changed["editor_metadata"]["timeline_transform_layers"]["stage"][0]["keyframes"][0][
+            "opacity"
+        ] = 0.5
+        proposal = _mcp_tool(
+            client,
+            proposer,
+            "propose_project_revision",
+            base_revision=2,
+            title="Dim flag",
+            kind="timeline_change",
+            proposed_draft=changed,
+        )["structuredContent"]
+        isolated = _mcp_tool(
+            client,
+            proposer,
+            "preview_composition",
+            composition_id="stage",
+            timestamp_ms=0,
+            proposal_id=proposal["proposal_id"],
+        )
+        assert isolated["isError"] is False
+        assert (
+            _mcp_tool(
+                client,
+                proposer,
+                "preview_composition",
+                composition_id="stage",
+                timestamp_ms=0,
+                proposal_id=proposal["proposal_id"],
+                pixel_limit=501,
+            )["isError"]
+            is True
+        )
+        assert services.repository.get_revision(project_id).revision == 2
+        assert (
+            _mcp_tool(
+                client,
+                foreign_token,
+                "preview_composition",
+                composition_id="stage",
+                timestamp_ms=0,
+                proposal_id=proposal["proposal_id"],
+            )["isError"]
+            is True
+        )
+        oversized = copy.deepcopy(changed)
+        oversized["editor_metadata"]["compositions"]["stage"]["render_settings"].update(
+            {
+                "render_width": 2048,
+                "render_height": 1025,
+            }
+        )
+        large_proposal = _mcp_tool(
+            client,
+            proposer,
+            "propose_project_revision",
+            base_revision=2,
+            title="Oversized preview",
+            kind="timeline_change",
+            proposed_draft=oversized,
+        )["structuredContent"]
+        rejected = _mcp_tool(
+            client,
+            proposer,
+            "preview_composition",
+            composition_id="stage",
+            timestamp_ms=0,
+            proposal_id=large_proposal["proposal_id"],
+        )
+        assert rejected["isError"] is True
+        assert "2 megapixel" in rejected["content"][0]["text"]
+        changed["editor_metadata"]["compositions"]["stage"].update(
+            {
+                "space_kind": "projector_native",
+                "target_id": "projector.demo",
+                "stage_lighting_surfaces": [],
+            }
+        )
+        native_proposal = _mcp_tool(
+            client,
+            proposer,
+            "propose_project_revision",
+            base_revision=2,
+            title="Native preview",
+            kind="timeline_change",
+            proposed_draft=changed,
+        )["structuredContent"]
+        native = _mcp_tool(
+            client,
+            proposer,
+            "preview_composition",
+            composition_id="stage",
+            timestamp_ms=0,
+            resource="projector.demo",
+            proposal_id=native_proposal["proposal_id"],
+        )
+        assert native["isError"] is False
+        assert native["content"][1]["type"] == "image"
+        updated = _mcp_tool(client, editor, "update_project_draft", base_revision=2, draft=changed)
+        assert updated["isError"] is False
+        assert (
+            _mcp_tool(
+                client,
+                proposer,
+                "preview_composition",
+                composition_id="stage",
+                timestamp_ms=0,
+                proposal_id=proposal["proposal_id"],
+            )["isError"]
+            is True
+        )
+        actions = {event.action for event in services.repository.list_audit_events()}
+        assert {"mcp.render.create", "mcp.render.cancel"}.issubset(actions)
+
+
+def test_mcp_image_results_fit_exact_png_and_wire_budgets() -> None:
+    import random
+
+    from cueverge.gui.mcp_server import _image_result
+
+    image = Image.frombytes("RGBA", (512, 512), random.Random(42).randbytes(512 * 512 * 4))
+    result = _image_result(image, {"hardware_command_sent": False})
+    encoded = json.loads(result.model_dump_json(by_alias=True))
+    assert len(result.model_dump_json(by_alias=True).encode()) <= 256 * 1024
+    assert len(base64.b64decode(encoded["content"][1]["data"])) <= 64 * 1024
+    assert max(encoded["structuredContent"]["image_size"]) < 512
+    from mcp.server.mcpserver.exceptions import ToolError
+
+    with pytest.raises(ToolError, match="payload budget"):
+        _image_result(image, {"samples": ["x" * 200000]})
 
 
 def _mcp_token(

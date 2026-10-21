@@ -388,6 +388,15 @@ target and does not shorten the live store's 30-day trash guarantee.
 
 ### Installation-wide mixed output bakes
 
+The MCP contract exposes this workflow through capability discovery, typed
+spatial metadata schemas, mapped LED/projector context, no-hardware composition
+image previews, and revision-checked render queue/status/cancel tools. These
+delegate to the same rendering services as the GUI, not a separate renderer.
+Stage projector image previews evaluate only the requested frame rather than
+preparing the entire composition. MCP read/simulation grants cannot queue bakes;
+queue/cancel requires an existing direct-edit or publish grant and remains
+project-bound. See [MCP operations](operations.md#mcp-assisted-authoring).
+
 Stage compositions may opt into mapped LED surfaces with the
 `stage_lighting_surfaces` array of semantic IDs. The default is empty, preserving
 projector-only rendering. The stage compositor evaluates each frame once;

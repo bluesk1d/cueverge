@@ -16,10 +16,10 @@ import {
 
 const optionalScopes: { value: McpScope; label: string }[] = [
   { value: "draft_edit", label: "Create isolated draft proposals" },
-  { value: "direct_edit", label: "Edit working drafts directly (no proposal approval)" },
-  { value: "simulation", label: "Run no-hardware simulations" },
+  { value: "direct_edit", label: "Edit working drafts directly and run offline bakes (no proposal approval)" },
+  { value: "simulation", label: "Run no-hardware simulations and image previews" },
   { value: "publish_prepare", label: "Read publication readiness" },
-  { value: "publish", label: "Approve releases, publish, and stage packages" },
+  { value: "publish", label: "Run offline bakes, approve releases, publish, and stage packages" },
   { value: "activate", label: "Activate staged packages (live output)" },
 ];
 

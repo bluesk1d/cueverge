@@ -45,21 +45,25 @@ is the `read` scope. Additional independent scopes are:
 - `draft_edit`: create isolated proposals; never changes the working draft.
 - `direct_edit`: save a working draft immediately as a new revision, without a
   proposal or human approval/merge. Requires designer, publisher, or administrator
-  project access.
-- `simulation`: run bounded deterministic simulations without hardware.
+  project access. Also permits queueing/canceling offline render jobs.
+- `simulation`: run bounded deterministic simulations and composition image previews
+  without hardware.
 - `publish_prepare`: inspect publication readiness and package status.
 - `publish`: update release metadata/approval, publish a validated immutable
-  revision, and stage its artifacts. Requires publisher or administrator access.
+  revision, stage its artifacts, and queue/cancel offline render jobs. Requires
+  publisher or administrator access.
 - `activate`: activate a staged package's artifacts. Requires publisher or
   administrator project access **and** that project's live-output grant; global
   administrators bypass those membership checks, as in the GUI.
 - `live_operation`: reserved; it does not grant direct editing, publishing,
   activation, scene transport, device enrollment, or access administration.
 
-All optional scopes start unchecked. The three new write/deployment scopes are
+All optional scopes start unchecked. The three write/deployment scopes are
 independent: `direct_edit` does not grant `publish` or `activate`, and `publish`
-does not grant `activate`. Existing tokens gain no new permissions. Issue a new
-token with the intended scopes, update the client, and revoke its old token.
+does not grant `activate`. Offline bake queue/cancel reuses an existing explicit
+`direct_edit` or `publish` grant; no new scope is added automatically. Read-only
+and proposal-only tokens remain unable to bake. To change a token's grants,
+issue a new token with the intended scopes, update the client, and revoke its old token.
 Grant these permissions only to trusted clients: direct edits and release
 approvals can happen through chat without a subsequent GUI confirmation.
 
@@ -82,13 +86,31 @@ rejected proposals never affect the working revision or live show.
 
 ### Direct editing and deployment through chat
 
+Start with `get_capabilities`. MCP contract version **2** advertises supported
+composition spaces, spatial/shared-stage features, tool names, granted scopes,
+and whether the current token can preview or bake. Empty project geometry is
+not evidence that the renderer lacks spatial support. If the client still has
+an old tool inventory after upgrading the container, refresh/reconnect its MCP
+connection and call `get_capabilities` again.
+
+`get_authoring_schema` describes composition settings (including
+`stage_lighting_surfaces`), output presets, image/video/GIF media layers,
+playback policy, keyframes, and timeline tracks under `editor_metadata`.
+Draft/proposal saves still enforce resource references, unique IDs, intervals,
+and other cross-field rules. Preserve unrelated GUI metadata when editing a
+complete draft.
+
 For geometry-aware LED authoring, MCP also provides:
 
 - `get_spatial_layout`: project-bound named surfaces, local/stage transforms,
-  LED coverage, calibration revisions, semantic landmarks, existing
-  compositions/layers, and a layout digest. Logical samples are opt-in and
+  LED coverage, projector extents/native dimensions/crops/meshes, zones,
+  calibration revisions, semantic landmarks, existing media/lighting
+  compositions/layers, and a layout digest. Stage bounds include projector
+  coverage as well as LED and semantic geometry. Logical samples are opt-in and
   paginated with `pixel_offset` and `pixel_limit` (maximum 500); normal
-  authoring context omits physical indices.
+  authoring context omits physical indices. `include_photo_geometry=true` adds
+  installation-photo references and their calibrated geometry. Installation
+  calibration is read-only through MCP; edit it in the GUI.
 - `get_spatial_effect_catalog`: authoritative parameter schemas. The initial
   procedural effect is a true expanding 2D `ripple`, distinct from the
   existing ordered-strip ripple.
@@ -111,11 +133,44 @@ clarification rather than invented coordinates. The existing
 `propose_project_revision` tool can also propose image/video/GIF transform
 layers; use ready project asset IDs and the normal transform schema.
 
-After merging, save/bake each affected lighting composition in the timeline.
-Full runtime simulation/publication needs current bakes; use the spatial
-preview tool to inspect unmerged lighting proposals. Preview responses are
-bounded to 200 KiB of structured diagnostics; spatial context is also bounded
-to 100 surfaces. Scope grants and the human approval boundary are unchanged.
+For installation-wide image/video/GIF overlays:
+
+1. Read the layout, draft, schema, and `list_asset_metadata`. Asset metadata
+   includes available source dimensions and duration, but not storage paths.
+2. Author media layers in a shared-stage composition, select mapped LED semantic
+   IDs in `stage_lighting_surfaces`, bind timeline tracks, and attach the
+   composition to a scene. `get_timeline_range` accepts scene **or composition**
+   IDs and returns overlapping media/lighting layers as well as cues and markers.
+3. Use the proposal/approval/merge workflow, or explicitly granted `direct_edit`.
+4. Call `preview_composition(composition_id, timestamp_ms)`. For a stage this
+   returns the common canvas plus LED diagnostics; pass `resource` for a
+   projector's warped output. Lighting-surface and projector-native compositions
+   are also supported. An optional `proposal_id` previews an isolated candidate
+   without merging it. Previews require `simulation`, never send hardware
+   commands, and reject stale proposals/installation digests. Images are
+   thumbnails up to 512 pixels per dimension and 64 KiB PNG; source canvases are
+   limited to 2 megapixels for MCP preview, and warped projector previews require
+   an output set of at most 8 megapixels. Diagnostic samples use `pixel_offset`
+   and `pixel_limit` (default 100, maximum 500). The complete result must fit the
+   256 KiB MCP payload budget.
+5. Call `create_render_job(base_revision, composition_id)` to bake the saved
+   revision. This requires **either** `direct_edit` **or** `publish`; `read`,
+   `draft_edit`, and `simulation` alone cannot queue or cancel jobs. Existing
+   storage/calibration/projector-rehearsal checks still apply.
+6. Poll `get_render_job(job_id)` for state, progress, errors, and artifact ID.
+   `include_artifact=true` returns the completed manifest, including matching
+   projector members and LED sequences. `get_render_jobs(offset, limit,
+   composition_id)` lists project jobs (maximum 100 per page).
+   `cancel_render_job(job_id)` cancels queued/running jobs with the same write
+   grants as queueing. Cross-project job IDs are rejected.
+7. Publish/stage/activate using the existing separately granted scopes below.
+   Offline bakes do not merge proposals, approve releases, deploy, or activate
+   hardware. Controller package handover/restart and physical synchronization
+   rehearsal remain necessary.
+
+Full runtime simulation/publication needs current bakes. Use image previews
+for unmerged proposals. Spatial context remains bounded to 200 KiB and 100
+combined LED/projector surfaces; oversized detail requests fail explicitly.
 
 1. Use `get_project_draft` to read the complete working draft and revision,
    and `get_authoring_schema` for its authoritative JSON Schema.

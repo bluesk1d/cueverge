@@ -1,11 +1,14 @@
+import base64
 import hashlib
 import json
 import math
 from dataclasses import dataclass, replace
+from io import BytesIO
 from pathlib import Path
 from typing import cast
 
 import numpy as np
+from PIL import Image
 
 from cueverge.gui.asset_upload import AssetUploadService
 from cueverge.gui.contracts import DraftProject
@@ -57,6 +60,7 @@ def prepare_stage_composition(
     coverage: StageCoverage,
     overlaps: tuple[StoredProjectorOverlap, ...],
     sync_admission: SyncAdmission,
+    preview_timestamp_ms: int | None = None,
 ) -> PreparedStageOutput:
     if not sync_admission.allowed:
         raise ProjectorRenderError(
@@ -100,6 +104,15 @@ def prepare_stage_composition(
         (duration_ms * frame_rate_numerator + 1000 * frame_rate_denominator - 1)
         // (1000 * frame_rate_denominator),
     )
+    if preview_timestamp_ms is not None:
+        if preview_timestamp_ms < 0 or preview_timestamp_ms >= duration_ms:
+            raise ProjectorRenderError("stage preview timestamp is outside composition duration")
+        frame_count = 1
+    first_frame = (
+        preview_timestamp_ms * frame_rate_numerator // (1000 * frame_rate_denominator)
+        if preview_timestamp_ms is not None
+        else 0
+    )
     lighting_surfaces = selected_stage_lighting_surfaces(composition, mapper_export)
     pixel_count = sum(len(_list(surface.get("pixels"))) for surface in lighting_surfaces)
     if pixel_count:
@@ -110,7 +123,8 @@ def prepare_stage_composition(
     stage_frames = tuple(
         compose_visual_frame(
             stage_layers,
-            timestamp_ms=(index * 1000 * frame_rate_denominator) // frame_rate_numerator,
+            timestamp_ms=((index + first_frame) * 1000 * frame_rate_denominator)
+            // frame_rate_numerator,
             output_width=render_width,
             output_height=render_height,
             background_rgb=_hex_rgb(_string(settings.get("output_background_color"))),
@@ -360,6 +374,7 @@ def preview_stage_lighting_samples(
     assets: AssetUploadService,
     mapper_export: dict[str, object],
     device_reported_scales: dict[str, float],
+    include_canvas: bool = False,
 ) -> dict[str, object]:
     metadata = cast(dict[str, object], draft.editor_metadata)
     composition = _mapping(_mapping(metadata.get("compositions")).get(composition_id))
@@ -439,7 +454,7 @@ def preview_stage_lighting_samples(
                 "samples": samples,
             }
         )
-    return {
+    result: dict[str, object] = {
         "composition_id": composition_id,
         "timestamp_ms": timestamp_ms,
         "frame_timestamp_ms": frame_timestamp_ms,
@@ -447,6 +462,11 @@ def preview_stage_lighting_samples(
         "surfaces": surfaces,
         "hardware_command_sent": False,
     }
+    if include_canvas:
+        output = BytesIO()
+        Image.fromarray(frame).save(output, format="PNG")
+        result["canvas_png_base64"] = base64.b64encode(output.getvalue()).decode("ascii")
+    return result
 
 
 def render_stage_composition(
@@ -522,6 +542,7 @@ def preview_stage_composition_member(
             "Preview sends no hardware command.",
             None,
         ),
+        preview_timestamp_ms=timestamp_ms,
     )
     frames = prepared.members.get(resource)
     if frames is None:
