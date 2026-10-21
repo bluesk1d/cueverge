@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Protocol
@@ -37,6 +38,7 @@ from cueverge.gui.stage_coverage import StageCoverageService
 from cueverge.gui.sync_rehearsal import SyncRehearsalService
 from cueverge.gui.timing_calibration import TimingCalibrationService
 from cueverge.gui.wled_status import WledStatusObserver
+from cueverge.lighting.output_test import OutputTestSegment, OutputTestStatus
 
 
 class RuntimeStatusSource(Protocol):
@@ -61,6 +63,22 @@ class RuntimeStatusSource(Protocol):
     async def reset_ambient(self) -> ActiveScene: ...
 
     async def set_show_mode(self, mode: ShowMode) -> None: ...
+
+    def output_test_status(self) -> OutputTestStatus | None: ...
+
+    def start_output_test(
+        self,
+        *,
+        resource: str,
+        pixel_count: int,
+        speed: int,
+        duration_seconds: float,
+        arm_id: str,
+        segments: tuple[OutputTestSegment, ...],
+        on_finish: Callable[[OutputTestStatus], None],
+    ) -> OutputTestStatus: ...
+
+    async def stop_output_test(self, *, reason: str = "operator") -> OutputTestStatus | None: ...
 
 
 @dataclass(frozen=True)

@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import json
 import shutil
+import socket
 import time
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -32,6 +33,8 @@ from cueverge.gui.passwords import hash_password
 from cueverge.gui.publication import PublicationDiagnostic, PublicationError
 from cueverge.gui.repository import StoredDevice
 from cueverge.gui.service import GuiServices
+from cueverge.lighting.ddp import DdpUdpSink
+from cueverge.lighting.sink import FrameSinkRouter
 from cueverge.protocol.device_v2 import (
     ControllerDiscoveryDocument,
     DeviceHello,
@@ -3495,6 +3498,118 @@ def _mcp_tool(client: TestClient, token: str, tool_name: str, **arguments: Any) 
     )
     assert response.status_code == 200
     return cast(dict[str, Any], response.json()["result"])
+
+
+def test_physical_output_test_api_streams_and_disarms_without_publishing(tmp_path: Path) -> None:
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as receiver:
+        receiver.bind(("127.0.0.1", 0))
+        receiver.settimeout(1)
+        runtime = ControllerRuntime(sink=FrameSinkRouter({
+            "roofline.demo": DdpUdpSink(
+                "127.0.0.1", port=receiver.getsockname()[1], expected_pixel_count=8,
+            ),
+        }))
+        services = _services(tmp_path, runtime)
+        with TestClient(create_app(runtime, gui_services=services)) as client:
+            assert client.get("/api/gui/v1/maintenance/output-tests").status_code == 401
+            _login(client)
+            body = {
+                "resource": "roofline.demo", "confirmation": "roofline.demo",
+                "duration_seconds": 5, "speed": 30, "use_mapping": False,
+            }
+            assert client.post(
+                "/api/gui/v1/maintenance/output-tests", json=body,
+                headers={"Origin": ORIGIN},
+            ).status_code == 403
+            assert client.post(
+                "/api/gui/v1/maintenance/output-tests", json=body,
+                headers=_mutation_headers(client),
+            ).status_code == 409
+            client.post(
+                "/api/gui/v1/operate/actions", json={"action": "maintenance"},
+                headers=_mutation_headers(client),
+            )
+            available = client.get("/api/gui/v1/maintenance/output-tests").json()
+            assert [item["resource"] for item in available["outputs"]] == ["roofline.demo"]
+            rejected = client.post(
+                "/api/gui/v1/maintenance/output-tests",
+                json={**body, "confirmation": "wrong"},
+                headers=_mutation_headers(client),
+            )
+            assert rejected.status_code == 422
+            started = client.post(
+                "/api/gui/v1/maintenance/output-tests", json=body,
+                headers=_mutation_headers(client),
+            )
+            assert started.status_code == 201, started.text
+            test = started.json()
+            assert test["simulation_only"] is False
+            assert test["frames_sent"] >= 1
+            assert receiver.recv(1024)[10:13] == bytes([255, 255, 255])
+            assert client.post(
+                "/api/gui/v1/maintenance/output-tests", json=body,
+                headers=_mutation_headers(client),
+            ).status_code == 409
+            assert client.post(
+                "/api/gui/v1/maintenance/output-arms",
+                json={key: body[key] for key in ("resource", "confirmation", "duration_seconds")},
+                headers=_mutation_headers(client),
+            ).status_code == 409
+            assert client.post(
+                "/api/gui/v1/maintenance/output-tests/not-the-current-test/stop",
+                headers=_mutation_headers(client),
+            ).status_code == 404
+            stopped = client.post(
+                f"/api/gui/v1/maintenance/output-arms/{test['arm_id']}/stop",
+                headers=_mutation_headers(client),
+            )
+            assert stopped.status_code == 200
+            assert stopped.json()["hardware_command_sent"] is True
+            current = client.get("/api/gui/v1/maintenance/output-tests").json()["test"]
+            assert current["state"] == "stopped"
+            actions = {event.action for event in services.repository.list_audit_events()}
+            assert "maintenance.output_test.started" in actions
+            assert "maintenance.output_test.stopped" in actions
+            assert not services.repository.list_projects()
+
+
+@pytest.mark.parametrize("role", [Role.VIEWER, Role.DESIGNER, Role.PUBLISHER])
+def test_physical_output_tests_require_operator_role(tmp_path: Path, role: Role) -> None:
+    runtime = ControllerRuntime()
+    services = _services(tmp_path, runtime, role=role)
+    with TestClient(create_app(runtime, gui_services=services)) as client:
+        _login(client)
+        assert client.post(
+            "/api/gui/v1/maintenance/output-tests",
+            json={"resource": "roofline.demo", "confirmation": "roofline.demo"},
+            headers=_mutation_headers(client),
+        ).status_code == 403
+        assert client.post(
+            "/api/gui/v1/maintenance/output-tests/any/stop",
+            headers=_mutation_headers(client),
+        ).status_code == 403
+
+
+def test_physical_test_overview_excludes_unconfigured_or_mismatched_drivers(tmp_path: Path) -> None:
+    runtime = ControllerRuntime(sink=FrameSinkRouter({
+        "roofline.demo": DdpUdpSink("127.0.0.1", expected_pixel_count=99),
+    }))
+    with TestClient(create_app(runtime, gui_services=_services(tmp_path, runtime))) as client:
+        _login(client)
+        assert client.get("/api/gui/v1/maintenance/output-tests").json()["outputs"] == []
+        client.post(
+            "/api/gui/v1/operate/actions", json={"action": "maintenance"},
+            headers=_mutation_headers(client),
+        )
+        rejected = client.post(
+            "/api/gui/v1/maintenance/output-tests",
+            json={"resource": "roofline.demo", "confirmation": "roofline.demo"},
+            headers=_mutation_headers(client),
+        )
+        assert rejected.status_code == 409
+        assert rejected.json()["detail"]["code"] == (
+            "output_test_driver_missing_or_pixel_count_mismatch"
+        )
 
 
 def _services(

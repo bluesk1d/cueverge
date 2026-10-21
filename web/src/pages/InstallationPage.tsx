@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { CSSProperties } from "react";
+import { OutputTraversalPreview } from "../components/OutputTraversalPreview";
+import { photoPixelPoints } from "../components/pixel-traversal";
 import {
   Cable,
   Clock3,
@@ -599,6 +601,7 @@ function GeometryMapper({
   const [creationMethod, setCreationMethod] = useState<"trace" | "generate">("trace");
   const [allocationResources, setAllocationResources] = useState<Record<string, string>>({});
   const [allocationCheckError, setAllocationCheckError] = useState(false);
+  const [allocationLoading, setAllocationLoading] = useState(false);
   const [stagePoints, setStagePoints] = useState("");
   const [traversalPreview, setTraversalPreview] = useState(false);
   const [simulationOverlay, setSimulationOverlay] = useState(false);
@@ -831,6 +834,7 @@ function GeometryMapper({
       return;
     }
     let cancelled = false;
+    setAllocationLoading(true);
     setAllocationCheckError(false);
     void Promise.all(
       geometry
@@ -848,6 +852,7 @@ function GeometryMapper({
     ).then((entries) => {
       if (!cancelled) {
         setAllocationResources(Object.fromEntries(entries));
+        setAllocationLoading(false);
       }
     });
     return () => {
@@ -890,6 +895,7 @@ function GeometryMapper({
   }, [geometry, simulationOverlay]);
 
   async function beginEdit(item: InstallationGeometry) {
+    setTraversalPreview(false);
     setCreationMethod("trace");
     setEditing(item);
     setPhotoId(item.photo_id);
@@ -1468,10 +1474,26 @@ function GeometryMapper({
                   <option value="reverse">Last point → first point</option>
                 </select>
               </label>
-              <button aria-pressed={traversalPreview} onClick={() => setTraversalPreview((current) => !current)}>
+              <button
+                aria-pressed={traversalPreview}
+                disabled={kind === "pixel_segment" && (
+                  allocationLoading || allocationCheckError ||
+                  !selectedPixelOutput?.pixel_count
+                )}
+                onClick={() => setTraversalPreview((current) => !current)}
+              >
                 {traversalPreview ? "Stop traversal preview" : "Preview traversal"}
               </button>
               <small>Canvas only. No hardware commands are sent.</small>
+              {kind === "pixel_segment" && (
+                <small>
+                  Previews every saved segment on the selected output in pixel-index order,
+                  not just this segment. Save edits before previewing.
+                  {allocationLoading && " Loading output assignments..."}
+                  {!selectedPixelOutput?.pixel_count &&
+                    " Select a configured output with a known pixel count to preview."}
+                </small>
+              )}
             </>
           )}
           {kind === "pixel_segment" && creationMethod === "generate" && (
@@ -2642,6 +2664,20 @@ function GeometryMapper({
           </svg>
         </section>
       )}
+      {photo && traversalPreview && kind === "pixel_segment" &&
+        !allocationLoading && !allocationCheckError && selectedPixelOutput?.pixel_count != null &&
+        selectedPixelOutput.pixel_count > 0 && (
+          <OutputTraversalPreview
+            key={`${photo.id}:${lightingValues.resource}:${selectedPixelOutput.pixel_count}`}
+            geometry={geometry}
+            resources={allocationResources}
+            resource={lightingValues.resource}
+            pixelCount={selectedPixelOutput.pixel_count}
+            photo={photo}
+            onClose={() => setTraversalPreview(false)}
+            canTest={canPreview}
+          />
+      )}
       {photo && (
         <div
           className={
@@ -2671,7 +2707,7 @@ function GeometryMapper({
         )}
         <svg
           aria-label={`Geometry editor for ${photo.name}`}
-          className={`geometry-canvas${traversalPreview ? " geometry-canvas--traversal" : ""}${simulationOverlay ? " geometry-canvas--simulation" : ""}`}
+          className={`geometry-canvas${traversalPreview ? " geometry-canvas--traversal" : ""}${traversalPreview && kind === "path" ? " geometry-canvas--path-traversal" : ""}${simulationOverlay ? " geometry-canvas--simulation" : ""}`}
           role="img"
           viewBox={`${panX} ${panY} ${1000 / zoom} ${600 / zoom}`}
           onClick={(event) => {
@@ -3409,47 +3445,6 @@ function geometryDiagnostics(geometry: InstallationGeometry[]): string[] {
     }
   }
   return [...new Set(diagnostics)];
-}
-
-function photoPixelPoints(
-  geometry: InstallationGeometry,
-): { outputIndex: number; x: number; y: number }[] {
-  if (
-    geometry.kind !== "pixel_segment" ||
-    geometry.start_index === null ||
-    geometry.pixel_count === null ||
-    geometry.points.length < 2
-  ) {
-    return [];
-  }
-  const ordered =
-    geometry.direction === "forward" ? geometry.points : [...geometry.points].reverse();
-  const lengths = ordered.slice(1).map((point, index) =>
-    Math.hypot(point.x - ordered[index].x, point.y - ordered[index].y),
-  );
-  const total = lengths.reduce((sum, value) => sum + value, 0);
-  const closed =
-    ordered[0].x === ordered.at(-1)?.x && ordered[0].y === ordered.at(-1)?.y;
-  return Array.from({ length: geometry.pixel_count }, (_, offset) => {
-    const denominator = closed
-      ? geometry.pixel_count!
-      : Math.max(geometry.pixel_count! - 1, 1);
-    const target = total * (offset / denominator);
-    let traversed = 0;
-    for (let index = 0; index < lengths.length; index += 1) {
-      const length = lengths[index];
-      if (traversed + length >= target || index === lengths.length - 1) {
-        const ratio = length ? (target - traversed) / length : 0;
-        return {
-          outputIndex: geometry.start_index! + offset,
-          x: ordered[index].x + (ordered[index + 1].x - ordered[index].x) * ratio,
-          y: ordered[index].y + (ordered[index + 1].y - ordered[index].y) * ratio,
-        };
-      }
-      traversed += length;
-    }
-    return { outputIndex: geometry.start_index! + offset, ...ordered[0] };
-  });
 }
 
 function generateNormalizedPixelLayout(

@@ -15,6 +15,8 @@ technical handover required for changed runtime scene logic.
 
 ## Supporting references
 
+- [Persistent local UI sandbox](local-demo.md): generated demo assets and a
+  hardware-free local controller for testing uploads, mapping, and UI changes.
 - [Operations and simulation](operations.md): modes, diagnostics, MCP,
   deployment dependencies, publication/cache behavior, and recovery.
 - [Show creator guide](show-creator-guide.md): creative capabilities,

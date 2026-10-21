@@ -182,15 +182,59 @@ For lighting:
   fixture/group/path IDs and cross-view linking, **Shared stage coordinates**
   for shared points, and **Advanced calibration** for local dimensions, pixel
   corrections, stage transforms, brightness, and timing.
-- Choose **Wiring direction** and **Preview traversal** to check ordering on
-  the canvas, then **Save segment** (or **Update geometry** when editing).
-  These editing and traversal controls do not send hardware commands.
+- Choose **Wiring direction**, then **Save segment** (or **Update geometry**
+  when editing). **Preview traversal** uses saved mappings for the selected
+  output, not unsaved edits or just the selected segment. A five-pixel pulse
+  travels through increasing output indices across the entire device. Each
+  segment has a distinct color and a numbered legend showing its index range
+  and direction. Linked photo views count as one segment; segments on another
+  photo are identified in the legend and progress readout.
+- Pause, change the speed, or scrub **Output pixel index** to inspect segment
+  boundaries and the first/last pixels. Restart returns to index zero and pauses.
+  Unmapped indices remain gaps in the sequence rather than being skipped.
+  Overlaps and invalid ranges are reported explicitly. Reduced-motion
+  preferences start the preview paused. These controls are browser-only and
+  do not send hardware commands or certify physical wiring.
 - Pixel segment ranges use half-open intervals: `[start, end)` includes
   `start` but excludes `end`. An eight-pixel output has indices 0 through 7.
 - **Maintenance preview** records an index-chase simulation for the selected
   output and duration. It requires maintenance mode and idle playback but does
   not drive physical LEDs. Verify actual wiring in a separate authorized physical
   test. Drawing a path does not change wiring order.
+
+To check the real output from Cueverge, open **Test this output on physical
+LEDs** inside the traversal preview, or use **Operate > Physical LED output
+tests**. This is separate from the simulation-only maintenance preview:
+
+1. Stop playback and enter **Maintenance**.
+2. Choose a configured LED output, duration (5, 15, or 30 seconds), and chase
+   speed. The output must have an enabled DDP driver whose expected pixel count
+   matches the running installation.
+3. Leave **Use saved segment colors** checked to match the preview's segment
+   colors and boundaries. Linked photo views count once. Save complete mappings
+   and resolve conflicting ranges first. For an unsegmented white index chase,
+   uncheck this option. Unmapped indices also use white.
+4. Type the exact output resource name into **Confirm physical output name**
+   and choose **Start physical chase**. This sends real output, not a simulation.
+   Within the mapper, the preview follows the controller's reported pixel
+   position, sampled once per second.
+5. Observe the pulse through the complete output and compare the physical
+   segment boundaries/directions with the photo. Choose **Stop physical chase**
+   when finished. Otherwise the controller stops at the deadline, even if the
+   browser closes.
+
+The test uses existing output-driver brightness settings without an extra
+test-specific brightness cap. It targets 60 frames/second with fractional-pixel
+crossfading for smooth motion, without changing the show's configured render rate.
+Network loss or device refresh limits can still cause stuttering.
+Downstream devices and power supplies are assumed
+to be correctly configured. Only one physical test runs at a time, and show
+playback is blocked while it owns the output. Stop/disarm, mode changes, global
+Stop, and controller shutdown terminate the test. Completion sends a black frame
+to the tested output and releases realtime output; subsequent preset/timeout
+behavior remains controlled by the downstream device. Transmission errors are
+reported, but successful UDP sending is not proof that the LEDs visibly responded.
+Testing does not publish, alter mappings, or reload the show.
 
 For shared-stage content across projectors, define stage coverage and overlap
 calibration consistently. Review seams, masks, crop, brightness/color matching,

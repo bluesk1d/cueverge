@@ -1,7 +1,7 @@
 import asyncio
 import time
 from collections import deque
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from contextlib import suppress
 from dataclasses import dataclass
 from enum import StrEnum
@@ -23,6 +23,12 @@ from cueverge.core.models import (
 )
 from cueverge.core.opportunities import OpportunityManager
 from cueverge.lighting.ddp import DdpUdpSink
+from cueverge.lighting.output_test import (
+    OutputTestError,
+    OutputTestRunner,
+    OutputTestSegment,
+    OutputTestStatus,
+)
 from cueverge.lighting.renderer import SegmentPulse, SyntheticSweep, TargetPulse
 from cueverge.lighting.sink import FrameSink, FrameSinkRouter, MemoryFrameSink, RenderedFrame
 from cueverge.lighting.timeline import LightingTimeline
@@ -205,6 +211,8 @@ class ControllerRuntime:
         elif len(lighting_resources) > 1:
             raise ValueError("multiple lighting resources require a FrameSinkRouter")
         self.sink = configured_sink
+        self._output_test: OutputTestRunner | None = None
+        self._scene_starting = False
         self.event_clock = event_clock or (lambda: round(time.time() * 1000))
         if scene_selector is not None and director is not None:
             raise ValueError("configure either scene_selector or director, not both")
@@ -387,6 +395,18 @@ class ControllerRuntime:
                     self._degraded_reason = f"media_output_disconnected:{media_session.output_id}"
 
     async def start_scene(self, scene_id: str) -> ActiveScene:
+        test = self.output_test_status()
+        if self._scene_starting or (test is not None and test.state == "active"):
+            raise RuntimeError(
+                "scene start is blocked by an active output test or scene transition"
+            )
+        self._scene_starting = True
+        try:
+            return await self._start_scene(scene_id)
+        finally:
+            self._scene_starting = False
+
+    async def _start_scene(self, scene_id: str) -> ActiveScene:
         scene = self.catalog.require(scene_id)
         missing_required = [
             output.agent_id
@@ -441,6 +461,7 @@ class ControllerRuntime:
         return await self.start_scene(self.director.start())
 
     async def set_show_mode(self, mode: ShowMode) -> None:
+        await self.stop_output_test(reason="mode_changed")
         self.show_mode = mode
         if mode is ShowMode.AUTOMATIC:
             return
@@ -846,17 +867,83 @@ class ControllerRuntime:
         )
 
     def lighting_targets(self) -> tuple[RuntimeLightingTarget, ...]:
-        if not isinstance(self.sink, FrameSinkRouter):
-            return ()
+        sinks: Mapping[str, FrameSink]
+        if isinstance(self.sink, FrameSinkRouter):
+            sinks = self.sink.sinks
+        elif isinstance(self.sink, DdpUdpSink):
+            resources = [
+                binding.resource
+                for binding in self.catalog.installation.resources
+                if binding.kind.value == "pixel_output"
+            ]
+            sinks = {resource: self.sink for resource in resources} if len(resources) == 1 else {}
+        else:
+            sinks = {}
         return tuple(
             RuntimeLightingTarget(
                 resource=resource,
                 host=sink.host,
                 expected_pixel_count=sink.expected_pixel_count,
             )
-            for resource, sink in sorted(self.sink.sinks.items())
+            for resource, sink in sorted(sinks.items())
             if isinstance(sink, DdpUdpSink)
         )
+
+    def output_test_status(self) -> OutputTestStatus | None:
+        return self._output_test.status if self._output_test is not None else None
+
+    def start_output_test(
+        self,
+        *,
+        resource: str,
+        pixel_count: int,
+        speed: int,
+        duration_seconds: float,
+        arm_id: str,
+        segments: tuple[OutputTestSegment, ...],
+        on_finish: Callable[[OutputTestStatus], None],
+    ) -> OutputTestStatus:
+        if self.show_mode is not ShowMode.MAINTENANCE or self.active_scene or self._scene_starting:
+            raise OutputTestError("Physical output tests require idle maintenance mode")
+        current = self.output_test_status()
+        if current is not None and current.state == "active":
+            raise OutputTestError("An output test already owns the lighting output")
+        target = next((item for item in self.lighting_targets() if item.resource == resource), None)
+        if target is None or target.expected_pixel_count != pixel_count:
+            raise OutputTestError(
+                "Output requires a configured DDP driver with matching pixel count"
+            )
+        if pixel_count < 1 or speed < 1 or not 0 < duration_seconds <= 30:
+            raise OutputTestError("Invalid output test count, speed or duration")
+        if any(not 0 <= segment.start < segment.end <= pixel_count for segment in segments):
+            raise OutputTestError("Output test segment is outside the configured output")
+
+        def finished(test: OutputTestStatus) -> None:
+            if test.error is not None:
+                self.lighting_output_error_count += 1
+                self._lighting_output_errors[test.resource] = test.error
+            else:
+                self._lighting_output_errors.pop(test.resource, None)
+            on_finish(test)
+
+        self._output_test = OutputTestRunner(
+            sink=self.sink,
+            resource=resource,
+            pixel_count=pixel_count,
+            speed=speed,
+            duration_seconds=duration_seconds,
+            arm_id=arm_id,
+            segments=segments,
+            clock=self.clock,
+            fps=60.0,
+            on_finish=finished,
+        )
+        return self._output_test.start()
+
+    async def stop_output_test(self, *, reason: str = "operator") -> OutputTestStatus | None:
+        if self._output_test is None:
+            return None
+        return await self._output_test.stop(reason)
 
     def render_frame(self) -> bool:
         self.check_timeouts()
@@ -957,6 +1044,11 @@ class ControllerRuntime:
         ).render(render_position_ms)
 
     async def stop(self, *, continue_queue: bool = True) -> None:
+        test = self.output_test_status()
+        if test is not None and test.state == "active":
+            await self.stop_output_test()
+            if self.active_scene is None:
+                return
         await self._stop_render_loop()
         active = self.active_scene
         if active is not None:
@@ -1327,6 +1419,16 @@ class ControllerRuntime:
             "connected_agents": sorted(self._agents),
             "media_outputs": active_media,
             "lighting_outputs": active_lighting,
+            "output_test": (
+                {
+                    "id": self._output_test.status.id,
+                    "resource": self._output_test.status.resource,
+                    "state": self._output_test.status.state,
+                    "error": self._output_test.status.error,
+                }
+                if self._output_test is not None
+                else None
+            ),
             "pending_commands": len(self._pending_commands),
             "command_errors": self.command_errors,
             "command_timeouts": self.command_timeouts,

@@ -524,7 +524,21 @@ point-to-point measurement.
 Pixel segments persist forward/reverse wiring direction, start index, and pixel
 count. The mapper displays index ranges and direction, diagnoses gaps,
 overlapping index ranges, and endpoint discontinuities, and animates ordered
-path traversal. Geometry bounding-box overlap diagnostics report the
+path traversal. Whole-output LED traversal previews use saved output assignments,
+sort segments by physical start index, and run one five-pixel pulse through the
+configured output index range. Segment colors, numbered ranges, direction labels,
+pause/speed controls, and an index scrubber expose ordering as well as direction.
+Linked photo views are deduplicated, off-view segments remain in the sequence,
+and gaps/overlaps/invalid mappings are reported rather than silently reordered.
+The preview is browser-only and starts paused for reduced-motion preferences.
+An explicitly opened physical-test section can start the same ordered chase
+through a configured runtime DDP output. This separate action requires idle
+maintenance mode, exact output confirmation, and operator access. The runtime
+enforces exclusive ownership, timeout and final-black cleanup; the browser
+follows reported test indices while active. Driver brightness settings are
+preserved without an extra test cap. The simulation-only maintenance-preview
+endpoint is unchanged.
+Geometry bounding-box overlap diagnostics report the
 higher-z-index object that has draw precedence.
 
 Indexed pixel-segment geometry can bind to a logical lighting surface with

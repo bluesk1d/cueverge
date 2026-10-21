@@ -6,6 +6,7 @@ import {
   useEffect,
   useState,
 } from "react";
+import { PhysicalOutputTestControls } from "./components/PhysicalOutputTestControls";
 
 import {
   ApiError,
@@ -1556,6 +1557,7 @@ export function OperatePage({
         node.connection !== "connected",
     ) ?? true;
   const active = runtime?.status.active_scene != null;
+  const physicalTestActive = runtime?.status.output_test?.state === "active";
   const maintenanceMode = runtime?.status.operations.mode === "maintenance";
   const previewRemaining = preview
     ? Math.max(0, Math.ceil((new Date(preview.expires_at).getTime() - previewNow) / 1_000))
@@ -1704,7 +1706,7 @@ export function OperatePage({
             <div className="operate-controls__buttons">
               <button
                 className="primary-button"
-                disabled={!canOperate || unavailableRequiredDevice || active || pending !== null}
+                disabled={!canOperate || unavailableRequiredDevice || active || physicalTestActive || pending !== null}
                 onClick={() =>
                   void runAction(
                     "start",
@@ -1727,7 +1729,7 @@ export function OperatePage({
                 Resume
               </button>
               <button
-                disabled={!canOperate || !active || pending !== null}
+                disabled={!canOperate || (!active && !physicalTestActive) || pending !== null}
                 onClick={() => void runAction("stop", "Stop the active show and return outputs safe?")}
               >
                 Stop
@@ -1780,7 +1782,7 @@ export function OperatePage({
                 Maintenance
               </button>
               <button
-                disabled={!canOperate || unavailableRequiredDevice || pending !== null}
+                disabled={!canOperate || unavailableRequiredDevice || physicalTestActive || pending !== null}
                 onClick={() =>
                   void runAction("reset", "Reset to the configured ambient scene?")
                 }
@@ -1804,6 +1806,15 @@ export function OperatePage({
         </div>
         {pending && <p role="status">Sending {pending}…</p>}
         {operationError && <p role="alert">{operationError}</p>}
+      </Panel>
+      <Panel
+        title="Physical LED output tests"
+        description="Run a bounded chase on configured LED output devices without changing the show."
+      >
+        <PhysicalOutputTestControls
+          canOperate={canOperate}
+          installationId={installation?.installation_id}
+        />
       </Panel>
       <Panel
         title="Maintenance simulation"

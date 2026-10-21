@@ -108,6 +108,9 @@ from cueverge.gui.contracts import (
     OperateActionRequest,
     OperateActionResponse,
     OutputArmResponse,
+    OutputTestOverviewResponse,
+    OutputTestResponse,
+    OutputTestSegmentResponse,
     PairingTokenResponse,
     PlaceAssetRequest,
     PresenceHeartbeatRequest,
@@ -151,6 +154,7 @@ from cueverge.gui.contracts import (
     SimulationScenarioResponse,
     StageCoverageResponse,
     StageRegionResponse,
+    StartOutputTestRequest,
     StartTimingCalibrationRequest,
     SyncAdmissionResponse,
     SyncRehearsalResponse,
@@ -204,6 +208,7 @@ from cueverge.gui.mcp_authoring import (
     allowed_mcp_scopes,
 )
 from cueverge.gui.output_arming import OutputArmError, StoredOutputArm
+from cueverge.gui.output_tests import mapped_test_segments
 from cueverge.gui.passwords import hash_password
 from cueverge.gui.preview_evaluation import (
     PreviewEvaluationError,
@@ -267,6 +272,7 @@ from cueverge.gui.timing_calibration import (
     StoredTimingCalibration,
     TimingCalibrationError,
 )
+from cueverge.lighting.output_test import OutputTestError, OutputTestStatus
 from cueverge.protocol.device_v2 import (
     DEVICE_PROTOCOL_VERSION,
     DeviceKind,
@@ -3490,6 +3496,9 @@ def create_gui_router(services: GuiServices) -> APIRouter:
                 status_code=409,
                 detail={"code": "output_arm_requires_idle_maintenance"},
             )
+        running_test = services.runtime.output_test_status()
+        if running_test is not None and running_test.state == "active":
+            raise HTTPException(status_code=409, detail={"code": "output_test_already_active"})
         resource = _installation_resources(services).get(body.resource)
         if resource is None or resource.kind == "downstream_controller":
             raise HTTPException(
@@ -3536,10 +3545,16 @@ def create_gui_router(services: GuiServices) -> APIRouter:
         "/maintenance/output-arms/{arm_id}/stop",
         response_model=OutputArmResponse,
     )
-    def stop_output_arm(
+    async def stop_output_arm(
         arm_id: str,
         identity: Annotated[AuthenticatedSession, operator_mutation],
     ) -> OutputArmResponse:
+        test = services.runtime.output_test_status()
+        if test is not None and test.arm_id == arm_id and test.state == "active":
+            await services.runtime.stop_output_test(reason="disarmed")
+            response = _output_arm(services.output_arming.get(arm_id, _now_iso()))
+            response.hardware_command_sent = True
+            return response
         try:
             arm = services.output_arming.stop(
                 arm_id,
@@ -3553,6 +3568,181 @@ def create_gui_router(services: GuiServices) -> APIRouter:
                 detail={"code": "output_arm_not_active"},
             ) from error
         return _output_arm(arm)
+
+    @router.get(
+        "/maintenance/output-tests",
+        response_model=OutputTestOverviewResponse,
+        dependencies=[reader],
+    )
+    def output_test_overview() -> OutputTestOverviewResponse:
+        status = services.runtime.status()
+        operations = status.get("operations")
+        mode = operations.get("mode") if isinstance(operations, dict) else None
+        targets = {target.resource: target for target in services.runtime.lighting_targets()}
+        test = services.runtime.output_test_status()
+        return OutputTestOverviewResponse(
+            mode=str(mode),
+            playback_active=status.get("active_scene") is not None,
+            outputs=tuple(
+                resource
+                for resource in _installation_resources(services).values()
+                if resource.kind == "pixel_output"
+                and resource.resource in targets
+                and resource.pixel_count is not None
+                and targets[resource.resource].expected_pixel_count == resource.pixel_count
+            ),
+            test=_output_test_response(test) if test is not None else None,
+        )
+
+    @router.post(
+        "/maintenance/output-tests",
+        response_model=OutputTestResponse,
+        status_code=201,
+    )
+    async def start_output_test(
+        body: StartOutputTestRequest,
+        identity: Annotated[AuthenticatedSession, operator_mutation],
+    ) -> OutputTestResponse:
+        resource = _installation_resources(services).get(body.resource)
+        if resource is None or resource.kind != "pixel_output" or resource.pixel_count is None:
+            raise HTTPException(status_code=422, detail={"code": "output_test_resource_invalid"})
+        installation = services.repository.get_runtime_installation()
+        if body.installation_id is not None and body.installation_id != installation.id:
+            raise HTTPException(
+                status_code=422, detail={"code": "output_test_requires_runtime_installation"}
+            )
+        overview = output_test_overview()
+        if overview.mode != "maintenance" or overview.playback_active:
+            raise HTTPException(
+                status_code=409, detail={"code": "output_test_requires_idle_maintenance"}
+            )
+        if overview.test is not None and overview.test.state == "active":
+            raise HTTPException(status_code=409, detail={"code": "output_test_already_active"})
+        if body.resource not in {output.resource for output in overview.outputs}:
+            raise HTTPException(
+                status_code=409,
+                detail={"code": "output_test_driver_missing_or_pixel_count_mismatch"},
+            )
+        try:
+            segments = (
+                mapped_test_segments(
+                    services.installation_geometry,
+                    services.lighting_surface,
+                    installation.id,
+                    body.resource,
+                    resource.pixel_count,
+                )
+                if body.use_mapping
+                else ()
+            )
+        except (OutputTestError, LightingSurfaceError) as error:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "output_test_mapping_invalid", "message": str(error)},
+            ) from error
+        try:
+            arm = services.output_arming.create(
+                resource=body.resource,
+                resource_kind="pixel_output",
+                device_identity=resource.target or f"controller-owned {body.resource}",
+                stop_action="send black frame and release realtime output",
+                confirmation=body.confirmation,
+                duration_seconds=body.duration_seconds,
+                actor=identity.username,
+                role=identity.role,
+                occurred_at=_now_iso(),
+            )
+        except OutputArmError as error:
+            raise HTTPException(
+                status_code=422, detail={"code": "output_arm_invalid", "message": str(error)}
+            ) from error
+
+        def finished(test: OutputTestStatus) -> None:
+            stored = services.output_arming.get(test.arm_id, _now_iso())
+            if stored.state == "active":
+                services.output_arming.stop(
+                    test.arm_id,
+                    actor=identity.username,
+                    role=identity.role,
+                    occurred_at=_now_iso(),
+                )
+            services.repository.append_audit(
+                actor=identity.username,
+                action=f"maintenance.output_test.{test.state}",
+                target=test.resource,
+                result="failed" if test.state == "failed" else "success",
+                occurred_at=_now_iso(),
+                authorization_context={
+                    "test_id": test.id,
+                    "arm_id": test.arm_id,
+                    "reason": test.stop_reason,
+                    "error": test.error,
+                    "frames_sent": test.frames_sent,
+                    "simulation_only": False,
+                },
+            )
+
+        try:
+            remaining = (datetime.fromisoformat(arm.expires_at) - datetime.now(UTC)).total_seconds()
+            test = services.runtime.start_output_test(
+                resource=body.resource,
+                pixel_count=resource.pixel_count,
+                speed=body.speed,
+                duration_seconds=remaining,
+                arm_id=arm.id,
+                segments=segments,
+                on_finish=finished,
+            )
+        except OutputTestError as error:
+            if services.output_arming.get(arm.id, _now_iso()).state == "active":
+                services.output_arming.stop(
+                    arm.id,
+                    actor=identity.username,
+                    role=identity.role,
+                    occurred_at=_now_iso(),
+                )
+            raise HTTPException(
+                status_code=409,
+                detail={"code": "output_test_rejected", "message": str(error)},
+            ) from error
+        services.repository.append_audit(
+            actor=identity.username,
+            action="maintenance.output_test.started",
+            target=test.resource,
+            result="success",
+            occurred_at=_now_iso(),
+            authorization_context={
+                "test_id": test.id,
+                "arm_id": arm.id,
+                "speed": test.speed,
+                "duration_seconds": body.duration_seconds,
+                "simulation_only": False,
+                "use_mapping": body.use_mapping,
+            },
+        )
+        return _output_test_response(test)
+
+    @router.post(
+        "/maintenance/output-tests/{test_id}/stop",
+        response_model=OutputTestResponse,
+    )
+    async def stop_output_test(
+        test_id: str,
+        identity: Annotated[AuthenticatedSession, operator_mutation],
+    ) -> OutputTestResponse:
+        test = services.runtime.output_test_status()
+        if test is None or test.id != test_id:
+            raise HTTPException(status_code=404, detail={"code": "output_test_not_found"})
+        await services.runtime.stop_output_test()
+        services.repository.append_audit(
+            actor=identity.username,
+            action="maintenance.output_test.stop_requested",
+            target=test.resource,
+            result="success",
+            occurred_at=_now_iso(),
+            authorization_context={"test_id": test.id},
+        )
+        return _output_test_response(test)
 
     @router.post(
         "/maintenance/test-pattern-preview",
@@ -4966,6 +5156,32 @@ def _timing_calibration(
         state=session.state,
         revision=session.revision,
         expires_at=session.expires_at,
+    )
+
+
+def _output_test_response(test: OutputTestStatus) -> OutputTestResponse:
+    return OutputTestResponse(
+        id=test.id,
+        arm_id=test.arm_id,
+        resource=test.resource,
+        pixel_count=test.pixel_count,
+        speed=test.speed,
+        state=test.state,
+        pixel_index=test.pixel_index,
+        frames_sent=test.frames_sent,
+        started_at=test.started_at,
+        expires_at=test.expires_at,
+        error=test.error,
+        stop_reason=test.stop_reason,
+        segments=tuple(
+            OutputTestSegmentResponse(
+                name=segment.name,
+                start=segment.start,
+                end=segment.end,
+                color=segment.color,
+            )
+            for segment in test.segments
+        ),
     )
 
 

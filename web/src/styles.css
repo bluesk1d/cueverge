@@ -3055,9 +3055,138 @@ p {
   vector-effect: non-scaling-stroke;
 }
 
-.geometry-canvas--traversal .geometry-shape {
+.geometry-canvas--path-traversal .geometry-shape--path {
   stroke-dasharray: 18 10;
   animation: geometry-traversal 0.8s linear infinite;
+}
+
+.output-traversal {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+  margin-block: 16px;
+  padding: 16px;
+  background: var(--cv-sidebar);
+  border: 1px solid var(--cv-border);
+  border-radius: var(--cv-radius-panel);
+}
+
+.output-traversal h4,
+.output-traversal p {
+  margin: 0;
+}
+
+.output-traversal__controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 12px;
+}
+
+.output-traversal__position {
+  flex: 1 1 180px;
+}
+
+.output-traversal button {
+  min-height: 38px;
+  padding: 8px 12px;
+  color: var(--cv-text);
+  background: var(--cv-surface-raised);
+  border: 1px solid var(--cv-border);
+  border-radius: var(--cv-radius-control);
+  cursor: pointer;
+}
+
+.output-traversal button:hover {
+  border-color: var(--cv-primary-hover);
+}
+
+.output-traversal__segment {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 3;
+  opacity: 0.4;
+  vector-effect: non-scaling-stroke;
+}
+
+.output-traversal__pulse {
+  fill: currentColor;
+  stroke: var(--cv-text);
+  stroke-width: 1;
+}
+
+.output-traversal__label {
+  fill: currentColor;
+  stroke: var(--cv-bg);
+  stroke-width: 3px;
+  paint-order: stroke;
+  font-size: 14px;
+}
+
+.output-traversal__legend {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding-left: 24px;
+}
+
+.output-traversal__legend [aria-current="step"] {
+  color: var(--cv-text);
+  font-weight: 700;
+}
+
+.output-traversal__swatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  margin-right: 6px;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+}
+
+.output-traversal__diagnostics {
+  margin: 0;
+  color: var(--cv-warning);
+}
+
+.physical-output-test {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.physical-output-test h4,
+.physical-output-test p {
+  margin: 0;
+}
+
+.physical-output-test__controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 12px;
+}
+
+.physical-output-test__controls > label {
+  flex: 1 1 180px;
+}
+
+.physical-output-test__status {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--cv-border);
+  border-radius: var(--cv-radius-control);
+}
+
+.physical-output-test button:not(.primary-button) {
+  min-height: 38px;
+  padding: 8px 12px;
+  color: var(--cv-text);
+  background: var(--cv-surface-raised);
+  border: 1px solid var(--cv-border);
+  border-radius: var(--cv-radius-control);
+  cursor: pointer;
 }
 
 .geometry-canvas--simulation .geometry-shape--projector_surface {

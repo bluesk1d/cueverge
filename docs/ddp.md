@@ -45,6 +45,38 @@ the loaded show. The controller rejects simultaneous use of
 `examples/output-config.example.json` for every available field. Keep real
 addresses and installation limits outside the repository.
 
+## Physical maintenance chase
+
+Configured DDP outputs with matching installation pixel counts can run a
+controller-driven maintenance index chase without a test scene or publication.
+Use **Operate > Physical LED output tests** or the physical-test controls in a
+mapper traversal preview. Start requires operator/administrator access, CSRF
+validation, idle maintenance mode, and exact resource-name confirmation.
+
+The test follows increasing physical output indices using a five-pixel pulse,
+with saved mapper segment colors or a plain white pulse. Maintenance tests target
+60 frames per second, independently of the show's render rate. Fractional pixel
+positions crossfade adjacent LEDs instead of jumping between whole indices;
+segment colors remain tied to each LED's allocation. Missed deadlines skip stale
+frames rather than sending catch-up bursts. Actual smoothness also depends on
+network delivery and the device's refresh rate. Existing DDP
+`brightness_limit` settings remain authoritative; there is no additional
+maintenance-test brightness cap or automatic downstream reconfiguration.
+Mapped tests reject invalid/overlapping saved allocations. Unmapped indices
+remain in the traversal and use white.
+
+The runtime owns the test, enforces its 5–30-second API duration, and excludes
+scene starts while testing. Closing a browser does not cancel it. Explicit
+stop/disarm, mode changes, global Stop, shutdown, errors, or timeout end the
+session. A final black frame is attempted on the selected output before
+releasing realtime transmission; failures are visible in test and runtime
+status and logged. Downstream realtime timeout/preset behavior is unchanged.
+
+Authenticated GUI endpoints are `GET/POST /api/gui/v1/maintenance/output-tests`
+and `POST /api/gui/v1/maintenance/output-tests/{id}/stop`. The existing
+`test-pattern-preview` endpoint remains simulation-only. Start and terminal
+test events are audited. UDP send success is not a device acknowledgement.
+
 Before enabling output, validate:
 
 - WLED version, configured LED count, RGB/RGBW layout, and color order.

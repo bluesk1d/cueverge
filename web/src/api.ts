@@ -605,6 +605,12 @@ export interface RuntimeStatus {
     connected_agents: string[];
     media_outputs: MediaOutputStatus[];
     lighting_outputs: LightingOutputStatus[];
+    output_test?: {
+      id: string;
+      resource: string;
+      state: PhysicalOutputTest["state"];
+      error: string | null;
+    } | null;
     pending_commands: number;
     command_errors: number;
     command_timeouts: number;
@@ -956,7 +962,57 @@ export interface OutputArm {
   stop_action: string;
   state: "active" | "stopped" | "expired";
   expires_at: string;
-  hardware_command_sent: false;
+  hardware_command_sent: boolean;
+}
+
+export interface PhysicalOutputTest {
+  id: string;
+  arm_id: string;
+  resource: string;
+  pixel_count: number;
+  speed: number;
+  state: "active" | "stopped" | "completed" | "failed";
+  pixel_index: number;
+  frames_sent: number;
+  started_at: string;
+  expires_at: string;
+  error: string | null;
+  stop_reason: string | null;
+  simulation_only: false;
+  segments: { name: string; start: number; end: number; color: [number, number, number] }[];
+}
+
+export interface OutputTestOverview {
+  mode: string;
+  playback_active: boolean;
+  outputs: InstallationResource[];
+  test: PhysicalOutputTest | null;
+}
+
+export function getOutputTestOverview(): Promise<OutputTestOverview> {
+  return request<OutputTestOverview>("/api/gui/v1/maintenance/output-tests");
+}
+
+export function startPhysicalOutputTest(body: {
+  resource: string;
+  confirmation: string;
+  duration_seconds: number;
+  speed: number;
+  use_mapping: boolean;
+  installation_id?: string;
+}): Promise<PhysicalOutputTest> {
+  return request<PhysicalOutputTest>("/api/gui/v1/maintenance/output-tests", {
+    method: "POST",
+    headers: mutationHeaders(),
+    body: JSON.stringify(body),
+  }, true);
+}
+
+export function stopPhysicalOutputTest(id: string): Promise<PhysicalOutputTest> {
+  return request<PhysicalOutputTest>(
+    `/api/gui/v1/maintenance/output-tests/${encodeURIComponent(id)}/stop`,
+    { method: "POST", headers: mutationHeaders() }, true,
+  );
 }
 
 export interface TimingCalibrationSession {
@@ -2367,7 +2423,9 @@ export const rejectMcpProposal = (
 export const mergeMcpProposal = (projectId: string, proposalId: string) =>
   transitionMcpProposal(projectId, proposalId, "merge");
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+async function request<T>(
+  path: string, init?: RequestInit, includeErrorDetail = false,
+): Promise<T> {
   const response = await fetch(path, {
     ...init,
     credentials: "include",
@@ -2377,7 +2435,19 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     },
   });
   if (!response.ok) {
-    throw new ApiError(response.status, `Cueverge API request failed (${response.status})`);
+    let message = `Cueverge API request failed (${response.status})`;
+    if (includeErrorDetail && response.headers.get("content-type")?.includes("application/json")) {
+      const payload: unknown = await response.json();
+      if (payload && typeof payload === "object" && "detail" in payload &&
+          payload.detail && typeof payload.detail === "object") {
+        if ("message" in payload.detail && typeof payload.detail.message === "string") {
+          message += `: ${payload.detail.message}`;
+        } else if ("code" in payload.detail && typeof payload.detail.code === "string") {
+          message += `: ${payload.detail.code}`;
+        }
+      }
+    }
+    throw new ApiError(response.status, message);
   }
   if (response.status === 204) {
     return undefined as T;

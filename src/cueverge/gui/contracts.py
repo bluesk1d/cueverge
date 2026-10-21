@@ -1852,7 +1852,44 @@ class OutputArmResponse(GuiModel):
     stop_action: str
     state: Literal["active", "stopped", "expired"]
     expires_at: str
-    hardware_command_sent: Literal[False] = False
+    hardware_command_sent: bool = False
+
+
+class StartOutputTestRequest(CreateOutputArmRequest):
+    speed: Literal[5, 15, 30, 60, 120] = 30
+    use_mapping: bool = True
+    installation_id: str | None = None
+
+
+class OutputTestSegmentResponse(GuiModel):
+    name: str
+    start: int
+    end: int
+    color: tuple[int, int, int]
+
+
+class OutputTestResponse(GuiModel):
+    id: str
+    arm_id: str
+    resource: str
+    pixel_count: int
+    speed: int
+    state: Literal["active", "stopped", "completed", "failed"]
+    pixel_index: int
+    frames_sent: int
+    started_at: str
+    expires_at: str
+    error: str | None
+    stop_reason: str | None
+    segments: tuple[OutputTestSegmentResponse, ...]
+    simulation_only: Literal[False] = False
+
+
+class OutputTestOverviewResponse(GuiModel):
+    mode: str
+    playback_active: bool
+    outputs: tuple[InstallationResourceResponse, ...]
+    test: OutputTestResponse | None
 
 
 class StartTimingCalibrationRequest(GuiModel):
