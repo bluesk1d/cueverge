@@ -599,6 +599,7 @@ export interface RuntimeStatus {
     scene_instance_id: string | null;
     playback_session_id: string | null;
     estimated_position_ms: number | null;
+    clock_authority?: "controller" | "media" | null;
     playback_state: string | null;
     degraded: boolean;
     degraded_reason: string | null;

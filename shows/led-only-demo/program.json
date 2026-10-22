@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "initial_scene_id": "halloween-preshow",
+  "default_pool_id": "preshow",
+  "pools": [
+    {
+      "id": "preshow",
+      "category": "ambient",
+      "scenes": [{"scene_id": "halloween-preshow"}]
+    }
+  ]
+}

@@ -2,7 +2,10 @@
 
 Cueverge is an early-stage, self-hosted reactive show engine. A controller owns
 scene selection and lifecycle, while a media agent reports the authoritative
-playback position used to render synchronized lighting.
+playback position used to render synchronized lighting. Scenes can instead
+explicitly use the controller's monotonic clock, including LED-only shows
+with no media agent. See [controller-timed scenes](docs/scene-schema.md#controller-timed-scenes)
+and the [LED-only example](shows/led-only-demo).
 
 This repository contains the software vertical slice, declarative autonomous
 show direction, aggregate audience presence, safe transition arbitration,

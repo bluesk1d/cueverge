@@ -266,7 +266,7 @@ class SchedulingDefinition(FrozenModel):
 class SceneDefinitionBase(FrozenModel):
     id: str = Field(min_length=1)
     name: str = Field(min_length=1)
-    mode: Literal["media_synchronized"]
+    mode: Literal["media_synchronized", "controller_timed"]
     priority: int = Field(default=50, ge=0, le=100)
     interruption: Literal["replace_by_priority", "queue", "ignore"] = "replace_by_priority"
     resources: tuple[str, ...] = Field(min_length=1)
@@ -301,6 +301,7 @@ class SceneDefinitionBase(FrozenModel):
 
 class SceneDefinitionV1(SceneDefinitionBase):
     schema_version: Literal[1]
+    mode: Literal["media_synchronized"]
     media: MediaDefinition
     lighting: LightingDefinition
 
@@ -317,8 +318,20 @@ class SceneDefinitionV1(SceneDefinitionBase):
 
 class SceneDefinitionV2(SceneDefinitionBase):
     schema_version: Literal[2]
-    clock_source: str = Field(min_length=1)
-    media: tuple[MediaOutputDefinition, ...] = Field(min_length=1)
+    clock_source: str = Field(
+        min_length=1,
+        description=(
+            "Use controller in controller_timed mode; in media_synchronized mode, "
+            "reference a required media output ID. Clock authority never fails over automatically."
+        ),
+    )
+    media: tuple[MediaOutputDefinition, ...] = Field(
+        description=(
+            "Use [] for LED-only controller_timed scenes; media_synchronized scenes require "
+            "a media clock output. Controller-timed media still prepares before scene time "
+            "starts, but its telemetry is diagnostic and does not drive scene time."
+        )
+    )
     lighting: tuple[LightingOutputDefinition, ...] = Field(min_length=1)
 
     @model_validator(mode="after")
@@ -329,10 +342,14 @@ class SceneDefinitionV2(SceneDefinitionBase):
         if len(output_ids) != len(set(output_ids)):
             raise ValueError("scene output IDs must be unique")
         media_ids = {output.id for output in self.media}
-        if self.clock_source not in media_ids:
-            raise ValueError("scene clock_source must reference a media output")
-        if not next(output for output in self.media if output.id == self.clock_source).required:
-            raise ValueError("scene clock_source media output must be required")
+        if self.mode == "controller_timed":
+            if self.clock_source != "controller":
+                raise ValueError("controller_timed scene clock_source must be controller")
+        else:
+            if self.clock_source not in media_ids:
+                raise ValueError("scene clock_source must reference a media output")
+            if not next(output for output in self.media if output.id == self.clock_source).required:
+                raise ValueError("scene clock_source media output must be required")
         output_resources = [output.resource for output in self.media]
         output_resources.extend(output.resource for output in self.lighting)
         referenced = set(output_resources)
@@ -374,10 +391,10 @@ class LoadedLightingOutput(FrozenModel):
 
 class LoadedScene(FrozenModel):
     definition: SceneDefinition
-    media_outputs: tuple[LoadedMediaOutput, ...] = Field(min_length=1)
+    media_outputs: tuple[LoadedMediaOutput, ...]
     lighting_outputs: tuple[LoadedLightingOutput, ...] = Field(min_length=1)
     clock_source_id: str
-    agent_id: str
+    agent_id: str | None
     pixel_count: int
     pixel_segments: tuple[PixelSegment, ...] = ()
     lighting_segment: PixelSegment | None = None

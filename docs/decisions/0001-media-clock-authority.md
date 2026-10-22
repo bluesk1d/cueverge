@@ -19,6 +19,13 @@ reject duplicate or reordered samples.
 
 ## Consequences
 
+Schema-v2 scenes may explicitly select `controller_timed` mode and
+`clock_source: "controller"`. These use local monotonic elapsed time and
+duration-based completion, with no media dependency for LED-only scenes.
+Media outputs, when present, still prepare before the clock starts but do not
+drive it. This does not change media-synchronized authority or introduce
+automatic clock failover; use media synchronization for actual playback tracking.
+
 Lighting remains seekable and deterministic. Brief telemetry gaps can be
 smoothed without requiring synchronized absolute clocks. Long gaps degrade and
 freeze rather than allowing unbounded drift. Hardware latency still requires

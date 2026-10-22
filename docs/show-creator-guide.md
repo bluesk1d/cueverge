@@ -28,16 +28,18 @@ coordinates:
 - Video projected from a Windows or Linux media computer (see the platform
   guides for hardware qualification status).
 - Audio played from the same media asset through the configured analog output.
-- Addressable RGB lighting rendered from authoritative media time.
+- Addressable RGB lighting rendered from authoritative media or controller time.
 - External observations such as Frigate person and zone events.
 - Stateful encounters with timeout, cooldown, priority, and ambient recovery.
 - Direct operator scene control.
 - Automatic, disabled, maintenance, and blackout operating modes.
 - Accelerated deterministic simulation using fake media and in-memory lighting.
 
-The controller decides **which scene is active**. The media player decides
-**where that scene is in time**. Lighting follows the observed media clock, not
-the time at which the controller requested playback.
+The controller decides **which scene is active**. In media-synchronized mode,
+the media player decides **where that scene is in time**. Lighting follows the
+observed media clock, not the time at which the controller requested playback.
+Explicit controller-timed scenes instead use local monotonic time and can
+run LED-only shows without a media player.
 
 The reusable engine contains no Halloween story, house geometry, private
 addresses, credentials, or copyrighted assets. Those belong in a private show
@@ -85,13 +87,14 @@ direction, strand transition, and full-line traversal.
 
 ## 3. Current scene model
 
-A scene is one media-synchronized unit. The current schema requires:
+A scene is one media-synchronized or controller-timed unit. The current schema requires:
 
 - A unique scene ID and human-readable name.
 - A positive duration in milliseconds.
 - A priority from 0 through 100.
 - An interruption policy.
-- A media resource and optional package-relative media asset.
+- For media-synchronized scenes, a media resource and optional package-relative
+  media asset. Schema-v2 controller-timed scenes may use `media: []`.
 - A pixel-lighting resource and one lighting effect definition.
 - Explicit claims for every referenced resource.
 

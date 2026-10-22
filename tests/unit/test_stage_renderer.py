@@ -37,8 +37,10 @@ from cueverge.gui.stage_renderer import (
 from cueverge.gui.sync_rehearsal import SyncAdmission
 
 
+@pytest.mark.parametrize("mode", ["media_synchronized", "controller_timed"])
 def test_stage_runner_creates_lockstep_projector_set_with_one_audio_owner(
     tmp_path: Path,
+    mode: str,
 ) -> None:
     image = tmp_path / "ghost.png"
     Image.fromarray(
@@ -53,7 +55,12 @@ def test_stage_runner_creates_lockstep_projector_set_with_one_audio_owner(
             "audio": ("audio/wav", audio),
         }
     )
-    draft = DraftProject.model_validate(_draft())
+    document = _draft()
+    scene = cast(list[dict[str, object]], document["scenes"])[0]
+    scene["mode"] = mode
+    if mode == "controller_timed":
+        scene["clock_source"] = "controller"
+    draft = DraftProject.model_validate(document)
     mapper = _mapper_export()
     coverage = _coverage()
     overlaps = (_overlap(),)

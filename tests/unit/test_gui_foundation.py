@@ -3476,6 +3476,93 @@ def _mcp_fixture(tmp_path: Path) -> tuple[ControllerRuntime, GuiServices, str]:
     return runtime, services, project.project.id
 
 
+@pytest.mark.parametrize("with_media", [False, True])
+def test_mcp_controller_timed_scenes_are_discoverable_authorable_and_simulatable(
+    tmp_path: Path,
+    with_media: bool,
+) -> None:
+    runtime, services, project_id = _mcp_fixture(tmp_path)
+    token = _mcp_token(
+        services, project_id, (McpScope.READ, McpScope.DRAFT_EDIT, McpScope.SIMULATION)
+    )
+    document = _draft()
+    scene = document["scenes"][0]
+    scene.update(
+        {
+            "schema_version": 2,
+            "mode": "controller_timed",
+            "clock_source": "controller",
+            "duration_ms": 2000,
+            "completion": {"policy": "loop"},
+            "resources": ["roofline.demo", "projector.demo"] if with_media else ["roofline.demo"],
+            "media": [{"id": "video", "resource": "projector.demo"}] if with_media else [],
+            "lighting": [{"id": "leds", "resource": "roofline.demo", "effect": "synthetic_sweep"}],
+        }
+    )
+    if not with_media:
+        document["installation"]["resources"] = [
+            resource
+            for resource in document["installation"]["resources"]
+            if resource["kind"] != "media_agent"
+        ]
+    with TestClient(
+        create_app(runtime, gui_services=services), base_url="http://localhost"
+    ) as client:
+        capabilities = _mcp_tool(client, token, "get_capabilities")["structuredContent"]
+        assert capabilities["features"]["controller_timed_scenes"] is True
+        assert capabilities["features"]["led_only_scenes"] is True
+        assert capabilities["scene_timing"]["controller_timed"]["clock_source"] == "controller"
+        assert capabilities["scene_timing"]["controller_timed"]["requires_media"] is False
+        schema = _mcp_tool(client, token, "get_authoring_schema")["structuredContent"]
+        definition = schema["$defs"]["SceneDefinitionV2"]
+        assert "controller_timed" in definition["properties"]["mode"]["enum"]
+        assert "controller" in definition["properties"]["clock_source"]["description"]
+        assert "LED-only" in definition["properties"]["media"]["description"]
+        proposal = _mcp_tool(
+            client,
+            token,
+            "propose_project_revision",
+            base_revision=1,
+            title="Controller-timed pre-show",
+            kind="scene_change",
+            proposed_draft=document,
+        )
+        assert proposal["isError"] is False
+        proposal_id = proposal["structuredContent"]["proposal_id"]
+        validated = _mcp_tool(client, token, "validate_proposal", proposal_id=proposal_id)
+        assert validated["isError"] is False
+        assert validated["structuredContent"]["state"] == "validated"
+        simulated = _mcp_tool(
+            client,
+            token,
+            "simulate_proposal",
+            proposal_id=proposal_id,
+            steps=[{"kind": "advance", "delta_ms": 2500}],
+            expected={"scene_history": ["ambient", "ambient"]},
+        )
+        assert simulated["isError"] is False
+        result = simulated["structuredContent"]["simulation"]
+        assert result["passed"] is True, result["mismatches"]
+        status = result["actual"]["status"]
+        assert status["clock_authority"] == "controller"
+        assert status["estimated_position_ms"] == 500
+        assert status["playback_state"] == "playing"
+        assert status["scene_completions"] == 1
+        assert result["hardware_adapters_opened"] is False
+        assert result["hardware_commands_sent"] is False
+        assert result["actual"]["status"]["connected_agents"] == (
+            ["fake-media-1"] if with_media else []
+        )
+        assert services.repository.get_revision(project_id).revision == 1
+        editor = _mcp_token(services, project_id, (McpScope.READ, McpScope.DIRECT_EDIT))
+        saved = _mcp_tool(client, editor, "update_project_draft", base_revision=1, draft=document)
+        assert saved["isError"] is False
+        structure = _mcp_tool(client, token, "get_project_structure")["structuredContent"]
+        assert structure["scenes"][0]["mode"] == "controller_timed"
+        assert structure["scenes"][0]["clock_source"] == "controller"
+        assert runtime.active_scene is None
+
+
 def test_mcp_spatial_context_proposal_and_image_preview_are_isolated(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

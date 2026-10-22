@@ -273,6 +273,54 @@ test("timeline ruler markers regions loop and snapping persist", async ({ page }
   expect(instance.composition_id).toBe(child.id);
 });
 
+test("controller clock can be selected with media outputs and saved", async ({ page }) => {
+  savedDraft = null;
+  await installTimelineRoutes(page);
+  await page.goto("/demo.html");
+  await page.getByRole("button", { name: "Shows", exact: true }).click();
+  await page.getByText("Timeline editor", { exact: true }).click();
+  await page.getByLabel("Clock authority").selectOption("controller_timed");
+  await expect(page.getByLabel("Clock source")).toBeDisabled();
+  await expect(page.getByLabel("Clock source")).toHaveValue("controller");
+  await page.getByLabel("Required media output left-window").uncheck();
+  await expect(page.getByLabel("Timeline validation")).toContainText("Timeline valid");
+  await page.getByRole("button", { name: "Save timeline" }).click();
+  await expect.poll(() => savedDraft).not.toBeNull();
+  expect((savedDraft as ReturnType<typeof draftDocument> | null)?.scenes[0]).toMatchObject({
+    mode: "controller_timed",
+    clock_source: "controller",
+    media: [expect.objectContaining({ required: false })],
+  });
+
+  await page.getByLabel("Clock authority").selectOption("media_synchronized");
+  await expect(page.getByLabel("Timeline validation")).toContainText(
+    "The clock-source media output must remain required.",
+  );
+});
+
+test("LED-only scene remains valid and saves without media dependencies", async ({ page }) => {
+  savedDraft = null;
+  const document = draftDocument();
+  document.scenes[0].mode = "controller_timed";
+  document.scenes[0].clock_source = "controller";
+  document.scenes[0].media = [];
+  document.scenes[0].resources = ["wled-001"];
+  await installTimelineRoutes(page, document);
+  await page.goto("/demo.html");
+  await page.getByRole("button", { name: "Shows", exact: true }).click();
+  await page.getByText("Timeline editor", { exact: true }).click();
+  await expect(page.getByLabel("Clock authority")).toHaveValue("controller_timed");
+  await expect(page.getByLabel("Timeline validation")).toContainText("Timeline valid");
+  await page.getByRole("button", { name: "Save timeline" }).click();
+  await expect.poll(() => savedDraft).not.toBeNull();
+  expect((savedDraft as ReturnType<typeof draftDocument> | null)?.scenes[0]).toMatchObject({
+    mode: "controller_timed",
+    clock_source: "controller",
+    media: [],
+    resources: ["wled-001"],
+  });
+});
+
 test("timeline marker workflow is keyboard operable", async ({ page }) => {
   savedDraft = null;
   await installTimelineRoutes(page);

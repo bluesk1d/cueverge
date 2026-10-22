@@ -30,14 +30,15 @@ planning a live opening.
 | Installation | Physical resources and their mapping: projectors, lighting, geometry, viewpoints, assignments, and calibration |
 | Logical resource | Stable show-facing name, such as `projector.demo`; not an IP address or a device credential |
 | Project | Revisioned working show, assets, editor metadata, comments, and access permissions |
-| Scene | A media-synchronized unit with duration, resources, lighting, interruption, and completion behavior |
+| Scene | A media-synchronized or controller-timed unit with duration, resources, lighting, interruption, and completion behavior |
 | Composition | Reusable time-based content in projector-native, lighting-surface, or shared-stage coordinates |
 | Revision | Persisted version of a project; the basis for review, render, and publication |
 | Published package | Immutable release snapshot; publication, staging, activation, and playback are different steps |
 
 Editing a draft does not edit the active runtime package. Browser preview
 time is not venue playback time. During actual playback, lighting follows the
-designated media output's reported clock.
+designated media output's reported clock, or the controller's monotonic clock
+when the scene explicitly selects controller timing.
 
 ### Navigation
 
@@ -377,7 +378,13 @@ For each scene, define:
 
 Cueverge runs one active scene at a time, but a scene may contain multiple
 media and lighting outputs. Every required media output prepares before play;
-one required output supplies the scene clock.
+one required output supplies the scene clock in media-synchronized mode.
+For an LED-only pre-show, use a schema-v2 scene with `media: []`, only lighting
+resource claims, and **Clock authority → Controller** in the timeline editor.
+No media client is required. Controller-timed scenes can also include media
+outputs, but lighting follows controller time rather than buffering or actual
+playback. See [controller-timed scenes](scene-schema.md#controller-timed-scenes)
+and the [LED-only package](../shows/led-only-demo).
 
 Use **Scenes & reusable presets** to organize scenes by folder/tags, create
 reusable presets, and apply them to a selected scene. Check resource references

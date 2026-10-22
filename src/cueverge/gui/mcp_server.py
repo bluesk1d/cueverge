@@ -193,7 +193,8 @@ def create_mcp_app(services: GuiServices) -> Starlette:
     server = MCPServer(
         name="Cueverge Authoring",
         description=(
-            "Project-scoped show authoring, calibrated spatial geometry, shared-stage "
+            "Project-scoped media-synchronized and controller-timed/LED-only show authoring, "
+            "calibrated spatial geometry, shared-stage "
             "image/video/GIF overlays, no-hardware image previews, and baked LED/projector "
             "output. Read get_capabilities and get_authoring_schema for available workflows. "
             "Proposals require human approval and merge; "
@@ -225,6 +226,8 @@ def create_mcp_app(services: GuiServices) -> Starlette:
                     "duration_ms": scene.duration_ms,
                     "resources": list(scene.resources),
                     "schema_version": scene.schema_version,
+                    "mode": scene.mode,
+                    "clock_source": scene.clock_source if scene.schema_version == 2 else "media",
                 }
                 for scene in revision.draft.scenes
             ],
@@ -296,7 +299,7 @@ def create_mcp_app(services: GuiServices) -> Starlette:
 
     @server.tool()
     def get_capabilities() -> dict[str, JsonValue]:
-        """Discover spatial/shared-stage authoring, geometry, preview and bake tools and grants."""
+        """Discover scene timing, LED-only/spatial authoring, preview/bake tools and grants."""
         token = _authorize(services, McpScope.READ)
         revision = services.repository.get_revision(token.project_id)
         return cast(
@@ -314,8 +317,26 @@ def create_mcp_app(services: GuiServices) -> Starlette:
                     "shared_stage_overlays": True,
                     "image_video_gif": True,
                     "mixed_output_bakes": True,
+                    "controller_timed_scenes": True,
+                    "led_only_scenes": True,
                     "geometry_editing": False,
                     "live_media_rendering": False,
+                },
+                "scene_timing": {
+                    "media_synchronized": {
+                        "clock_source": "required_media_output_id",
+                        "requires_media": True,
+                    },
+                    "controller_timed": {
+                        "schema_version": 2,
+                        "clock_source": "controller",
+                        "requires_media": False,
+                        "starts_after_prepare": True,
+                        "completion": "duration_ms",
+                        "transport": ["pause", "resume", "seek", "stop"],
+                    },
+                    "automatic_clock_failover": False,
+                    "media_drift_correction": False,
                 },
                 "tools": {
                     "layout": "get_spatial_layout",
@@ -338,6 +359,8 @@ def create_mcp_app(services: GuiServices) -> Starlette:
                     ),
                 },
                 "workflow": [
+                    "Choose media_synchronized or controller_timed scene time; LED-only "
+                    "scenes use schema v2, clock_source controller, media [] and lighting claims.",
                     "Read layout, schema, assets and current draft.",
                     "Author media once in stage space; stage_lighting_surfaces selects LED IDs.",
                     "Propose and human-merge changes, or save with explicit direct_edit.",
@@ -346,6 +369,8 @@ def create_mcp_app(services: GuiServices) -> Starlette:
                     "Publish the matching LED sequences and projector videos with publish scope.",
                 ],
                 "limitations": [
+                    "Controller-timed media receives transport commands, but playback telemetry "
+                    "does not drive scene time; no live scene transport is exposed over MCP.",
                     "Calibration editing remains in the GUI; geometry tools are read-only.",
                     "Baking sends no hardware commands and does not approve or merge proposals.",
                     "Controller package handover/restart and hardware latency rehearsal "
@@ -499,7 +524,11 @@ def create_mcp_app(services: GuiServices) -> Starlette:
 
     @server.tool()
     def get_authoring_schema() -> dict[str, Any]:
-        """Read draft/composition/media schemas, including shared-stage LED selection."""
+        """Read scene timing and draft/composition/media schemas, including LED-only scenes.
+
+        Schema-v2 controller_timed scenes use clock_source controller and may use media [].
+        Media-synchronized scenes retain a required media clock output.
+        """
         _authorize(services, McpScope.READ)
         return authoring_schema()
 

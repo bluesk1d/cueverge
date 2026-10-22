@@ -1,0 +1,38 @@
+{
+  "schema_version": 2,
+  "id": "halloween-preshow",
+  "name": "Halloween LED Pre-show",
+  "mode": "controller_timed",
+  "clock_source": "controller",
+  "resources": ["roofline.demo"],
+  "duration_ms": 10000,
+  "media": [],
+  "lighting": [
+    {
+      "id": "roofline",
+      "resource": "roofline.demo",
+      "brightness_limit": 0.5,
+      "timeline": [
+        {
+          "id": "orange-glow",
+          "primitive": "envelope",
+          "start_ms": 0,
+          "duration_ms": 5000,
+          "color": "#FF5000",
+          "fade_in_ms": 1500,
+          "fade_out_ms": 1500
+        },
+        {
+          "id": "purple-glow",
+          "primitive": "envelope",
+          "start_ms": 5000,
+          "duration_ms": 5000,
+          "color": "#8000FF",
+          "fade_in_ms": 1500,
+          "fade_out_ms": 1500
+        }
+      ]
+    }
+  ],
+  "completion": {"policy": "loop"}
+}

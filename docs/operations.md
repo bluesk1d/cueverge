@@ -93,6 +93,33 @@ not evidence that the renderer lacks spatial support. If the client still has
 an old tool inventory after upgrading the container, refresh/reconnect its MCP
 connection and call `get_capabilities` again.
 
+Controller-clock support is an additive part of contract version 2.
+`get_capabilities` advertises `features.controller_timed_scenes`,
+`features.led_only_scenes`, and a `scene_timing` contract describing both clock
+modes. `get_project_structure` includes each scene's `mode` and `clock_source`.
+`get_authoring_schema` documents the clock-source and media-array constraints:
+
+- For an LED-only show, use scene `schema_version: 2`,
+  `mode: "controller_timed"`, `clock_source: "controller"`, `media: []`, and
+  only lighting resource claims. No media-agent installation binding is needed.
+- Controller-timed scenes may include media outputs. Required agents must be
+  connected and participating outputs prepared before scene time starts, but
+  telemetry does not drive that clock. Completion uses `duration_ms`; there
+  is no automatic clock failover or ongoing media drift correction.
+- Media-synchronized scenes still require a required media output as their
+  clock source.
+
+Use the existing `propose_project_revision` → `validate_proposal` →
+`simulate_proposal` workflow to author and rehearse either mode without
+hardware. With an explicit `direct_edit` grant, `update_project_draft` can save
+the same schema directly. Preserve unrelated draft/editor metadata and remove
+unused media references when converting an existing scene to LED-only.
+Simulation results expose `actual.status.clock_authority`,
+`estimated_position_ms`, and `playback_state` so clients can verify clock
+behavior. These additions do not grant live transport or output access.
+See [controller-timed scenes](scene-schema.md#controller-timed-scenes) and
+the [LED-only example](../shows/led-only-demo).
+
 `get_authoring_schema` describes composition settings (including
 `stage_lighting_surfaces`), output presets, image/video/GIF media layers,
 playback policy, keyframes, and timeline tracks under `editor_metadata`.

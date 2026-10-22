@@ -42,7 +42,8 @@ from cueverge.protocol.models import (
     MediaPosition,
     PlaybackState,
 )
-from cueverge.timing.follower import TelemetryDecision, TimecodeFollower
+from cueverge.timing.controller import ControllerClock
+from cueverge.timing.follower import TelemetryDecision, TimecodeFollower, TimeEstimate
 
 Clock = Callable[[], float]
 EventClock = Callable[[], int]
@@ -84,7 +85,7 @@ class ActiveScene:
 
     @property
     def resolved_media_sessions(self) -> tuple[ActiveMediaSession, ...]:
-        if self.media_sessions:
+        if self.media_sessions or self.definition.mode == "controller_timed":
             return self.media_sessions
         output = self.scene.media_outputs[0]
         return (
@@ -100,7 +101,9 @@ class ActiveScene:
         )
 
     @property
-    def clock_session(self) -> ActiveMediaSession:
+    def clock_session(self) -> ActiveMediaSession | None:
+        if self.definition.mode == "controller_timed":
+            return None
         return next(
             session
             for session in self.resolved_media_sessions
@@ -193,6 +196,7 @@ class ControllerRuntime:
             raise ValueError("lighting_delay_ms must be non-negative")
         self.clock = clock
         self.follower = TimecodeFollower(stale_after_ms=stale_after_ms)
+        self._controller_clock: ControllerClock | None = None
         self.render_fps = render_fps
         self.heartbeat_interval_ms = heartbeat_interval_ms
         self.heartbeat_timeout_ms = heartbeat_timeout_ms
@@ -435,13 +439,19 @@ class ControllerRuntime:
             for output in scene.media_outputs
             if output.agent_id in self._agents
         )
-        clock_session = next(
-            session for session in media_sessions if session.output_id == scene.clock_source_id
+        clock_session = (
+            next(
+                session for session in media_sessions if session.output_id == scene.clock_source_id
+            )
+            if scene.definition.mode == "media_synchronized"
+            else None
         )
         active = ActiveScene(
             scene=scene,
             scene_instance_id=str(uuid4()),
-            playback_session_id=clock_session.playback_session_id,
+            playback_session_id=(
+                clock_session.playback_session_id if clock_session is not None else str(uuid4())
+            ),
             media_sessions=media_sessions,
         )
         self.active_scene = active
@@ -449,9 +459,16 @@ class ControllerRuntime:
         for session in media_sessions:
             self._last_media_positions[session.playback_session_id] = 0
         self.follower.begin(active.scene_instance_id, active.playback_session_id)
+        self._controller_clock = (
+            ControllerClock(active.definition.duration_ms, self.clock())
+            if active.definition.mode == "controller_timed"
+            else None
+        )
         for session in media_sessions:
             connection = self._agents[session.agent_id]
             await self._send_command(active, session, "prepare", connection)
+        if not media_sessions:
+            await self._play_when_prepared(active)
         self._ensure_render_loop(active.scene_instance_id)
         return active
 
@@ -481,7 +498,7 @@ class ControllerRuntime:
     async def request_scene(self, scene_id: str) -> str:
         incoming = self.catalog.require(scene_id)
         active = self.active_scene.scene if self.active_scene is not None else None
-        estimate = self.follower.estimate(self.clock())
+        estimate = self._estimate_time()
         decision = self.arbiter.evaluate(
             active,
             incoming,
@@ -494,12 +511,22 @@ class ControllerRuntime:
 
     async def pause(self) -> None:
         await self._send_to_active_media("pause")
+        if self._controller_clock is not None:
+            self._controller_clock.pause(self.clock())
 
     async def resume(self) -> None:
         await self._send_to_active_media("resume")
+        if self._controller_clock is not None:
+            self._controller_clock.resume(self.clock())
 
     async def seek(self, position_ms: int) -> None:
+        if position_ms < 0:
+            raise ValueError("position_ms must be non-negative")
+        if self._controller_clock is not None:
+            position_ms = min(position_ms, self._controller_clock.duration_ms)
         await self._send_to_active_media("seek", target_position_ms=position_ms)
+        if self._controller_clock is not None:
+            self._controller_clock.seek(position_ms, self.clock())
 
     async def ingest_event(self, event: ExternalEvent) -> EventOutcome:
         if self.show_mode is not ShowMode.AUTOMATIC:
@@ -725,6 +752,8 @@ class ControllerRuntime:
         )
         if has_pending_prepare or required_failed:
             return
+        if self._controller_clock is not None:
+            self._controller_clock.start(self.clock())
         for session in active.resolved_media_sessions:
             if session.playback_session_id in self._failed_prepare_sessions:
                 continue
@@ -945,14 +974,34 @@ class ControllerRuntime:
             return None
         return await self._output_test.stop(reason)
 
+    def _estimate_time(self) -> TimeEstimate | None:
+        if self._controller_clock is not None:
+            return self._controller_clock.estimate(self.clock())
+        return self.follower.estimate(self.clock())
+
     def render_frame(self) -> bool:
         self.check_timeouts()
         self.render_ticks += 1
         active = self.active_scene
-        estimate = self.follower.estimate(self.clock())
+        estimate = self._estimate_time()
         if active is None or estimate is None or estimate.reason == "agent_disconnected":
             self.render_ticks_without_timecode += 1
             return False
+
+        if self._controller_clock is not None:
+            previous_position_ms = self._last_media_positions.get(active.playback_session_id, 0)
+            if estimate.state is PlaybackState.COMPLETED:
+                self._schedule_completion(active)
+            else:
+                ready = self.arbiter.pop_ready(
+                    active.scene,
+                    previous_position_ms=previous_position_ms,
+                    position_ms=estimate.position_ms,
+                    now_ms=round(self.clock() * 1000),
+                )
+                if ready is not None:
+                    self._schedule_scene_start(ready.definition.id, active)
+            self._last_media_positions[active.playback_session_id] = estimate.position_ms
 
         rendered_at = self.clock()
         render_position_ms = max(0, estimate.position_ms - self.lighting_delay_ms)
@@ -1083,6 +1132,7 @@ class ControllerRuntime:
         self._degraded_reason = None
         self.active_scene = None
         self.follower.reset()
+        self._controller_clock = None
         queued = None
         if continue_queue:
             queued = self.arbiter.pop_next(now_ms=round(self.clock() * 1000))
@@ -1358,7 +1408,7 @@ class ControllerRuntime:
 
     def status(self) -> dict[str, object]:
         self.check_timeouts()
-        estimate = self.follower.estimate(self.clock())
+        estimate = self._estimate_time()
         mean_interval_ms = (
             self._render_interval_total_ms / self._render_interval_count
             if self._render_interval_count
@@ -1375,7 +1425,7 @@ class ControllerRuntime:
             degraded_reason = "awaiting_telemetry"
         clock_session_id = (
             self.active_scene.clock_session.playback_session_id
-            if self.active_scene is not None
+            if self.active_scene is not None and self.active_scene.clock_session is not None
             else None
         )
         clock_position = (
@@ -1383,6 +1433,8 @@ class ControllerRuntime:
             if clock_session_id in self._media_sessions_with_telemetry
             else None
         )
+        if self._controller_clock is not None and estimate is not None:
+            clock_position = estimate.position_ms
         active_media = (
             [
                 {
@@ -1440,6 +1492,13 @@ class ControllerRuntime:
             if self.active_scene
             else None,
             "estimated_position_ms": estimate.position_ms if estimate else None,
+            "clock_authority": (
+                "controller"
+                if self._controller_clock is not None
+                else "media"
+                if self.active_scene is not None
+                else None
+            ),
             "playback_state": estimate.state if estimate else None,
             "degraded": degraded_reason is not None,
             "degraded_reason": degraded_reason,

@@ -235,6 +235,7 @@ type SceneOperationalPolicy = {
     | "ignore";
   request_ttl_ms: number;
   resources: string;
+  mode: "media_synchronized" | "controller_timed";
   clock_source: string;
   media_required: Record<string, boolean>;
   lighting_required: Record<string, boolean>;
@@ -2220,10 +2221,30 @@ export function TimelineEditor({
           {scene.schema_version === 2 && Array.isArray(scene.media) && (
             <>
               <label>
+                Clock authority
+                <select
+                  aria-label="Clock authority"
+                  disabled={!canEdit}
+                  value={scenePolicy.mode}
+                  onChange={(event) =>
+                    setScenePolicy((current) => ({
+                      ...current,
+                      mode: event.target.value as SceneOperationalPolicy["mode"],
+                      clock_source: event.target.value === "controller_timed"
+                        ? "controller"
+                        : Array.isArray(scene.media) ? scene.media[0]?.id ?? "" : "",
+                    }))
+                  }
+                >
+                  <option value="media_synchronized">Media playback</option>
+                  <option value="controller_timed">Controller</option>
+                </select>
+              </label>
+              <label>
                 Clock source
                 <select
                   aria-label="Clock source"
-                  disabled={!canEdit}
+                  disabled={!canEdit || scenePolicy.mode === "controller_timed"}
                   value={scenePolicy.clock_source}
                   onChange={(event) =>
                     setScenePolicy((current) => ({
@@ -2232,6 +2253,9 @@ export function TimelineEditor({
                     }))
                   }
                 >
+                  {scenePolicy.mode === "controller_timed" && (
+                    <option value="controller">Controller monotonic clock</option>
+                  )}
                   {scene.media.map((output) => (
                     <option key={output.id} value={output.id}>
                       {output.id}
@@ -5757,6 +5781,7 @@ function readSceneOperationalPolicy(
       : "priority",
     request_ttl_ms: numberValue(scheduling.request_ttl_ms, 30000),
     resources: scene?.resources?.join(", ") ?? "",
+    mode: value.mode === "controller_timed" ? "controller_timed" : "media_synchronized",
     clock_source:
       typeof value.clock_source === "string" ? value.clock_source : "",
     media_required: Object.fromEntries(
@@ -5875,7 +5900,7 @@ function validateTimelineState({
       );
     }
   }
-  if (scene?.schema_version === 2) {
+  if (scene?.schema_version === 2 && policy.mode === "media_synchronized") {
     const clock = media.find((output) => output.id === policy.clock_source);
     if (!clock) {
       add(
@@ -5890,7 +5915,7 @@ function validateTimelineState({
         clock.id,
       );
     }
-  } else if (typeof sceneRecord.clock_source === "string") {
+  } else if (scene?.schema_version !== 2 && typeof sceneRecord.clock_source === "string") {
     add("clock_source_unsupported", "Schema-v1 scenes cannot define a clock source.", scene?.id ?? "scene");
   }
   if (
@@ -6079,6 +6104,7 @@ function applySceneOperationalPolicy(
   }
   return {
     ...updated,
+    mode: policy.mode,
     clock_source: policy.clock_source,
     media: scene.media.map((output) => {
       const record = metadataRecord(output);

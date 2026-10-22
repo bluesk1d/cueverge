@@ -372,14 +372,14 @@ def _bind_scene(
     lighting_outputs = tuple(
         _bind_lighting_output(scene.id, definition, bindings) for definition in lighting_definitions
     )
-    primary_media = media_outputs[0]
+    primary_media = media_outputs[0] if media_outputs else None
     primary_lighting = lighting_outputs[0]
     return LoadedScene(
         definition=scene,
         media_outputs=media_outputs,
         lighting_outputs=lighting_outputs,
         clock_source_id=clock_source_id,
-        agent_id=primary_media.agent_id,
+        agent_id=primary_media.agent_id if primary_media is not None else None,
         pixel_count=primary_lighting.pixel_count,
         pixel_segments=primary_lighting.pixel_segments,
         lighting_segment=primary_lighting.lighting_segment,
@@ -389,7 +389,7 @@ def _bind_scene(
         lighting_target_precedence=primary_lighting.lighting_target_precedence,
         lighting_cues=primary_lighting.lighting_cues,
         color=primary_lighting.color,
-        asset_id=primary_media.asset_id,
+        asset_id=primary_media.asset_id if primary_media is not None else None,
     )
 
 

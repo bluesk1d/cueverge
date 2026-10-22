@@ -643,7 +643,14 @@ def _audio_owner(
     for scene in draft.scenes:
         roots = scene_roots.get(scene.id, [])
         if scene.schema_version == 2 and isinstance(roots, list) and composition_id in roots:
-            output = next(item for item in scene.media if item.id == scene.clock_source)
+            if scene.mode == "controller_timed":
+                output = next((item for item in scene.media if item.resource in resources), None)
+                if output is None:
+                    raise ProjectorRenderError(
+                        "controller-timed stage composition requires a scene media output"
+                    )
+            else:
+                output = next(item for item in scene.media if item.id == scene.clock_source)
             if output.resource not in resources:
                 raise ProjectorRenderError(
                     "scene clock-source resource is not in the projector output set"

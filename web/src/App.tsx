@@ -1667,6 +1667,14 @@ export function OperatePage({
               <dd>{formatDuration(runtime.status.estimated_position_ms)}</dd>
             </div>
             <div>
+              <dt>Clock authority</dt>
+              <dd>
+                {runtime.status.clock_authority === "controller"
+                  ? "Controller"
+                  : runtime.status.active_scene ? "Media playback" : "None"}
+              </dd>
+            </div>
+            <div>
               <dt>Connected agents</dt>
               <dd>{runtime.status.connected_agents.length}</dd>
             </div>

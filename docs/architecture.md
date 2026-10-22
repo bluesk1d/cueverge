@@ -6,13 +6,21 @@ Cueverge deliberately separates two kinds of authority:
 
 - The controller is authoritative for which scene instance is active, its
   resource claims, and when it is stopped or replaced.
-- The media agent is authoritative for where its current playback session is
-  in media time.
+- In media-synchronized scenes, the media agent is authoritative for where its
+  current playback session is in media time.
+- Explicit controller-timed scenes use the controller's monotonic clock,
+  starting after media preparation if any outputs participate. LED-only scenes
+  need no media agent.
 
-The controller therefore renders lighting from a bounded estimate anchored to
+For media-synchronized scenes the controller renders lighting from a bounded estimate anchored to
 accepted agent telemetry. It does not use elapsed time since issuing `play` as
 the scene clock. Scene instance IDs and playback session IDs fence late traffic
 from earlier runs.
+
+Controller-timed scenes retain the same render scheduler and lifecycle rules,
+but derive position from a local pauseable, seekable clock bounded by scene
+duration. Media telemetry cannot change this clock. Clock authority never
+switches automatically on agent loss.
 
 ## M1 components
 
@@ -54,7 +62,9 @@ does not persist state across restarts or attempt hardware recovery.
   optional discontinuity field records whether the agent observed a seek or
   loop; rendering remains pure and does not fire irreversible actions.
 - Pause and stale telemetry continue emitting a held deterministic frame.
-  Agent disconnect, explicit stop, replacement, and shutdown cancel rendering.
+  Clock-source agent disconnect, explicit stop, replacement, and shutdown cancel
+  rendering. Controller-timed scenes continue on media-agent disconnect, with
+  degraded output diagnostics.
 - Scheduler metrics are diagnostic software measurements and do not describe
   when a projector or physical pixel visibly updates.
 - Authentication, durable state, multi-scene arbitration, and rate limiting

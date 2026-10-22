@@ -220,6 +220,9 @@ def _expected_mismatches(
 def _deterministic_status(status: dict[str, object]) -> dict[str, JsonValue]:
     keys = (
         "active_scene",
+        "clock_authority",
+        "estimated_position_ms",
+        "playback_state",
         "connected_agents",
         "scene_starts",
         "scene_completions",

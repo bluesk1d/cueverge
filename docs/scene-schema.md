@@ -150,7 +150,7 @@ within the scene.
 }
 ```
 
-`clock_source` must identify a required media output. Its accepted telemetry is
+In `media_synchronized` mode, `clock_source` must identify a required media output. Its accepted telemetry is
 the authoritative scene clock. Telemetry from other media outputs is fenced
 and recorded but does not move scene time.
 
@@ -178,6 +178,57 @@ healthy lighting outputs from receiving their frames; failed sends are retried
 on later render ticks.
 Scene schema version 1 retains its singular `media` and `lighting` objects and
 is normalized to the same loaded representation.
+
+### Controller-timed scenes
+
+Schema version 2 also supports `mode: "controller_timed"` with
+`clock_source: "controller"`. The controller's monotonic clock owns scene
+position, pause/resume, seeking, and duration-based completion. It is an
+explicit choice, not a fallback for a disconnected or stale media clock.
+Version 1 scenes remain media-synchronized.
+
+For an LED-only pre-show, use `media: []` and claim only lighting resources:
+
+```json
+{
+  "schema_version": 2,
+  "id": "preshow",
+  "name": "LED pre-show",
+  "mode": "controller_timed",
+  "clock_source": "controller",
+  "resources": ["roofline"],
+  "duration_ms": 30000,
+  "media": [],
+  "lighting": [
+    {"id": "roofline", "resource": "roofline", "effect": "synthetic_sweep"}
+  ],
+  "completion": {"policy": "loop"}
+}
+```
+
+No media-agent binding, connection, or telemetry is needed for this scene.
+The [LED-only demo](../shows/led-only-demo) is a complete loadable package.
+Bind its lighting resource to your installation before enabling physical output.
+
+Controller-timed scenes may also include media outputs. Required connections
+and the prepare barrier still apply; scene time starts when preparation
+succeeds, before per-output startup delays. Pause/resume/seek commands go to
+participating agents as well as the local clock. Agent telemetry and drift
+remain diagnostic: media completion, pauses, buffering, or disconnection do
+not take over scene time. There is no ongoing media drift correction, so use
+media-synchronized mode when lighting must track actual visible/audible
+playback. Required prepare failures still prevent startup and retain the
+configured failure-scene behavior.
+
+Normal completion policies, safe-point requests, lighting offsets, and
+brightness limits apply in both modes. Controller time clamps at the scene
+duration; `hold` keeps rendering the final position, and `loop` starts a new
+scene instance. In the timeline editor, select **Clock authority → Controller**;
+the clock source then becomes **Controller monotonic clock**.
+
+Stage projector bakes normally give mixed audio to the clock-source media
+output. A controller-timed scene instead uses the first declared media output
+that belongs to the stage projector set as its audio owner.
 
 ## Multi-cue lighting timelines
 

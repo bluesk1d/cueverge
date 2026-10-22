@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "resources": [
+    {
+      "resource": "roofline.demo",
+      "kind": "pixel_output",
+      "target": "memory",
+      "pixel_count": 8
+    }
+  ]
+}
