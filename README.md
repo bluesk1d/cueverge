@@ -40,6 +40,10 @@ uv run mypy src
 uv run pytest
 ```
 
+Pytest adds the repository root to its import path so the suite can also test
+the local-demo tooling in `examples/`, which is not part of the installed engine
+package. CI uses the same configuration and commands.
+
 Run the controller:
 
 ```bash
