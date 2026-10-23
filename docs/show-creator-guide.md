@@ -45,6 +45,39 @@ The reusable engine contains no Halloween story, house geometry, private
 addresses, credentials, or copyrighted assets. Those belong in a private show
 package and deployment configuration.
 
+### Browser authoring entry point
+
+Use **Shows > Open show** to choose a scene. Scene-native LED cues now appear
+directly with their original IDs, targets and timing; selecting a cue opens
+contextual controls and seeks its safe preview to the cue start. The default
+view fits all effect timing to the scene duration. **Save scene** preserves the
+source representation and does not apply changes to live output.
+Legacy sweep/pulse forms remain legacy forms rather than being silently converted.
+
+When saved work is ready, choose **Apply saved changes** and review its changes,
+controller target and safe interruption. Preparation and verified media transfers
+precede catalog load. A playing show restarts its chosen scene at zero; paused/
+stopped stays stopped. Saved work is never silently made live. Retained recovery
+does not overwrite the editable show. See [managed Apply](operations.md#applying-saved-shows-and-recovering).
+
+Use **Operate > Open output monitor** to observe last successfully sent colors
+on saved photo mappings. It is not another candidate preview or physical proof:
+media reports, stale/held samples and unmapped coverage are labeled separately.
+Decoded projector video and electrical LED/audio feedback are not captured.
+
+The house overlay uses the production lighting evaluator. It keeps the last
+evaluated frame visible while the next frame is prepared, without inserting
+per-frame loading messages into the layout. **LED output details** optionally
+shows a single horizontally scrollable row in pixel-address order; it is a
+diagnostic view, not a representation of physical placement. Without a matching
+photo mapping, add a photo and map your lights in Installation for spatial preview.
+Mapping gaps, candidate/allocation differences, unavailable media and unsupported
+simple spatial preview are explicit. Media reference review is separate from
+venue playback. Open the advanced timeline for synchronized cues, transforms and
+spatial composition preview; the selected scene is shared with the main view.
+Collaboration remains available under **Show options > Share & review** without
+occupying the normal hobby workflow.
+
 ## 2. Validated installation capabilities
 
 The current installation has been validated with:
@@ -255,6 +288,28 @@ Each transition currently supports:
 
 ### Available Frigate observations
 
+For everyday authoring, use **Shows > Open show > Visitor responses**. The guided
+editor writes the existing audience/opportunity/program/scene models in place,
+preserving response IDs and unedited fields. Human names use only
+`editor_metadata.interaction_names`. Existing state-sequence scene edits preserve
+the complete transition, and unsupported matching stays explicitly advanced.
+See [the visitor workflow](operator-guide.md#visitor-responses-and-the-shared-preview-workspace)
+for boundary timing, shared completion consent and pending-change preview.
+
+**Preview > Visitor test** accepts camera-like examples and clock advancement,
+not live input. It uses the production qualifier, response selection and lighting
+renderer, records intermediate scene changes, and exposes why a response is
+waiting, expired, ignored or selected. Arrival confirmation, sustained presence,
+prior quiet time, repeat windows, competing responses and scene completion remain
+separate constraints. A queued response does not imply immediate or physical playback.
+
+Set up real reception in **Installation > Inputs & connections**, also linked
+from visitor-enabled shows and the autonomous designer. The optional safe example
+checks saved source labels and loaded visitor rules without sending a live event.
+Saving a show's visitor rules does not load them into the controller.
+See [connecting camera events](operator-guide.md#connecting-camera-events) for
+subscription, reception, filtering, freshness and qualification checks.
+
 Cueverge normalizes live Frigate MQTT messages into:
 
 | Event | Meaning | Common attributes |
@@ -298,6 +353,16 @@ timer ticks rather than requiring a detector event at the exact threshold.
 An opportunity is consumed once at an eligible completion boundary before
 normal director selection. It does not interrupt the active scene, and repeated
 source observations coalesce instead of creating a reaction backlog.
+
+For the upcoming hobbyist workflow, distinguish a **trigger** (what happened),
+an **interaction** (the configured response), a **scene** (the content that may
+play), and a **cue** (a timed action inside content). An engagement opportunity
+is a time-limited chance to respond at an eligible boundary; an encounter tracks
+ongoing interaction state and transitions. Neither term promises immediate
+playback. The [accepted usability architecture](decisions/0016-lossless-hobbyist-authoring-and-runtime-handover.md)
+requires summaries and safe simulation to explain qualification, waiting,
+expiry, repetition, and recovery without losing those distinctions. The guided
+interaction editor itself is scheduled for UP-05, not implemented by this decision.
 
 ### Remaining declarative limitations
 

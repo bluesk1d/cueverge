@@ -13,6 +13,7 @@ planning a live opening.
 
 - [Orientation and safety](#orientation-and-safety)
 - [Creating an installation](#creating-an-installation)
+- [Connecting camera events](#connecting-camera-events)
 - [Creating and organizing a show](#creating-and-organizing-a-show)
 - [Authoring scenes and timelines](#authoring-scenes-and-timelines)
 - [Authoring autonomous behavior](#authoring-autonomous-behavior)
@@ -20,6 +21,7 @@ planning a live opening.
 - [Publishing and handing over](#publishing-and-handing-over)
 - [Running a show](#running-a-show)
 - [Current boundaries](#current-boundaries)
+
 
 ## Orientation and safety
 
@@ -44,25 +46,52 @@ when the scene explicitly selects controller timing.
 
 ![Overview showing a stopped synthetic installation and disconnected media resource](assets/gui/operator-overview.png)
 
-*All screenshots in these guides were captured with the integrated browser
+*Screenshots illustrate earlier implementation checkpoints; Overview/header
+were simplified in UP-02 and Shows in UP-03. All captures use the integrated browser
 against an isolated controller using synthetic demo data. No live hardware
 was connected. Empty, disconnected, and blocked states are intentional.*
 
-- **Overview:** configured resource counts, observed connectivity, current
-  scene, activity, and available installation information.
-- **Installation:** topology, photos, mapper, device management, assignments,
+- **Overview:** a saved installation photo, current or explicitly last-known
+  playback, equipment connections, useful destinations, and compact activity.
+  Open **Setup checklist** or **System details** for optional setup facts.
+- **Installation:** camera inputs/connections, topology, photos, mapper, device management, assignments,
   and connection diagnostics.
-- **Shows:** projects, assets, collaboration, scene presets, timeline, show
-  logic, rehearsal, and publication.
+- **Shows:** a compact library; **Open show** leads directly to scenes, lighting
+  effects and a safe preview. Assets, show options, sharing, and advanced
+  authoring/history remain available when needed.
 - **Operate:** live transport, operating mode, maintenance simulation,
   per-output status, and runtime diagnostics.
 - **Settings:** administrator-managed local users and installation records.
 
-Use **Refresh status** before making a decision based on connectivity or mode.
-Status displays include observation times; they are not proof of a continuously
-live feed. **Open Operate** provides access to transport and blackout; the
+Live runtime and device snapshots refresh independently about every two seconds
+while the tab is visible. Setup/activity refresh about every 30 seconds.
+After ten seconds without an updated snapshot, the UI marks it out of date;
+failed requests report unavailable status and retain last-known information
+without an unqualified green live claim. Requests time out after eight seconds.
+Background polling pauses in hidden tabs and refreshes on return.
+Use **Refresh status** to retry, not as a prerequisite for normal monitoring.
+
+The header names the single runtime-backed installation without pretending
+additional planning records can be selected as controllers. Open the avatar's
+**Account** disclosure for role and **Sign out**; Escape dismisses it and
+returns focus. Session expiry stops automatic live requests and offers an
+explicit return to sign-in, warning before unsaved local edits are discarded.
+
+Controller connected does not mean equipment is ready or physically producing
+output. Overview and Installation use the same topology connection facts;
+**Offline · on demand** describes connection policy, not confirmed readiness.
+Activity audit outcomes are not device-health badges. Repeated connection
+changes are grouped with every event retained in audit details; routine token/
+tool administration stays in **More activity**.
+
+Managed Apply reports the controller's acknowledged loaded show identity.
+Legacy/external catalogs remain unreported; saved edits and active artifact
+labels do not establish identity.
+**Open controls** or **Open Operate** provides access to transport and blackout; the
 current application does not provide a global emergency-stop control on every
-editor screen.
+editor screen. Stale status blocks ordinary playback/mode changes; authorized
+Stop and Blackout remain available, but a broken network cannot guarantee
+delivery. Follow the physical safety procedure when needed.
 
 ### Before any physical output
 
@@ -84,16 +113,19 @@ editor screen.
 An administrator first deploys the controller with a validated runtime package
 and enables the necessary adapters. The active installation is derived from
 that package. On a fresh synthetic deployment it is named `demo`; older
-screens and the **Create from Home** button use "Home" for this runtime-backed
-installation.
+screens use "Home" for this runtime-backed installation.
+
+Use **Settings > Your installation > Installation settings** to change the
+display name. Folder, tags and favorite are under **Organization (optional)**.
+People/project access administration is also collapsed by default.
 
 To create an additional planning record:
 
-1. Open **Settings > Installations** as administrator.
+1. Open **Settings > Additional installation records (advanced)** as administrator.
 2. Enter **New installation name**, then choose **Create installation**.
 3. Set its folder, comma-separated tags, and favorite state as needed; save.
 
-**Expected result:** a durable record marked **Not provisioned**. It cannot
+**Expected result:** a durable **Planning record** with no controller attached. It cannot
 be selected as a running installation in the header. This action does not
 attach a package, change the active installation, or deploy another controller.
 There is no end-to-end GUI provisioning wizard for that handover yet; involve
@@ -104,7 +136,8 @@ another project or installation artifact still uses.
 
 ### 2. Verify resources and devices
 
-Open **Installation** and compare **Installation Package** with the physical
+Open **Installation > Devices** and compare **Configured outputs and logical
+resources** with the physical
 inventory. Record resource names, media hosts, native output sizes, lighting
 pixel counts, segment ranges, fixtures, paths, and intended clock source.
 
@@ -115,6 +148,16 @@ changed with playback idle and the device disconnected; follow
 Controller-owned DDP destinations remain private deployment configuration,
 not photo geometry.
 
+Device cards show identity, display role and connection state. Open **Device
+details** for protocol, formats, storage, transfers, certificates and timing.
+Compatibility conflicts, transfer failures, storage faults and diagnostic messages
+remain visible without opening details. **Add a device** opens the enrollment
+guide: choose its kind, load/review its capability file, then create a one-time
+token. Manual capability JSON is under **Advanced declaration editing**; the
+example template is not a device observation. A compatible declaration does not
+mean connected or ready. **Assign display roles**, connection expectations/checks
+and advanced suspend/revoke controls are separate contextual disclosures.
+
 **Expected result:** the correct enrolled devices and resources appear in
 topology, with fresh connection/capability information. Independently check
 video, audio, and pixels; "not independently detectable" is not a fault to
@@ -122,18 +165,21 @@ hide or a health check to waive.
 
 ### 3. Add reference photos
 
-1. Open **Installation > Installation Photos**.
-2. Enter a descriptive **Photo name** and **Named viewpoint**, such as
-   "Wide front view" and "Audience center".
-3. Choose **Add installation photo** and upload a JPEG, PNG, or WebP that
+1. Open **Installation > Photos & Layout**.
+2. Enter one **Photo description**, such as "Wide front view for roofline placement".
+3. **Choose photo**, then **Add installation photo** to upload a JPEG, PNG, or WebP that
    you own or have permission to use.
-4. Check the orientation, crop, and optional scale hint; choose **Save photo**
-   after adjustments.
+4. Open **Photo details** to edit its description. Orientation, crop and scale
+   are optional under **Image and calibration details**; choose **Save photo**
+   after adjustments. Existing view IDs/legacy labels and mapping metadata are
+   preserved by a description-only edit.
 5. Add useful alternate angles or close-ups, within the 12-photo budget.
 
 Use non-sensitive photos where practical. Photos describe viewpoints, not
 separate physical outputs. The Visual Mapper becomes available after a photo
-has been uploaded.
+has been uploaded. **Open Layout** on a card enters that exact photo.
+Use **Refresh photos** after external/MCP changes; revision conflicts never
+silently overwrite another edit.
 
 ### 4. Map geometry and outputs
 
@@ -142,8 +188,10 @@ has been uploaded.
 *The capture shows mapper inputs before calibration, not a calibrated venue.
 The reference uploaded for this walkthrough was a generated courtyard diagram.*
 
-1. Select the named viewpoint and geometry kind in **Visual Mapper**.
-2. Name the geometry and place points on the reference view. Choose the
+1. Choose **Open Layout** on the photo. Layout starts in **Select**, not Draw.
+   Select a shape on the photo or in the list to reveal its properties.
+2. Choose **Add to photo** to create an LED segment, projector area, or other
+   object, then name it and place points on the reference view. Choose the
    appropriate kind: output, pixel segment, fixture, path, projector surface,
    mask, audience zone, or safety zone.
 3. Use grid snapping, zoom/pan, color, labels, ordering, and locked/hidden
@@ -154,8 +202,9 @@ The reference uploaded for this walkthrough was a generated courtyard diagram.*
    projector pixels, and lighting-local coordinates distinct.
 
 Navigate the reference image with **Hand** and drag, or temporarily pan using
-**Space + drag** or the middle mouse button. **Draw** restores point placement
-and handle editing. The mouse wheel zooms around the cursor; trackpad pinch
+**Space + drag** or the middle mouse button. **Select** changes the selected
+object and permits editable point handles; it does not add points on empty space.
+**Draw** explicitly adds points when creating or editing an object. The mouse wheel zooms around the cursor; trackpad pinch
 zooms and two-finger scrolling pans. Wheel-device detection is heuristic:
 small pixel-scroll deltas pan, while larger vertical wheel steps zoom.
 **Shift + wheel** explicitly pans on any device. On touchscreens, use two
@@ -169,7 +218,8 @@ without clearing points. Changing the reference photo also resets the view.
 
 For a planar projector surface:
 
-- Select its **Projector resource** and actual native width/height.
+- Select its **Projector resource**. Open **Projector mapping** for actual native
+  width/height, calibration content, fit and precise alignment.
 - Draw exactly four corners in consistent perimeter order.
 - Set stage placement/size, orientation, mirroring, crop, fit, linked masks,
   and brightness limit deliberately.
@@ -187,7 +237,7 @@ For lighting:
   additional points define bends. Use **Undo point**, **Clear points**, and
   **Fit view** in the drawing toolbar without clearing the segment's properties.
 - Enter **First pixel index** (zero-based), **Pixel count**, and an optional
-  **Strand ID**. The allocation summary displays the inclusive first and last
+  **Strand ID** under **Optional strand label**. The allocation summary displays the inclusive first and last
   indices. Out-of-range allocations cannot be saved; overlaps on the same output
   are warnings, excluding linked views of the same semantic object.
 - Alternatively, choose **Generate layout** for a row, grid, ring, outline,
@@ -276,30 +326,77 @@ lighting. Do not guess compensation from the time a command was clicked.
 pixel order, usable video/audio, deliberate safe output states, reconnect
 behavior, and recorded physical timing checks.
 
+## Connecting camera events
+
+Open **Installation > Inputs & connections**. Frigate over MQTT is the supported
+camera-event connection; Cueverge does not need a camera video stream.
+
+1. Open **Set up Frigate camera events** (or **Connection settings**).
+2. Enter the MQTT broker hostname and port, choose TLS if the broker supports it,
+   and open **Broker login (optional)** if credentials are needed.
+   The topic defaults to `frigate/events`
+   and the accepted object label to `person`; both are under **Advanced connection
+   settings**. Use a trusted local network if TLS is off.
+3. Select **Enable camera events**, then **Save and connect**. Confirm that real
+   events may reach the loaded automatic show. This reconnects only the camera
+   listener, not the show. Only installation administrators can change settings.
+4. Wait for **Subscribed to camera events**, then open **Check event reception**
+   and cause an authorized real detection in Frigate. Check received messages,
+   controller acceptance, matching visitor rules, and camera/zone names separately.
+   A connected broker with no events is not proof that the integration works.
+
+Passwords are write-only: an empty password field retains a stored credential;
+**Remove stored password** explicitly removes it. Saved settings survive a
+controller restart, independently of show drafts. If another administrator
+changed settings, **Reload saved settings** before submitting again.
+Changing a connection starts a new listener session and resets its counters.
+
+**Try an isolated example** checks a camera and optional zone against saved
+connection labels and the controller's currently loaded visitor rules. It never
+injects a live event or commands hardware. It does not test MQTT reception or
+promise scene playback. Unsaved show rules are not loaded rules.
+
+No events: check that Frigate publishes to the configured broker/topic.
+Filtered labels: compare accepted labels. Unmatched input: compare exact camera
+and zone names with the loaded rules. Stale input: check clock synchronization
+and the loaded freshness limit. A matched visitor may still wait for arrival
+confirmation, repetition limits or an eligible response. Guided response
+authoring and explicit verified Apply are separate actions.
+
+An **Operator-managed connection** is deliberately read-only. The operator changes
+`CUEVERGE_FRIGATE_*` settings and restarts the controller. See
+[input deployment and credential recovery](operations.md#camera-input-management)
+for management selection, TLS, backup/restore and protected-storage requirements.
+
 ## Creating and organizing a show
 
 ![Shows workspace with a revisioned synthetic project and collaboration tools](assets/gui/operator-shows.png)
 
-### 1. Create an isolated project
+### 1. Open or create a show
 
 1. Open **Shows** with authoring permission.
-2. Enter **Project name** and choose **Create from Home**.
-3. Verify the new draft revision and inherited scenes/resources.
+2. Choose **Open show** on an existing show, or expand **New show**, enter
+   **Show name**, and choose **Create show**.
+3. A new show opens into its inherited scenes. Select a scene to inspect its
+   content. Creation and saving do not change live playback.
 
 The button copies the controller's current runtime catalog; it does not
 create an empty show or use the unprovisioned record you just created in
 Settings. Alternatively, use **Import project** with a compatible Cueverge
 project JSON document.
 
-Use **Rename**, **Duplicate**, **Archive**, project search, and **Export** to
-organize work. Export is a portable project document, not a backup of original
+Use **Find a show** in the library. Within an opened show, **Show options**
+contains name, duplicate/archive, export, and saved revision details.
+Export is a portable saved project document, not a backup of original
 media, device credentials, or the complete controller service. Keep those
 separately.
 
 ### 2. Arrange collaboration
 
-Ask an administrator to add team members under **Collaboration > Project
-access**. A person needs an account and project membership. Use comments and
+Collaboration is opt-in: open **Show options > Share & review**, then ask an
+administrator to add team members under **Project access**. It is not part of
+the default hobby workflow. A person needs an account and project membership.
+Project permissions are checked independently of opening sharing. Use comments and
 change requests for review; associate an object ID when feedback concerns a
 specific scene or object.
 
@@ -335,7 +432,7 @@ root; importing a project JSON file does not copy those files.
 
 ### 4. Optionally author through chat
 
-Open the project's **MCP-assisted authoring** workspace and create a named
+Open **Advanced authoring and history > MCP-assisted authoring** and create a named
 client token. Copy the secret once and connect the chat client to `/mcp/` on
 the controller's HTTPS origin using bearer authentication. Keep the token
 private; it is bound to your user and this project.
@@ -386,16 +483,55 @@ outputs, but lighting follows controller time rather than buffering or actual
 playback. See [controller-timed scenes](scene-schema.md#controller-timed-scenes)
 and the [LED-only package](../shows/led-only-demo).
 
-Use **Scenes & reusable presets** to organize scenes by folder/tags, create
+Under **Advanced authoring and history**, use **Scenes & reusable presets** to organize scenes by folder/tags, create
 reusable presets, and apply them to a selected scene. Check resource references
 after reuse. Presets do not make an installation-specific resource portable by
 renaming it automatically.
 
-### Edit time-based content
+### Edit scene-native lighting
+
+Open a show and select a scene. Its existing scene-native timeline effects are
+shown as selectable rows fitted to the entire duration, not reconstructed from
+editor metadata. Use **Find an effect** for long scenes. Selecting an effect
+moves the preview to its start and exposes its supported target, color,
+brightness, timing and primitive-specific controls. Optional fades, blend,
+seed/precedence and output/scene details stay contextual.
+
+Targets retain their original segment/fixture/path identities; saved geometry
+names are used when a matching semantic identity is available. Save changes
+with **Save scene** in the sticky scene heading, or **Cancel scene edits**.
+Scene name/duration are under **Scene details**. Invalid timing is explained and
+cannot be saved. Shortening a scene does not automatically delete or trim effects,
+markers, or protected intervals.
+
+**Play scene preview** and the seconds scrubber request frames from the same
+lighting evaluator used by the controller. Frames include declared output timing
+offsets. A matching saved photo displays evaluated LED locations; the output
+strip remains available when mapping is absent or incomplete. Different
+allocations withhold the overlay rather than paint incorrect locations.
+This is a candidate scene preview, not a live monitor, automatic visitor/show
+simulation, or proof of physical output. Media reference proxies are explicitly
+independent of the LED preview clock and venue playback.
+
+Only supported fields are changed. Scene-native v1/v2 legacy effects remain in
+their original form; legacy pulse targets/times/color are editable. The renderer's
+existing legacy brightness-limit behavior is reported rather than silently
+changed. Unsupported simplified editing never removes saved data.
+Compositions, synchronized editor cues and transforms are identified as separate
+contributions with a direct **Open advanced timeline** destination; spatial
+composition preview continues through its existing advanced renderer.
+
+Unsaved scene edits warn before scene changes, return to the library, workspace
+navigation, sign-out, or browser unload. Background asset refreshes do not
+replace those edits. While raw edits are pending, other mutating show tools are
+unavailable; save or cancel first. Stale saves retain edits and report conflict.
+
+### Advanced time-based content
 
 ![Timeline transport, backend evaluation, and no-hardware scenario tools](assets/gui/operator-timeline.png)
 
-1. Expand **Timeline editor** and select **Scene**.
+1. Open **Advanced authoring and history > Timeline editor**. Its **Scene**
+   selection stays synchronized with the main scene workspace.
 2. Choose **Editing space**: scene root or a composition.
 3. Set zoom and snap precision, scrub to a time, and use frame steps/preview
    speed for inspection. Check both global and composition-local time.
@@ -404,6 +540,13 @@ renaming it automatically.
 5. Use **Save timeline** to persist changes. Undo/redo and browser preview do
    not replace saving a revision.
 6. Check backend deterministic evaluation and diagnostics after saving.
+
+Saved zoom and snap precision are restored when entering that scene or editing
+space; opening and saving it should not replace those view settings with defaults.
+Existing raw runtime lighting cues and legacy effects are edited in the main
+scene workspace and preserved by advanced saves. This advanced timeline shows
+editor-owned synchronized cues/compositions; an empty lane does not establish
+that a scene has no scene-native lighting.
 
 Choose coordinates deliberately:
 
@@ -512,6 +655,54 @@ physical playback separately.
 
 ## Authoring autonomous behavior
 
+### Visitor responses and the shared Preview workspace
+
+Open a show and choose **Visitor responses** next to **Scenes** and **Preview**.
+Cards explain when a response matches, what scene it requests, whether it waits
+for a boundary, its repeat limits, and what happens afterward. The shared visitor
+area applies to every response; **Inputs & connections** opens real Frigate setup.
+
+**Add visitor response** guides When/Where, Response, Timing/Repetition, then
+Afterward/Review. Guided creation makes a boundary-based response: it waits until
+a scene with **choose next** end behavior completes. It does not silently turn an
+event into an immediate interrupt. Existing state-sequence requests remain visible;
+**Change response scene** preserves their events, states, conditions and ordering.
+Custom matching stays in **Advanced interactions** rather than being flattened.
+
+Review the shared scene-change checkbox carefully. It explicitly changes the
+response, starting scene and normal default-group scenes to choose what plays
+next; their names and previous end behavior are listed. Leave it unchecked to
+preserve loop/hold/stop/fixed-next behavior. A new automatic program requires an
+explicit normal-playback scene and confirmation. Editing an existing response
+never creates a missing program implicitly.
+
+**Try changes before saving** runs the same Preview workspace on an unsaved
+candidate. It never submits the editor form or changes the saved/live show.
+Save remains separate from making changes live. Cancel/Escape and navigation
+protect pending edits.
+
+In **Preview**, choose **Scene preview** for ordinary LED timing or **Visitor
+test** for arrival/tracking/departure and time advancement. **Try it** opens a
+visitor test directly. Set example camera/zone names; **Other test conditions**
+contains object identity, label and observation age. **Visitor stays** sends a
+tracking update, not a new arrival. Advance time separately to test confirmation,
+freshness, waiting, expiry, scene boundaries and return. Inspect earlier action
+checkpoints without replaying physical outputs.
+
+The photo view uses the actual isolated runtime's evaluated LED frame; sampled
+coverage and unsupported/unbaked spatial output are explicit. **What happened**
+separates qualified visitors, waiting/qualifying responses, rejection reasons,
+boundary selection, actual scene history, normal-playback eligibility and state
+sequence activity. A selected response is not proof of physical playback.
+Once prepared, a boundary response remains available until expiry even if visitors
+leave; its required context is checked while qualifying, not again at consumption.
+Use a shorter waiting lifetime when a late response would make no sense.
+
+These are deterministic tests with memory outputs and healthy fake media agents,
+not live camera reception or device-readiness checks. Input filters must still be
+verified in Installation. Full choreography, unusual matching conditions and
+spatial composition editing remain contextual advanced tools.
+
 Expand **Autonomous show logic designer**:
 
 1. Set the program's initial scene and default pool.
@@ -522,6 +713,12 @@ Expand **Autonomous show logic designer**:
    timing, and ambient recovery.
 5. Review completion/fallback behavior, resource ownership, and arbitration.
 6. Save, analyze, and simulate the resulting behavior.
+
+The encounter transition editor and scene completion/fallback table scroll
+horizontally within their own regions when space is limited. Tab to
+**Encounter transitions** or **Scene transition details**, then use the left/right
+arrow keys to reach additional columns. Long timelines scroll independently;
+opening one should not enlarge the encounter diagram or hide later controls.
 
 Raw detector observations are not the same as semantic audience state.
 Test arrival, continued presence, departure, long idle, repeated observations,
@@ -611,12 +808,24 @@ bakes, and client cache state/capacity. Do not bypass a diagnostic because
 editorial preview looks correct. Devices protect candidate, active, rollback,
 and playing artifacts; staging can fail rather than evict a protected file.
 
-**Important handover limit:** the GUI release workflow does not reload the
-running controller scene catalog. If scene definitions or autonomous logic
-changed, the technical operator must update `CUEVERGE_SHOW_PACKAGE` to the
-verified package and restart/recreate the controller in a controlled window.
-See [release handover](service-administration.md#release-handover-and-upgrades).
-An `active` package label is not proof the runtime is executing that catalog.
+For everyday changes use **Shows > Apply saved changes** instead of coordinating
+the advanced release buttons. Review the target, change categories and restart
+scene; explicitly approve this saved version and authorize safe interruption.
+Preparation, publication and checksummed device transfers happen before the
+controller stops and loads the verified catalog. Progress and failures persist
+when the browser closes. Cancel during preparation; Stop/Blackout take priority
+once handover starts. A playing show restarts from zero; paused/stopped stays
+stopped. Baseline/safe controller lighting is preserved unless deliberately
+cleared. Routing changes need deployment configuration, not automatic rewiring.
+
+Open **Loaded identity and retained versions** to restore a verified retained
+version without overwriting saved editing work. Failed/interrupted handover
+attempts stopped recovery; restart re-verifies the retained package before
+accepting input and never automatically starts playback. Review any
+`recovery_required` failure and recover/apply a valid show.
+See [managed Apply](operations.md#applying-saved-shows-and-recovering) and
+[service handover](service-administration.md#release-handover-and-upgrades).
+Advanced artifact `Activate` alone is still not catalog handover.
 
 **Activate** is a real device-artifact operation, not a preview. Arrange the
 maintenance window and confirm targets before using it. **Deactivate** updates
@@ -631,7 +840,7 @@ release state; it is not an emergency stop. For an urgent problem use live
 
 - [ ] Correct controller origin and installation; current observed status.
 - [ ] Authorized operator account and required live-output permission.
-- [ ] Agreed release revision/digest; technical catalog handover completed.
+- [ ] Intended show loaded through verified Apply (or a deliberately managed external catalog).
 - [ ] Required agents connected with correct assignments and fresh inventories.
 - [ ] Actual video, audio, lighting, safe states, and physical surroundings checked.
 - [ ] Content/render validation and supervised rehearsal accepted.
@@ -642,15 +851,20 @@ release state; it is not an emergency stop. For an urgent problem use live
 
 ### Start and monitor
 
-1. Open **Operate** and refresh status.
-2. Select **Automatic** when audience-driven behavior is intended.
-   Changing to Automatic enables observation-driven behavior; it is not the
-   same action as starting playback.
+1. Open **Operate** and check fresh loaded-show/playback status.
+2. Choose a loaded starting scene if needed. Only its required media devices
+   block Start; unused/optional media does not block an LED-only scene.
 3. Choose **Start show** and confirm the affected installation/outputs.
+   Start enables Automatic input; the advanced Automatic control can separately
+   enable audience-driven behavior without starting playback.
 4. Verify the expected active scene, playback state, advancing authoritative
    time, per-output media/lighting state, and physical result.
-5. Monitor command failures, timeouts, rejected/stale telemetry, lighting errors,
-   skipped render deadlines, audience state, and director/encounter behavior.
+5. Optionally **Open output monitor** for last successfully sent LED colors on
+   mapped photos, sample age/held/stale/send-error coverage and separate
+   device-reported media status. It is read-only, at most 2 Hz and pauses in hidden
+   tabs. It does not capture decoded projector video or prove physical output.
+   More playback/recovery controls, setup tests and diagnostics are contextual;
+   monitor loss does not hide Stop/Blackout.
 
 Do not treat an enabled Start button as a substitute for the opening
 checklist. On required clock-source loss, time-following freezes and lighting
@@ -663,7 +877,7 @@ degraded. Inspect and recover rather than repeatedly pressing Start.
 | --- | --- |
 | Pause / Resume | Controls active playback; verify required outputs and time-following respond |
 | Position (ms) / Seek | Seeks an active scene to media-relative milliseconds; test interruption and cue effects before using with an audience |
-| Stop | Stops active playback using configured safe handling; verify outputs and queue state afterward |
+| Stop | Cancels Apply and stops without draining the queued scenes; disables automatic input; verify physical safe handling |
 | Automatic | Permits external observations to drive audience/director behavior |
 | Maintenance | Stops active playback and rejects automatic observations; direct operator control remains possible |
 | Reset ambient | Starts configured encounter ambient, or program initial scene if no encounter; does not change the selected mode |

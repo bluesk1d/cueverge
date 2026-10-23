@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { openAdvancedShowWorkspace } from "./show-workspace";
 
 let savedDraft: Record<string, unknown> | null = null;
 
@@ -25,6 +26,7 @@ test("transform layers persist independent axes crop and Bezier controls", async
 
   await page.goto("/demo.html");
   await page.getByRole("button", { name: "Shows", exact: true }).click();
+  await openAdvancedShowWorkspace(page);
   await page.getByText("Timeline editor", { exact: true }).click();
   await expect(
     page.getByText(/Runtime-keyed: position, independent X\/Y scale/),
@@ -198,6 +200,7 @@ test("transform layers persist independent axes crop and Bezier controls", async
 
   await page.reload();
   await page.getByRole("button", { name: "Shows", exact: true }).click();
+  await openAdvancedShowWorkspace(page);
   await page.getByText("Timeline editor", { exact: true }).click();
   await expect(
     page.getByRole("button", {

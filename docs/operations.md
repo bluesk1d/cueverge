@@ -33,7 +33,8 @@ proxy and configure its public HTTPS origin in `CUEVERGE_GUI_ALLOWED_ORIGINS`.
 Cueverge uses that origin for the MCP resource URL and restricts MCP Host and
 Origin headers to configured/local controller hosts.
 
-Create client tokens from a project's **MCP-assisted authoring** workspace.
+Open a show and create client tokens under
+**Advanced authoring and history > MCP-assisted authoring**.
 Token creation/revocation and human proposal-review actions are authenticated
 GUI mutations and must include the session's `X-CSRF-Token` header. A
 `csrf_failed` 403 is not an MCP bearer-token or device-certificate failure;
@@ -46,7 +47,7 @@ is the `read` scope. Additional independent scopes are:
 - `direct_edit`: save a working draft immediately as a new revision, without a
   proposal or human approval/merge. Requires designer, publisher, or administrator
   project access. Also permits queueing/canceling offline render jobs.
-- `simulation`: run bounded deterministic simulations and composition image previews
+- `simulation`: run bounded deterministic simulations, scene LED frames, and composition image previews
   without hardware.
 - `publish_prepare`: inspect publication readiness and package status.
 - `publish`: update release metadata/approval, publish a validated immutable
@@ -55,10 +56,19 @@ is the `read` scope. Additional independent scopes are:
 - `activate`: activate a staged package's artifacts. Requires publisher or
   administrator project access **and** that project's live-output grant; global
   administrators bypass those membership checks, as in the GUI.
-- `live_operation`: reserved; it does not grant direct editing, publishing,
-  activation, scene transport, device enrollment, or access administration.
+- `live_operation`: explicitly confirmed transport of the token's actually
+  loaded show. Requires current operator/administrator permission and live-output
+  access. It does not grant editing, publication, enrollment or access administration.
+- `input_config`: configure/reconnect installation camera inputs. Requires a
+  current global administrator and a project bound to the runtime installation.
+  A project administrator or `direct_edit` grant alone is insufficient. Real
+  events can trigger loaded automatic-show responses, so grant deliberately.
+- `installation_edit`: edit installation photo descriptions through the separately
+  scoped tool. Requires global installation-author and bound-project author
+  permission; `direct_edit` alone is insufficient. It does not grant device
+  enrollment, assignment, geometry writes or physical control.
 
-All optional scopes start unchecked. The three write/deployment scopes are
+All optional scopes start unchecked. Draft/deployment scopes remain
 independent: `direct_edit` does not grant `publish` or `activate`, and `publish`
 does not grant `activate`. Offline bake queue/cancel reuses an existing explicit
 `direct_edit` or `publish` grant; no new scope is added automatically. Read-only
@@ -66,6 +76,322 @@ and proposal-only tokens remain unable to bake. To change a token's grants,
 issue a new token with the intended scopes, update the client, and revoke its old token.
 Grant these permissions only to trusted clients: direct edits and release
 approvals can happen through chat without a subsequent GUI confirmation.
+
+### Observing the running installation
+
+`get_capabilities.runtime_status` discovers `get_runtime_status`, its `read`
+requirement, and whether the token's project is bound to this controller's
+runtime-backed installation. Unbound or unrelated-installation projects cannot
+use that tool to observe this runtime. It grants no transport or deployment
+permission.
+
+The tool and authenticated `GET /api/gui/v1/runtime/status` expose the same
+controller facts, `source`, `observed_at`, `installation_id`, and additive
+`loaded_catalog` identity envelope. Legacy/external catalogs have
+`state: "unreported"` and null project/revision/digest/load-time/generation.
+Managed Apply reports `loaded` with the acknowledged project, friendly name,
+revision, digest, load time and generation. Failed retained startup recovery
+reports `recovery_required` with an explicit error and playback disabled.
+Do not substitute the authoring project's identity or a published/active artifact
+record. A status snapshot is not candidate preflight or proof of physical output.
+Oversized MCP snapshots fail the existing 200 KiB result boundary explicitly.
+The shared envelope also includes compact secret-free camera-input health and
+active Apply progress. Connection, recent reception, visitor matching and
+playback remain distinct facts; active Apply blocks ordinary transport but not
+authorized Stop/Blackout.
+
+### Applying saved shows and recovering
+
+Use **Shows > Apply saved changes** for managed catalog handover, not the
+advanced artifact **Activate** button. Saving never applies live output.
+`get_capabilities.runtime_apply` and `get_authoring_schema.x-runtime-workflows`
+discover `apply_saved_show`, its standalone request schema, `get_apply_jobs`,
+and `cancel_apply`.
+
+Example tool arguments (replace versions/scene with the saved project's values):
+
+```json
+{
+  "request": {
+    "source_revision": 3,
+    "expected_head_revision": 3,
+    "approve_release": true,
+    "confirm_interruption": true,
+    "starting_scene_id": "ambient",
+    "preserve_controller_looks": true
+  }
+}
+```
+
+Normal Apply requires **both** `publish` and `activate`, a current publisher/
+administrator with live-output permission, runtime installation binding and
+explicit interruption confirmation. Approval covers only the exact revision.
+Changing head, authorization, token validity or installation/asset/device/mapping
+dependencies during preparation rejects the candidate before load.
+
+The job prepares an immutable package, verifies files, stages original or baked
+media by checksummed digest and receives transfer acknowledgements before
+interruption. Runtime media IDs resolve to device-cache digest filenames; the
+working draft's asset IDs are unchanged. Ambiguous multiple baked roots for one
+media output are rejected: create one combined native composition first.
+Routing/kind/pixel-count deployment changes require deployment configuration,
+not a silent GUI sink replacement. Controller baseline/safe looks are preserved
+by default; incompatible definitions block Apply. Explicitly clearing the
+preservation option removes them and requires deliberate review.
+
+Poll the durable job by `get_apply_jobs(job_id=...)` or authenticated
+`GET /api/gui/v1/projects/{id}/apply-jobs/{job}`. Preparation/publishing/staging
+can be cancelled. After handover begins, use Stop/Blackout or retained recovery;
+Stop fences in-flight starts and cancels the Apply. A playing show restarts
+the selected/initial scene from zero after stop/start acknowledgements; paused
+or stopped stays stopped with automatic input disabled. No exact-position or
+wait-for-scene-end handover is promised.
+
+Restore with `restore_package_id`, its matching `source_revision`, the current
+`expected_head_revision`, and interruption confirmation. Restore requires
+`activate`, not new publication approval, and never overwrites the working head.
+Reapply an edited saved show to change retained content. Controller restart
+re-verifies and loads the retained managed catalog **stopped**, before input
+ingress; it never resumes a show automatically. Corruption or incomplete
+handover is reported, never disguised as a successfully loaded bootstrap show.
+
+### Read-only output monitor and explicit transport
+
+**Operate > Open output monitor** polls at most 2 Hz, without overlapping
+requests, only while open and the tab is visible. It observes the last successful
+sink send, including scene, safe-state, blackout and physical-test frames. It
+does not render a second show or send hardware commands. Capture is hard-capped
+at 5 Hz, retains the latest frame for at most 32 resources, and returns at most
+4096 LED samples per request (1000 per output). Select an output and
+`pixel_offset` for another range; omitted/unmapped/unsupported coverage is explicit.
+The default controller memory sink retains 120 frames; explicitly supplied
+simulation sinks keep their existing full-history default.
+
+`get_output_monitor(request={"resource": "porch.demo", "pixel_offset": 0})`
+requires `read`, matching installation and the token's **actually loaded**
+project. The authenticated GUI endpoint is
+`GET /api/gui/v1/runtime/output-monitor`. Samples identify their age, held/stale
+state, send failures and loaded generation. A retained frame is not evidence
+that a later send succeeded; stopped LEDs can hold their last colors where no
+safe look was configured. Photo overlays use saved physical mappings, not a
+wrapping pixel row. Raw address order is collapsed diagnostics.
+
+Media output is agent-reported connection/clock/position data; decoded video,
+projector photographs, electrical LED feedback and independent audio verification
+are not captured. Inspect the real installation separately. Monitor/network
+failure never removes authorized Stop/Blackout controls.
+
+`operate_loaded_show(request={"action": "start", "scene_id": "ambient"},
+confirm_physical_output=True)` is **real transport**, not simulation. It
+requires separately opted-in `live_operation`, current operator/admin and live
+permission, the runtime installation and loaded project match. Omit `scene_id`
+to use an existing program; select a loaded scene for LED-only catalogs without
+a program. Use actions `pause`, `resume`, `seek` (with `position_ms`), `stop`,
+`reset`, `automatic`, `maintenance` or `blackout` as appropriate. Normal actions
+are blocked during Apply/recovery; Stop and Blackout remain available. Existing
+MCP token rate limits apply even though GUI monitoring polls at 2 Hz.
+When loaded project identity is unknown, use the authorized GUI Stop/Blackout
+or the site's physical safety procedure. MCP never weakens project isolation
+to control another or unidentified show.
+
+### Photo-first installation setup
+
+The installation workspace separates **Photos & Layout**, **Devices**, and
+**Inputs & connections**. Photo descriptions reuse the persisted `name`; the
+additive read-only `description` alias is not a second authority. Existing photo
+UUIDs, independent legacy `viewpoint` labels, crop, scale, orientation, image
+digests, geometry links and calibration fields remain unchanged by description edits.
+
+Photo upload retains its 25 MB/type/authentication boundary. New browser clients
+send `X-Photo-Description` and `X-Original-Filename` URI-encoded with
+`X-Photo-Metadata-Encoding: uri`. Legacy `X-Photo-Name`/`X-Photo-Viewpoint` headers
+still work; when a new upload omits viewpoint, the description supplies its
+legacy label. The UI asks for only one description and explicitly submits after
+file selection. Invalid UTF-8/description metadata is rejected.
+
+Authenticated `PATCH /api/gui/v1/installation-photos/{id}/description` requires
+the existing installation-author, origin/CSRF and `If-Match` revision checks,
+and changes only the description/name. Full legacy photo PUT remains available
+for explicit advanced metadata edits. Re-read after conflicts; the gallery has
+**Refresh photos** rather than silently overwriting concurrent work.
+
+Example metadata-only request (with an authenticated session, allowed origin
+and its CSRF token):
+
+```http
+PATCH /api/gui/v1/installation-photos/PHOTO_ID/description
+Content-Type: application/json
+If-Match: "3"
+
+{"description":"Front porch for roofline placement"}
+```
+
+MCP `get_installation_setup` requires `read` plus runtime installation binding
+and returns photos, paginated layout summaries (1–100), observed agents and actual
+device-setup boundaries. `describe_installation_photo` requires independent
+`installation_edit`, an installation-author role, bound-project author permission,
+matching photo installation and current photo revision. Discovery and
+`get_authoring_schema.x-installation-setup` publish the schema and limits.
+Device enrollment/assignment remain administrator GUI workflows with their
+existing authorization, CSRF, TLS, protocol, idle/disconnect and lifecycle
+confirmation checks. No MCP device-control grant or geometry-write capability
+was added for this presentation pass.
+
+Layout defaults to Select; Add explicitly enables drawing, and canvas/list
+selection reveals contextual properties. Optional strand labels, associations,
+stage coordinates, calibration and multi-projector coverage are disclosures.
+Output/index conflicts remain visible, including nested ranges on one output.
+Linked views are counted once and different outputs are never compared as one
+index space. Photo bounds, coverage gaps and draw precedence are nonblocking
+observations, not proof of physical wiring faults in a three-dimensional display.
+Canvas traversal remains distinct from authored scene Preview or armed physical
+tests. If geometry saves but its secondary mapping fails, the retained object ID
+is used on retry, avoiding duplicate creations.
+
+### Guided visitor authoring and isolated Preview
+
+The show workspace's **Visitor responses** uses authenticated project reads at
+`GET /api/gui/v1/projects/{id}/interactions`. Focused updates use `PUT` on that
+path, with `InteractionEditRequest`, project designer/publisher/administrator
+authorization, origin/CSRF checks, and a current `source_revision`. Only the
+requested response fields, visitor area, transition scene or explicitly consented
+scene completion changes are written; existing IDs, extra timing, conditions,
+state choreography and unrelated metadata remain intact.
+
+The following MCP tools use the same projection, editing and preview services:
+
+| Tool | Scope | Behavior |
+| --- | --- | --- |
+| `get_interactions` | `read` | Plain-language cards and existing normal-playback/visitor definitions |
+| `update_interaction` | `direct_edit` | Current-revision focused save; no publish, activation or live injection |
+| `preview_interaction_workflow` | `simulation` | Isolated saved/proposed-candidate test, checkpoint trace and one sampled evaluated frame |
+
+`get_capabilities.interactions` and `get_authoring_schema`'s
+`x-guided-interactions` expose edit/preview schemas and model boundaries. Extract
+each nested schema as a standalone JSON Schema document. Human labels live in
+`editor_metadata.interaction_names`; they are not a second response engine.
+Immediate/custom/state-dependent creation remains in advanced authoring.
+
+Browser `POST /api/gui/v1/projects/{id}/interaction-preview` requires project
+designer/operator/publisher/administrator permission and CSRF. `proposed_draft`
+or `proposed_edit` is evaluated without saving; installation binding cannot change.
+`source_revision`, `draft_digest` and `unsaved` identify the exact candidate.
+The client invalidates checkpoints when candidate/revision/test inputs change.
+No MQTT/DDP/media adapters are opened, and hardware flags are always false.
+
+Tests use the actual controller and production Frigate normalization, freshness,
+presence qualification, response arbitration and rendering. Fake media agents are
+healthy by default; this is not a preflight or a guarantee of real playback.
+Clock advancement ticks qualification every 100 ms, matching the controller, while
+scene completion and interruption/queue decisions remain engine-owned. Per-event
+matching comes from the ingestion result, not global-counter differences.
+Scene changes within waits are recorded; checkpoints show state after each action.
+
+Limits: 200 actions, ten simulated minutes, 1,000 estimated scene boundaries,
+65,536 installation pixels, 20,000,000 estimated pixel-index work,
+20,000 media telemetry ticks and 4,096 returned RGB samples. Interactive evaluation
+shares the two nonblocking scene-preview slots. Long/high-work tests fail explicitly
+rather than queue unbounded work. MCP retains its 200 KiB result budget; reduce the
+test/output samples when necessary. Unbaked spatial shows retain a decision trace
+but withhold misleading placeholder colors.
+
+The `visitor` scenario step carries camera, optional zone, label, object identity,
+arrive/stay/leave and optional observation age. Saved scenarios containing visitor
+steps reuse the same normalized ingestion and clock advancement and return
+`actual.visitor_checkpoints`. Their `actual.clock_ms` remains elapsed test time.
+Legacy direct `observe` scenarios remain supported and explicitly bypass camera
+normalization. Visit examples do not prove real source label filters/reception.
+
+### Camera input management
+
+With the GUI enabled, **Installation > Inputs & connections** supports one
+installation-owned Frigate/MQTT source. It is off until explicitly enabled.
+`CUEVERGE_INPUT_MANAGEMENT=gui` selects durable controller-local configuration.
+`CUEVERGE_INPUT_MANAGEMENT=environment` selects read-only operator configuration.
+If no mode is specified, the presence of any `CUEVERGE_FRIGATE_*` environment
+setting preserves environment management; otherwise GUI management is selected.
+GUI mode ignores those Frigate environment values rather than mixing credentials.
+Without the GUI service, the existing environment-configured ingress is unchanged.
+Changing management mode requires a controller restart.
+
+`GET /api/gui/v1/input-source` is authenticated, secret-free health and settings.
+`PUT` requires a global administrator, allowed origin and CSRF token; it validates
+before replacing active settings and supports `expected_revision` to reject
+conflicting changes. A successful save means settings were persisted and the
+affected listener restarted, not that subscription or real event reception
+succeeded. The listener drains an in-flight controller delivery before disconnecting
+and retries broker failures automatically. Other runtime/show state is not reset.
+
+Browser health polls are serialized, visible-page-only, approximately two seconds
+apart, with an eight-second timeout. Failures explicitly label retained facts as
+last known; session expiry stops automatic requests without discarding edits.
+Source freshness uses the controller's loaded audience freshness limit (five
+seconds for diagnostic freshness when no audience is loaded), not browser clocks.
+Stale Frigate observations cannot qualify new visitors through the managed source.
+Recent diagnostics are limited to 20 entries and omit raw payloads/object IDs;
+payloads over 256 KiB and nonfinite source timestamps are rejected. Counters reset
+on connection reconfiguration or controller restart. Subscribed, received,
+normalized/delivered, controller-accepted, fresh, and audience-matched are distinct.
+None guarantees a scene response or visible physical output.
+
+MCP discovery exposes `get_capabilities.input_source` and its configuration schema;
+`get_authoring_schema` also includes the separate
+`x-installation-input-configuration` schema. Input settings never belong in show
+metadata or exports. Tools, all requiring the runtime installation binding:
+
+| Tool | Grant | Effect |
+| --- | --- | --- |
+| `get_input_source` | `read` | Settings/credential-presence and observed connection/event/loaded-rule health, never credentials |
+| `configure_input_source` | `input_config` + global administrator | Validate/persist/reconnect the GUI-managed source; may admit real events |
+| `validate_input_source_payload` | `simulation` | Bounded isolated Frigate normalization and loaded visitor-rule matching; no live injection/network/hardware |
+
+The browser's **Try an isolated example** uses authenticated, CSRF-protected
+`POST /api/gui/v1/input-source/validate`. It checks saved labels and loaded rules,
+not an unsaved draft, accumulated real visitor history, or full qualification
+timing. Successful examples are never recorded as received real input.
+
+Validation results include a `validation_context_digest` of installation,
+configuration revision, accepted labels and loaded audience rules. Compare it
+with current input health before reusing a result; the browser invalidates an
+example when that context or pending connection edits change. This digest is
+not a loaded-show/project identity or an end-to-end readiness certificate.
+
+**Credential storage and recovery:** GUI-managed settings live in
+`CUEVERGE_GUI_DATA_ROOT/input-source/settings.json`, referencing a separate
+immutable `credential-<id>.json`. The input directory must be controller-owned
+mode 0700, with regular nonsymlink files mode 0600; the controller data parent
+must not be group/world-writable. This implementation enforces POSIX permissions;
+use environment management on platforms without that protection. Permissions
+are not encryption at rest. Passwords are write-only and absent from readback,
+audit details, MCP results, logs and project exports.
+
+Back up the private input directory and matching GUI database/installation
+identity together using restricted operator backups. Stop the controller before
+restoring a matching set, restore ownership/permissions, then restart and verify
+actual subscription and reception. Missing credentials, mismatched installation
+identity, or insecure storage disables managed ingress explicitly; there is no
+anonymous/default-credential fallback. Do not copy these files into show packages,
+support bundles or source control. A blank submitted password retains the secret;
+`clear_password` removes it; a replacement is written separately before atomically
+switching the settings reference and retiring the previous file. Revoke old
+broker credentials independently and account for any old private backups. Storage
+failures are explicit, including a retired-file cleanup failure after application.
+
+TLS uses system-trusted broker certificates (`CUEVERGE_FRIGATE_MQTT_TLS=true` in
+environment mode); configure the platform trust store for a private CA. TLS is
+not automatic from the port number. Never expose a plaintext broker to an
+untrusted network.
+
+### Snapshot freshness and access
+
+Clients should track elapsed time since a successful response with a monotonic
+clock: the recommended visible refresh is 2000 ms and stale boundary is 10000 ms.
+The browser uses an 8000 ms request timeout, does not overlap slow live polls,
+and handles runtime and topology failures independently. Observation timestamps
+remain useful for diagnostics but should not be subtracted from an unrelated
+host clock to decide freshness. Hidden browser tabs pause live polling.
+These refresh limits are presentation guidance, not the runtime render cadence,
+device heartbeat limits, or audience observation freshness.
 
 Current local-user status, project membership, role, and live-output grant are
 rechecked on every MCP request. Disabling a user, removing project membership,
@@ -126,6 +452,68 @@ playback policy, keyframes, and timeline tracks under `editor_metadata`.
 Draft/proposal saves still enforce resource references, unique IDs, intervals,
 and other cross-field rules. Preserve unrelated GUI metadata when editing a
 complete draft.
+
+`get_capabilities.authoring_representations` distinguishes raw runtime scene
+lighting from editor-owned timelines. `get_project_draft` is the authoritative
+read for schema-v1 lighting objects and schema-v2 lighting output arrays,
+including legacy effects and `lighting.timeline` cues described by `LightingCue`
+in the authoring schema. They do not require editor metadata.
+`get_timeline_range` reads editor markers, synchronized cues, transform layers,
+and lighting author layers under `editor_metadata`; an empty range result does
+not mean the scene has no runtime lighting. Direct draft writes still require
+`direct_edit`; discovery does not add permission. Preserve the stored
+representation, targets, policy, and unrelated metadata rather than rebuilding
+the scene from editor-only range results.
+
+The accepted [UP-01 architecture decisions](decisions/0016-lossless-hobbyist-authoring-and-runtime-handover.md)
+record the accepted preservation, explicit Apply, unified Preview and monitoring
+contracts. Discover current tool schemas and grants before attempting a workflow.
+
+### Scene-native LED preview
+
+`get_capabilities.scene_lighting_preview` discovers `preview_scene_lighting`
+and its limits. It requires `simulation`, not direct-edit or live-operation
+permission. Browser clients use authenticated, CSRF-protected
+`POST /api/gui/v1/projects/{project_id}/scene-lighting-preview`.
+
+Both surfaces use the same `SceneLightingPreviewRequest` validation and
+production `evaluate_lighting_output` function as the controller. For example:
+
+```json
+{
+  "scene_id": "baseline-timeline",
+  "timestamp_ms": 1000,
+  "source_revision": 3,
+  "resource": "roofline.demo",
+  "pixel_offset": 0,
+  "pixel_limit": 605
+}
+```
+
+The immutable source revision is explicit; omitting it over MCP selects the
+current saved revision. Optional `proposed_draft` evaluates unsaved changes
+without saving or merging them and cannot change installation binding.
+The result reports source revision, scene time, `unsaved`, output/resource
+identity, calibrated `output_position_ms`, sampled RGB colors, next offset,
+limitations, and `hardware_commands_sent: false`.
+
+Compilation/validation occurs in cleaned-up temporary storage. No controller
+instance, media client, broker, hardware adapter, render job or live transport
+is opened. Preview cannot publish or activate. Invalid candidates/dependencies
+fail explicitly; they are not rendered as partial success. Spatial lighting
+compositions retain `preview_composition`/advanced composition preview, not this
+raw-scene endpoint. Legacy effects retain their existing runtime behavior;
+an unapplied legacy brightness limit is explicitly reported.
+
+Limits: at most 4096 returned samples, 65536 installation pixels, 2000000 estimated
+pixel-index work, and two concurrent evaluations per controller process. Busy
+REST evaluation returns 429; MCP returns a tool error. Select a resource and
+page pixels rather than assume a truncated frame is complete. Large/complex
+workflows should use advanced/offline rendering.
+The browser samples scene frames up to four times/second, serializes slow
+requests to prevent overlap/starvation, and labels the actual evaluated time.
+This cadence does not change the runtime renderer or prove real-time media/
+hardware synchronization.
 
 For geometry-aware LED authoring, MCP also provides:
 
@@ -439,8 +827,8 @@ Deployment is deliberately split into four attributable operations:
 
 These operations do not reload the running controller's scene catalog.
 Deactivation updates publication state and does not stop physical playback.
-Scene-logic handover and rollback require an explicit package configuration
-change and controller restart; see
+For actual scene-logic handover/rollback, use the separate managed Apply workflow
+described above; the advanced artifact buttons alone are insufficient. See
 [release handover](service-administration.md#release-handover-and-upgrades).
 
 Every stage command carries the complete protected digest set for the

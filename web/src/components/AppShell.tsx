@@ -1,24 +1,21 @@
 import {
   Activity,
-  ChevronDown,
   CircleGauge,
   Home,
   Layers3,
-  LogOut,
   MonitorCog,
   RefreshCw,
   Settings,
-  ShieldCheck,
 } from "lucide-react";
-import { ReactNode } from "react";
+import { ReactNode, useEffect, useRef, useState } from "react";
 
 import {
   InstallationStatus,
-  InstallationSummary,
   RuntimeStatus,
   Session,
 } from "../api";
 import { StatusText } from "./ui";
+import { controllerStatus, SnapshotFreshness } from "../status";
 
 export type Workspace = "overview" | "installation" | "shows" | "operate" | "settings";
 
@@ -38,10 +35,14 @@ export function AppShell({
   session,
   workspace,
   installation,
-  installations,
+  installationUnavailable = false,
   runtime,
-  runtimeError,
+  runtimeFreshness,
+  topologyFreshness,
   refreshing,
+  configurationError,
+  sessionExpired = false,
+  onReauthenticate,
   onNavigate,
   onRefresh,
   onSignOut,
@@ -50,25 +51,36 @@ export function AppShell({
   session: Session;
   workspace: Workspace;
   installation: InstallationStatus | null;
-  installations: InstallationSummary[];
+  installationUnavailable?: boolean;
   runtime: RuntimeStatus | null;
-  runtimeError: boolean;
+  runtimeFreshness: SnapshotFreshness;
+  topologyFreshness: SnapshotFreshness;
   refreshing: boolean;
+  configurationError?: string | null;
+  sessionExpired?: boolean;
+  onReauthenticate?: () => void;
   onNavigate: (workspace: Workspace) => void;
   onRefresh: () => void;
   onSignOut: () => void;
   children: ReactNode;
 }) {
+  const [accountOpen, setAccountOpen] = useState(false);
+  const account = useRef<HTMLDivElement>(null);
+  const accountButton = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (!accountOpen) return;
+    const dismiss = (event: PointerEvent) => {
+      if (event.target instanceof Node && !account.current?.contains(event.target)) {
+        setAccountOpen(false);
+      }
+    };
+    document.addEventListener("pointerdown", dismiss);
+    return () => document.removeEventListener("pointerdown", dismiss);
+  }, [accountOpen]);
   const mode = runtime?.status.operations.mode;
-  const health = runtimeError ? (
-    <StatusText tone="danger">Status unavailable</StatusText>
-  ) : runtime?.status.degraded ? (
-    <StatusText tone="warning">Controller degraded</StatusText>
-  ) : runtime ? (
-    <StatusText tone="success">Controller observed</StatusText>
-  ) : (
-    <StatusText tone="neutral">Checking status</StatusText>
-  );
+  const health = controllerStatus(runtime, runtimeFreshness);
+  const runtimeOld = runtimeFreshness === "stale" || runtimeFreshness === "unavailable";
+  const topologyOld = topologyFreshness === "stale" || topologyFreshness === "unavailable";
 
   return (
     <div className="app-frame">
@@ -106,44 +118,20 @@ export function AppShell({
           })}
         </nav>
 
-        <div className="sidebar__footer">
-          <ShieldCheck aria-hidden="true" size={17} />
-          <span>
-            <strong>Authenticated</strong>
-            <small>{session.role}</small>
-          </span>
-        </div>
       </aside>
 
       <div className="app-frame__main">
         <header className="global-header">
-          <div className="installation-switcher">
-            <label htmlFor="installation-select">Installation</label>
-            <div className="installation-switcher__control">
-              <select
-                id="installation-select"
-                value={installation?.installation_id ?? ""}
-                onChange={() => undefined}
-              >
-                {!installation && <option value="">Loading installation…</option>}
-                {installations.map((item) => (
-                  <option
-                    disabled={!item.runtime_active}
-                    key={item.id}
-                    value={item.id}
-                  >
-                    {item.name}
-                    {item.runtime_active ? "" : " (not provisioned)"}
-                  </option>
-                ))}
-              </select>
-              <ChevronDown aria-hidden="true" size={15} />
-            </div>
+          <div className="installation-context" aria-label="Selected installation">
+            <span>Installation</span>
+            <strong>{installation?.name ?? (installationUnavailable ? "Installation unavailable" : "Loading installation…")}</strong>
           </div>
 
           <div className="global-header__status">
-            {health}
-            {mode && <span className="mode-chip">Mode: {humanize(mode)}</span>}
+            <StatusText tone={health.tone}>{health.label}</StatusText>
+            {mode && runtimeFreshness === "fresh" && (
+              <span className="mode-chip">Mode: {humanize(mode)}</span>
+            )}
           </div>
 
           <div className="global-header__actions">
@@ -157,35 +145,64 @@ export function AppShell({
             >
               <RefreshCw aria-hidden="true" size={17} className={refreshing ? "spin" : ""} />
             </button>
-            <button
+            {workspace !== "operate" && <button
               className="operate-link"
               type="button"
               onClick={() => onNavigate("operate")}
             >
               Open Operate
-            </button>
-            <span className="account-summary">
-              <span className="account-summary__avatar" aria-hidden="true">
-                {session.username.slice(0, 1).toUpperCase()}
-              </span>
-              <span>
-                <strong>{session.username}</strong>
-                <small>{session.role}</small>
-              </span>
-            </span>
-            <button
-              className="icon-button"
-              type="button"
-              onClick={onSignOut}
-              aria-label="Sign out"
-              title="Sign out"
+            </button>}
+            <div
+              className="account-disclosure"
+              ref={account}
+              onKeyDown={(event) => {
+                if (event.key === "Escape" && accountOpen) {
+                  setAccountOpen(false);
+                  accountButton.current?.focus();
+                }
+              }}
             >
-              <LogOut aria-hidden="true" size={17} />
-            </button>
+              <button
+                className="account-button"
+                ref={accountButton}
+                aria-label={`Account: ${session.username}`}
+                aria-expanded={accountOpen}
+                aria-controls="account-details"
+                onClick={() => setAccountOpen(!accountOpen)}
+              >
+                <span className="account-summary__avatar" aria-hidden="true">
+                  {session.username.slice(0, 1).toUpperCase()}
+                </span>
+              </button>
+              {accountOpen && (
+                <section id="account-details" className="account-details" aria-label="Account details">
+                  <strong>{session.username}</strong>
+                  <span>{humanize(session.role)}</span>
+                  <button onClick={onSignOut}>Sign out</button>
+                </section>
+              )}
+            </div>
           </div>
         </header>
 
-        <main className="workspace" id="main-content">
+        <main
+          className={`workspace${runtimeOld || topologyOld ? " workspace--last-known" : ""}`}
+          id="main-content"
+        >
+          {sessionExpired && (
+            <div className="snapshot-notice" role="alert">
+              <strong>Your session has expired</strong>
+              <span>Private information cannot be refreshed. Returning to sign-in discards unsaved changes in this tab.</span>
+              {onReauthenticate && <button onClick={onReauthenticate}>Sign in again</button>}
+            </div>
+          )}
+          {(runtimeOld || topologyOld) && (
+            <div className="snapshot-notice" role="status">
+              <strong>{runtimeOld ? health.label : "Device status is not current"}</strong>
+              <span>Information below may be last known, not live. Refresh status to retry.</span>
+            </div>
+          )}
+          {configurationError && <div className="snapshot-notice" role="alert">{configurationError}</div>}
           {children}
         </main>
       </div>

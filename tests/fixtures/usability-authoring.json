@@ -1,0 +1,118 @@
+{
+  "schema_version": 1,
+  "installation": {
+    "schema_version": 1,
+    "resources": [
+      {"resource": "projector.demo", "kind": "media_agent", "target": "fake-media-1"},
+      {
+        "resource": "roofline.demo",
+        "kind": "pixel_output",
+        "target": "memory",
+        "pixel_count": 12,
+        "segments": [
+          {"id": "left", "start": 0, "end": 6, "strand": "lower"},
+          {"id": "right", "start": 6, "end": 12, "strand": "upper"}
+        ],
+        "fixtures": [
+          {"id": "outline", "segments": [{"segment": "left"}, {"segment": "right", "reverse": true}], "precedence": 5}
+        ],
+        "paths": [
+          {"id": "travel", "segments": [{"segment": "right"}, {"segment": "left", "reverse": true}]}
+        ]
+      }
+    ]
+  },
+  "scenes": [
+    {
+      "schema_version": 2,
+      "id": "baseline-timeline",
+      "name": "Original synthetic timeline",
+      "mode": "controller_timed",
+      "clock_source": "controller",
+      "duration_ms": 180000,
+      "priority": 25,
+      "interruption": "queue",
+      "failure_scene_id": "legacy-sweep",
+      "resources": ["roofline.demo"],
+      "media": [],
+      "lighting": [{
+        "id": "leds",
+        "resource": "roofline.demo",
+        "required": true,
+        "timing_offset_ms": -40,
+        "brightness_limit": 0.7,
+        "timeline": [
+          {"id": "base", "primitive": "solid", "start_ms": 0, "duration_ms": 180000, "target": {"kind": "segment", "id": "left"}, "color": "#204060", "brightness": 0.2},
+          {"id": "envelope", "primitive": "envelope", "start_ms": 15000, "duration_ms": 5000, "target": {"kind": "fixture", "id": "outline"}, "color": "#305070", "brightness": 0.6, "end_brightness": 0.1, "fade_in_ms": 500, "fade_out_ms": 1000, "blend_mode": "max", "precedence": 10},
+          {"id": "pulse", "primitive": "pulse", "start_ms": 30000, "duration_ms": 5000, "color": "#402080", "period_ms": 750, "blend_mode": "add", "precedence": 20},
+          {"id": "chase", "primitive": "chase", "start_ms": 45000, "duration_ms": 5000, "target": {"kind": "segment", "id": "right"}, "width_pixels": 2, "reverse": true, "precedence": 30},
+          {"id": "path", "primitive": "path_sweep", "start_ms": 60000, "duration_ms": 5000, "target": {"kind": "path", "id": "travel"}, "width_pixels": 3, "precedence": 40},
+          {"id": "flicker", "primitive": "flicker", "start_ms": 75000, "duration_ms": 5000, "seed": 37, "period_ms": 125, "precedence": 50},
+          {"id": "sparkle", "primitive": "sparkle", "start_ms": 90000, "duration_ms": 5000, "seed": 53, "density": 0.4, "blend_mode": "max", "precedence": 60},
+          {"id": "ripple", "primitive": "ripple", "start_ms": 105000, "duration_ms": 5000, "width_pixels": 2, "precedence": 70},
+          {"id": "transition", "primitive": "color_transition", "start_ms": 120000, "duration_ms": 5000, "color": "#102030", "end_color": "#708090", "blend_mode": "multiply", "precedence": 80},
+          {"id": "dark", "primitive": "blackout", "start_ms": 135000, "duration_ms": 5000, "precedence": 90}
+        ]
+      }],
+      "completion": {"policy": "loop"},
+      "scheduling": {
+        "request_policy": "after_completion",
+        "request_ttl_ms": 200000,
+        "safe_points_ms": [0, 60000, 95000, 120000, 130000],
+        "protected_intervals": [{"start_ms": 1000, "end_ms": 2000}]
+      }
+    },
+    {
+      "schema_version": 2,
+      "id": "legacy-sweep",
+      "name": "Original synthetic legacy sweep",
+      "mode": "controller_timed",
+      "clock_source": "controller",
+      "duration_ms": 4000,
+      "priority": 15,
+      "interruption": "replace_by_priority",
+      "resources": ["roofline.demo"],
+      "media": [],
+      "lighting": [{"id": "sweep", "resource": "roofline.demo", "required": true, "timing_offset_ms": 25, "effect": "synthetic_sweep", "brightness_limit": 0.4}],
+      "completion": {"policy": "hold"},
+      "scheduling": {"request_policy": "priority", "request_ttl_ms": 30000, "safe_points_ms": [], "protected_intervals": []}
+    },
+    {
+      "schema_version": 1,
+      "id": "legacy-pulse",
+      "name": "Original synthetic schema-one pulse",
+      "mode": "media_synchronized",
+      "duration_ms": 4000,
+      "priority": 35,
+      "interruption": "ignore",
+      "resources": ["projector.demo", "roofline.demo"],
+      "media": {"resource": "projector.demo"},
+      "lighting": {"resource": "roofline.demo", "effect": "segment_pulse", "target": {"kind": "path", "id": "travel"}, "pulse_times_ms": [500, 2000], "pulse_duration_ms": 250, "color": "#604020", "brightness_limit": 0.5},
+      "completion": {"policy": "hold"},
+      "scheduling": {"request_policy": "priority", "request_ttl_ms": 30000, "safe_points_ms": [1000], "protected_intervals": []}
+    }
+  ],
+  "program": {
+    "schema_version": 1,
+    "initial_scene_id": "baseline-timeline",
+    "default_pool_id": "background",
+    "recent_history_size": 0,
+    "random_seed": 19,
+    "pools": [{
+      "id": "background",
+      "category": "ambient",
+      "scenes": [{"scene_id": "baseline-timeline", "weight": 1, "cooldown_ms": 0, "available": true, "conditions": {}}]
+    }]
+  },
+  "editor_metadata": {
+    "installation_id": "demo-installation",
+    "baseline_notes": {
+      "origin": "Original synthetic fixture; no production document or private media copied",
+      "phases": [{"name": "Quiet", "start_ms": 0}, {"name": "Travel", "start_ms": 60000}],
+      "future_editor_annotation": {"keep": true, "values": [1, 2, 3]}
+    },
+    "timeline_views": {
+      "legacy-sweep": {"loop_start_ms": 0, "loop_end_ms": 4000, "quantization_ms": 250, "zoom_px_per_second": 100}
+    }
+  }
+}

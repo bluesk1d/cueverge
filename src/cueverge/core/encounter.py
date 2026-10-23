@@ -17,6 +17,12 @@ class EventOutcome:
     scene_decision: str | None = None
 
 
+@dataclass(frozen=True)
+class ObservedEventOutcome:
+    outcome: EventOutcome
+    audience_relevant: bool | None
+
+
 class EncounterEngine:
     def __init__(
         self,

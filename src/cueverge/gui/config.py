@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+from typing import Literal
 
 from pydantic import AnyUrl, BaseModel, ConfigDict, Field, SecretStr, model_validator
 
@@ -10,6 +11,7 @@ class GuiConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     data_root: Path
+    input_management: Literal["gui", "environment"] = "gui"
     admin_username: str = Field(default="admin", min_length=1, max_length=128)
     admin_password_hash: SecretStr
     admin_role: Role = Role.ADMINISTRATOR
@@ -77,7 +79,21 @@ class GuiConfig(BaseModel):
             ).split(",")
             if value.strip()
         )
+        configured_mode = os.environ.get(
+            "CUEVERGE_INPUT_MANAGEMENT",
+            "environment"
+            if any(key.startswith("CUEVERGE_FRIGATE_") for key in os.environ)
+            else "gui",
+        )
+        input_management: Literal["gui", "environment"]
+        if configured_mode == "gui":
+            input_management = "gui"
+        elif configured_mode == "environment":
+            input_management = "environment"
+        else:
+            raise ValueError("CUEVERGE_INPUT_MANAGEMENT must be gui or environment")
         return cls(
+            input_management=input_management,
             data_root=Path(
                 os.environ.get(
                     "CUEVERGE_GUI_DATA_ROOT",

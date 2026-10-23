@@ -23,12 +23,33 @@ from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoin
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
+from cueverge.core.loader import ShowPackageError
+from cueverge.gui.apply import ApplyError, ApplyRequest
 from cueverge.gui.artifact_deployment import ArtifactDeploymentError
 from cueverge.gui.asset_upload import AssetUploadError
 from cueverge.gui.authoring_schema import authoring_schema
 from cueverge.gui.compiler import CompilationError
-from cueverge.gui.contracts import DraftProject, Role, UpdateRevisionReleaseRequest
+from cueverge.gui.contracts import (
+    ConfigureInputSourceRequest,
+    DraftProject,
+    InteractionEditRequest,
+    InteractionPreviewRequest,
+    OperateActionRequest,
+    OutputMonitorRequest,
+    PhotoDescriptionRequest,
+    Role,
+    SceneLightingPreviewRequest,
+    UpdateRevisionReleaseRequest,
+)
 from cueverge.gui.device_session import DeviceSessionError
+from cueverge.gui.input_sources import InputSourceError
+from cueverge.gui.installation_photos import InstallationPhotoError
+from cueverge.gui.interaction_preview import preview_interactions
+from cueverge.gui.interactions import (
+    InteractionError,
+    apply_interaction_edit,
+    describe_interactions,
+)
 from cueverge.gui.lighting_preview import (
     LightingPreviewError,
     evaluate_lighting_preview,
@@ -49,6 +70,7 @@ from cueverge.gui.projector_renderer import ProjectorRenderError, preview_projec
 from cueverge.gui.publication import ApprovalState, PublicationError, PublishedPackage
 from cueverge.gui.render_jobs import RenderJobError, StoredRenderJob
 from cueverge.gui.repository import ProjectNotFoundError
+from cueverge.gui.scene_preview import ScenePreviewError, preview_project_scene
 from cueverge.gui.service import GuiServices
 from cueverge.gui.spatial_authoring import (
     layout_digest,
@@ -61,6 +83,7 @@ from cueverge.gui.stage_renderer import (
     preview_stage_composition_member,
     preview_stage_lighting_samples,
 )
+from cueverge.integrations.mqtt import MAX_INPUT_PAYLOAD_BYTES, MAX_INPUT_RECENT_EVENTS
 
 MAX_CONCURRENT_CALLS_PER_TOKEN = 4
 
@@ -240,6 +263,295 @@ def create_mcp_app(services: GuiServices) -> Starlette:
         }
 
     @server.tool()
+    async def get_runtime_status() -> dict[str, JsonValue]:
+        """Read an observed controller snapshot for this project's runtime installation.
+
+        Requires read and a matching installation binding. Controller connectivity
+        is not equipment readiness, published is not loaded, and an observation
+        is not proof of visible physical output. This does not start playback.
+        """
+        token = _authorize(services, McpScope.READ)
+        revision = services.repository.get_revision(token.project_id)
+        installation = services.repository.get_runtime_installation()
+        if revision.draft.editor_metadata.get("installation_id") != installation.id:
+            raise ToolError("project is not bound to this runtime installation")
+        snapshot = services.runtime_snapshot()
+        return _bounded_result(snapshot.model_dump(mode="json"))
+
+    def input_installation_token(scope: McpScope) -> McpToken:
+        token = _authorize(services, scope)
+        revision = services.repository.get_revision(token.project_id)
+        if (
+            revision.draft.editor_metadata.get("installation_id")
+            != services.repository.get_runtime_installation().id
+        ):
+            raise ToolError("project is not bound to this runtime installation")
+        return token
+
+    @server.tool()
+    async def get_output_monitor(
+        request: dict[str, JsonValue] | None = None,
+    ) -> dict[str, JsonValue]:
+        """Read bounded last-successful controller LED sends for the token's loaded show.
+
+        Requires read, matching installation and loaded project. No rendering or
+        physical commands. Ages, held/stale state and send failures are separate
+        from physical observation. Up to 32 resources/4096 samples; select a resource
+        and pixel_offset for coverage. Capture is capped at 5 Hz; MCP token rate
+        limits still apply. Media playback reports are in get_runtime_status.
+        """
+        token = input_installation_token(McpScope.READ)
+        if services.runtime.loaded_catalog.get("project_id") != token.project_id:
+            raise ToolError("Apply this project before reading its loaded output monitor")
+        try:
+            parsed = OutputMonitorRequest.model_validate(request or {})
+            return _bounded_result(
+                services.runtime.output_monitor(
+                    parsed.resource,
+                    parsed.pixel_offset,
+                    parsed.pixel_limit,
+                )
+            )
+        except (ValueError, ValidationError) as error:
+            raise ToolError(str(error)) from error
+
+    @server.tool()
+    async def operate_loaded_show(
+        request: dict[str, JsonValue],
+        confirm_physical_output: bool = False,
+    ) -> dict[str, JsonValue]:
+        """Operate only the token's actually loaded show, not a working draft.
+
+        Requires explicit live_operation, current operator/admin with live-output
+        permission, matching runtime installation/project and physical confirmation.
+        Start may select a loaded scene (including LED-only shows without a program).
+        Stop/Blackout cancel Apply and take priority. Stale/revoked grants are rejected.
+        This is not simulation: commands can affect real equipment.
+        """
+        token = input_installation_token(McpScope.LIVE_OPERATION)
+        if services.runtime.loaded_catalog.get("project_id") != token.project_id:
+            raise ToolError("This token does not own the currently loaded show")
+        if not confirm_physical_output:
+            raise ToolError("Explicit physical-output confirmation is required")
+        try:
+            parsed = OperateActionRequest.model_validate(request)
+            await services.operate(parsed)
+        except (ValidationError, RuntimeError, LookupError) as error:
+            services.repository.append_audit(
+                actor=token.username,
+                action="mcp.operate",
+                target=token.project_id,
+                result="error",
+                occurred_at=_now_iso(),
+                authorization_context={"error": str(error), "token_id": token.id},
+            )
+            raise ToolError(str(error)) from error
+        services.repository.append_audit(
+            actor=token.username,
+            action=f"mcp.operate.{parsed.action}",
+            target=token.project_id,
+            result="success",
+            occurred_at=_now_iso(),
+            authorization_context={"token_id": token.id, "scope": "live_operation"},
+        )
+        return _bounded_result(
+            {
+                "source": "controller_runtime",
+                "status": services.runtime.status(),
+                "hardware_operation_requested": True,
+            }
+        )
+
+    @server.tool()
+    def get_installation_setup(
+        photo_id: str | None = None, offset: int = 0, limit: int = 50
+    ) -> dict[str, JsonValue]:
+        """Read photo-first setup, stable photo/layout IDs and enrollment boundaries.
+
+        Requires read and this runtime's installation binding. Geometry is read-only;
+        2D photo overlap is not a physical wiring error. Device enrollment/assignment
+        still require the administrator GUI, origin/CSRF and existing trust checks.
+        """
+        input_installation_token(McpScope.READ)
+        if offset < 0 or not 1 <= limit <= 100:
+            raise ToolError("Setup offset must be nonnegative and limit between 1 and 100")
+        installation = services.repository.get_runtime_installation()
+        photos = services.installation_photos.list(installation.id)
+        if photo_id is not None and not any(photo.id == photo_id for photo in photos):
+            raise ToolError("Photo is outside this runtime installation")
+        geometry = [
+            item
+            for item in services.installation_geometry.list(installation.id)
+            if photo_id is None or item.photo_id == photo_id
+        ]
+        return _bounded_result(
+            {
+                "installation_id": installation.id,
+                "photos": [{**asdict(photo), "description": photo.name} for photo in photos],
+                "layout_objects": [
+                    {
+                        "id": item.id,
+                        "photo_id": item.photo_id,
+                        "semantic_id": item.semantic_id,
+                        "name": item.name,
+                        "kind": item.kind,
+                        "revision": item.revision,
+                        "point_count": len(item.points),
+                        "locked": item.locked,
+                        "hidden": item.hidden,
+                        "start_index": item.start_index,
+                        "pixel_count": item.pixel_count,
+                    }
+                    for item in geometry[offset : offset + limit]
+                ],
+                "next_offset": offset + limit if offset + limit < len(geometry) else None,
+                "total_objects": len(geometry),
+                "observed_agents": [asdict(agent) for agent in services.runtime.agent_status()],
+                "device_setup": {
+                    "enrollment_enabled": services.config.device_enrollment_enabled,
+                    "interface": "Installation > Devices > Add a device",
+                    "authorization": (
+                        "global_administrator_gui_with_origin_csrf_and_protocol_validation"
+                    ),
+                    "mcp_device_writes": False,
+                },
+                "description_tool": "describe_installation_photo",
+                "layout_guidance": (
+                    "Select is the default. Add explicitly to draw; bounds/draw precedence "
+                    "are optional photo diagnostics, not proof of wiring conflicts."
+                ),
+            }
+        )
+
+    @server.tool()
+    def describe_installation_photo(
+        photo_id: str, source_revision: int, description: str
+    ) -> dict[str, JsonValue]:
+        """Edit only a photo's description, retaining view ID, geometry, crop and calibration.
+
+        Requires explicit installation_edit, an installation author role, and matching
+        runtime binding. Project direct_edit alone is insufficient. Re-read on revision
+        conflict. Does not upload files, enroll devices or change physical output.
+        """
+        token = input_installation_token(McpScope.INSTALLATION_EDIT)
+        try:
+            parsed = PhotoDescriptionRequest(description=description)
+            photo = services.installation_photos.get(photo_id)
+            if photo.installation_id != services.repository.get_runtime_installation().id:
+                raise ToolError("Photo is outside this runtime installation")
+            updated = services.installation_photos.describe(
+                photo_id=photo_id,
+                expected_revision=source_revision,
+                description=parsed.description,
+                actor=token.username,
+                role=_token_role(services, token),
+                occurred_at=_now_iso(),
+            )
+        except (ValidationError, InstallationPhotoError) as error:
+            raise ToolError(str(error)) from error
+        return _bounded_result(
+            {**asdict(updated), "description": updated.name, "hardware_commands_sent": False}
+        )
+
+    @server.tool()
+    def get_input_source() -> dict[str, JsonValue]:
+        """Read secret-free Frigate/MQTT settings, connection and event/visitor health.
+
+        Requires read and the runtime installation binding. Connection, fresh input,
+        accepted input, visitor matching and scene playback are distinct evidence.
+        """
+        input_installation_token(McpScope.READ)
+        return _bounded_result(services.input_source.snapshot())
+
+    @server.tool()
+    async def configure_input_source(configuration: dict[str, JsonValue]) -> dict[str, JsonValue]:
+        """Configure this installation's Frigate/MQTT ingress; may trigger loaded show responses.
+
+        Requires explicit input_config and a current global administrator, never
+        direct_edit alone. Only GUI-managed sources are writable. Password is
+        write-only; omit to retain or use clear_password to remove it. Settings
+        persist separately from shows. Save/reconnect is not connection success.
+        """
+        token = input_installation_token(McpScope.INPUT_CONFIG)
+        try:
+            request = ConfigureInputSourceRequest.model_validate(configuration)
+        except ValidationError:
+            raise ToolError(
+                "Invalid broker settings or credential action; "
+                "inspect the input configuration schema"
+            ) from None
+        try:
+            result = await services.input_source.configure(request)
+        except InputSourceError as error:
+            raise ToolError(str(error)) from error
+        services.repository.append_audit(
+            actor=token.username,
+            action="input.configure",
+            target="frigate_mqtt",
+            result="success",
+            occurred_at=_now_iso(),
+            authorization_context={"management": "gui", "enabled": request.enabled},
+        )
+        return _bounded_result(result)
+
+    @server.tool()
+    def validate_input_source_payload(payload: dict[str, JsonValue]) -> dict[str, JsonValue]:
+        """Safely normalize a Frigate example and check loaded visitor rules in isolation.
+
+        Requires simulation and runtime installation binding. Never injects a live
+        event, connects MQTT, mutates audience state or commands hardware. This
+        does not prove real reception, qualification timing or scene playback.
+        Compare validation_context_digest with current input health before reuse.
+        """
+        input_installation_token(McpScope.SIMULATION)
+        try:
+            return _bounded_result(services.input_source.validate_payload(payload))
+        except InputSourceError as error:
+            raise ToolError(str(error)) from error
+
+    @server.tool()
+    def preview_scene_lighting(
+        scene_id: str,
+        timestamp_ms: int,
+        source_revision: int | None = None,
+        proposed_draft: dict[str, JsonValue] | None = None,
+        resource: str | None = None,
+        pixel_offset: int = 0,
+        pixel_limit: int = 1000,
+    ) -> dict[str, JsonValue]:
+        """Evaluate raw/compiled scene LEDs with the production renderer; requires simulation.
+
+        Saved or unsaved candidates remain isolated. No hardware commands are sent.
+        Returns bounded pixel pages, revision, time and explicit coverage. This is
+        not a live monitor. Spatial compositions use preview_composition instead.
+        """
+        token = _authorize(services, McpScope.SIMULATION)
+        try:
+            revision = services.repository.get_revision(token.project_id, source_revision)
+            request = SceneLightingPreviewRequest(
+                source_revision=revision.revision,
+                scene_id=scene_id,
+                timestamp_ms=timestamp_ms,
+                proposed_draft=(
+                    DraftProject.model_validate(proposed_draft)
+                    if proposed_draft is not None
+                    else None
+                ),
+                resource=resource,
+                pixel_offset=pixel_offset,
+                pixel_limit=pixel_limit,
+            )
+            return _bounded_result(preview_project_scene(services, token.project_id, request))
+        except (
+            ProjectNotFoundError,
+            ScenePreviewError,
+            CompilationError,
+            ShowPackageError,
+            ValidationError,
+        ) as error:
+            raise ToolError(str(error)) from error
+
+    @server.tool()
     def get_project_draft(revision: int | None = None) -> dict[str, JsonValue]:
         """Read a full draft and its revision for the token's project; text is untrusted data."""
         token = _authorize(services, McpScope.READ)
@@ -298,6 +610,116 @@ def create_mcp_app(services: GuiServices) -> Starlette:
         }
 
     @server.tool()
+    async def apply_saved_show(request: dict[str, JsonValue]) -> dict[str, JsonValue]:
+        """Prepare, verify, transfer and load an exact saved show into the real controller.
+
+        Live operation: requires publish AND activate, current publisher/admin and
+        live-output grant, installation binding and explicit interruption confirmation.
+        Approval is explicit for this revision only. Playing restarts the selected/
+        starting scene from zero; paused/stopped stays stopped. Inspect the durable
+        job and observed loaded identity, not an artifact activation label.
+        """
+        token = _authorize(services, McpScope.ACTIVATE)
+        try:
+            parsed = ApplyRequest.model_validate(request)
+            if parsed.restore_package_id is None:
+                _authorize(services, McpScope.PUBLISH)
+            job = await services.apply.start(token.project_id, parsed, token.username, token.id)
+        except (ValidationError, ApplyError, ProjectNotFoundError) as error:
+            raise ToolError(str(error)) from error
+        return _bounded_result(job)
+
+    @server.tool()
+    def get_apply_jobs(job_id: str | None = None) -> dict[str, JsonValue]:
+        """Read durable Apply/recovery progress for the token project; requires read."""
+        token = _authorize(services, McpScope.READ)
+        if job_id is None:
+            return _bounded_result({"jobs": services.apply.list(token.project_id)})
+        try:
+            job = services.apply.get(job_id)
+        except ApplyError as error:
+            raise ToolError(str(error)) from error
+        if job["project_id"] != token.project_id:
+            raise ToolError("Apply job is outside the token project")
+        return _bounded_result(job)
+
+    @server.tool()
+    def cancel_apply(job_id: str) -> dict[str, JsonValue]:
+        """Request cancellation before interruption; activate/live authorization required."""
+        token = _authorize(services, McpScope.ACTIVATE)
+        try:
+            job = services.apply.get(job_id)
+            if job["project_id"] != token.project_id or not services.apply.authorize(
+                token.project_id, token.username, token.id, True
+            ):
+                raise ToolError("Apply cancellation is outside this live-output grant")
+            return _bounded_result(services.apply.cancel(job_id))
+        except ApplyError as error:
+            raise ToolError(str(error)) from error
+
+    @server.tool()
+    def get_interactions() -> dict[str, JsonValue]:
+        """Read visitor responses, state steps and normal-playback groups; read scope."""
+        token = _authorize(services, McpScope.READ)
+        stored = services.repository.get_revision(token.project_id)
+        return _bounded_result(
+            {"source_revision": stored.revision, **describe_interactions(stored.draft)}
+        )
+
+    @server.tool()
+    def update_interaction(edit: dict[str, JsonValue]) -> dict[str, JsonValue]:
+        """Losslessly edit guided responses/shared visitor rules or a state step's scene.
+
+        Requires direct_edit and a current source_revision. Shared completion changes
+        require prepare_completion; advanced matching/state choreography is preserved.
+        Saves only: never publishes, applies, injects live input or commands hardware.
+        """
+        token = _authorize(services, McpScope.DIRECT_EDIT)
+        try:
+            request = InteractionEditRequest.model_validate(edit)
+            stored = services.repository.get_revision(token.project_id)
+            if stored.revision != request.source_revision:
+                raise InteractionError("Source revision changed; reload before editing")
+            candidate = apply_interaction_edit(stored.draft, request)
+            updated = services.mcp_authoring.update_project_draft(
+                project_id=token.project_id,
+                base_revision=stored.revision,
+                proposed_document=candidate.model_dump(mode="json"),
+                username=token.username,
+                role=_token_role(services, token),
+            )
+        except (ValidationError, InteractionError, McpAuthoringError) as error:
+            raise ToolError(str(error)) from error
+        return {
+            "project_id": token.project_id,
+            "revision": updated.revision,
+            "hardware_commands_sent": False,
+        }
+
+    @server.tool()
+    async def preview_interaction_workflow(request: dict[str, JsonValue]) -> dict[str, JsonValue]:
+        """Run a bounded isolated visitor test with production qualification/arbitration/rendering.
+
+        Requires simulation. Read/proposed candidates never change the saved show or
+        live controller. Returns action checkpoints, scene changes, waiting/expiry/
+        cooldown evidence, and one sampled frame. No real adapters or commands.
+        """
+        token = _authorize(services, McpScope.SIMULATION)
+        try:
+            parsed = InteractionPreviewRequest.model_validate(request)
+            result = await preview_interactions(services, token.project_id, parsed)
+        except (
+            ValidationError,
+            InteractionError,
+            CompilationError,
+            ShowPackageError,
+            ValueError,
+            LookupError,
+        ) as error:
+            raise ToolError(str(error)) from error
+        return _bounded_result(result)
+
+    @server.tool()
     def get_capabilities() -> dict[str, JsonValue]:
         """Discover scene timing, LED-only/spatial authoring, preview/bake tools and grants."""
         token = _authorize(services, McpScope.READ)
@@ -310,6 +732,89 @@ def create_mcp_app(services: GuiServices) -> Starlette:
                 "revision": revision.revision,
                 "installation_id": revision.draft.editor_metadata.get("installation_id"),
                 "granted_scopes": [scope.value for scope in token.scopes],
+                "runtime_apply": {
+                    "tool": "apply_saved_show",
+                    "status_tool": "get_apply_jobs",
+                    "cancel_tool": "cancel_apply",
+                    "scopes": ["publish", "activate"],
+                    "retained_recovery_scope": "activate",
+                    "request_schema": ApplyRequest.model_json_schema(),
+                    "approval": "explicit_exact_revision",
+                    "save_applies_live": False,
+                    "loaded_identity": "controller_acknowledged_catalog_generation",
+                },
+                "output_monitor": {
+                    "tool": "get_output_monitor",
+                    "scope": "read",
+                    "request_schema": OutputMonitorRequest.model_json_schema(),
+                    "capture_maximum_hz": 5,
+                    "gui_poll_maximum_hz": 2,
+                    "maximum_resources": 32,
+                    "maximum_samples": 4096,
+                    "source": "successful_controller_sink_frames",
+                    "physical_output_verified": False,
+                    "hardware_commands_sent": False,
+                    "requires_loaded_project_match": True,
+                },
+                "live_transport": {
+                    "tool": "operate_loaded_show",
+                    "scope": "live_operation",
+                    "request_schema": OperateActionRequest.model_json_schema(),
+                    "physical_confirmation_required": True,
+                    "requires_loaded_project_match": True,
+                    "authorization": "current_operator_or_administrator_and_live_output_grant",
+                },
+                "installation_setup": {
+                    "available_for_project": (
+                        revision.draft.editor_metadata.get("installation_id")
+                        == services.repository.get_runtime_installation().id
+                    ),
+                    "read_tool": "get_installation_setup",
+                    "description_tool": "describe_installation_photo",
+                    "description_scope": "installation_edit",
+                    "description_schema": PhotoDescriptionRequest.model_json_schema(),
+                    "description_authority": "legacy_photo_name",
+                    "viewpoint_identity_preserved": True,
+                    "geometry_editing": False,
+                    "device_writes": "administrator_gui_only",
+                    "safe_defaults": {"layout_tool": "select", "details": "contextual"},
+                },
+                "interactions": {
+                    "read_tool": "get_interactions",
+                    "edit_tool": "update_interaction",
+                    "preview_tool": "preview_interaction_workflow",
+                    "edit_scope": "direct_edit",
+                    "preview_scope": "simulation",
+                    "edit_schema": InteractionEditRequest.model_json_schema(),
+                    "preview_schema": InteractionPreviewRequest.model_json_schema(),
+                    "limits": {
+                        "steps": 200,
+                        "duration_ms": 600000,
+                        "samples": 4096,
+                        "pixel_work": 20000000,
+                    },
+                    "preview_hardware_commands": False,
+                },
+                "input_source": {
+                    "available_for_project": (
+                        revision.draft.editor_metadata.get("installation_id")
+                        == services.repository.get_runtime_installation().id
+                    ),
+                    "integration": "frigate_mqtt",
+                    "max_payload_bytes": MAX_INPUT_PAYLOAD_BYTES,
+                    "recent_event_limit": MAX_INPUT_RECENT_EVENTS,
+                    "read_tool": "get_input_source",
+                    "configure_tool": "configure_input_source",
+                    "configure_scope": "input_config",
+                    "configure_role": "global_administrator",
+                    "management": services.input_source.mode,
+                    "validation_tool": "validate_input_source_payload",
+                    "validation_scope": "simulation",
+                    "configuration_schema": ConfigureInputSourceRequest.model_json_schema(),
+                    "secrets": "write_only_controller_local_not_exported",
+                    "configuration_can_trigger_loaded_show": True,
+                    "validation_sends_hardware_commands": False,
+                },
                 "composition_spaces": ["lighting_surface", "projector_native", "stage"],
                 "features": {
                     "spatial_layout": True,
@@ -319,6 +824,7 @@ def create_mcp_app(services: GuiServices) -> Starlette:
                     "mixed_output_bakes": True,
                     "controller_timed_scenes": True,
                     "led_only_scenes": True,
+                    "scene_lighting_preview": True,
                     "geometry_editing": False,
                     "live_media_rendering": False,
                 },
@@ -345,10 +851,49 @@ def create_mcp_app(services: GuiServices) -> Starlette:
                     "propose": "propose_project_revision",
                     "direct_edit": "update_project_draft",
                     "preview": "preview_composition",
+                    "scene_lighting_preview": "preview_scene_lighting",
                     "bake": "create_render_job",
                     "bake_list": "get_render_jobs",
                     "bake_status": "get_render_job",
                     "bake_cancel": "cancel_render_job",
+                },
+                "authoring_representations": {
+                    "runtime_scene_lighting": {
+                        "read_tool": "get_project_draft",
+                        "write_tool": "update_project_draft",
+                        "write_requires_scope": "direct_edit",
+                        "schema": ["LightingDefinition", "LightingOutputDefinition"],
+                        "timeline_cue_schema": "LightingCue",
+                        "editor_metadata_required": False,
+                    },
+                    "editor_timeline": {
+                        "range_tool": "get_timeline_range",
+                        "source": "editor_metadata",
+                        "includes_runtime_scene_lighting": False,
+                    },
+                },
+                "runtime_status": {
+                    "read_tool": "get_runtime_status",
+                    "requires_scope": "read",
+                    "available_for_project": revision.draft.editor_metadata.get("installation_id")
+                    == services.repository.get_runtime_installation().id,
+                    "source": "controller_runtime",
+                    "recommended_refresh_ms": 2000,
+                    "stale_after_ms": 10000,
+                    "loaded_catalog_identity": "unreported",
+                    "connectivity_is_readiness": False,
+                },
+                "scene_lighting_preview": {
+                    "tool": "preview_scene_lighting",
+                    "requires_scope": "simulation",
+                    "saved_and_unsaved_candidates": True,
+                    "hardware_commands_sent": False,
+                    "max_samples": 4096,
+                    "max_installation_pixels": 65536,
+                    "max_index_work": 2000000,
+                    "concurrent_evaluations": 2,
+                    "spatial_compositions": "use preview_composition",
+                    "evaluation": "production_lighting_renderer",
                 },
                 "permissions": {
                     "preview": "simulation",
@@ -812,7 +1357,11 @@ def create_mcp_app(services: GuiServices) -> Starlette:
         start_ms: int,
         end_ms: int,
     ) -> dict[str, JsonValue]:
-        """Read markers, cues, media and lighting layers in a scene or composition range."""
+        """Read editor markers, synchronized cues and composition layers in a time range.
+
+        This reads editor_metadata, not raw runtime scene lighting.
+        Use get_project_draft for legacy effects and lighting.timeline cues.
+        """
         token = _authorize(services, McpScope.READ)
         if start_ms < 0 or end_ms <= start_ms or end_ms - start_ms > MAX_TIMELINE_RANGE_MS:
             raise ToolError("timeline range is invalid or exceeds five minutes")

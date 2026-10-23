@@ -61,12 +61,19 @@ bounded by the local receive time to prevent future observations from entering
 the controller. MQTT transport is an opt-in adapter and is not required for
 direct `POST /api/v1/events` ingestion.
 
-Enable direct MQTT ingestion with environment configuration:
+With the GUI enabled, use **Installation > Inputs & connections** for guided
+Frigate/MQTT setup and separate subscription, reception and visitor-matching health.
+See [camera input management](operations.md#camera-input-management) for durable
+settings, write-only credentials and the isolated example checker.
+
+Alternatively retain operator-managed MQTT ingress with environment configuration:
 
 ```text
+CUEVERGE_INPUT_MANAGEMENT=environment
 CUEVERGE_FRIGATE_MQTT_ENABLED=true
 CUEVERGE_FRIGATE_MQTT_HOST=mqtt.example
 CUEVERGE_FRIGATE_MQTT_PORT=1883
+CUEVERGE_FRIGATE_MQTT_TLS=false
 CUEVERGE_FRIGATE_MQTT_TOPIC=frigate/events
 CUEVERGE_FRIGATE_MQTT_USERNAME=cueverge
 CUEVERGE_FRIGATE_MQTT_PASSWORD=...
@@ -75,9 +82,9 @@ CUEVERGE_FRIGATE_ACCEPTED_LABELS=person
 
 Only the enabled flag and host are required; the port, topic, reconnect delay,
 and accepted labels have defaults. Username and password are optional for
-anonymous brokers, but a password requires a username. Credentials belong in
-the deployment environment and must not be stored in show packages or source
-control. The ingress reconnects after broker failures, logs invalid payloads
+anonymous brokers, but a password requires a username. Environment-managed
+credentials belong only in private deployment configuration, never show packages
+or source control. The ingress reconnects after broker failures, logs invalid payloads
 without stopping, and starts and stops with the controller application
 lifespan.
 

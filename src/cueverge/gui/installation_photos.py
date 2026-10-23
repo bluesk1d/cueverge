@@ -221,6 +221,33 @@ class InstallationPhotoService:
             connection.commit()
         return self.get(photo_id)
 
+    def describe(
+        self,
+        *,
+        photo_id: str,
+        expected_revision: int,
+        description: str,
+        actor: str,
+        role: Role,
+        occurred_at: str,
+    ) -> StoredInstallationPhoto:
+        photo = self.get(photo_id)
+        return self.update(
+            photo_id=photo_id,
+            expected_revision=expected_revision,
+            name=description,
+            viewpoint=photo.viewpoint,
+            orientation_degrees=photo.orientation_degrees,
+            crop_x=photo.crop_x,
+            crop_y=photo.crop_y,
+            crop_width=photo.crop_width,
+            crop_height=photo.crop_height,
+            scale_hint=photo.scale_hint,
+            actor=actor,
+            role=role,
+            occurred_at=occurred_at,
+        )
+
     def delete(
         self,
         *,

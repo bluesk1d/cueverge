@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import type { Page } from "@playwright/test";
+import { openLayout } from "./setup-workspace";
 
 const installationId = "demo-installation";
 const photoId = "mapper-front";
@@ -25,6 +26,7 @@ test("tracing uses visible labels, one pixel count, and preserves save payloads"
   await inspector.getByLabel("Geometry name").fill("garage-eave");
   await inspector.getByLabel("First pixel index").fill("0");
   await inspector.getByLabel("Pixel count", { exact: true }).fill("162");
+  await inspector.getByText("Optional strand label", { exact: true }).click();
   await inspector.getByLabel("Strand ID").fill("lower");
   await expect(inspector.getByRole("status")).toHaveText("Pixels 0–161 · 162 LEDs");
   await expect(inspector.getByText(/Pixel allocation overlaps/)).toHaveCount(0);
@@ -44,7 +46,7 @@ test("tracing uses visible labels, one pixel count, and preserves save payloads"
   });
   expect(writes.projects).toBe(0);
   expect(writes.maintenance).toBe(0);
-  await expect(inspector.getByLabel("Geometry name")).toHaveValue("");
+  await expect(inspector).toHaveCount(0);
 });
 
 test("allocation validates boundaries and warns only for other objects on the same output", async ({ page }) => {
@@ -340,6 +342,7 @@ async function setupMapper(page: Page) {
   });
   await page.goto("/demo.html");
   await page.getByRole("button", { name: "Installation", exact: true }).click();
+  await openLayout(page, "pixel_segment");
   await page.getByLabel("Geometry type").selectOption("pixel_segment");
   return writes;
 }

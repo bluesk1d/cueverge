@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from cueverge.core.loader import ShowPackageError, load_show_package
+from cueverge.core.models import MultiLightingLooksDefinition
 from cueverge.gui.contracts import DraftProject
 from cueverge.gui.render_pipeline import render_pipeline_manifest
 from cueverge.gui.render_verification import verification_policy_manifest
@@ -45,6 +46,8 @@ class DraftCompiler:
         revision: int,
         draft: DraftProject,
         lighting_artifacts: dict[str, Path] | None = None,
+        media_assets: dict[tuple[str, str], str] | None = None,
+        lighting_looks: MultiLightingLooksDefinition | None = None,
     ) -> CompiledPackage:
         project_root = self.output_root / project_id
         project_root.mkdir(parents=True, exist_ok=True)
@@ -61,6 +64,7 @@ class DraftCompiler:
                 ("audience.json", draft.audience),
                 ("opportunities.json", draft.opportunities),
                 ("encounter.json", draft.encounter),
+                ("looks.json", lighting_looks),
             ):
                 if definition is not None:
                     _write_json(
@@ -93,9 +97,19 @@ class DraftCompiler:
                 verification_policy_manifest(),
             )
             for index, scene in enumerate(draft.scenes):
+                document = scene.model_dump(mode="json")
+                if media_assets:
+                    outputs = document["media"]
+                    if isinstance(outputs, list):
+                        for output in outputs:
+                            digest = media_assets.get((scene.id, output["id"]))
+                            if digest is not None:
+                                output["asset"] = digest
+                    elif (scene.id, "media") in media_assets:
+                        outputs["asset"] = media_assets[(scene.id, "media")]
                 _write_json(
                     scenes_root / f"scene-{index + 1:04d}.json",
-                    scene.model_dump(mode="json"),
+                    document,
                 )
             try:
                 catalog = load_show_package(temporary_root)

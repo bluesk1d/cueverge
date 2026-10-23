@@ -92,14 +92,62 @@ class SimulationScenarioService:
         scenario: StoredSimulationScenario,
         catalog: SceneCatalog,
     ) -> dict[str, JsonValue]:
-        simulation = ShowSimulation(catalog)
+        visitor_workflow = any(step.get("kind") == "visitor" for step in scenario.steps)
+        origin = 600000 if visitor_workflow else 0
+        if visitor_workflow:
+            duration = sum(
+                _integer(step.get("delta_ms"))
+                for step in scenario.steps
+                if step.get("kind") == "advance"
+            )
+            boundaries = duration // min(
+                scene.definition.duration_ms for scene in catalog.scenes.values()
+            )
+            work = sum(
+                output.pixel_count * (len(output.definition.timeline) + 1)
+                for scene in catalog.scenes.values()
+                for output in scene.lighting_outputs
+            )
+            if (
+                len(scenario.steps) > 200
+                or duration > 600000
+                or boundaries > 1000
+                or 2 * work * (boundaries + len(scenario.steps) + 1) > 20000000
+            ):
+                raise SimulationScenarioError(
+                    "Visitor scenario exceeds the interactive step/time/pixel budget"
+                )
+        simulation = ShowSimulation(catalog, automatic_rendering=not visitor_workflow)
+        simulation.clock.now_ms = origin
         decisions: list[str] = []
+        checkpoints: list[dict[str, object]] = []
         try:
             if catalog.program is None:
                 await simulation.operator_start(sorted(catalog.scenes)[0])
             else:
                 await simulation.start()
             for step in scenario.steps:
+                if visitor_workflow:
+                    from cueverge.gui.contracts import SimulationStepRequest
+                    from cueverge.gui.interaction_preview import _apply_step, _trace_status
+
+                    observed = await _apply_step(
+                        simulation, SimulationStepRequest.model_validate(step)
+                    )
+                    if simulation.runtime.active_scene is not None:
+                        simulation.report_position()
+                        simulation.runtime.render_frame()
+                        await simulation.runtime.wait_for_lifecycle_idle()
+                        simulation._sync_active()
+                        await simulation._acknowledge_prepares()
+                    checkpoints.append(
+                        {
+                            "at_ms": simulation.clock.now_ms - origin,
+                            "observations": observed,
+                            "status": _trace_status(simulation),
+                        }
+                    )
+                    continue
                 kind = _string(step.get("kind"))
                 if kind == "advance":
                     await simulation.advance(_integer(step.get("delta_ms")))
@@ -134,7 +182,8 @@ class SimulationScenarioService:
             actual = cast(
                 dict[str, JsonValue],
                 {
-                    "clock_ms": simulation.clock.now_ms,
+                    "clock_ms": simulation.clock.now_ms - origin,
+                    **({"visitor_checkpoints": checkpoints} if visitor_workflow else {}),
                     "scene_history": list(simulation.scene_history),
                     "request_decisions": decisions,
                     "lighting_frame_counts": {

@@ -1,12 +1,17 @@
 import asyncio
 import json
+import ssl
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+from typing import Any
+
+import pytest
+from pydantic import SecretStr
 
 from cueverge.config import FrigateMqttConfig
 from cueverge.core.events import ExternalEvent
-from cueverge.integrations.mqtt import FrigateMqttIngress, MqttConnection
+from cueverge.integrations.mqtt import FrigateMqttIngress, MqttConnection, _connect_aiomqtt
 
 
 @dataclass
@@ -81,6 +86,81 @@ def test_mqtt_ingress_rejects_malformed_payload_and_continues() -> None:
         assert len(received) == 1
         assert ingress.messages_received == 2
         assert ingress.invalid_messages == 1
+
+    asyncio.run(scenario())
+
+
+def test_mqtt_stop_finishes_inflight_controller_delivery_before_disconnect() -> None:
+    async def scenario() -> None:
+        started = asyncio.Event()
+        finish = asyncio.Event()
+        delivered: list[ExternalEvent] = []
+        connection = FakeConnection((_payload(),))
+
+        async def handle(event: ExternalEvent) -> None:
+            started.set()
+            await finish.wait()
+            delivered.append(event)
+
+        @asynccontextmanager
+        async def connect(_: FrigateMqttConfig) -> AsyncIterator[MqttConnection]:
+            yield connection
+
+        ingress = FrigateMqttIngress(
+            FrigateMqttConfig(enabled=True, host="loopback-example"),
+            handle,
+            connector=connect,
+        )
+        ingress.start()
+        await asyncio.wait_for(started.wait(), timeout=1)
+        stop = asyncio.create_task(ingress.stop())
+        await asyncio.sleep(0)
+        assert not stop.done()
+        finish.set()
+        await asyncio.wait_for(stop, timeout=1)
+        assert len(delivered) == 1
+        assert ingress.events_emitted == 1
+        assert not ingress.connected
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("tls", [False, True])
+def test_mqtt_connector_uses_explicit_tls_and_write_only_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+    tls: bool,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    class Client:
+        def __init__(self, **values: Any) -> None:
+            captured.update(values)
+
+        async def __aenter__(self) -> "Client":
+            return self
+
+        async def __aexit__(self, *arguments: object) -> None:
+            return None
+
+    monkeypatch.setattr("cueverge.integrations.mqtt.aiomqtt.Client", Client)
+
+    async def scenario() -> None:
+        config = FrigateMqttConfig(
+            enabled=True,
+            host="loopback-example",
+            username="original-test-user",
+            password=SecretStr("original-test-only-password"),
+            tls=tls,
+        )
+        async with _connect_aiomqtt(config):
+            assert captured["password"] == "original-test-only-password"
+            context = captured["tls_context"]
+            if tls:
+                assert isinstance(context, ssl.SSLContext)
+                assert context.check_hostname
+                assert context.verify_mode == ssl.CERT_REQUIRED
+            else:
+                assert context is None
 
     asyncio.run(scenario())
 

@@ -193,10 +193,8 @@ async def _operations_scenario() -> None:
     agent.accept_welcome(runtime.register_agent(agent.hello(), MemoryCommandChannel(sent=[])))
 
     await runtime.set_show_mode(ShowMode.MAINTENANCE)
-    assert runtime.status()["operations"] == {
-        "show_enabled": False,
-        "mode": "maintenance",
-    }
+    assert runtime.status()["operations"]["show_enabled"] is False
+    assert runtime.status()["operations"]["mode"] == "maintenance"
     await runtime.start_scene("operator-override")
     reset = await runtime.reset_ambient()
     assert reset.definition.id == "ambient"

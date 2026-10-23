@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { openLayout, openProjectorDetails } from "./setup-workspace";
 
 const installationId = "demo-installation";
 const photoId = "compound-angle-photo";
@@ -93,11 +94,13 @@ test("compound-angle mapping reuses one homography for multiple assets", async (
 
   await page.goto("/demo.html");
   await page.getByRole("button", { name: "Installation", exact: true }).click();
+  await openLayout(page);
   const mapper = page
     .getByRole("heading", { name: "Visual Mapper" })
     .locator("xpath=ancestor::section");
 
   await mapper.getByRole("button", { name: "Edit" }).click();
+  await openProjectorDetails(mapper);
   const content = mapper.getByLabel("Calibration content");
   await expect(content).toHaveValue("asset-still-a");
   await expect(mapper.getByAltText("Selected projector mapping content")).toHaveAttribute(
@@ -124,6 +127,8 @@ test("compound-angle mapping reuses one homography for multiple assets", async (
   await expect.poll(() => selectedAssetId).toBe("asset-still-b");
   expect(surface().points).toEqual(points);
   expect(mapping().homography).toEqual(homography);
+  await mapper.getByRole("button", { name: "Edit" }).click();
+  await openProjectorDetails(mapper);
   await expect(mapper.getByAltText("Selected projector mapping content")).toHaveAttribute(
     "src",
     "/api/gui/v1/assets/asset-still-b/artifacts/review",

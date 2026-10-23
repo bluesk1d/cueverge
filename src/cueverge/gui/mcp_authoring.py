@@ -41,6 +41,8 @@ class McpScope(StrEnum):
     PUBLISH = "publish"
     ACTIVATE = "activate"
     LIVE_OPERATION = "live_operation"
+    INPUT_CONFIG = "input_config"
+    INSTALLATION_EDIT = "installation_edit"
 
 
 def allowed_mcp_scopes(
@@ -50,6 +52,14 @@ def allowed_mcp_scopes(
 ) -> set[McpScope]:
     effective_role = Role.ADMINISTRATOR if global_role is Role.ADMINISTRATOR else project_role
     scopes = {McpScope.READ}
+    if global_role is Role.ADMINISTRATOR:
+        scopes.add(McpScope.INPUT_CONFIG)
+    if global_role in {Role.DESIGNER, Role.PUBLISHER, Role.ADMINISTRATOR} and effective_role in {
+        Role.DESIGNER,
+        Role.PUBLISHER,
+        Role.ADMINISTRATOR,
+    }:
+        scopes.add(McpScope.INSTALLATION_EDIT)
     if effective_role in {Role.DESIGNER, Role.PUBLISHER, Role.ADMINISTRATOR}:
         scopes.update({McpScope.DRAFT_EDIT, McpScope.DIRECT_EDIT})
     if effective_role in {Role.DESIGNER, Role.OPERATOR, Role.PUBLISHER, Role.ADMINISTRATOR}:

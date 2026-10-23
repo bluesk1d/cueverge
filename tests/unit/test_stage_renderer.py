@@ -378,6 +378,7 @@ def test_installation_overlay_bakes_one_animation_for_projectors_and_leds(
     )
     # Device/asset admission is tested separately; exercise publication's artifact selection here.
     monkeypatch.setattr(publication, "validate", lambda _project_id, _revision: ())
+    monkeypatch.setattr(repository, "get_render_artifact_manifest", lambda _: manifest)
     published = publication.publish(
         project_id=stored.project.id,
         revision=2,

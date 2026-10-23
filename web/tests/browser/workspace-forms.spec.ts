@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { openAdvancedShowWorkspace } from "./show-workspace";
 
 const viewports = [
   { name: "desktop", width: 1440, height: 900 },
@@ -32,6 +33,7 @@ for (const viewport of viewports) {
     });
     await page.goto("/demo.html");
     await page.getByRole("button", { name: "Shows", exact: true }).click();
+    await openAdvancedShowWorkspace(page);
     const collaboration = page.getByRole("region", { name: "Collaboration" });
     await expect(collaboration).toBeVisible();
     await expect(collaboration).toHaveCSS("display", "grid");

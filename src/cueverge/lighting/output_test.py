@@ -93,11 +93,13 @@ class OutputTestRunner:
         clock: Callable[[], float],
         fps: float,
         on_finish: Callable[[OutputTestStatus], None],
+        on_frame: Callable[[RenderedFrame], None] | None = None,
     ) -> None:
         self.sink = sink
         self.clock = clock
         self.fps = fps
         self.on_finish = on_finish
+        self.on_frame = on_frame
         self.started = clock()
         now = datetime.now(UTC)
         self.status = OutputTestStatus(
@@ -124,14 +126,15 @@ class OutputTestRunner:
 
     def _send(self, elapsed: float) -> None:
         position = elapsed * self.status.speed % self.status.pixel_count
-        self.sink.send(
-            RenderedFrame(
-                scene_instance_id=f"output-test:{self.status.id}",
-                position_ms=round(elapsed * 1000),
-                pixels=traversal_frame(self.status.pixel_count, position, self.status.segments),
-                resource=self.status.resource,
-            )
+        frame = RenderedFrame(
+            scene_instance_id=f"output-test:{self.status.id}",
+            position_ms=round(elapsed * 1000),
+            pixels=traversal_frame(self.status.pixel_count, position, self.status.segments),
+            resource=self.status.resource,
         )
+        self.sink.send(frame)
+        if self.on_frame is not None:
+            self.on_frame(frame)
         self.status.pixel_index = math.floor(position)
         self.status.frames_sent += 1
 
@@ -170,14 +173,15 @@ class OutputTestRunner:
         if error is not None:
             self.status.error = f"{type(error).__name__}: {error}"
         try:
-            self.sink.send(
-                RenderedFrame(
-                    scene_instance_id=f"output-test-stop:{self.status.id}",
-                    position_ms=0,
-                    pixels=((0, 0, 0),) * self.status.pixel_count,
-                    resource=self.status.resource,
-                )
+            frame = RenderedFrame(
+                scene_instance_id=f"output-test-stop:{self.status.id}",
+                position_ms=0,
+                pixels=((0, 0, 0),) * self.status.pixel_count,
+                resource=self.status.resource,
             )
+            self.sink.send(frame)
+            if self.on_frame is not None:
+                self.on_frame(frame)
             self.status.frames_sent += 1
         except (OSError, ValueError) as stop_error:
             self.status.state = "failed"

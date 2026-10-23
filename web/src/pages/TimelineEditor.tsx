@@ -327,6 +327,9 @@ export function TimelineEditor({
   projectId,
   onSave,
   initiallyOpen = false,
+  selectedSceneId,
+  onSceneChange,
+  openRequest = 0,
 }: {
   draft: ProjectDraftRecord;
   assets: AssetRecord[];
@@ -334,11 +337,15 @@ export function TimelineEditor({
   projectId: string;
   onSave: (draft: ProjectDraftRecord["draft"]) => Promise<void>;
   initiallyOpen?: boolean;
+  selectedSceneId?: string;
+  onSceneChange?: (id: string) => void;
+  openRequest?: number;
 }) {
   const [editorOpen, setEditorOpen] = useState(initiallyOpen);
+  useEffect(() => { if (openRequest > 0) setEditorOpen(true); }, [openRequest]);
   const [sceneId, setSceneId] = useState(draft.draft.scenes[0]?.id ?? "");
   const scene =
-    draft.draft.scenes.find((candidate) => candidate.id === sceneId) ??
+    draft.draft.scenes.find((candidate) => candidate.id === (selectedSceneId ?? sceneId)) ??
     draft.draft.scenes[0];
   const [compositions, setCompositions] = useState<Record<string, Composition>>(
     () => compositionMap(draft.draft.editor_metadata.compositions),
@@ -350,6 +357,7 @@ export function TimelineEditor({
     Record<string, CompositionInstance[]>
   >(() => compositionInstanceMap(draft.draft.editor_metadata.composition_instances));
   const [activeCompositionId, setActiveCompositionId] = useState("");
+  useEffect(() => { if (selectedSceneId !== undefined) setActiveCompositionId(""); }, [selectedSceneId]);
   const [newCompositionName, setNewCompositionName] = useState("");
   const [newCompositionDuration, setNewCompositionDuration] = useState(5000);
   const [newCompositionSpace, setNewCompositionSpace] =
@@ -729,6 +737,8 @@ export function TimelineEditor({
     setRegionEnd(Math.min(1000, scene?.duration_ms ?? 1000));
     setLoopStart(numberValue(sceneView.loop_start_ms, 0));
     setLoopEnd(numberValue(sceneView.loop_end_ms, scene?.duration_ms ?? 1000));
+    setZoom(numberValue(sceneView.zoom_px_per_second, 80));
+    setSnapMs(numberValue(sceneView.quantization_ms, 100));
     setCustomTracks(trackArray(timelineTracks[editingSpaceId]));
     setSelectedTrackId("");
     setSelectedTransformLayerId("");
@@ -744,6 +754,8 @@ export function TimelineEditor({
     scene?.duration_ms,
     sceneView.loop_end_ms,
     sceneView.loop_start_ms,
+    sceneView.zoom_px_per_second,
+    sceneView.quantization_ms,
   ]);
 
   useEffect(() => {
@@ -1248,6 +1260,7 @@ export function TimelineEditor({
             value={scene.id}
             onChange={(event) => {
               setSceneId(event.target.value);
+              onSceneChange?.(event.target.value);
               setActiveCompositionId("");
             }}
           >

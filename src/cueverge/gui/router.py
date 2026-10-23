@@ -4,6 +4,7 @@ from collections.abc import Callable, Collection, Mapping
 from datetime import UTC, datetime, timedelta
 from io import BytesIO
 from typing import Annotated, Literal, cast
+from urllib.parse import unquote
 from uuid import UUID, uuid4
 
 from fastapi import (
@@ -13,15 +14,17 @@ from fastapi import (
     Depends,
     Header,
     HTTPException,
+    Query,
     Request,
     Response,
 )
 from fastapi.responses import FileResponse, JSONResponse
 from PIL import Image
-from pydantic import JsonValue
+from pydantic import JsonValue, ValidationError
 
 from cueverge.controller.runtime import ShowMode
-from cueverge.core.loader import load_show_package
+from cueverge.core.loader import ShowPackageError, load_show_package
+from cueverge.gui.apply import ApplyError, ApplyRequest
 from cueverge.gui.artifact_deployment import ArtifactDeploymentError
 from cueverge.gui.artifact_preview import (
     ArtifactPreviewError,
@@ -65,6 +68,7 @@ from cueverge.gui.contracts import (
     CommentResponse,
     CommentStateRequest,
     CompilationResponse,
+    ConfigureInputSourceRequest,
     ConnectionTestCheck,
     CreateInstallationRequest,
     CreateMcpTokenRequest,
@@ -92,6 +96,8 @@ from cueverge.gui.contracts import (
     InstallationResourceResponse,
     InstallationStatusResponse,
     InstallationSummaryResponse,
+    InteractionEditRequest,
+    InteractionPreviewRequest,
     LightingSurfaceRequest,
     LightingSurfaceResponse,
     LocalUserRequest,
@@ -112,6 +118,7 @@ from cueverge.gui.contracts import (
     OutputTestResponse,
     OutputTestSegmentResponse,
     PairingTokenResponse,
+    PhotoDescriptionRequest,
     PlaceAssetRequest,
     PresenceHeartbeatRequest,
     PresenceResponse,
@@ -146,6 +153,7 @@ from cueverge.gui.contracts import (
     Role,
     RuntimeStatusResponse,
     SaveSimulationScenarioRequest,
+    SceneLightingPreviewRequest,
     SessionResponse,
     SetDeviceConnectionPolicyRequest,
     SetDeviceEnrollmentStateRequest,
@@ -176,6 +184,7 @@ from cueverge.gui.geometry_suggestions import (
     GeometrySuggestionError,
     StoredGeometrySuggestion,
 )
+from cueverge.gui.input_sources import InputSourceError
 from cueverge.gui.installation_geometry import (
     InstallationGeometryConflictError,
     InstallationGeometryError,
@@ -186,6 +195,12 @@ from cueverge.gui.installation_photos import (
     InstallationPhotoConflictError,
     InstallationPhotoError,
     StoredInstallationPhoto,
+)
+from cueverge.gui.interaction_preview import preview_interactions
+from cueverge.gui.interactions import (
+    InteractionError,
+    apply_interaction_edit,
+    describe_interactions,
 )
 from cueverge.gui.lighting_preview import (
     LightingPreviewError,
@@ -252,6 +267,11 @@ from cueverge.gui.repository import (
     StoredProject,
     StoredResourceAssignment,
     StoredRevision,
+)
+from cueverge.gui.scene_preview import (
+    ScenePreviewBusyError,
+    ScenePreviewError,
+    preview_project_scene,
 )
 from cueverge.gui.service import GuiServices
 from cueverge.gui.simulation_scenarios import (
@@ -409,6 +429,9 @@ def create_gui_router(services: GuiServices) -> APIRouter:
     )
     project_designer = Depends(
         require_project_roles(Role.DESIGNER, Role.PUBLISHER, Role.ADMINISTRATOR)
+    )
+    project_simulator = Depends(
+        require_project_roles(Role.DESIGNER, Role.OPERATOR, Role.PUBLISHER, Role.ADMINISTRATOR)
     )
     project_publisher = Depends(require_project_roles(Role.PUBLISHER, Role.ADMINISTRATOR))
     project_administrator = Depends(require_project_roles(Role.ADMINISTRATOR))
@@ -2309,6 +2332,7 @@ def create_gui_router(services: GuiServices) -> APIRouter:
                 status_code=404,
                 detail={"code": "project_not_found"},
             ) from error
+
         except PreviewEvaluationError as error:
             raise HTTPException(
                 status_code=422,
@@ -2323,6 +2347,27 @@ def create_gui_router(services: GuiServices) -> APIRouter:
             raise HTTPException(
                 status_code=422,
                 detail={"code": "lighting_preview_invalid", "message": str(error)},
+            ) from error
+
+    @router.post("/projects/{project_id}/scene-lighting-preview")
+    def scene_lighting_preview(
+        project_id: str,
+        body: SceneLightingPreviewRequest,
+        identity: Annotated[AuthenticatedSession, project_commenter],
+    ) -> dict[str, object]:
+        try:
+            return preview_project_scene(services, project_id, body)
+        except ScenePreviewBusyError as error:
+            raise HTTPException(
+                status_code=429, detail={"code": "scene_preview_busy", "message": str(error)}
+            ) from error
+        except ProjectNotFoundError as error:
+            raise HTTPException(
+                status_code=404, detail={"code": "project_or_revision_not_found"}
+            ) from error
+        except (ScenePreviewError, CompilationError, ShowPackageError) as error:
+            raise HTTPException(
+                status_code=422, detail={"code": "scene_preview_invalid", "message": str(error)}
             ) from error
 
     @router.post(
@@ -2373,6 +2418,109 @@ def create_gui_router(services: GuiServices) -> APIRouter:
     )
     def render_jobs(project_id: str) -> list[RenderJobResponse]:
         return [_render_job(job) for job in services.render_jobs.list(project_id)]
+
+    @router.post("/projects/{project_id}/apply", status_code=202)
+    async def apply_saved_show(
+        project_id: str,
+        body: ApplyRequest,
+        identity: Annotated[AuthenticatedSession, project_publisher],
+    ) -> dict[str, object]:
+        if not services.apply.authorize(
+            project_id, identity.username, None, body.restore_package_id is not None
+        ):
+            raise HTTPException(403, detail={"code": "live_output_permission_required"})
+        try:
+            return await services.apply.start(project_id, body, identity.username)
+        except (ApplyError, ProjectNotFoundError) as error:
+            raise HTTPException(
+                409, detail={"code": "apply_not_started", "message": str(error)}
+            ) from error
+
+    @router.get("/projects/{project_id}/apply-jobs", dependencies=[project_reader])
+    def apply_jobs(project_id: str) -> list[dict[str, object]]:
+        return services.apply.list(project_id)
+
+    @router.get("/projects/{project_id}/apply-jobs/{job_id}", dependencies=[project_reader])
+    def apply_job(project_id: str, job_id: str) -> dict[str, object]:
+        try:
+            job = services.apply.get(job_id)
+        except ApplyError as error:
+            raise HTTPException(404, detail={"code": "apply_job_not_found"}) from error
+        if job["project_id"] != project_id:
+            raise HTTPException(403, detail={"code": "apply_job_outside_project"})
+        return job
+
+    @router.post("/projects/{project_id}/apply-jobs/{job_id}/cancel")
+    def cancel_apply(
+        project_id: str,
+        job_id: str,
+        identity: Annotated[AuthenticatedSession, project_publisher],
+    ) -> dict[str, object]:
+        job = services.apply.get(job_id)
+        if job["project_id"] != project_id or not services.apply.authorize(
+            project_id, identity.username, None, True
+        ):
+            raise HTTPException(403, detail={"code": "live_output_permission_required"})
+        try:
+            return services.apply.cancel(job_id)
+        except ApplyError as error:
+            raise HTTPException(
+                409, detail={"code": "apply_cancel_failed", "message": str(error)}
+            ) from error
+
+    @router.get("/projects/{project_id}/interactions", dependencies=[project_reader])
+    def interactions(project_id: str) -> dict[str, object]:
+        stored = services.repository.get_revision(project_id)
+        return {"source_revision": stored.revision, **describe_interactions(stored.draft)}
+
+    @router.put("/projects/{project_id}/interactions", response_model=ProjectDraftResponse)
+    def edit_interaction(
+        project_id: str,
+        body: InteractionEditRequest,
+        identity: Annotated[AuthenticatedSession, project_designer],
+    ) -> ProjectDraftResponse:
+        stored = services.repository.get_revision(project_id)
+        if stored.revision != body.source_revision:
+            raise HTTPException(
+                409,
+                detail={
+                    "code": "revision_conflict",
+                    "message": "This show changed. Reload saved data before editing.",
+                },
+            )
+        try:
+            candidate = apply_interaction_edit(stored.draft, body)
+            updated = services.mcp_authoring.update_project_draft(
+                project_id=project_id,
+                base_revision=stored.revision,
+                proposed_document=candidate.model_dump(mode="json"),
+                username=identity.username,
+                role=identity.role,
+            )
+        except (InteractionError, McpAuthoringError) as error:
+            raise HTTPException(
+                422, detail={"code": "interaction_invalid", "message": str(error)}
+            ) from error
+        return _project_draft(updated)
+
+    @router.post("/projects/{project_id}/interaction-preview")
+    async def interaction_preview(
+        project_id: str,
+        body: InteractionPreviewRequest,
+        identity: Annotated[AuthenticatedSession, project_simulator],
+    ) -> dict[str, object]:
+        try:
+            return await preview_interactions(services, project_id, body)
+        except (
+            InteractionError,
+            CompilationError,
+            ShowPackageError,
+            ValueError,
+            LookupError,
+        ) as error:
+            raise HTTPException(
+                422, detail={"code": "interaction_preview_invalid", "message": str(error)}
+            ) from error
 
     @router.get(
         "/projects/{project_id}/simulation-scenarios",
@@ -2791,11 +2939,36 @@ def create_gui_router(services: GuiServices) -> APIRouter:
         installation_id: str,
         request: Request,
         identity: Annotated[AuthenticatedSession, author],
-        photo_name: Annotated[str, Header(alias="X-Photo-Name")],
-        viewpoint: Annotated[str, Header(alias="X-Photo-Viewpoint")],
         original_filename: Annotated[str, Header(alias="X-Original-Filename")],
         content_type: Annotated[str, Header(alias="Content-Type")],
+        photo_name: Annotated[str | None, Header(alias="X-Photo-Name")] = None,
+        viewpoint: Annotated[str | None, Header(alias="X-Photo-Viewpoint")] = None,
+        description: Annotated[str | None, Header(alias="X-Photo-Description")] = None,
+        metadata_encoding: Annotated[
+            Literal["uri"] | None, Header(alias="X-Photo-Metadata-Encoding")
+        ] = None,
     ) -> InstallationPhotoResponse:
+        try:
+            if metadata_encoding == "uri":
+                original_filename = unquote(original_filename, errors="strict")
+                photo_name = (
+                    unquote(photo_name, errors="strict") if photo_name is not None else None
+                )
+                viewpoint = unquote(viewpoint, errors="strict") if viewpoint is not None else None
+                description = (
+                    unquote(description, errors="strict") if description is not None else None
+                )
+            label = PhotoDescriptionRequest(
+                description=description if description is not None else photo_name or "",
+            ).description
+        except (ValidationError, UnicodeError):
+            raise HTTPException(
+                422,
+                detail={
+                    "code": "photo_description_required",
+                    "message": "Describe what the photo shows or is used for (1-200 characters).",
+                },
+            ) from None
         content = bytearray()
         async for chunk in request.stream():
             content.extend(chunk)
@@ -2807,8 +2980,8 @@ def create_gui_router(services: GuiServices) -> APIRouter:
         try:
             photo = services.installation_photos.create(
                 installation_id=installation_id,
-                name=photo_name,
-                viewpoint=viewpoint,
+                name=label,
+                viewpoint=viewpoint if viewpoint is not None else label,
                 original_filename=original_filename,
                 media_type=content_type,
                 content=bytes(content),
@@ -2837,6 +3010,36 @@ def create_gui_router(services: GuiServices) -> APIRouter:
                 detail={"code": "installation_photo_not_found"},
             ) from error
         return FileResponse(path, media_type=media_type, headers={"Cache-Control": "private"})
+
+    @router.patch(
+        "/installation-photos/{photo_id}/description", response_model=InstallationPhotoResponse
+    )
+    def describe_installation_photo(
+        photo_id: str,
+        body: PhotoDescriptionRequest,
+        identity: Annotated[AuthenticatedSession, author],
+        if_match: Annotated[str | None, Header(alias="If-Match")] = None,
+    ) -> InstallationPhotoResponse:
+        try:
+            photo = services.installation_photos.describe(
+                photo_id=photo_id,
+                expected_revision=_parse_if_match(if_match),
+                description=body.description,
+                actor=identity.username,
+                role=identity.role,
+                occurred_at=_now_iso(),
+            )
+        except InstallationPhotoConflictError as error:
+            raise HTTPException(
+                409,
+                detail={
+                    "code": "installation_photo_conflict",
+                    "message": "This photo changed. Reopen its details before saving.",
+                },
+            ) from error
+        except InstallationPhotoError as error:
+            raise HTTPException(404, detail={"code": "installation_photo_not_found"}) from error
+        return _installation_photo(photo)
 
     @router.put(
         "/installation-photos/{photo_id}",
@@ -3498,16 +3701,75 @@ def create_gui_router(services: GuiServices) -> APIRouter:
             resources=tuple(resources[key] for key in sorted(resources)),
         )
 
+    @router.get("/input-source", dependencies=[reader])
+    def input_source() -> dict[str, object]:
+        return services.input_source.snapshot()
+
+    @router.put("/input-source")
+    async def configure_input_source(
+        body: dict[str, JsonValue],
+        identity: Annotated[AuthenticatedSession, administrator_mutation],
+    ) -> dict[str, object]:
+        try:
+            request = ConfigureInputSourceRequest.model_validate(body)
+        except ValidationError:
+            raise HTTPException(
+                422,
+                detail={
+                    "code": "invalid_input_settings",
+                    "message": (
+                        "Check the broker hostname, port, topic, labels and credential action."
+                    ),
+                },
+            ) from None
+        try:
+            result = await services.input_source.configure(request)
+        except InputSourceError as error:
+            raise HTTPException(
+                409, detail={"code": "input_configuration_failed", "message": str(error)}
+            ) from error
+        services.repository.append_audit(
+            actor=identity.username,
+            action="input.configure",
+            target="frigate_mqtt",
+            result="success",
+            occurred_at=_now_iso(),
+            authorization_context={"management": "gui", "enabled": request.enabled},
+        )
+        return result
+
+    @router.post("/input-source/validate")
+    def validate_input_source(
+        body: dict[str, JsonValue],
+        identity: Annotated[AuthenticatedSession, Depends(mutation_session)],
+    ) -> dict[str, object]:
+        try:
+            return services.input_source.validate_payload(body)
+        except InputSourceError as error:
+            raise HTTPException(
+                422, detail={"code": "invalid_input_payload", "message": str(error)}
+            ) from error
+
     @router.get(
         "/runtime/status",
         response_model=RuntimeStatusResponse,
         dependencies=[reader],
     )
-    def runtime_status() -> RuntimeStatusResponse:
-        return RuntimeStatusResponse(
-            observed_at=_now_iso(),
-            status=services.runtime.status(),
-        )
+    async def runtime_status() -> RuntimeStatusResponse:
+        return services.runtime_snapshot()
+
+    @router.get("/runtime/output-monitor", dependencies=[reader])
+    async def output_monitor(
+        resource: str | None = None,
+        pixel_offset: int = Query(default=0, ge=0),
+        pixel_limit: int = Query(default=1000, ge=1, le=1000),
+    ) -> dict[str, object]:
+        try:
+            return services.runtime.output_monitor(resource, pixel_offset, pixel_limit)
+        except ValueError as error:
+            raise HTTPException(
+                422, detail={"code": "invalid_monitor_request", "message": str(error)}
+            ) from error
 
     @router.post(
         "/maintenance/output-arms",
@@ -3950,26 +4212,8 @@ def create_gui_router(services: GuiServices) -> APIRouter:
     ) -> OperateActionResponse:
         occurred_at = _now_iso()
         try:
-            if body.action == "start":
-                await services.runtime.start_show()
-            elif body.action == "pause":
-                await services.runtime.pause()
-            elif body.action == "resume":
-                await services.runtime.resume()
-            elif body.action == "seek":
-                assert body.position_ms is not None
-                await services.runtime.seek(body.position_ms)
-            elif body.action == "stop":
-                await services.runtime.stop()
-            elif body.action == "reset":
-                await services.runtime.reset_ambient()
-            elif body.action == "automatic":
-                await services.runtime.set_show_mode(ShowMode.AUTOMATIC)
-            elif body.action == "maintenance":
-                await services.runtime.set_show_mode(ShowMode.MAINTENANCE)
-            else:
-                await services.runtime.set_show_mode(ShowMode.BLACKOUT)
-        except RuntimeError as error:
+            await services.operate(body)
+        except (RuntimeError, LookupError) as error:
             services.repository.append_audit(
                 actor=identity.username,
                 action=f"operate.{body.action}",

@@ -10,6 +10,7 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from io import BytesIO
 from pathlib import Path
+from threading import BoundedSemaphore
 from types import SimpleNamespace
 from typing import Any, cast
 from uuid import uuid4
@@ -19,9 +20,11 @@ from fastapi.testclient import TestClient
 from PIL import Image
 from pydantic import SecretStr
 
+import cueverge.gui.scene_preview as scene_preview
 from cueverge.controller.app import create_app
 from cueverge.controller.runtime import ControllerRuntime
 from cueverge.core.loader import load_show_package
+from cueverge.core.models import SceneDefinitionV2
 from cueverge.gui.asset_upload import StoredAsset
 from cueverge.gui.config import GuiConfig
 from cueverge.gui.contracts import DraftProject, Role
@@ -36,7 +39,9 @@ from cueverge.gui.publication import PublicationDiagnostic, PublicationError
 from cueverge.gui.repository import StoredDevice
 from cueverge.gui.service import GuiServices
 from cueverge.lighting.ddp import DdpUdpSink
+from cueverge.lighting.evaluation import evaluate_lighting_output
 from cueverge.lighting.sink import FrameSinkRouter
+from cueverge.lighting.timeline import LightingTimeline
 from cueverge.protocol.device_v2 import (
     ControllerDiscoveryDocument,
     DeviceHello,
@@ -3474,6 +3479,286 @@ def _mcp_fixture(tmp_path: Path) -> tuple[ControllerRuntime, GuiServices, str]:
         occurred_at=datetime.now(UTC).isoformat(),
     )
     return runtime, services, project.project.id
+
+
+@pytest.mark.parametrize("binding", ["runtime", "unrelated", None])
+def test_mcp_runtime_snapshot_is_read_only_installation_bound_and_honest(
+    tmp_path: Path, binding: str | None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime, services, _ = _mcp_fixture(tmp_path)
+    installation_id = services.repository.get_runtime_installation().id
+    metadata = {"installation_id": installation_id if binding == "runtime" else binding}
+    project = services.repository.create_project(
+        name="Runtime observation fixture",
+        draft=DraftProject.model_validate(_draft(editor_metadata=metadata)),
+        actor="admin",
+        role=Role.ADMINISTRATOR,
+        occurred_at=datetime.now(UTC).isoformat(),
+    )
+    project_id = project.project.id
+    token = _mcp_token(services, project_id, (McpScope.READ,))
+    with TestClient(
+        create_app(runtime, gui_services=services), base_url="http://localhost"
+    ) as client:
+        capabilities = _mcp_tool(client, token, "get_capabilities")["structuredContent"]
+        assert capabilities["runtime_status"]["available_for_project"] is (binding == "runtime")
+        assert capabilities["runtime_status"]["stale_after_ms"] == 10000
+        assert capabilities["granted_scopes"] == ["read"]
+        result = _mcp_tool(client, token, "get_runtime_status")
+        if binding != "runtime":
+            assert result["isError"] is True
+            assert "not bound" in result["content"][0]["text"]
+        else:
+            assert result["isError"] is False
+            snapshot = result["structuredContent"]
+            assert snapshot["installation_id"] == installation_id
+            assert snapshot["source"] == "controller_runtime"
+            assert datetime.fromisoformat(snapshot["observed_at"]).tzinfo is not None
+            assert snapshot["loaded_catalog"] == {
+                "state": "unreported",
+                "project_id": None,
+                "project_name": None,
+                "revision": None,
+                "digest_sha256": None,
+                "loaded_at": None,
+                "generation": None,
+                "error": None,
+            }
+            _login(client)
+            rest = client.get("/api/gui/v1/runtime/status")
+            assert rest.status_code == 200
+            assert rest.json()["loaded_catalog"] == snapshot["loaded_catalog"]
+            assert rest.json()["status"] == snapshot["status"]
+
+            def oversized_status() -> dict[str, object]:
+                return {"detail": "x" * (200 * 1024)}
+
+            monkeypatch.setattr(runtime, "status", oversized_status)
+            oversized = _mcp_tool(client, token, "get_runtime_status")
+            assert oversized["isError"] is True
+            assert "exceeds 200 KiB" in oversized["content"][0]["text"]
+        assert services.repository.get_revision(project_id).revision == 1
+        assert runtime.active_scene is None
+        assert services.publication.list(project_id) == ()
+
+
+def test_mcp_usability_baseline_preserves_raw_lighting_through_compile_and_edit(
+    tmp_path: Path,
+) -> None:
+    document = json.loads(
+        (Path(__file__).parents[1] / "fixtures" / "usability-authoring.json").read_text()
+    )
+    baseline = DraftProject.model_validate(document)
+    runtime, services, project_id = _mcp_fixture(tmp_path)
+    token = _mcp_token(
+        services,
+        project_id,
+        (McpScope.READ, McpScope.DIRECT_EDIT, McpScope.DRAFT_EDIT, McpScope.SIMULATION),
+    )
+
+    def compile_frames(
+        draft: DraftProject, revision: int
+    ) -> tuple[tuple[tuple[int, int, int], ...], ...]:
+        compiled = services.compiler.compile(project_id=project_id, revision=revision, draft=draft)
+        catalog = load_show_package(compiled.package_root)
+        assert tuple(scene.definition for scene in catalog.scenes.values()) == draft.scenes
+        output = catalog.require("baseline-timeline").lighting_outputs[0]
+        timeline = LightingTimeline(
+            pixel_count=output.pixel_count,
+            cues=output.lighting_cues,
+            brightness_limit=output.definition.brightness_limit,
+        )
+        return tuple(timeline.render(timestamp) for timestamp in (1000, 17500, 62500, 77500, 92500))
+
+    expected_frames = compile_frames(baseline, 1)
+    with TestClient(
+        create_app(runtime, gui_services=services), base_url="http://localhost"
+    ) as client:
+        schema = _mcp_tool(client, token, "get_authoring_schema")["structuredContent"]
+        assert {
+            cue["primitive"] for cue in document["scenes"][0]["lighting"][0]["timeline"]
+        } == set(schema["$defs"]["LightingCue"]["properties"]["primitive"]["enum"])
+        capabilities = _mcp_tool(client, token, "get_capabilities")["structuredContent"]
+        representations = capabilities["authoring_representations"]
+        assert representations["runtime_scene_lighting"]["read_tool"] == "get_project_draft"
+        assert representations["runtime_scene_lighting"]["editor_metadata_required"] is False
+        assert representations["runtime_scene_lighting"]["write_requires_scope"] == "direct_edit"
+        assert representations["editor_timeline"]["includes_runtime_scene_lighting"] is False
+        updated = _mcp_tool(client, token, "update_project_draft", base_revision=1, draft=document)
+        assert updated["isError"] is False
+        read = _mcp_tool(client, token, "get_project_draft")
+        assert read["isError"] is False
+        saved = DraftProject.model_validate(read["structuredContent"]["draft"])
+        assert saved == baseline
+        assert compile_frames(saved, 2) == expected_frames
+        editor_range = _mcp_tool(
+            client,
+            token,
+            "get_timeline_range",
+            scene_id="baseline-timeline",
+            start_ms=0,
+            end_ms=180000,
+        )
+        assert editor_range["isError"] is False
+        assert editor_range["structuredContent"]["cues"] == []
+        timeline_scene = saved.scenes[0]
+        assert isinstance(timeline_scene, SceneDefinitionV2)
+        assert len(timeline_scene.lighting[0].timeline) == 10
+
+        unchanged = _mcp_tool(
+            client, token, "update_project_draft", base_revision=2, draft=document
+        )
+        assert unchanged["isError"] is True
+        assert services.repository.get_revision(project_id).revision == 2
+        assert services.repository.get_revision(project_id).draft == baseline
+
+        changed = copy.deepcopy(document)
+        changed["scenes"][0]["lighting"][0]["timeline"][0]["brightness"] = 0.4
+        proposal = _mcp_tool(
+            client,
+            token,
+            "propose_project_revision",
+            base_revision=2,
+            title="Original synthetic brightness edit",
+            kind="timeline_change",
+            proposed_draft=changed,
+        )
+        assert proposal["isError"] is False
+        proposal_id = proposal["structuredContent"]["proposal_id"]
+        validated = _mcp_tool(client, token, "validate_proposal", proposal_id=proposal_id)
+        assert validated["isError"] is False
+        simulated = _mcp_tool(
+            client,
+            token,
+            "simulate_proposal",
+            proposal_id=proposal_id,
+            steps=[{"kind": "advance", "delta_ms": 1200}],
+            expected={"scene_history": ["baseline-timeline"]},
+        )
+        assert simulated["isError"] is False
+        result = simulated["structuredContent"]["simulation"]
+        assert result["passed"] is True, result["mismatches"]
+        assert result["hardware_adapters_opened"] is False
+        assert result["hardware_commands_sent"] is False
+        assert services.repository.get_revision(project_id).revision == 2
+
+        edited = _mcp_tool(client, token, "update_project_draft", base_revision=2, draft=changed)
+        assert edited["isError"] is False
+        read_back = _mcp_tool(client, token, "get_project_draft")
+        saved_edit = DraftProject.model_validate(read_back["structuredContent"]["draft"])
+        assert saved_edit == DraftProject.model_validate(changed)
+        assert saved_edit.editor_metadata == baseline.editor_metadata
+        edited_frames = compile_frames(saved_edit, 3)
+        assert edited_frames[0] != expected_frames[0]
+        assert runtime.active_scene is None
+        assert services.publication.list(project_id) == ()
+
+
+def test_scene_lighting_preview_matches_runtime_for_saved_unsaved_and_paged_candidates(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime, services, _ = _mcp_fixture(tmp_path)
+    document = json.loads(
+        (Path(__file__).parents[1] / "fixtures" / "usability-authoring.json").read_text()
+    )
+    project = services.repository.create_project(
+        name="Scene preview fixture",
+        draft=DraftProject.model_validate(document),
+        actor="admin",
+        role=Role.ADMINISTRATOR,
+        occurred_at=datetime.now(UTC).isoformat(),
+    )
+    project_id = project.project.id
+    token = _mcp_token(services, project_id, (McpScope.READ, McpScope.SIMULATION))
+    reader = _mcp_token(services, project_id, (McpScope.READ,))
+    with TestClient(
+        create_app(runtime, gui_services=services), base_url="http://localhost"
+    ) as client:
+        body = {
+            "source_revision": 1,
+            "scene_id": "baseline-timeline",
+            "timestamp_ms": 17500,
+            "resource": "roofline.demo",
+        }
+        path = f"/api/gui/v1/projects/{project_id}/scene-lighting-preview"
+        assert client.post(path, json=body).status_code == 401
+        _login(client)
+        assert client.post(path, json=body).status_code == 403
+        response = client.post(path, json=body, headers=_mutation_headers(client))
+        assert response.status_code == 200, response.text
+        result = response.json()
+        assert result["hardware_commands_sent"] is False
+        assert result["unsaved"] is False
+        assert result["outputs"][0]["output_position_ms"] == 17540
+        compiled = services.compiler.compile(project_id=project_id, revision=1, draft=project.draft)
+        loaded = load_show_package(compiled.package_root).require("baseline-timeline")
+        output = loaded.lighting_outputs[0]
+        expected = evaluate_lighting_output(output, position_ms=17540, duration_ms=180000)
+        assert result["outputs"][0]["colors"] == [list(color) for color in expected]
+        mcp = _mcp_tool(client, token, "preview_scene_lighting", **body)
+        assert mcp["isError"] is False
+        assert mcp["structuredContent"] == result
+        legacy = client.post(
+            path,
+            json={**body, "scene_id": "legacy-sweep", "timestamp_ms": 1000},
+            headers=_mutation_headers(client),
+        )
+        assert legacy.status_code == 200
+        assert legacy.json()["outputs"][0]["limitations"]
+        assert max(color[1] for color in legacy.json()["outputs"][0]["colors"]) > 102
+        assert _mcp_tool(client, reader, "preview_scene_lighting", **body)["isError"] is True
+        page = _mcp_tool(
+            client, token, "preview_scene_lighting", **body, pixel_offset=4, pixel_limit=3
+        )["structuredContent"]
+        assert page["outputs"][0]["colors"] == result["outputs"][0]["colors"][4:7]
+        assert page["outputs"][0]["next_pixel_offset"] == 7
+        changed = copy.deepcopy(document)
+        changed["scenes"][0]["lighting"][0]["timeline"][0]["brightness"] = 0.8
+        unsaved = client.post(
+            path,
+            json={**body, "timestamp_ms": 1000, "proposed_draft": changed},
+            headers=_mutation_headers(client),
+        )
+        saved = client.post(
+            path,
+            json={**body, "timestamp_ms": 1000},
+            headers=_mutation_headers(client),
+        )
+        assert unsaved.status_code == 200, unsaved.text
+        assert unsaved.json()["unsaved"] is True
+        assert unsaved.json()["outputs"][0]["colors"] != saved.json()["outputs"][0]["colors"]
+        changed["editor_metadata"]["installation_id"] = "unrelated"
+        assert (
+            client.post(
+                path, json={**body, "proposed_draft": changed}, headers=_mutation_headers(client)
+            ).status_code
+            == 422
+        )
+        for invalid in (
+            {"timestamp_ms": 180000},
+            {"pixel_limit": 4097},
+            {"pixel_offset": 12},
+            {"resource": "not-in-scene"},
+        ):
+            rejected = client.post(
+                path, json={**body, **invalid}, headers=_mutation_headers(client)
+            )
+            assert rejected.status_code == 422
+        huge = copy.deepcopy(document)
+        huge["installation"]["resources"][1]["pixel_count"] = 65537
+        huge["installation"]["resources"][1]["segments"][1]["end"] = 65537
+        rejected = client.post(
+            path, json={**body, "proposed_draft": huge}, headers=_mutation_headers(client)
+        )
+        assert rejected.status_code == 422
+        assert "budget" in rejected.json()["detail"]["message"]
+        assert client.post(path, json=body, headers=_mutation_headers(client)).status_code == 200
+        monkeypatch.setattr(scene_preview, "_PREVIEW_SLOTS", BoundedSemaphore(0))
+        assert client.post(path, json=body, headers=_mutation_headers(client)).status_code == 429
+        assert services.repository.get_revision(project_id).revision == 1
+        assert services.publication.list(project_id) == ()
+        assert runtime.active_scene is None
 
 
 @pytest.mark.parametrize("with_media", [False, True])

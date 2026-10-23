@@ -21,6 +21,9 @@ const optionalScopes: { value: McpScope; label: string }[] = [
   { value: "publish_prepare", label: "Read publication readiness" },
   { value: "publish", label: "Run offline bakes, approve releases, publish, and stage packages" },
   { value: "activate", label: "Activate staged packages (live output)" },
+  { value: "live_operation", label: "Operate the loaded show (physical output; operator/admin)" },
+  { value: "input_config", label: "Configure installation camera connections (administrator; real events can trigger shows)" },
+  { value: "installation_edit", label: "Edit installation photo descriptions (installation author; does not grant device control)" },
 ];
 
 export function McpWorkspace({
@@ -28,11 +31,17 @@ export function McpWorkspace({
   canDesign,
   canPublish,
   canActivate,
+  canOperate = false,
+  canConfigureInputs = false,
+  canConfigureInstallation = false,
 }: {
   projectId: string;
   canDesign: boolean;
   canPublish: boolean;
   canActivate: boolean;
+  canOperate?: boolean;
+  canConfigureInputs?: boolean;
+  canConfigureInstallation?: boolean;
 }) {
   const [tokens, setTokens] = useState<McpToken[]>([]);
   const [proposals, setProposals] = useState<McpProposal[]>([]);
@@ -46,6 +55,9 @@ export function McpWorkspace({
     direct_edit: canDesign,
     publish: canPublish,
     activate: canActivate,
+    live_operation: canOperate,
+    input_config: canConfigureInputs,
+    installation_edit: canConfigureInstallation,
   };
 
   useEffect(() => {
@@ -54,10 +66,13 @@ export function McpWorkspace({
         (scope) =>
           (scope !== "direct_edit" || canDesign) &&
           (scope !== "publish" || canPublish) &&
-          (scope !== "activate" || canActivate),
+          (scope !== "activate" || canActivate) &&
+          (scope !== "live_operation" || canOperate) &&
+          (scope !== "input_config" || canConfigureInputs) &&
+          (scope !== "installation_edit" || canConfigureInstallation),
       ),
     );
-  }, [canDesign, canPublish, canActivate]);
+  }, [canDesign, canPublish, canActivate, canOperate, canConfigureInputs, canConfigureInstallation]);
 
   const load = useCallback(async () => {
     const [nextTokens, nextProposals] = await Promise.all([

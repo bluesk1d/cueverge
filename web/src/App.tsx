@@ -4,16 +4,20 @@ import {
   Suspense,
   useCallback,
   useEffect,
+  useRef,
   useState,
 } from "react";
 import { PhysicalOutputTestControls } from "./components/PhysicalOutputTestControls";
+import { AssetPreview } from "./components/AssetPreview";
+import { DetailsDialog } from "./components/DetailsDialog";
+import { ApplyPanel } from "./pages/ApplyPanel";
+import { LiveOutputMonitor } from "./pages/LiveOutputMonitor";
 
 import {
   ApiError,
   ActivityEvent,
   applyScenePreset,
   AssetRecord,
-  assetArtifactUrl,
   archiveProject,
   createInstallation,
   createProjectFromActive,
@@ -28,11 +32,10 @@ import {
   getInstallations,
   getLocalUsers,
   getProjectDraft,
+  getProjectMembers,
   getProjects,
   getResourceAssignments,
-  getRuntimeStatus,
   getSession,
-  getTopology,
   InstallationStatus,
   InstallationSummary,
   importProject,
@@ -74,7 +77,11 @@ import {
 } from "./components/ui";
 import { OverviewPage } from "./pages/OverviewPage";
 import { InstallationPage } from "./pages/InstallationPage";
+import { useLiveStatus } from "./useLiveStatus";
+import { SnapshotFreshness, STATUS_TIMEOUT_MS } from "./status";
 
+const VisitorInteractions = lazy(() => import("./pages/VisitorInteractions").then((module) => ({ default: module.VisitorInteractions })));
+const ShowPreviewWorkspace = lazy(() => import("./pages/ShowPreviewWorkspace").then((module) => ({ default: module.ShowPreviewWorkspace })));
 const ShowLogicDesigner = lazy(() =>
   import("./pages/ShowLogicDesigner").then((module) => ({
     default: module.ShowLogicDesigner,
@@ -99,6 +106,9 @@ const TimelineEditor = lazy(() =>
   import("./pages/TimelineEditor").then((module) => ({
     default: module.TimelineEditor,
   })),
+);
+const SceneWorkspace = lazy(() =>
+  import("./pages/SceneWorkspace").then((module) => ({ default: module.SceneWorkspace })),
 );
 
 export function App() {
@@ -141,38 +151,68 @@ function AuthenticatedApp({
   onSignedOut: () => void;
 }) {
   const [workspace, setWorkspace] = useState<Workspace>("overview");
+  const [installationEntry, setInstallationEntry] = useState<"photos" | "devices" | "inputs">("photos");
+  const [authoringDirty, setAuthoringDirty] = useState(false);
+  const navigate = (next: Workspace, setupSection: "photos" | "devices" | "inputs" = "photos") => {
+    if (next === workspace) return;
+    if (!authoringDirty ||
+      window.confirm("Discard unsaved changes and leave this page?")) {
+        if (next === "installation") setInstallationEntry(setupSection);
+        setWorkspace(next);
+      }
+  };
   const [installation, setInstallation] = useState<InstallationStatus | null>(null);
   const [installations, setInstallations] = useState<InstallationSummary[]>([]);
-  const [runtime, setRuntime] = useState<RuntimeStatus | null>(null);
-  const [topology, setTopology] = useState<Topology | null>(null);
+  const {
+    runtime, topology, runtimeError, topologyError,
+    runtimeFreshness, topologyFreshness, refresh: refreshLiveStatus,
+    sessionExpired,
+  } = useLiveStatus();
   const [assignments, setAssignments] = useState<ResourceAssignment[]>([]);
   const [activity, setActivity] = useState<ActivityEvent[]>([]);
   const [installationError, setInstallationError] = useState(false);
-  const [runtimeError, setRuntimeError] = useState(false);
-  const [topologyError, setTopologyError] = useState(false);
   const [activityError, setActivityError] = useState(false);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [configurationError, setConfigurationError] = useState<string | null>(null);
+  const [refreshVersion, setRefreshVersion] = useState(0);
+  const configurationRequest = useRef<AbortController | null>(null);
+  const configurationTimeout = useRef<number | null>(null);
 
   const loadStatus = useCallback(async (refresh = false) => {
+    configurationRequest.current?.abort();
+    if (configurationTimeout.current !== null) window.clearTimeout(configurationTimeout.current);
+    const request = new AbortController();
+    configurationRequest.current = request;
+    const timeout = window.setTimeout(() => request.abort(), STATUS_TIMEOUT_MS);
+    configurationTimeout.current = timeout;
     if (refresh) {
       setRefreshing(true);
+      setRefreshVersion((version) => version + 1);
     }
+    const liveRequest = refreshLiveStatus(refresh);
     const [
       installationResult,
       installationsResult,
-      runtimeResult,
-      topologyResult,
       assignmentResult,
       activityResult,
     ] = await Promise.allSettled([
-      getInstallation(),
-      getInstallations(),
-      getRuntimeStatus(),
-      getTopology(),
-      getResourceAssignments(),
-      getActivity(),
+      getInstallation(request.signal),
+      getInstallations(request.signal),
+      getResourceAssignments(request.signal),
+      getActivity(request.signal),
     ]);
+    window.clearTimeout(timeout);
+    if (configurationRequest.current !== request) return;
+    configurationRequest.current = null;
+    configurationTimeout.current = null;
+    const unavailable = [];
+    if (installationResult.status === "rejected") unavailable.push("installation setup");
+    if (installationsResult.status === "rejected") unavailable.push("installation list");
+    if (assignmentResult.status === "rejected") unavailable.push("device assignments");
+    setConfigurationError(unavailable.length
+      ? `Could not refresh ${unavailable.join(" and ")}. Previously loaded setup may be out of date.`
+      : null);
     if (installationResult.status === "fulfilled") {
       setInstallation(installationResult.value);
       setInstallationError(false);
@@ -181,18 +221,6 @@ function AuthenticatedApp({
     }
     if (installationsResult.status === "fulfilled") {
       setInstallations(installationsResult.value);
-    }
-    if (runtimeResult.status === "fulfilled") {
-      setRuntime(runtimeResult.value);
-      setRuntimeError(false);
-    } else {
-      setRuntimeError(true);
-    }
-    if (topologyResult.status === "fulfilled") {
-      setTopology(topologyResult.value);
-      setTopologyError(false);
-    } else {
-      setTopologyError(true);
     }
     if (assignmentResult.status === "fulfilled") {
       setAssignments(assignmentResult.value);
@@ -204,41 +232,70 @@ function AuthenticatedApp({
       setActivityError(true);
     }
     setLoading(false);
+    await liveRequest;
     setRefreshing(false);
-  }, []);
+  }, [refreshLiveStatus]);
 
   useEffect(() => {
+    if (sessionExpired) {
+      setRefreshing(false);
+      return;
+    }
     void loadStatus();
-  }, [loadStatus]);
+    const timer = window.setInterval(() => {
+      if (document.visibilityState !== "hidden") void loadStatus();
+    }, 30000);
+    return () => {
+      window.clearInterval(timer);
+      configurationRequest.current?.abort();
+      configurationRequest.current = null;
+      if (configurationTimeout.current !== null) window.clearTimeout(configurationTimeout.current);
+      configurationTimeout.current = null;
+    };
+  }, [loadStatus, sessionExpired]);
 
   return (
     <AppShell
       session={session}
       workspace={workspace}
       installation={installation}
-      installations={installations}
+      installationUnavailable={installationError}
       runtime={runtime}
-      runtimeError={runtimeError}
+      runtimeFreshness={runtimeFreshness}
+      topologyFreshness={topologyFreshness}
       refreshing={refreshing}
-      onNavigate={setWorkspace}
+      configurationError={configurationError}
+      sessionExpired={sessionExpired}
+      onReauthenticate={() => {
+        if (window.confirm("Return to sign-in? Unsaved changes in this tab will be discarded.")) onSignedOut();
+      }}
+      onNavigate={navigate}
       onRefresh={() => void loadStatus(true)}
       onSignOut={() => {
+        if (authoringDirty && !window.confirm("Discard unsaved changes and sign out?")) return;
         void logout().finally(onSignedOut);
       }}
     >
       {workspace === "overview" && (
         <OverviewPage
+          onManageDevices={() => navigate("installation", "devices")}
           installation={installation}
           runtime={runtime}
           activity={activity}
           installationError={installationError}
           runtimeError={runtimeError}
+          runtimeFreshness={runtimeFreshness}
+          topology={topology}
+          topologyFreshness={topologyFreshness}
           activityError={activityError}
+          refreshKey={refreshVersion}
           loading={loading}
+          onNavigate={navigate}
         />
       )}
       {workspace === "installation" && (
         <InstallationPage
+          initialSection={installationEntry}
           session={session}
           installation={installation}
           topology={topology}
@@ -247,9 +304,10 @@ function AuthenticatedApp({
           topologyError={topologyError}
           loading={loading}
           onRefresh={() => loadStatus(true)}
+          onDirtyChange={setAuthoringDirty}
         />
       )}
-      {workspace === "shows" && <ShowsPage session={session} />}
+      {workspace === "shows" && <ShowsPage session={session} runtime={runtime} runtimeFresh={runtimeFreshness === "fresh"} onDirtyChange={setAuthoringDirty} onInputs={() => navigate("installation", "inputs")} />}
       {workspace === "operate" && (
         <OperatePage
           session={session}
@@ -257,6 +315,7 @@ function AuthenticatedApp({
           runtime={runtime}
           topology={topology}
           runtimeError={runtimeError}
+          runtimeFreshness={runtimeFreshness}
           loading={loading}
           onRefresh={() => loadStatus(true)}
         />
@@ -334,9 +393,17 @@ function Login({ onAuthenticated }: { onAuthenticated: (session: Session) => voi
 export function ShowsPage({
   session,
   initialProjects,
+  onDirtyChange,
+  onInputs,
+  runtime,
+  runtimeFresh,
 }: {
   session: Session;
   initialProjects?: ProjectSummary[];
+  onDirtyChange?: (dirty: boolean) => void;
+  onInputs?: () => void;
+  runtime?: RuntimeStatus | null;
+  runtimeFresh?: boolean;
 }) {
   const [projects, setProjects] = useState<ProjectSummary[] | null>(
     initialProjects ?? null,
@@ -345,6 +412,7 @@ export function ShowsPage({
   const [name, setName] = useState("");
   const [search, setSearch] = useState("");
   const [busy, setBusy] = useState(false);
+  const [openProjectId, setOpenProjectId] = useState<string | null>(null);
   const canAuthor = ["designer", "publisher", "administrator"].includes(session.role);
 
   const loadProjects = useCallback(async () => {
@@ -376,8 +444,10 @@ export function ShowsPage({
   }
 
   async function importFile(file: File) {
-    const document = JSON.parse(await file.text()) as ProjectExportDocument;
-    await run(() => importProject(document));
+    await run(async () => {
+      const document = JSON.parse(await file.text()) as ProjectExportDocument;
+      await importProject(document);
+    });
   }
 
   const filteredProjects =
@@ -387,22 +457,31 @@ export function ShowsPage({
   const activeProjects = filteredProjects?.filter((project) => !project.archived_at) ?? [];
   const archivedProjects = filteredProjects?.filter((project) => project.archived_at) ?? [];
 
+  const openProject = projects?.find((project) => project.id === openProjectId);
+  if (openProject) {
+    return <>{error && <ErrorState title="Show action failed" description="The action or its refresh could not be completed. Check saved state before retrying." />}<ProjectCard
+      key={openProject.id} project={openProject} session={session} busy={busy} run={run}
+      onClose={() => { setOpenProjectId(null); void loadProjects(); }}
+      onDirtyChange={onDirtyChange}
+      onInputs={onInputs}
+      runtime={runtime}
+      runtimeFresh={runtimeFresh}
+    /></>;
+  }
   return (
     <>
       <WorkspaceHeader
         eyebrow="Authoring"
         title="Shows"
-        description="Revisioned drafts remain isolated from the active show package."
+        description="Choose a show to create, edit, and safely preview its scenes."
       />
       {canAuthor && (
-        <Panel
-          title="Project actions"
-          description="Create from Home or import a portable project document"
-          className="project-actions-panel"
-        >
+        <details className="new-show-flow">
+          <summary>New show</summary>
+          <p>Start with scenes from the current installation. Creating a show does not make it live.</p>
           <div className="project-actions">
             <label>
-              Project name
+              Show name
               <input
                 maxLength={200}
                 value={name}
@@ -414,12 +493,13 @@ export function ShowsPage({
               disabled={busy || !name.trim()}
               onClick={() =>
                 void run(async () => {
-                  await createProjectFromActive(name);
+                  const created = await createProjectFromActive(name);
                   setName("");
+                  setOpenProjectId(created.project.id);
                 })
               }
             >
-              Create from Home
+              Create show
             </button>
             <label className="file-button">
               Import project
@@ -436,11 +516,11 @@ export function ShowsPage({
               />
             </label>
           </div>
-        </Panel>
+        </details>
       )}
-      <Panel title="Draft projects">
+      <Panel title="Your shows">
         <label className="project-search">
-          Search projects
+          Find a show
           <input value={search} onChange={(event) => setSearch(event.target.value)} />
         </label>
         {error ? (
@@ -449,29 +529,27 @@ export function ShowsPage({
           <Skeleton lines={3} />
         ) : filteredProjects?.length === 0 ? (
           <EmptyState
-            title="No draft projects"
+            title="No shows found"
             description={
               projects.length
                 ? "No projects match the current search."
-                : "Create a revisioned project from Home or import one."
+                : "Create a show or import an existing one."
             }
           />
         ) : (
           <>
             <ProjectGroup
-              title="Active"
+              title="Saved"
               projects={activeProjects}
-              session={session}
               busy={busy}
-              run={run}
+              onOpen={setOpenProjectId}
             />
             {archivedProjects.length > 0 && (
               <ProjectGroup
                 title="Archived"
                 projects={archivedProjects}
-                session={session}
                 busy={busy}
-                run={run}
+                onOpen={setOpenProjectId}
               />
             )}
           </>
@@ -484,28 +562,25 @@ export function ShowsPage({
 function ProjectGroup({
   title,
   projects,
-  session,
   busy,
-  run,
+  onOpen,
 }: {
   title: string;
   projects: ProjectSummary[];
-  session: Session;
   busy: boolean;
-  run: (action: () => Promise<void>) => Promise<void>;
+  onOpen: (id: string) => void;
 }) {
   return (
     <section className="project-group" aria-label={`${title} projects`}>
       <h3>{title}</h3>
       <div className="project-grid">
         {projects.map((project) => (
-          <ProjectCard
-            key={project.id}
-            project={project}
-            session={session}
-            busy={busy}
-            run={run}
-          />
+          <article className="show-library-card" key={project.id}>
+            <h4>{project.name}</h4>
+            <p>Edited {new Date(project.updated_at).toLocaleString()}</p>
+            <small>{project.archived_at ? "Archived · read only" : "Saved show · not a live status"}</small>
+            <button disabled={busy} onClick={() => onOpen(project.id)} aria-label={`Open show ${project.name}`}>Open show</button>
+          </article>
         ))}
       </div>
     </section>
@@ -517,11 +592,21 @@ function ProjectCard({
   session,
   busy,
   run,
+  onClose,
+  onDirtyChange,
+  onInputs,
+  runtime,
+  runtimeFresh,
 }: {
   project: ProjectSummary;
   session: Session;
   busy: boolean;
   run: (action: () => Promise<void>) => Promise<void>;
+  onClose: () => void;
+  onDirtyChange?: (dirty: boolean) => void;
+  onInputs?: () => void;
+  runtime?: RuntimeStatus | null;
+  runtimeFresh?: boolean;
 }) {
   const [name, setName] = useState(project.name);
   const [assets, setAssets] = useState<AssetRecord[] | null>(null);
@@ -530,34 +615,75 @@ function ProjectCard({
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [assetError, setAssetError] = useState<string | null>(null);
   const [timelineLoaded, setTimelineLoaded] = useState(false);
+  const [sceneId, setSceneId] = useState("");
+  const [sceneDirty, setSceneDirty] = useState(false);
+  const [interactionDirty, setInteractionDirty] = useState(false);
+  const [showView, setShowView] = useState<"scenes" | "interactions" | "preview">("scenes");
+  const [previewStartsWithVisitors, setPreviewStartsWithVisitors] = useState(false);
+  const interactionDirtyRef = useRef(false);
+  const sceneDirtyRef = useRef(false);
+  const updateSceneDirty = useCallback((value: boolean) => {
+    sceneDirtyRef.current = value;
+    setSceneDirty(value);
+    onDirtyChange?.(value || interactionDirtyRef.current);
+  }, [onDirtyChange]);
+  const updateInteractionDirty = useCallback((value: boolean) => {
+    interactionDirtyRef.current = value;
+    setInteractionDirty(value);
+    onDirtyChange?.(value || sceneDirtyRef.current);
+  }, [onDirtyChange]);
+  useEffect(() => () => onDirtyChange?.(false), [onDirtyChange]);
+  const [sharingOpen, setSharingOpen] = useState(false);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [timelineOpenRequest, setTimelineOpenRequest] = useState(0);
+  const [logicOpenRequest, setLogicOpenRequest] = useState(0);
   const [projectRole, setProjectRole] = useState<Role>(
     session.role === "administrator" ? "administrator" : "viewer",
   );
-  const canAuthor = ["designer", "publisher", "administrator"].includes(projectRole);
-  const canPublish = ["publisher", "administrator"].includes(projectRole);
+  const canEditScene = ["designer", "publisher", "administrator"].includes(projectRole);
+  const canAuthor = canEditScene && !sceneDirty && !interactionDirty;
+  const canPublish = ["publisher", "administrator"].includes(projectRole) && !sceneDirty && !interactionDirty;
   const [canLiveOutput, setCanLiveOutput] = useState(session.role === "administrator");
+  const [permissionError, setPermissionError] = useState<string | null>(null);
   const updatePermissions = useCallback((role: Role, liveOutput: boolean) => {
     setProjectRole(role);
     setCanLiveOutput(liveOutput);
+    setPermissionError(null);
   }, []);
 
   const loadAssets = useCallback(async () => {
-    try {
-      const [loadedAssets, loadedDraft] = await Promise.all([
+      const [assetResult, draftResult] = await Promise.allSettled([
         getAssets(project.id),
         getProjectDraft(project.id),
       ]);
-      setAssets(loadedAssets);
-      setDraft(loadedDraft);
-      setAssetError(null);
-    } catch {
-      setAssetError("Assets could not be loaded.");
-    }
+      const issues: string[] = [];
+      if (assetResult.status === "fulfilled") setAssets(assetResult.value);
+      else issues.push("Assets could not be refreshed.");
+      if (draftResult.status === "fulfilled") {
+        if (!sceneDirtyRef.current && !interactionDirtyRef.current) {
+          const loadedDraft = draftResult.value;
+          setDraft(loadedDraft);
+          setSceneId((current) => loadedDraft.draft.scenes.some((scene) => scene.id === current)
+            ? current : loadedDraft.draft.scenes[0]?.id ?? "");
+        }
+      } else issues.push("Saved scene data could not be refreshed.");
+      setAssetError(issues.join(" ") || null);
   }, [project.id]);
 
   useEffect(() => {
     void loadAssets();
   }, [loadAssets]);
+
+  useEffect(() => {
+    if (session.role === "administrator") return;
+    let current = true;
+    getProjectMembers(project.id).then((members) => {
+      if (!current) return;
+      const membership = members.find((member) => member.username === session.username);
+      updatePermissions(membership?.role ?? "viewer", membership?.can_live_output === true);
+    }).catch(() => { if (current) setPermissionError("Project permissions could not be checked. Editing remains unavailable."); });
+    return () => { current = false; };
+  }, [project.id, session.role, session.username, updatePermissions]);
 
   useEffect(() => {
     if (!assets?.some((asset) => asset.status === "uploading")) {
@@ -615,11 +741,51 @@ function ProjectCard({
     }) ?? null;
 
   return (
-    <article className="project-card">
-      <span>
-        Draft r{project.head_revision} · Metadata r{project.metadata_revision}
-      </span>
+    <article className="project-card" aria-label={`Show ${project.name}`}>
+      <button className="show-back" onClick={() => {
+        if ((!sceneDirty && !interactionDirty) || window.confirm("Discard unsaved edits and return to the show library?")) onClose();
+      }}>Back to shows</button>
+      <h1>{project.name}</h1>
+      {assetError && <p role="alert">{assetError}</p>}
+      {permissionError && <p role="alert">{permissionError}</p>}
+      <div className="show-workspace-tabs" role="group" aria-label="Show workspace">
+        {(["scenes", "interactions", "preview"] as const).map((view) => <button key={view} aria-pressed={showView === view} onClick={() => {
+          if (showView === view) return;
+          if ((sceneDirty || interactionDirty) && !window.confirm("Discard unsaved edits and change workspace?")) return;
+          updateSceneDirty(false); updateInteractionDirty(false);
+          if (view === "preview") setPreviewStartsWithVisitors(false);
+          setShowView(view);
+        }}>{view === "scenes" ? "Scenes" : view === "interactions" ? "Visitor responses" : "Preview"}</button>)}
+      </div>
+      {draft && showView === "interactions" && <Suspense fallback={<p>Loading visitor responses…</p>}>
+        <VisitorInteractions draft={draft} canEdit={canEditScene && !project.archived_at}
+          canPreview={["designer", "operator", "publisher", "administrator"].includes(projectRole)}
+          onDirtyChange={updateInteractionDirty} onUpdated={setDraft} onInputs={onInputs}
+          onPreview={() => { setPreviewStartsWithVisitors(true); setShowView("preview"); }}
+          onAdvanced={() => {
+            setAdvancedOpen(true);
+            setLogicOpenRequest((value) => value + 1);
+          }} />
+      </Suspense>}
+      {draft && showView === "preview" && <Suspense fallback={<p>Loading preview workspace…</p>}>
+        <ShowPreviewWorkspace draft={draft} startWithVisitors={previewStartsWithVisitors} canTestVisitors={["designer", "operator", "publisher", "administrator"].includes(projectRole)} />
+      </Suspense>}
+      {draft && showView === "scenes" && <Suspense fallback={<p>Loading scene workspace…</p>}>
+        <SceneWorkspace
+          draft={draft} sceneId={sceneId} canEdit={canEditScene && !project.archived_at}
+          assets={assets ?? []} onSelectScene={setSceneId} onDirtyChange={updateSceneDirty}
+          onOpenAdvanced={() => {
+            setAdvancedOpen(true);
+            setTimelineLoaded(true);
+            setTimelineOpenRequest((value) => value + 1);
+          }}
+          onSave={async (document) => setDraft(await updateProjectDraft(project.id, draft.revision, document))}
+        />
+      </Suspense>}
+      <details className="show-options"><summary>Show options</summary>
+      <small>Saved revision {draft?.revision ?? project.head_revision} · metadata {project.metadata_revision}</small>
       {canAuthor && !project.archived_at ? (
+        <label>Show name
         <input
           aria-label={`Name for ${project.name}`}
           disabled={busy}
@@ -627,6 +793,7 @@ function ProjectCard({
           value={name}
           onChange={(event) => setName(event.target.value)}
         />
+        </label>
       ) : (
         <h2>{project.name}</h2>
       )}
@@ -663,16 +830,23 @@ function ProjectCard({
             </button>
           </>
         )}
+      </div>
+      <details className="share-options" onToggle={(event) => setSharingOpen(event.currentTarget.open)}>
+        <summary>Share &amp; review</summary>
+        {sharingOpen && draft && <Suspense fallback={<p>Loading sharing…</p>}>
+          <CollaborationWorkspace projectId={project.id} revision={draft.revision} session={session} onPermissions={updatePermissions} />
+        </Suspense>}
+      </details>
+      </details>
+      <details className="project-assets">
+        <summary>Assets</summary>
         <input
           aria-label={`Search assets in ${project.name}`}
-          placeholder="Search assets, folders, tags, owners…"
+          placeholder="Find media"
           type="search"
           value={assetSearch}
           onChange={(event) => setAssetSearch(event.target.value)}
         />
-      </div>
-      <div className="project-assets">
-        <strong>Assets</strong>
         {canAuthor && !project.archived_at && (
           <label className="file-button file-button--compact">
             Add visual or audio asset
@@ -797,34 +971,35 @@ function ProjectCard({
         ) : (
           <small>No assets imported.</small>
         )}
-      </div>
+      </details>
+      {draft && <ApplyPanel draft={draft} canApply={canPublish && canLiveOutput && !project.archived_at} runtime={runtime} runtimeFresh={runtimeFresh} />}
       {draft && (
-        <>
-          <Suspense fallback={<p>Loading collaboration workspace…</p>}>
-            <CollaborationWorkspace
-              projectId={project.id}
-              revision={draft.revision}
-              session={session}
-              onPermissions={updatePermissions}
-            />
-          </Suspense>
+        <details className="show-advanced" open={advancedOpen}
+          onToggle={(event) => setAdvancedOpen(event.currentTarget.open)}>
+          <summary>Advanced authoring and history</summary>
+          {sceneDirty && <p role="status">Save or cancel scene edits before editing other show data.</p>}
           <Suspense fallback={<p>Loading MCP authoring workspace…</p>}>
             <McpWorkspace
               projectId={project.id}
-              canDesign={canAuthor}
+              canDesign={canAuthor && !sceneDirty}
               canPublish={canPublish}
               canActivate={canPublish && canLiveOutput}
+              canOperate={canLiveOutput && ["operator", "administrator"].includes(projectRole)}
+              canConfigureInputs={session.role === "administrator"}
+              canConfigureInstallation={canAuthor && ["designer", "publisher", "administrator"].includes(session.role)}
             />
           </Suspense>
           <ScenePresetOrganizer
-            canEdit={canAuthor && !project.archived_at}
+            canEdit={canAuthor && !project.archived_at && !sceneDirty}
             draft={draft}
             projectId={project.id}
             onUpdated={setDraft}
           />
           <Suspense fallback={<p>Loading autonomous show designer…</p>}>
             <ShowLogicDesigner
-              canEdit={canAuthor && !project.archived_at}
+              openRequest={logicOpenRequest}
+              onInputs={onInputs}
+              canEdit={canAuthor && !project.archived_at && !sceneDirty}
               draft={draft}
               projectId={project.id}
               onSave={async (document) => {
@@ -838,10 +1013,15 @@ function ProjectCard({
             <Suspense fallback={<p>Loading timeline editor…</p>}>
               <TimelineEditor
                 assets={assets ?? []}
-                canEdit={canAuthor && !project.archived_at}
+                canEdit={canAuthor && !project.archived_at && !sceneDirty}
                 draft={draft}
                 initiallyOpen
                 projectId={project.id}
+                selectedSceneId={sceneId}
+                onSceneChange={(id) => {
+                  if (!sceneDirty || window.confirm("Discard unsaved scene edits and change scene?")) setSceneId(id);
+                }}
+                openRequest={timelineOpenRequest}
                 onSave={async (document) => {
                   setDraft(
                     await updateProjectDraft(project.id, draft.revision, document),
@@ -868,7 +1048,7 @@ function ProjectCard({
               projectId={project.id}
             />
           </Suspense>
-        </>
+        </details>
       )}
     </article>
   );
@@ -1418,68 +1598,6 @@ function AssetPlacement({
   );
 }
 
-function AssetPreview({ asset }: { asset: AssetRecord }) {
-  const hasReview = hasAssetArtifact(asset, "review");
-  const hasThumbnail = hasAssetArtifact(asset, "thumbnail");
-  const hasWaveform = hasAssetArtifact(asset, "waveform");
-  if (asset.media_type?.startsWith("video/") && hasReview) {
-    return (
-      <div className="asset-preview asset-preview--video">
-        <video
-          controls
-          poster={hasThumbnail ? assetArtifactUrl(asset.id, "thumbnail") : undefined}
-          preload="metadata"
-          src={assetArtifactUrl(asset.id, "review")}
-        >
-          Review proxy playback is unsupported by this browser.
-        </video>
-        {hasWaveform && (
-          <img
-            alt={`Waveform for ${asset.name}`}
-            src={assetArtifactUrl(asset.id, "waveform")}
-          />
-        )}
-      </div>
-    );
-  }
-  if (asset.media_type?.startsWith("audio/") && hasReview) {
-    return (
-      <div className="asset-preview asset-preview--audio">
-        {hasWaveform && (
-          <img
-            alt={`Waveform for ${asset.name}`}
-            src={assetArtifactUrl(asset.id, "waveform")}
-          />
-        )}
-        <audio controls preload="metadata" src={assetArtifactUrl(asset.id, "review")}>
-          Review proxy playback is unsupported by this browser.
-        </audio>
-      </div>
-    );
-  }
-  if (asset.media_type?.startsWith("image/") && hasReview) {
-    return (
-      <img
-        alt={`Review proxy for ${asset.name}`}
-        className="asset-preview"
-        loading="lazy"
-        src={assetArtifactUrl(asset.id, "review")}
-      />
-    );
-  }
-  return <div className="asset-preview asset-preview--pending" aria-hidden="true" />;
-}
-
-function hasAssetArtifact(asset: AssetRecord, kind: string): boolean {
-  const artifacts = asset.metadata?.artifacts;
-  return (
-    typeof artifacts === "object" &&
-    artifacts !== null &&
-    !Array.isArray(artifacts) &&
-    kind in artifacts
-  );
-}
-
 function formatAssetMetadata(metadata: Record<string, unknown>): string {
   const values: string[] = [];
   if (typeof metadata.duration_ms === "number") {
@@ -1528,6 +1646,7 @@ export function OperatePage({
   runtime,
   topology,
   runtimeError,
+  runtimeFreshness,
   loading,
   onRefresh,
 }: {
@@ -1536,6 +1655,7 @@ export function OperatePage({
   runtime: RuntimeStatus | null;
   topology: Topology | null;
   runtimeError: boolean;
+  runtimeFreshness: SnapshotFreshness;
   loading: boolean;
   onRefresh: () => Promise<void>;
 }) {
@@ -1548,9 +1668,14 @@ export function OperatePage({
   const [armConfirmation, setArmConfirmation] = useState("");
   const [outputArm, setOutputArm] = useState<OutputArm | null>(null);
   const [previewNow, setPreviewNow] = useState(Date.now());
+  const [chosenScene, setChosenScene] = useState("");
+  const sceneOptions = runtime?.status.operations.scene_options;
+  const startingScene = chosenScene || runtime?.status.operations.starting_scene_id || sceneOptions?.[0]?.id;
+  const activeSceneName = sceneOptions?.find((value) => value.id === runtime?.status.active_scene)?.name ?? runtime?.status.active_scene;
   const canOperate = session.role === "operator" || session.role === "administrator";
+  const playbackUnavailable = runtimeFreshness !== "fresh" || Boolean(runtime?.apply_job);
   const unavailableRequiredDevice =
-    topology?.nodes.some(
+    sceneOptions ? !sceneOptions.find((value) => value.id === startingScene)?.ready : topology?.nodes.some(
       (node) =>
         node.kind === "direct_media_agent" &&
         node.configured &&
@@ -1578,6 +1703,10 @@ export function OperatePage({
   }, [preview]);
 
   async function runAction(action: OperateAction, confirmMessage?: string) {
+    if (runtimeFreshness !== "fresh" && action !== "stop" && action !== "blackout") {
+      setOperationError("Current status is unavailable. Refresh before changing playback or mode.");
+      return;
+    }
     if (confirmMessage && !window.confirm(confirmMessage)) {
       return;
     }
@@ -1585,7 +1714,7 @@ export function OperatePage({
     setPending(action);
     setOperationError(null);
     try {
-      await operate(action, action === "seek" ? positionMs : undefined);
+      await operate(action, action === "seek" ? positionMs : undefined, action === "start" ? startingScene : undefined);
       await onRefresh();
     } catch {
       setOperationError("The controller rejected the operation. Refresh status and try again.");
@@ -1641,10 +1770,25 @@ export function OperatePage({
       <WorkspaceHeader
         eyebrow="Operations"
         title="Operate"
-        description="Authenticated controller actions with explicit state and impact checks."
+        description="Start your loaded show, stop safely, and check what the controller is sending."
       />
       <Panel title="Controller status">
-        {runtimeError ? (
+        {runtime?.apply_job && <p role="status">Applying saved changes: {runtime.apply_job.state}. Stop and Blackout remain available.</p>}
+        <p><strong>{runtimeFreshness !== "fresh" ? "Controller status is not current" : runtime?.status.active_scene ? `${activeSceneName} · ${runtime.status.playback_state}` : "Playback stopped"}</strong></p>
+        <p>{runtime?.loaded_catalog?.state === "loaded"
+          ? `Loaded: ${runtime.loaded_catalog.project_name ?? "a verified saved show"}. Saving edits does not update this running copy.`
+          : runtime?.loaded_catalog?.state === "recovery_required"
+            ? "Recover a verified show from Shows before starting."
+            : "Legacy/external catalog: saved-show identity is unreported. Apply from Shows to establish a verified identity."}</p>
+        {runtimeFreshness === "fresh" && runtime?.status.degraded && <p role="alert">{degradedGuidance(runtime.status.degraded_reason)} Check device connections and the contextual diagnostics before continuing.</p>}
+        {runtimeFreshness === "fresh" && runtime?.input_health?.visitor_rules_loaded && <p role={runtime.input_health.error ? "alert" : "status"}>
+          {runtime.input_health.state === "disabled" ? "Camera input is off; visitor responses cannot receive camera events."
+            : runtime.input_health.error ? `Camera input needs attention: ${runtime.input_health.error}`
+              : runtime.input_health.freshness === "fresh" ? "Recent camera input received; visitor matching and scene playback are separate checks."
+                : "No recent camera observations. Check Installation > Inputs & connections if visitors are not being detected."}
+        </p>}
+        <details><summary>Controller details</summary>
+        {runtimeError || runtimeFreshness !== "fresh" ? (
           <ErrorState />
         ) : loading && !runtime ? (
           <Skeleton />
@@ -1698,6 +1842,7 @@ export function OperatePage({
         ) : (
           <EmptyState title="No status" description="No controller response is available." />
         )}
+        </details>
       </Panel>
       <Panel
         title="Show controls"
@@ -1711,10 +1856,13 @@ export function OperatePage({
         <div className="operate-controls__groups">
           <section>
             <h3>Playback</h3>
+            {sceneOptions && <label>Starting scene<select value={startingScene ?? ""} onChange={(event) => setChosenScene(event.target.value)} disabled={active || pending !== null}>
+              {sceneOptions.map((value) => <option key={value.id} value={value.id}>{value.name}{value.ready ? "" : " — required device unavailable"}</option>)}
+            </select></label>}
             <div className="operate-controls__buttons">
               <button
                 className="primary-button"
-                disabled={!canOperate || unavailableRequiredDevice || active || physicalTestActive || pending !== null}
+                disabled={!canOperate || playbackUnavailable || unavailableRequiredDevice || active || physicalTestActive || runtime?.loaded_catalog?.state === "recovery_required" || pending !== null}
                 onClick={() =>
                   void runAction(
                     "start",
@@ -1725,30 +1873,34 @@ export function OperatePage({
                 Start show
               </button>
               <button
-                disabled={!canOperate || !active || pending !== null}
+                disabled={!canOperate || playbackUnavailable || !active || runtime?.status.playback_state === "paused" || pending !== null}
                 onClick={() => void runAction("pause")}
               >
                 Pause
               </button>
               <button
-                disabled={!canOperate || !active || pending !== null}
+                disabled={!canOperate || playbackUnavailable || !active || runtime?.status.playback_state !== "paused" || pending !== null}
                 onClick={() => void runAction("resume")}
               >
                 Resume
               </button>
               <button
-                disabled={!canOperate || (!active && !physicalTestActive) || pending !== null}
+                disabled={!canOperate || pending !== null}
                 onClick={() => void runAction("stop", "Stop the active show and return outputs safe?")}
               >
                 Stop
               </button>
+              <button className="danger-button" disabled={!canOperate || pending !== null}
+                onClick={() => void runAction("blackout", "Stop playback and send black LED frames? This does not verify physical output or other equipment safety.")}>Blackout</button>
             </div>
             {unavailableRequiredDevice && (
               <p className="control-note">
-                Start is unavailable until all assigned media clients are connected.
+                Start is unavailable until this starting scene's required media devices are connected. Unused and optional media devices do not block an LED-only show.
               </p>
             )}
+            {physicalTestActive && <p role="status">A physical wiring test owns the output. Stop it before starting playback.</p>}
           </section>
+          <details className="operate-advanced"><summary>More playback and recovery controls</summary>
           <section>
             <h3>Position</h3>
             <div className="seek-control">
@@ -1762,7 +1914,7 @@ export function OperatePage({
                 />
               </label>
               <button
-                disabled={!canOperate || !active || pending !== null}
+                disabled={!canOperate || playbackUnavailable || !active || pending !== null}
                 onClick={() => void runAction("seek")}
               >
                 Seek
@@ -1773,13 +1925,13 @@ export function OperatePage({
             <h3>Mode and recovery</h3>
             <div className="operate-controls__buttons">
               <button
-                disabled={!canOperate || pending !== null}
+                disabled={!canOperate || playbackUnavailable || pending !== null}
                 onClick={() => void runAction("automatic")}
               >
                 Automatic
               </button>
               <button
-                disabled={!canOperate || pending !== null}
+                disabled={!canOperate || playbackUnavailable || pending !== null}
                 onClick={() =>
                   void runAction(
                     "maintenance",
@@ -1790,31 +1942,22 @@ export function OperatePage({
                 Maintenance
               </button>
               <button
-                disabled={!canOperate || unavailableRequiredDevice || physicalTestActive || pending !== null}
+                disabled={!canOperate || playbackUnavailable || unavailableRequiredDevice || physicalTestActive || pending !== null}
                 onClick={() =>
                   void runAction("reset", "Reset to the configured ambient scene?")
                 }
               >
                 Reset ambient
               </button>
-              <button
-                className="danger-button"
-                disabled={!canOperate || pending !== null}
-                onClick={() =>
-                  void runAction(
-                    "blackout",
-                    "Blackout stops playback and emits the configured safe lighting state. Continue?",
-                  )
-                }
-              >
-                Blackout
-              </button>
             </div>
           </section>
+          </details>
         </div>
         {pending && <p role="status">Sending {pending}…</p>}
         {operationError && <p role="alert">{operationError}</p>}
       </Panel>
+      <LiveOutputMonitor installationId={installation?.installation_id ?? undefined} runtime={runtime} />
+      <details className="operate-advanced"><summary>Setup tests and maintenance</summary>
       <Panel
         title="Physical LED output tests"
         description="Run a bounded chase on configured LED output devices without changing the show."
@@ -1936,7 +2079,8 @@ export function OperatePage({
           </div>
         )}
       </Panel>
-      {runtime && <OperationalDiagnostics runtime={runtime} />}
+      </details>
+      {runtime && <details><summary>Command and playback diagnostics</summary><OperationalDiagnostics runtime={runtime} /></details>}
     </>
   );
 }
@@ -2232,11 +2376,16 @@ export function SettingsPage({
         title="Settings"
         description="Durable installation records and application configuration."
       />
-      {canManage && <LocalUsersPanel />}
+      {canManage && <details className="setup-disclosure"><summary>People &amp; project access</summary><LocalUsersPanel /></details>}
       <Panel
-        title="Installations"
-        description="Home is runtime-backed; new installations remain unprovisioned until a package is attached."
+        title="Your installation"
+        description="Name your display. Additional installation records are planning data, not extra connected controllers."
       >
+        <div className="installation-records">
+          {installations.filter((value) => value.runtime_active).map((value) =>
+            <InstallationRecord key={value.id} installation={value} canManage={canManage} onRefresh={onRefresh} onError={setError} />)}
+        </div>
+        <details className="setup-disclosure"><summary>Additional installation records (advanced)</summary>
         {canManage && (
           <div className="installation-create">
             <label>
@@ -2266,6 +2415,7 @@ export function SettingsPage({
         </label>
         <div className="installation-records">
           {installations
+            .filter((installation) => !installation.runtime_active)
             .filter((installation) =>
               [
                 installation.name,
@@ -2286,6 +2436,7 @@ export function SettingsPage({
             />
             ))}
         </div>
+        </details>
         {error && <p role="alert">{error}</p>}
       </Panel>
     </>
@@ -2400,6 +2551,18 @@ function InstallationRecord({
   const [tags, setTags] = useState(installation.tags.join(", "));
   const [favorite, setFavorite] = useState(installation.favorite);
   const [saving, setSaving] = useState(false);
+  const [recordOpen, setRecordOpen] = useState(false);
+  const [recordError, setRecordError] = useState<string | null>(null);
+  const recordDirty = name !== installation.name || folder !== (installation.folder ?? "") ||
+    tags !== installation.tags.join(", ") || favorite !== installation.favorite;
+  useEffect(() => {
+    const guard = (event: BeforeUnloadEvent) => { if (recordOpen && recordDirty) event.preventDefault(); };
+    window.addEventListener("beforeunload", guard);
+    return () => window.removeEventListener("beforeunload", guard);
+  }, [recordOpen, recordDirty]);
+  function closeRecord() {
+    if (!saving && (!recordDirty || window.confirm("Discard unsaved installation settings?"))) setRecordOpen(false);
+  }
 
   async function save() {
     setSaving(true);
@@ -2416,7 +2579,9 @@ function InstallationRecord({
         favorite,
       );
       await onRefresh();
+      setRecordOpen(false);
     } catch {
+      setRecordError("Installation update failed. Reopen saved settings before retrying if another user changed them.");
       onError("Installation update failed. Refresh and try again.");
     } finally {
       setSaving(false);
@@ -2443,13 +2608,7 @@ function InstallationRecord({
       <div>
         <strong>{installation.name}</strong>
         <small>
-          Revision {installation.revision} ·{" "}
-          {installation.runtime_active ? "Runtime backed" : "Not provisioned"}
-        </small>
-        <small>
-          {installation.favorite ? "Favorite · " : ""}
-          {installation.folder ?? "Unfiled"}
-          {installation.tags.length ? ` · ${installation.tags.join(", ")}` : ""}
+          {installation.runtime_active ? "This controller's installation" : "Planning record · no controller attached"}
         </small>
         <small>
           {installation.used_by_projects.length
@@ -2458,9 +2617,16 @@ function InstallationRecord({
         </small>
       </div>
       {canManage && (
-        <div className="installation-record__actions">
+        <>
+        <button type="button" onClick={() => {
+          setName(installation.name); setFolder(installation.folder ?? "");
+          setTags(installation.tags.join(", ")); setFavorite(installation.favorite);
+          setRecordError(null); setRecordOpen(true);
+        }}>Installation settings</button>
+        {recordOpen && <DetailsDialog title="Installation settings" onClose={closeRecord}>
+        <form className="installation-record__actions" onSubmit={(event) => { event.preventDefault(); void save(); }}>
           <label>
-            <span className="sr-only">Name for {installation.name}</span>
+            Display name
             <input
               aria-label={`Name for ${installation.name}`}
               disabled={saving}
@@ -2469,6 +2635,7 @@ function InstallationRecord({
               onChange={(event) => setName(event.target.value)}
             />
           </label>
+          <details><summary>Organization (optional)</summary>
           <input
             aria-label={`Folder for ${installation.name}`}
             disabled={saving}
@@ -2492,20 +2659,25 @@ function InstallationRecord({
             />
             Favorite
           </label>
+          </details>
           <button
-            disabled={saving || !name.trim() || name === installation.name}
-            onClick={() => void save()}
+            type="submit"
+            disabled={saving || !name.trim() || !recordDirty}
           >
             Save
           </button>
           <button
+            type="button"
             className="danger-button"
             disabled={saving || installation.runtime_active}
             onClick={() => void remove()}
           >
             Delete
           </button>
-        </div>
+        </form>
+        {recordError && <p role="alert">{recordError}</p>}
+        </DetailsDialog>}
+        </>
       )}
     </article>
   );

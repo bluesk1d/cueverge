@@ -149,7 +149,6 @@ class AudiencePresenceEstimator:
         events: list[ExternalEvent] = []
         if self._objects:
             self._absence_since_ms = None
-            self._departed_at_ms = None
             self._long_idle_emitted = False
             if self.state is AudienceState.ABSENT:
                 self._previous_absence_ms = (
@@ -157,6 +156,7 @@ class AudiencePresenceEstimator:
                 )
                 self.state = AudienceState.CANDIDATE
                 self._candidate_since_ms = now_ms
+            self._departed_at_ms = None
             if (
                 self.state is AudienceState.CANDIDATE
                 and self._candidate_since_ms is not None

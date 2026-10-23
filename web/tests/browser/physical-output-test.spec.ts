@@ -41,6 +41,7 @@ for (const width of [1440, 390]) {
     });
     await page.goto("/demo.html");
     await page.getByRole("button", { name: "Operate", exact: true }).click();
+    await page.getByText("Setup tests and maintenance", { exact: true }).click();
     const controls = page.getByRole("region", { name: "Physical LED output test", exact: true });
     await expect(controls.getByLabel("LED output to test")).toContainText("roofline.demo");
     expect(mutations).toEqual([]);

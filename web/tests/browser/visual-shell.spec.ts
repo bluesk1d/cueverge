@@ -27,21 +27,15 @@ for (const viewport of viewports) {
     await expect(page.getByRole("button", { name: "Overview", exact: true })).toBeFocused();
 
     await page.getByRole("button", { name: "Installation", exact: true }).click();
-    await expect(page.getByRole("heading", { name: "Network Topology" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Your installation" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Installation Photos" })).toBeVisible();
+    await page.getByRole("group", { name: "Installation workspace", exact: true }).getByRole("button", { name: "Devices", exact: true }).click();
     await expect(page.getByRole("heading", { name: "media-client-left" })).toBeVisible();
     const topologyPanel = page
-      .getByRole("heading", { name: "Topology", exact: true })
+      .getByRole("heading", { name: "Devices", exact: true })
       .locator("xpath=ancestor::section");
-    const photosPanel = page
-      .getByRole("heading", { name: "Installation Photos" })
-      .locator("xpath=ancestor::section");
-    const [topologyBox, photosBox] = await Promise.all([
-      topologyPanel.boundingBox(),
-      photosPanel.boundingBox(),
-    ]);
+    const topologyBox = await topologyPanel.boundingBox();
     expect(topologyBox).not.toBeNull();
-    expect(photosBox).not.toBeNull();
-    expect(photosBox!.y - (topologyBox!.y + topologyBox!.height)).toBeGreaterThanOrEqual(12);
 
     for (const node of await topologyPanel.locator(".topology-node").all()) {
       const header = node.locator("header");
@@ -59,18 +53,17 @@ for (const viewport of viewports) {
 
     await page.getByRole("button", { name: "Operate", exact: true }).click();
     await expect(page.getByRole("heading", { name: "Show controls" })).toBeVisible();
+    await page.getByText("Command and playback diagnostics", { exact: true }).click();
     await expect(page.getByRole("heading", { name: "Runtime counters" })).toBeVisible();
     await expect(page.getByRole("heading", { name: "Automation state" })).toBeVisible();
 
     await page.getByRole("button", { name: "Shows", exact: true }).click();
-    await expect(page.getByRole("heading", { name: "Draft projects" })).toBeVisible();
-    await expect(page.getByRole("textbox", { name: "Name for Home Show" })).toHaveValue(
-      "Home Show",
-    );
+    await expect(page.getByRole("heading", { name: "Your shows" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Open show Home Show" })).toBeVisible();
 
     await page.getByRole("button", { name: "Settings", exact: true }).click();
-    await expect(page.getByRole("heading", { name: "Installations" })).toBeVisible();
-    await expect(page.getByText("Runtime backed")).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Your installation" })).toBeVisible();
+    await expect(page.getByText("This controller's installation")).toBeVisible();
 
     const horizontalOverflow = await page.evaluate(
       () => document.documentElement.scrollWidth > document.documentElement.clientWidth,

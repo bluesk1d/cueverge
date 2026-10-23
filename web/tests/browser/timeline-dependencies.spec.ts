@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { openAdvancedShowWorkspace } from "./show-workspace";
 
 let savedDraft: Record<string, unknown> | null = null;
 
@@ -27,6 +28,7 @@ test("composition replacement prevents orphaned dependencies", async ({ page }) 
 
   await page.goto("/demo.html");
   await page.getByRole("button", { name: "Shows", exact: true }).click();
+  await openAdvancedShowWorkspace(page);
   await page.getByText("Timeline editor", { exact: true }).click();
   const hierarchy = page.locator(".composition-hierarchy");
 

@@ -138,6 +138,8 @@ class LightingTargetDefinition(FrozenModel):
 
 
 class LightingCue(FrozenModel):
+    """Scene-native runtime lighting cue, preserved independently of editor timeline metadata."""
+
     id: str = Field(min_length=1)
     primitive: Literal[
         "solid",
@@ -186,7 +188,12 @@ class LightingDefinition(FrozenModel):
     pulse_times_ms: tuple[int, ...] = ()
     pulse_duration_ms: int = Field(default=120, gt=0)
     timeline: tuple[LightingCue, ...] = ()
-    brightness_limit: float = Field(default=1.0, gt=0, le=1)
+    brightness_limit: float = Field(
+        default=1.0,
+        gt=0,
+        le=1,
+        description="Output limit for timelines/spatial sequences; legacy effects do not apply it.",
+    )
 
     @model_validator(mode="after")
     def validate_effect_configuration(self) -> "LightingDefinition":

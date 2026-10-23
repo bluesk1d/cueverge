@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { openLayout } from "./setup-workspace";
 
 const installationId = "demo-installation";
 const semanticId = "semantic-front-window";
@@ -79,11 +80,12 @@ test("linked fixture synchronizes across twelve photo viewpoints", async ({ page
 
   await page.goto("/demo.html");
   await page.getByRole("button", { name: "Installation", exact: true }).click();
+  await openLayout(page);
 
   await expect(page.getByRole("heading", { name: "Installation Photos" })).toBeVisible();
-  await expect(page.getByText("Wide front", { exact: true })).toBeVisible();
-  await expect(page.getByText("Left close-up", { exact: true })).toBeVisible();
-  await expect(page.getByText("Right close-up", { exact: true })).toBeVisible();
+  await expect(page.locator(".installation-photos").getByText("Wide front", { exact: true })).toBeVisible();
+  await expect(page.locator(".installation-photos").getByText("Left close-up", { exact: true })).toBeVisible();
+  await expect(page.locator(".installation-photos").getByText("Right close-up", { exact: true })).toBeVisible();
 
   const mapper = page
     .getByRole("heading", { name: "Visual Mapper" })

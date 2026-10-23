@@ -4,6 +4,7 @@ import ssl
 import uvicorn
 
 from cueverge.controller.runtime import ControllerRuntime
+from cueverge.gui.asset_upload import AssetUploadService
 from cueverge.gui.config import GuiConfig
 from cueverge.gui.device_app import create_device_app
 from cueverge.gui.device_ca import DeviceCertificateAuthority
@@ -37,7 +38,9 @@ class EmbeddedDeviceListener:
         )
         self.server = _EmbeddedServer(
             uvicorn.Config(
-                create_device_app(repository, sessions, runtime, authority),
+                create_device_app(
+                    repository, sessions, runtime, authority, AssetUploadService(config, repository)
+                ),
                 host=config.device_listener_host,
                 port=config.device_listener_port,
                 ws=PeerCertificateWebSocketProtocol,

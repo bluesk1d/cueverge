@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { openLayout, openProjectorDetails } from "./setup-workspace";
 
 let savedMapping: Record<string, unknown> | null = null;
 
@@ -55,10 +56,12 @@ test("non-planar projector surface edits an indexed UV mesh", async ({ page }) =
 
   await page.goto("/demo.html");
   await page.getByRole("button", { name: "Installation", exact: true }).click();
+  await openLayout(page);
   const mapper = page
     .getByRole("heading", { name: "Visual Mapper" })
     .locator("xpath=ancestor::section");
   await mapper.getByRole("button", { name: "Edit" }).click();
+  await openProjectorDetails(mapper);
 
   await expect(mapper.getByLabel("Projection calibration source")).toHaveValue(
     "measured_grid",

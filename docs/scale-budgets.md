@@ -14,6 +14,52 @@ targets.
 | Deterministic simulation | 100 steps | Complete within 5 seconds with no hardware adapters |
 | Publication | 250 scenes | Compile and publish within 5 seconds each |
 
+## Camera input setup and health
+
+- One supported Frigate/MQTT source per runtime installation; it is opt-in.
+- 256 KiB per application payload and 20 recent diagnostic entries; no raw
+  payloads or object IDs in health. Reconfiguration resets listener counters.
+- GUI labels are limited to 50 entries of at most 128 characters. Password
+  replacement is write-only and limited to 4096 characters.
+- Serialized visible-page health requests roughly every two seconds, an
+  eight-second timeout, and explicit last-known/unavailable state on failure.
+- Configuration/reconnect is serialized and drains any in-flight controller
+  delivery. Broker reconnect delay retains its existing five-second default.
+- Isolated normalization/rule checks share the same payload bound and never
+  connect to MQTT, inject live input, or command hardware. Their context digest
+  must match current saved settings/loaded visitor rules before reuse.
+
+## Interactive scene-native lighting preview
+
+The shared visitor Preview workspace additionally bounds a test to 200 actions,
+ten simulated minutes, 1,000 estimated scene boundaries, 20,000,000 estimated
+pixel-index work and 20,000 fake-media telemetry ticks. It shares the two
+nonblocking evaluation slots and returns at most 4,096 RGB samples at a selected
+checkpoint. Qualification advances at the controller's 100 ms tick; intermediate
+ticks need not allocate LED frames. No physical adapters or real input are used.
+MCP results retain their separate 200 KiB bound. Candidate/revision changes
+invalidate displayed test evidence; unsupported spatial colors are withheld,
+not replaced with successful-looking raw frames.
+
+UP-03 adds a separate bounded raw-scene preview budget, not a reduction in the
+offline compilation/publication or advanced composition budgets above:
+
+- 4096 returned RGB samples per request; pixel pages carry explicit coverage.
+- 65536 installation pixels and 2000000 estimated pixel-index work across the
+  candidate, checked before loading/rendering it.
+- Two nonblocking concurrent evaluations per controller process. Busy REST
+  requests return 429; MCP reports a tool error rather than queueing unbounded work.
+- The browser samples up to four times/second and serializes slow requests;
+  reported frame time, not speculative browser color rendering, is authoritative.
+- Temporary compilation is cleaned up. Spatial composition/bake previews retain
+  the existing advanced renderer; missing/unsupported contributions are not
+  replaced with a partial successful frame.
+
+These bounds are reported through MCP capability discovery and covered by
+preview tests. The 56-cue/605-pixel local demo is qualified through real
+browser/MCP readback and frame comparison, not a new claim that every maximum
+scene/asset combination renders interactively.
+
 Automated qualification compiles and publishes the maximum scene budget, runs a
 100-step no-hardware simulation, connects 100 in-memory device sessions, loads
 12 mapper viewpoints, and exercises 10,000 timeline markers and 5,000 assets

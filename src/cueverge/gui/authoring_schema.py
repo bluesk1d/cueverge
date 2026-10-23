@@ -2,7 +2,16 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from cueverge.gui.contracts import DraftProject
+from cueverge.gui.apply import ApplyRequest
+from cueverge.gui.contracts import (
+    ConfigureInputSourceRequest,
+    DraftProject,
+    InteractionEditRequest,
+    InteractionPreviewRequest,
+    OperateActionRequest,
+    OutputMonitorRequest,
+    PhotoDescriptionRequest,
+)
 from cueverge.gui.spatial_effects import SpatialRipple
 
 
@@ -150,6 +159,65 @@ class SpatialMetadata(MetadataSchema):
 def authoring_schema() -> dict[str, Any]:
     """Describe known spatial metadata while retaining other GUI-owned metadata."""
     schema = DraftProject.model_json_schema()
+    schema["x-runtime-workflows"] = {
+        "apply": {
+            "tool": "apply_saved_show",
+            "schema": ApplyRequest.model_json_schema(),
+            "scopes": ["publish", "activate"],
+            "restore_scope": "activate",
+            "status_tool": "get_apply_jobs",
+            "cancel_tool": "cancel_apply",
+            "saved_is_not_loaded": True,
+        },
+        "monitor": {
+            "tool": "get_output_monitor",
+            "schema": OutputMonitorRequest.model_json_schema(),
+            "scope": "read",
+            "maximum_capture_hz": 5,
+            "maximum_samples": 4096,
+            "requires_loaded_project_match": True,
+            "physical_output_verified": False,
+        },
+        "transport": {
+            "tool": "operate_loaded_show",
+            "schema": OperateActionRequest.model_json_schema(),
+            "scope": "live_operation",
+            "physical_confirmation_required": True,
+            "requires_loaded_project_match": True,
+        },
+        "schema_usage": "Extract each nested schema as its own JSON Schema document.",
+    }
+    schema["x-installation-setup"] = {
+        "read_tool": "get_installation_setup",
+        "description_tool": "describe_installation_photo",
+        "description_scope": "installation_edit",
+        "description_schema": PhotoDescriptionRequest.model_json_schema(),
+        "photo_authority": "name is the persisted description; viewpoint identity is preserved",
+        "device_writes": "administrator GUI only; no added MCP device-control grant",
+        "geometry_editing": False,
+    }
+    schema["x-guided-interactions"] = {
+        "read_tool": "get_interactions",
+        "edit_tool": "update_interaction",
+        "preview_tool": "preview_interaction_workflow",
+        "edit_scope": "direct_edit",
+        "preview_scope": "simulation",
+        "edit_schema": InteractionEditRequest.model_json_schema(),
+        "preview_schema": InteractionPreviewRequest.model_json_schema(),
+        "schema_usage": "Extract each nested schema as its own JSON Schema document.",
+        "names_metadata": (
+            "editor_metadata.interaction_names maps response IDs to human-readable names."
+        ),
+        "preserves_source_models": True,
+    }
+    schema["x-installation-input-configuration"] = {
+        "schema": ConfigureInputSourceRequest.model_json_schema(),
+        "stored_outside_show": True,
+        "tool": "configure_input_source",
+        "required_scope": "input_config",
+        "required_role": "global_administrator",
+        "password": "write_only_controller_local",
+    }
     metadata = SpatialMetadata.model_json_schema()
     schema.setdefault("$defs", {}).update(metadata.pop("$defs", {}))
     schema["properties"]["editor_metadata"] = {

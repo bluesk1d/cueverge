@@ -5,6 +5,28 @@ application. It covers client management, installation mapping, asset
 management, timeline-based show creation, visual simulation, deployment, and
 LLM-assisted authoring through MCP.
 
+The current [usability pass milestone](usability-pass.md) records the
+page-by-page review and revised audience-focused UX direction. Its agreed
+decisions guide the next usability implementation; the detailed capability
+milestones below remain implementation history and technical scope, not a
+requirement to expose every internal concept in everyday UI. The first review
+pass closed on 2026-10-22. Follow its
+[UP-00 through UP-09 implementation plan](usability-pass.md#consolidated-implementation-plan)
+for the approved usability work. UP-00 through UP-09 are complete with full-suite
+and isolated browser/MCP qualification recorded in that milestone.
+UP-04 adds installation-owned Frigate/MQTT setup, protected write-only credentials,
+operator-managed compatibility, distinct event/visitor health and isolated rule checks.
+UP-05 adds primary visitor response cards, focused guided edits, preserved advanced
+state choreography, and a shared scene/visitor Preview with authoritative evidence.
+UP-06 adds photo-first Layout, contextual device/image/settings details,
+Select/Add mapping, nonblocking photo-space diagnostics and separately scoped
+MCP photo-description editing without new device-control privileges.
+UP-07 adds exact-saved-version Apply, verified media delivery, real catalog
+handover, loaded generations, durable progress and stopped retained recovery.
+UP-08 adds glanceable Operate, contextual diagnostics and a bounded read-only
+photo-mapped intended-output monitor. Separately opted-in MCP transport is
+restricted to the token's loaded project and requires physical confirmation.
+
 The GUI is a new product surface over the reusable engine. It must not weaken
 the existing separation between generic engine behavior, installation-specific
 configuration, and private show assets.

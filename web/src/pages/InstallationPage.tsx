@@ -1,7 +1,12 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { connectionStatus } from "../status";
+import { InputSourcePanel } from "./InputSourcePanel";
 import type { CSSProperties } from "react";
 import { OutputTraversalPreview } from "../components/OutputTraversalPreview";
 import { GeometryCanvas } from "../components/GeometryCanvas";
+import { InstallationPhotoCard } from "../components/InstallationPhotoCard";
+import { DetailsDialog } from "../components/DetailsDialog";
+import { mapperDiagnostics } from "../components/mapper-diagnostics";
 import { photoPixelPoints } from "../components/pixel-traversal";
 import {
   Cable,
@@ -15,7 +20,6 @@ import {
 import {
   AssetRecord,
   assetArtifactUrl,
-  deleteInstallationPhoto,
   deleteInstallationGeometry,
   createPairingToken,
   ArtifactCacheCapability,
@@ -54,7 +58,6 @@ import {
   setDeviceEnrollmentState,
   setResourceAssignment,
   testDeviceConnection,
-  updateInstallationPhoto,
   saveInstallationGeometry,
   saveProjectorMapping,
   saveLightingSurface,
@@ -93,6 +96,8 @@ export function InstallationPage({
   loading,
   session,
   onRefresh,
+  onDirtyChange,
+  initialSection = "photos",
 }: {
   installation: InstallationStatus | null;
   topology: Topology | null;
@@ -102,7 +107,16 @@ export function InstallationPage({
   loading: boolean;
   session?: Session;
   onRefresh?: () => Promise<void> | void;
+  onDirtyChange?: (dirty: boolean) => void;
+  initialSection?: "photos" | "devices" | "inputs";
 }) {
+  const [section, setSection] = useState(initialSection);
+  const [inputDirty, setInputDirty] = useState(false);
+  const [layoutDirty, setLayoutDirty] = useState(false);
+  useEffect(() => {
+    onDirtyChange?.(inputDirty || layoutDirty);
+  }, [inputDirty, layoutDirty, onDirtyChange]);
+  useEffect(() => () => onDirtyChange?.(false), [onDirtyChange]);
   const controller = topology?.nodes.find((node) => node.kind === "controller");
   const agents =
     topology?.nodes.filter(
@@ -116,8 +130,8 @@ export function InstallationPage({
     <>
       <WorkspaceHeader
         eyebrow="Installation"
-        title="Network Topology"
-        description="Configured resources and controller-observed endpoint state. No control actions are available."
+        title="Your installation"
+        description="Connect camera events and manage the devices, photos, and layout of your display."
         meta={
           topology && (
             <div className="freshness">
@@ -132,6 +146,16 @@ export function InstallationPage({
           )
         }
       />
+      <div className="setup-tabs" role="group" aria-label="Installation workspace">
+        {(["photos", "devices", "inputs"] as const).map((value) => <button key={value} aria-pressed={section === value} onClick={() => {
+          if (value === section) return;
+          if ((inputDirty || layoutDirty) && !window.confirm("Discard unsaved installation changes and change section?")) return;
+          setInputDirty(false); setLayoutDirty(false); setSection(value);
+        }}>{value === "photos" ? "Photos & Layout" : value === "devices" ? "Devices" : "Inputs & connections"}</button>)}
+      </div>
+      {section === "inputs" && <InputSourcePanel session={session} onDirtyChange={setInputDirty} />}
+      {section === "devices" && <>
+      <details className="setup-disclosure"><summary>Connection overview</summary>
       <section className="topology-summary" aria-label="Topology summary">
         <Summary
           label="Controller"
@@ -164,11 +188,12 @@ export function InstallationPage({
           }
         />
       </section>
+      </details>
 
-      <div className="topology-layout">
+      <div className="topology-layout topology-layout--compact">
         <Panel
-          title="Topology"
-          description="Controller ownership and observed direct connections"
+          title="Devices"
+          description="Connections reported by your controller. Open details only when you need them."
           className="topology-layout__map"
         >
           {topologyError ? (
@@ -195,6 +220,7 @@ export function InstallationPage({
           )}
         </Panel>
 
+        <details className="setup-disclosure"><summary>Configured outputs and logical resources</summary>
         <Panel
           title="Installation Package"
           description="Logical resources in the active runtime package"
@@ -225,8 +251,15 @@ export function InstallationPage({
             />
           )}
         </Panel>
+        </details>
       </div>
-      {installation && (
+      {(session?.role === "administrator" || session?.role === "operator") && topology && (
+        <DeviceManagement agents={agents} installation={installation} assignments={assignments}
+          enrollmentSupported={topology.enrollment_supported}
+          canAdminister={session.role === "administrator"} onRefresh={onRefresh} />
+      )}
+      </>}
+      {section === "photos" && installation && (
         <InstallationPhotos
           installationId={installation.installation_id}
           projectorResources={installation.resources
@@ -243,16 +276,7 @@ export function InstallationPage({
             session !== undefined &&
             ["operator", "administrator"].includes(session.role)
           }
-        />
-      )}
-      {(session?.role === "administrator" || session?.role === "operator") && topology && (
-        <DeviceManagement
-          agents={agents}
-          installation={installation}
-          assignments={assignments}
-          enrollmentSupported={topology.enrollment_supported}
-          canAdminister={session.role === "administrator"}
-          onRefresh={onRefresh}
+          onDirtyChange={setLayoutDirty}
         />
       )}
     </>
@@ -265,12 +289,14 @@ function InstallationPhotos({
   pixelResources,
   canEdit,
   canPreview,
+  onDirtyChange,
 }: {
   installationId: string;
   projectorResources: string[];
   pixelResources: InstallationStatus["resources"];
   canEdit: boolean;
   canPreview: boolean;
+  onDirtyChange: (dirty: boolean) => void;
 }) {
   const [photos, setPhotos] = useState<InstallationPhoto[]>([]);
   const [geometry, setGeometry] = useState<InstallationGeometry[]>([]);
@@ -279,13 +305,27 @@ function InstallationPhotos({
   const [suggestions, setSuggestions] = useState<GeometrySuggestion[]>([]);
   const [stageCoverage, setStageCoverage] = useState<StageCoverage | null>(null);
   const [name, setName] = useState("");
-  const [viewpoint, setViewpoint] = useState("");
+  const [layoutPhotoId, setLayoutPhotoId] = useState<string | null>(null);
+  const [layoutOpen, setLayoutOpen] = useState(false);
+  const [layoutVisited, setLayoutVisited] = useState(false);
+  const [layoutRequest, setLayoutRequest] = useState(0);
+  const [layoutChanged, setLayoutChanged] = useState(false);
+  const layout = useRef<HTMLDetailsElement>(null);
+  const updateLayoutDirty = useCallback((value: boolean) => {
+    setLayoutChanged(value); onDirtyChange(value);
+  }, [onDirtyChange]);
+  useEffect(() => {
+    if (layoutOpen && layoutPhotoId) layout.current?.scrollIntoView({ block: "start" });
+  }, [layoutOpen, layoutRequest, layoutPhotoId]);
   const [busy, setBusy] = useState(false);
+  const [photoFile, setPhotoFile] = useState<File | null>(null);
+  const photoFileInput = useRef<HTMLInputElement>(null);
   const [error, setError] = useState<string | null>(null);
+  const [photoLoadFailed, setPhotoLoadFailed] = useState(false);
+  const [photosLoaded, setPhotosLoaded] = useState(false);
 
   async function load() {
-    try {
-      const [loadedPhotos, loadedGeometry, loadedImages, loadedOverlaps, loadedSuggestions, loadedCoverage] = await Promise.all([
+      const [loadedPhotos, loadedGeometry, loadedImages, loadedOverlaps, loadedSuggestions, loadedCoverage] = await Promise.allSettled([
         getInstallationPhotos(installationId),
         getInstallationGeometry(installationId),
         getImageAssetLibrary(),
@@ -293,16 +333,20 @@ function InstallationPhotos({
         getGeometrySuggestions(installationId),
         getStageCoverage(installationId),
       ]);
-      setPhotos(loadedPhotos);
-      setGeometry(loadedGeometry);
-      setImageAssets(loadedImages);
-      setOverlaps(loadedOverlaps);
-      setSuggestions(loadedSuggestions);
-      setStageCoverage(loadedCoverage);
-      setError(null);
-    } catch {
-      setError("Installation photos could not be loaded.");
-    }
+      const failures: string[] = [];
+      if (loadedPhotos.status === "fulfilled") { setPhotos(loadedPhotos.value); setPhotosLoaded(true); setPhotoLoadFailed(false); }
+      else { setPhotoLoadFailed(true); failures.push("Photos could not be refreshed."); }
+      if (loadedGeometry.status === "fulfilled") setGeometry(loadedGeometry.value);
+      else failures.push("Layout objects could not be refreshed.");
+      if (loadedImages.status === "fulfilled") setImageAssets(loadedImages.value);
+      else failures.push("Image library details are unavailable.");
+      if (loadedOverlaps.status === "fulfilled") setOverlaps(loadedOverlaps.value);
+      else failures.push("Projector overlap details are unavailable.");
+      if (loadedSuggestions.status === "fulfilled") setSuggestions(loadedSuggestions.value);
+      else failures.push("Layout suggestions are unavailable.");
+      if (loadedCoverage.status === "fulfilled") setStageCoverage(loadedCoverage.value);
+      else failures.push("Stage coverage details are unavailable.");
+      setError(failures.join(" ") || null);
   }
 
   useEffect(() => {
@@ -317,10 +361,10 @@ function InstallationPhotos({
         installationId,
         file,
         name || file.name.replace(/\.[^.]+$/, ""),
-        viewpoint || "Primary",
       );
       setName("");
-      setViewpoint("");
+      setPhotoFile(null);
+      if (photoFileInput.current) photoFileInput.current.value = "";
       await load();
     } catch {
       setError("Installation photo upload failed.");
@@ -333,41 +377,40 @@ function InstallationPhotos({
     <div className="installation-design-stack">
       <Panel
         title="Installation Photos"
-        description="Named viewpoints for visual mapping, calibration, and simulation"
+        description="Choose a photo of your display, then open Layout to arrange lights and decorations."
       >
+        <button type="button" disabled={busy} onClick={() => void load()}>Refresh photos</button>
         {canEdit && (
-          <div className="photo-upload">
+          <form className="photo-upload" onSubmit={(event) => { event.preventDefault(); if (photoFile) void upload(photoFile); }}>
+            <label>Photo description
             <input
-              aria-label="Photo name"
+              aria-label="Photo description"
               disabled={busy}
-              placeholder="Wide front view"
+              required maxLength={200}
+              placeholder="What does this photo show or help you arrange?"
               value={name}
               onChange={(event) => setName(event.target.value)}
             />
-            <input
-              aria-label="Named viewpoint"
-              disabled={busy}
-              placeholder="Front yard"
-              value={viewpoint}
-              onChange={(event) => setViewpoint(event.target.value)}
-            />
+            </label>
             <label className="file-button">
-              Add installation photo
+              Choose photo
               <input
+                ref={photoFileInput}
+                aria-label="Photo file"
                 accept="image/jpeg,image/png,image/webp"
                 disabled={busy}
                 type="file"
                 onChange={(event) => {
                   const file = event.target.files?.[0];
-                  if (file) {
-                    void upload(file);
-                  }
+                  setPhotoFile(file ?? null);
                 }}
               />
             </label>
-          </div>
+            <button type="submit" className="primary-button" disabled={busy || !photoFile || !name.trim()}>{busy ? "Adding…" : "Add installation photo"}</button>
+            {photoFile && <small>{photoFile.name}</small>}
+          </form>
         )}
-        {error && <p role="alert">{error}</p>}
+        {error && <><p role="alert">{error}</p><button onClick={() => void load()}>Retry installation data</button></>}
         {photos.length ? (
           <div className="installation-photos">
             {photos.map((photo) => (
@@ -376,10 +419,15 @@ function InstallationPhotos({
                 photo={photo}
                 canEdit={canEdit}
                 onRefresh={load}
+                mappedCount={geometry.filter((item) => item.photo_id === photo.id).length}
+                onLayout={() => {
+                  if (layoutChanged && photo.id !== layoutPhotoId && !window.confirm("Discard unsaved layout changes and open another photo?")) return;
+                  setLayoutPhotoId(photo.id); setLayoutVisited(true); setLayoutOpen(true); setLayoutRequest((value) => value + 1);
+                }}
               />
             ))}
           </div>
-        ) : (
+        ) : photoLoadFailed ? <ErrorState title="Photo library unavailable" description="Retry loading photos before adding or arranging them." /> : !photosLoaded ? <p>Loading photos…</p> : (
           <EmptyState
             title="No installation photos"
             description="Add wide views, close-ups, or alternate angles before mapping geometry."
@@ -387,15 +435,25 @@ function InstallationPhotos({
         )}
       </Panel>
       {photos.length > 0 && (
+        <details ref={layout} className="installation-layout" open={layoutOpen}
+          onToggle={(event) => {
+            setLayoutOpen(event.currentTarget.open);
+            if (event.currentTarget.open) setLayoutVisited(true);
+          }}>
+        <summary>Layout</summary>
+        {layoutVisited && <>
         <Panel
           title="Visual Mapper"
-          description="Geometry, projector transforms, lighting surfaces, and diagnostics"
+          description="Select an existing decoration to edit it, or choose Add. This is layout and wiring setup, not show playback."
         >
           <GeometryMapper
             installationId={installationId}
             projectorResources={projectorResources}
             pixelResources={pixelResources}
             photos={photos}
+            initialPhotoId={layoutPhotoId}
+            openRequest={layoutRequest}
+            onDirtyChange={updateLayoutDirty}
             geometry={geometry}
             imageAssets={imageAssets}
             overlaps={overlaps}
@@ -406,137 +464,10 @@ function InstallationPhotos({
             onRefresh={load}
           />
         </Panel>
+        </>}
+        </details>
       )}
     </div>
-  );
-}
-
-function InstallationPhotoCard({
-  photo,
-  canEdit,
-  onRefresh,
-}: {
-  photo: InstallationPhoto;
-  canEdit: boolean;
-  onRefresh: () => Promise<void>;
-}) {
-  const [name, setName] = useState(photo.name);
-  const [viewpoint, setViewpoint] = useState(photo.viewpoint);
-  const [orientation, setOrientation] = useState(photo.orientation_degrees);
-  const [scaleHint, setScaleHint] = useState(photo.scale_hint?.toString() ?? "");
-  const [crop, setCrop] = useState({
-    x: photo.crop_x?.toString() ?? "",
-    y: photo.crop_y?.toString() ?? "",
-    width: photo.crop_width?.toString() ?? "",
-    height: photo.crop_height?.toString() ?? "",
-  });
-  const [saving, setSaving] = useState(false);
-
-  async function save() {
-    setSaving(true);
-    try {
-      await updateInstallationPhoto(photo, {
-        name,
-        viewpoint,
-        orientation_degrees: orientation,
-        crop_x: crop.x ? Number(crop.x) : null,
-        crop_y: crop.y ? Number(crop.y) : null,
-        crop_width: crop.width ? Number(crop.width) : null,
-        crop_height: crop.height ? Number(crop.height) : null,
-        scale_hint: scaleHint ? Number(scaleHint) : null,
-      });
-      await onRefresh();
-    } finally {
-      setSaving(false);
-    }
-
-
-  }
-
-  async function remove() {
-    setSaving(true);
-    try {
-      await deleteInstallationPhoto(photo);
-      await onRefresh();
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  return (
-    <article>
-      <img
-        alt={`${photo.name}, ${photo.viewpoint}`}
-        src={installationPhotoUrl(photo.id)}
-        style={{ transform: `rotate(${photo.orientation_degrees}deg)` }}
-      />
-      <strong>{photo.name}</strong>
-      <small>
-        {photo.viewpoint} · {(photo.size_bytes / 1_000_000).toFixed(1)} MB
-      </small>
-      {canEdit && (
-        <>
-          <input
-            aria-label={`Name for photo ${photo.name}`}
-            disabled={saving}
-            value={name}
-            onChange={(event) => setName(event.target.value)}
-          />
-          <input
-            aria-label={`Viewpoint for photo ${photo.name}`}
-            disabled={saving}
-            value={viewpoint}
-            onChange={(event) => setViewpoint(event.target.value)}
-          />
-          <select
-            aria-label={`Orientation for photo ${photo.name}`}
-            disabled={saving}
-            value={orientation}
-            onChange={(event) =>
-              setOrientation(Number(event.target.value) as 0 | 90 | 180 | 270)
-            }
-          >
-            {[0, 90, 180, 270].map((degrees) => (
-              <option key={degrees} value={degrees}>
-                {degrees}°
-              </option>
-            ))}
-          </select>
-          <input
-            aria-label={`Scale hint for photo ${photo.name}`}
-            disabled={saving}
-            min="0.001"
-            placeholder="Pixels per meter"
-            step="any"
-            type="number"
-            value={scaleHint}
-            onChange={(event) => setScaleHint(event.target.value)}
-          />
-          {(["x", "y", "width", "height"] as const).map((field) => (
-            <input
-              key={field}
-              aria-label={`Crop ${field} for photo ${photo.name}`}
-              disabled={saving}
-              max="1"
-              min={field === "width" || field === "height" ? "0.001" : "0"}
-              placeholder={`Crop ${field} (0–1)`}
-              step="0.001"
-              type="number"
-              value={crop[field]}
-              onChange={(event) =>
-                setCrop((current) => ({ ...current, [field]: event.target.value }))
-              }
-            />
-          ))}
-          <button disabled={saving || !name.trim() || !viewpoint.trim()} onClick={() => void save()}>
-            Save photo
-          </button>
-          <button className="danger-button" disabled={saving} onClick={() => void remove()}>
-            Remove photo
-          </button>
-        </>
-      )}
-    </article>
   );
 }
 
@@ -571,6 +502,9 @@ function GeometryMapper({
   canEdit,
   canPreview,
   onRefresh,
+  initialPhotoId,
+  openRequest,
+  onDirtyChange,
 }: {
   installationId: string;
   projectorResources: string[];
@@ -584,8 +518,28 @@ function GeometryMapper({
   canEdit: boolean;
   canPreview: boolean;
   onRefresh: () => Promise<void>;
+  initialPhotoId: string | null;
+  openRequest: number;
+  onDirtyChange: (dirty: boolean) => void;
 }) {
-  const [photoId, setPhotoId] = useState(photos[0]?.id ?? "");
+  const [photoId, setPhotoId] = useState(initialPhotoId ?? photos[0]?.id ?? "");
+  const [adding, setAdding] = useState(false);
+  const [changed, setChanged] = useState(false);
+  const [savingGeometry, setSavingGeometry] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  useEffect(() => {
+    onDirtyChange(changed);
+    const guard = (event: BeforeUnloadEvent) => { if (changed) event.preventDefault(); };
+    window.addEventListener("beforeunload", guard);
+    return () => window.removeEventListener("beforeunload", guard);
+  }, [changed, onDirtyChange]);
+  useEffect(() => () => onDirtyChange(false), [onDirtyChange]);
+  useEffect(() => {
+    if (initialPhotoId && initialPhotoId !== photoId) { reset(); setPhotoId(initialPhotoId); }
+  }, [initialPhotoId, openRequest]);
+  useEffect(() => {
+    if (!photos.some((value) => value.id === photoId)) { reset(); setPhotoId(photos[0]?.id ?? ""); }
+  }, [photos, photoId]);
   const [kind, setKind] = useState<InstallationGeometryKind>("projector_surface");
   const [name, setName] = useState("");
   const [points, setPoints] = useState<{ x: number; y: number }[]>([]);
@@ -782,7 +736,7 @@ function GeometryMapper({
   const closed = ["output", "projector_surface", "mask", "audience_zone", "safety_zone"].includes(
     kind,
   );
-  const wiringDiagnostics = geometryDiagnostics(visible);
+  const diagnostics = mapperDiagnostics(geometry, allocationResources, photo?.id);
   const firstPixel = Number(startIndex);
   const numberOfPixels = Number(pixelCount);
   const selectedPixelOutput = pixelResources.find(
@@ -826,9 +780,6 @@ function GeometryMapper({
           (pixelGenerator !== "ring" || numberOfPixels <= 500));
 
   useEffect(() => {
-    if (kind !== "pixel_segment") {
-      return;
-    }
     let cancelled = false;
     setAllocationLoading(true);
     setAllocationCheckError(false);
@@ -854,7 +805,7 @@ function GeometryMapper({
     return () => {
       cancelled = true;
     };
-  }, [geometry, kind]);
+  }, [geometry]);
 
   useEffect(() => {
     if (!simulationOverlay) {
@@ -891,6 +842,9 @@ function GeometryMapper({
   }, [geometry, simulationOverlay]);
 
   async function beginEdit(item: InstallationGeometry) {
+    if (editing?.id === item.id && !adding) return;
+    if (changed && !window.confirm("Discard unsaved layout changes and select this object?")) return;
+    setAdding(false); setChanged(false); setSaveError(null);
     setTraversalPreview(false);
     setCreationMethod("trace");
     setEditing(item);
@@ -994,6 +948,7 @@ function GeometryMapper({
   }
 
   function reset() {
+    setAdding(false); setChanged(false); setSaveError(null);
     setEditing(undefined);
     setName("");
     setPoints([]);
@@ -1010,6 +965,7 @@ function GeometryMapper({
     setPoints(suggestion.points);
     setEditing(undefined);
     setLinkedSemanticId(null);
+    setAdding(true); setChanged(true);
     await onRefresh();
   }
 
@@ -1022,6 +978,9 @@ function GeometryMapper({
     if (!photo || !name.trim()) {
       return;
     }
+    setSavingGeometry(true); setSaveError(null);
+    let geometrySaved = false;
+    try {
     const saved = await saveInstallationGeometry(
       installationId,
       {
@@ -1051,6 +1010,8 @@ function GeometryMapper({
       },
       editing,
     );
+    geometrySaved = true;
+    setEditing(saved);
     if (
       kind === "projector_surface" &&
       (mappingValues.surface_model === "planar" ? points.length === 4 : points.length >= 5)
@@ -1083,6 +1044,14 @@ function GeometryMapper({
     }
     reset();
     await onRefresh();
+    } catch (failure) {
+      const detail = failure instanceof Error ? failure.message : "The request failed.";
+      setSaveError(geometrySaved
+        ? `The layout object was saved, but its mapping could not be completed. Your settings are retained; retry updates the saved object. ${detail}`
+        : `Layout changes could not be saved. ${detail}`);
+    } finally {
+      setSavingGeometry(false);
+    }
   }
 
   function generatePixelLayout() {
@@ -1240,12 +1209,25 @@ function GeometryMapper({
   return (
     <section className="geometry-mapper">
       <div className="geometry-mapper__tools">
+        {canEdit && <details className="layout-add">
+          <summary>Add to photo</summary>
+          <div className="setup-actions">
+            {GEOMETRY_KINDS.map((value) => <button type="button" key={value} onClick={(event) => {
+              if (changed && !window.confirm("Discard unsaved layout changes and add a new object?")) return;
+              reset(); setKind(value); setAdding(true);
+              event.currentTarget.closest("details")?.removeAttribute("open");
+            }}>{value === "pixel_segment" ? "LED segment" : value === "projector_surface" ? "Projector area" : value.replaceAll("_", " ")}</button>)}
+          </div>
+        </details>}
         <label>
-          Viewpoint
-          <select value={photo?.id} onChange={(event) => setPhotoId(event.target.value)}>
+          Photo view
+          <select value={photo?.id} onChange={(event) => {
+            if (changed && !window.confirm("Discard unsaved layout changes and change photo?")) return;
+            reset(); setPhotoId(event.target.value);
+          }}>
           {photos.map((candidate) => (
             <option key={candidate.id} value={candidate.id}>
-              {candidate.viewpoint} · {candidate.name}
+              {candidate.description ?? candidate.name}
             </option>
           ))}
           </select>
@@ -1348,17 +1330,20 @@ function GeometryMapper({
           </>
         )}
       </div>
-      <div className={`geometry-mapper__workspace${canEdit ? "" : " geometry-mapper__workspace--readonly"}`}>
-      {canEdit && (
+      <div className={`geometry-mapper__workspace${canEdit ? "" : " geometry-mapper__workspace--readonly"}${!adding && !editing ? " geometry-mapper__workspace--browse" : ""}`}>
+      {(adding || editing) && (
       <aside className="geometry-mapper__inspector" aria-label="Geometry properties">
+        <fieldset className="geometry-inspector-fields" disabled={!canEdit || savingGeometry} onChangeCapture={() => setChanged(true)}>
         <div className="geometry-mapper__fields">
           <h3>{kind === "pixel_segment" ? "Segment properties" : "Geometry properties"}</h3>
           <label>
             Geometry type
             <select
               value={kind}
+              disabled={Boolean(editing)}
               onChange={(event) => {
                 reset();
+                setAdding(true);
                 setKind(event.target.value as InstallationGeometryKind);
                 setCreationMethod("trace");
               }}
@@ -1455,10 +1440,10 @@ function GeometryMapper({
                 Some existing LED allocations could not be checked. Review output ranges before saving.
               </small>
             )}
-            <label>
+            <details className="geometry-mapper__group"><summary>Optional strand label</summary><label>
               Strand ID
               <input value={lightingValues.strand_id} placeholder="e.g. lower" onChange={(event) => setLightingValues((current) => ({ ...current, strand_id: event.target.value }))} />
-            </label>
+            </label></details>
           </>
           )}
           {(kind === "pixel_segment" || kind === "path") && (
@@ -1638,9 +1623,7 @@ function GeometryMapper({
           </details>
         </div>
       {canEdit && kind === "projector_surface" && (
-        <details className="geometry-mapper__group" open>
-        <summary>Projector mapping</summary>
-        <div className="projector-mapping-controls">
+        <>
           <label>
             Projector resource
             <select
@@ -1654,6 +1637,9 @@ function GeometryMapper({
               ))}
             </select>
           </label>
+        <details className="geometry-mapper__group">
+        <summary>Projector mapping</summary>
+        <div className="projector-mapping-controls">
           <label>
             Calibration content
             <select
@@ -2000,6 +1986,7 @@ function GeometryMapper({
           ))}
         </div>
         </details>
+        </>
       )}
       {canEdit &&
         editing?.kind === "projector_surface" &&
@@ -2007,6 +1994,7 @@ function GeometryMapper({
           (item) =>
             item.kind === "projector_surface" && item.id !== editing.id,
         ) && (
+          <details className="geometry-mapper__group"><summary>Multi-projector overlap calibration</summary>
           <div className="projector-mapping-controls overlap-calibration">
             <strong>Projector overlap calibration</strong>
             <label>
@@ -2117,6 +2105,7 @@ function GeometryMapper({
               aria-label="Non-destructive overlap calibration preview"
             />
           </div>
+          </details>
         )}
       {canEdit && kind === "pixel_segment" && (
           <>
@@ -2511,14 +2500,16 @@ function GeometryMapper({
             }
             onClick={() => void save()}
           >
-            {editing ? "Update geometry" : kind === "pixel_segment" ? "Save segment" : "Save geometry"}
+            {savingGeometry ? "Saving…" : editing ? "Update geometry" : kind === "pixel_segment" ? "Save segment" : "Save geometry"}
           </button>
-          <button onClick={reset}>Cancel</button>
+          <button onClick={() => { if (!changed || window.confirm("Discard unsaved layout changes?")) reset(); }}>Cancel</button>
         </div>
+        {saveError && <ErrorState title="Layout not saved" description={saveError} />}
+        </fieldset>
       </aside>
       )}
       <div className="geometry-mapper__drawing">
-        {canEdit && (
+        {canEdit && (adding || editing) && (
           <>
             <p className="geometry-mapper__instruction">
               {kind === "pixel_segment"
@@ -2540,6 +2531,7 @@ function GeometryMapper({
           </>
         )}
       {stageCoverage && stageCoverage.regions.length > 0 && (
+        <details className="setup-disclosure"><summary>Shared projector stage coverage (advanced)</summary>
         <section className="stage-coverage">
           <strong>Shared stage coverage</strong>
           <small>
@@ -2652,6 +2644,7 @@ function GeometryMapper({
               })}
           </svg>
         </section>
+        </details>
       )}
       {photo && traversalPreview && kind === "pixel_segment" &&
         !allocationLoading && !allocationCheckError && selectedPixelOutput?.pixel_count != null &&
@@ -2698,8 +2691,15 @@ function GeometryMapper({
           key={photo.id}
           label={`Geometry editor for ${photo.name}`}
           className={`geometry-canvas${traversalPreview ? " geometry-canvas--traversal" : ""}${traversalPreview && kind === "path" ? " geometry-canvas--path-traversal" : ""}${simulationOverlay ? " geometry-canvas--simulation" : ""}`}
-          canEdit={canEdit}
+          canEdit={canEdit && !editing?.locked}
+          drawing={adding}
+          canDraw={adding || Boolean(editing)}
+          onSelectGeometry={(id) => {
+            const selected = geometry.find((item) => item.id === id);
+            if (selected) void beginEdit(selected);
+          }}
           onPlacePoint={(point) => {
+            setChanged(true);
             const maximum =
               kind === "fixture"
                 ? 1
@@ -2719,6 +2719,7 @@ function GeometryMapper({
             ]);
           }}
           onMovePoint={(index, point) => {
+            setChanged(true);
             const next = {
               x: Math.max(0, Math.min(1, point.x)),
               y: Math.max(0, Math.min(1, point.y)),
@@ -2747,11 +2748,20 @@ function GeometryMapper({
             />
           )}
           {(simulationOverlay ? simulationGeometry : visible).map((item) => (
+            <g key={item.id} data-layout-object={item.id} data-selected={editing?.id === item.id ? "true" : undefined}>
             <GeometryShape
-              key={item.id}
               geometry={item}
               simulation={simulationOverlay}
             />
+            {item.kind === "fixture" && item.points[0] ? <circle className="layout-hit-target"
+              cx={item.points[0].x * 1000} cy={item.points[0].y * 600} r={18 / zoom} fill="transparent" />
+              : item.closed ? <polygon className="layout-hit-target"
+                points={item.points.map((point) => `${point.x * 1000},${point.y * 600}`).join(" ")}
+                fill="transparent" stroke="transparent" strokeWidth={14 / zoom} />
+              : <polyline className="layout-hit-target"
+                points={item.points.map((point) => `${point.x * 1000},${point.y * 600}`).join(" ")}
+                fill="none" stroke="transparent" strokeWidth={14 / zoom} />}
+            </g>
           ))}
           {simulationOverlay &&
             simulationGeometry
@@ -2859,6 +2869,7 @@ function GeometryMapper({
         </div>
       )}
       {points.length >= 2 && (
+        <details><summary>Point measurements</summary>
         <small>
           Last segment:{" "}
           {Math.hypot(
@@ -2867,12 +2878,19 @@ function GeometryMapper({
           ).toFixed(4)}{" "}
           normalized units
         </small>
+        </details>
       )}
-      {wiringDiagnostics.map((diagnostic) => (
+      {allocationCheckError && <p role="alert">Some output assignments could not be checked. Review LED mappings before relying on wiring diagnostics.</p>}
+      {diagnostics.conflicts.map((diagnostic) => (
         <small className="asset-diagnostic--warning" key={diagnostic}>{diagnostic}</small>
       ))}
+      {diagnostics.observations.length > 0 && <details className="setup-disclosure"><summary>Photo-space and coverage diagnostics</summary>
+        <p>Photos project a three-dimensional display into two dimensions. Overlap or separation on a photo does not prove a wiring fault.</p>
+        {diagnostics.observations.map((diagnostic) => <p key={diagnostic}>{diagnostic}</p>)}
+      </details>}
       </div>
       </div>
+      {!adding && !editing && <p className="muted">Select a decoration on the photo or in the list. Use Add to photo to draw a new one.</p>}
       {visibleSuggestions.length > 0 && (
         <ul className="geometry-list geometry-suggestion-list">
           {visibleSuggestions.map((suggestion) => (
@@ -2907,13 +2925,13 @@ function GeometryMapper({
             <span>
               <strong>{item.name}</strong>
               <small>
-                {item.kind.replaceAll("_", " ")} · {item.points.length} points · semantic{" "}
-                {item.semantic_id.slice(0, 8)}
+                {item.kind.replaceAll("_", " ")} · {item.points.length} points
                 {item.start_index !== null && item.pixel_count !== null
                   ? ` · pixels ${item.start_index}–${item.start_index + item.pixel_count - 1} ${item.direction}`
                   : ` · ${item.direction}`}
               </small>
             </span>
+            <button aria-pressed={editing?.id === item.id} onClick={() => void beginEdit(item)}>Select</button>
             {canEdit && (
               <>
                 <button disabled={item.locked} onClick={() => void beginEdit(item)}>Edit</button>
@@ -3328,63 +3346,6 @@ function filterSimulationGeometry(
     : [];
 }
 
-function geometryDiagnostics(geometry: InstallationGeometry[]): string[] {
-  const diagnostics: string[] = [];
-  const segments = geometry
-    .filter(
-      (item) =>
-        item.kind === "pixel_segment" &&
-        item.start_index !== null &&
-        item.pixel_count !== null,
-    )
-    .sort((left, right) => left.start_index! - right.start_index!);
-  for (let index = 1; index < segments.length; index += 1) {
-    const previous = segments[index - 1];
-    const current = segments[index];
-    const previousEnd = previous.start_index! + previous.pixel_count!;
-    if (current.start_index! < previousEnd) {
-      diagnostics.push(`Pixel index overlap: ${previous.name} and ${current.name}.`);
-    } else if (current.start_index! > previousEnd) {
-      diagnostics.push(`Pixel index gap before ${current.name}.`);
-    }
-
-    const previousPoint =
-      previous.direction === "forward" ? previous.points.at(-1) : previous.points[0];
-    const currentPoint =
-      current.direction === "forward" ? current.points[0] : current.points.at(-1);
-    if (
-      previousPoint &&
-      currentPoint &&
-      Math.hypot(previousPoint.x - currentPoint.x, previousPoint.y - currentPoint.y) >
-        0.05
-    ) {
-      diagnostics.push(`Wiring discontinuity between ${previous.name} and ${current.name}.`);
-    }
-  }
-  for (let leftIndex = 0; leftIndex < geometry.length; leftIndex += 1) {
-    for (let rightIndex = leftIndex + 1; rightIndex < geometry.length; rightIndex += 1) {
-      const left = geometry[leftIndex];
-      const right = geometry[rightIndex];
-      if (left.points.length < 2 || right.points.length < 2) {
-        continue;
-      }
-      const bounds = (item: InstallationGeometry) => ({
-        minX: Math.min(...item.points.map((point) => point.x)),
-        maxX: Math.max(...item.points.map((point) => point.x)),
-        minY: Math.min(...item.points.map((point) => point.y)),
-        maxY: Math.max(...item.points.map((point) => point.y)),
-      });
-      const a = bounds(left);
-      const b = bounds(right);
-      if (a.minX < b.maxX && a.maxX > b.minX && a.minY < b.maxY && a.maxY > b.minY) {
-        const winner = left.z_index >= right.z_index ? left : right;
-        diagnostics.push(`Bounds overlap: ${winner.name} has draw precedence.`);
-      }
-    }
-  }
-  return [...new Set(diagnostics)];
-}
-
 function generateNormalizedPixelLayout(
   mode: "row" | "grid" | "ring" | "outline" | "individual" | "import",
   rows: number,
@@ -3455,6 +3416,7 @@ function DeviceManagement({
   const [deviceKind, setDeviceKind] =
     useState<PairingToken["device_kind"]>("direct_media_agent");
   const [pairingToken, setPairingToken] = useState<PairingToken | null>(null);
+  const pairingSection = useRef<HTMLDetailsElement>(null);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [now, setNow] = useState(Date.now());
@@ -3564,12 +3526,19 @@ function DeviceManagement({
 
   return (
     <Panel
-      title="Device Management"
-      description="Administrator-only enrollment and connection expectations"
+      title="Connect and manage devices"
+      description="Enrollment establishes trust. Assign a display role afterward; connection alone is not readiness."
       className="device-management"
     >
+      {canAdminister && <button className="primary-button" onClick={() => {
+        if (pairingSection.current) {
+          pairingSection.current.open = true;
+          pairingSection.current.scrollIntoView({ block: "start" });
+        }
+      }}>Add a device</button>}
       <div className="device-management__grid">
         {canAdminister && (
+          <details className="device-management__wide"><summary>Find another controller (advanced)</summary>
           <section
             className="device-management__wide"
             aria-labelledby="endpoint-discovery-title"
@@ -3649,13 +3618,14 @@ function DeviceManagement({
               </p>
             )}
           </section>
+          </details>
         )}
-        {canAdminister && <section aria-labelledby="pair-device-title">
+        {canAdminister && <details ref={pairingSection} className="device-management__wide"><summary>Device enrollment</summary><section aria-labelledby="pair-device-title">
           <h3 id="pair-device-title">Pair a device</h3>
           {enrollmentSupported ? (
             <>
               <label>
-                Device kind
+                1. What are you connecting?
                 <select
                   value={deviceKind}
                   onChange={(event) => {
@@ -3666,10 +3636,20 @@ function DeviceManagement({
                     setPairingToken(null);
                   }}
                 >
-                  <option value="direct_media_agent">Direct media agent</option>
-                  <option value="downstream_controller">Downstream controller</option>
+                  <option value="direct_media_agent">Media player</option>
+                  <option value="downstream_controller">Another Cueverge controller</option>
                 </select>
               </label>
+              <p>2. Check the device's declared capabilities. A compatible declaration is not proof that the device is connected or ready.</p>
+              <label>Capability file from the device<input type="file" accept="application/json,.json" onChange={async (event) => {
+                const file = event.target.files?.[0];
+                if (!file) return;
+                if (file.size > 65536) { setError("The capability file exceeds 64 KiB. Use advanced declaration editing if needed."); return; }
+                try { setCapabilityJson(await file.text()); setCapabilityReview(null); setError(null); }
+                catch { setError("The capability file could not be read."); }
+              }} /></label>
+              <details><summary>Advanced declaration editing</summary>
+              <p>The starting template is an example, not a device observation. Declare only capabilities verified on the device.</p>
               <label>
                 Capability document
                 <textarea
@@ -3683,6 +3663,7 @@ function DeviceManagement({
                   }}
                 />
               </label>
+              </details>
               <button disabled={reviewing} onClick={() => void reviewCapabilities()}>
                 {reviewing ? "Reviewing…" : "Review capabilities"}
               </button>
@@ -3756,10 +3737,10 @@ function DeviceManagement({
               )}
             </>
           ) : (
-            <p className="muted">Device enrollment is disabled on this controller.</p>
+            <p className="muted">Device enrollment is disabled on this controller. The host administrator must enable verified TLS enrollment and the authenticated device listener before pairing.</p>
           )}
-        </section>}
-        {canAdminister && <section aria-labelledby="connection-policy-title">
+        </section></details>}
+        {canAdminister && <details><summary>Connection expectations</summary><section aria-labelledby="connection-policy-title">
           <h3 id="connection-policy-title">Connection expectations</h3>
           <div className="policy-list">
             {agents.map((agent) => (
@@ -3771,8 +3752,8 @@ function DeviceManagement({
               />
             ))}
           </div>
-        </section>}
-        {canAdminister && <section className="device-management__wide" aria-labelledby="device-lifecycle-title">
+        </section></details>}
+        {canAdminister && <details className="device-management__wide"><summary>Advanced device controls</summary><section className="device-management__wide" aria-labelledby="device-lifecycle-title">
           <h3 id="device-lifecycle-title">Device lifecycle</h3>
           <div className="policy-list">
             {agents.map((agent) => (
@@ -3784,8 +3765,8 @@ function DeviceManagement({
               />
             ))}
           </div>
-        </section>}
-        {canAdminister && <section className="device-management__wide" aria-labelledby="resource-assignment-title">
+        </section></details>}
+        {canAdminister && <details className="device-management__wide"><summary>Assign display roles</summary><section className="device-management__wide" aria-labelledby="resource-assignment-title">
           <h3 id="resource-assignment-title">Resource assignments</h3>
           <div className="policy-list">
             {installation?.resources
@@ -3812,8 +3793,8 @@ function DeviceManagement({
                 />
               ))}
           </div>
-        </section>}
-        <section className="device-management__wide" aria-labelledby="connection-test-title">
+        </section></details>}
+        <details className="device-management__wide"><summary>Connection checks</summary><section className="device-management__wide" aria-labelledby="connection-test-title">
           <h3 id="connection-test-title">Connection tests</h3>
           <div className="policy-list">
             {agents.map((agent) => (
@@ -3821,6 +3802,7 @@ function DeviceManagement({
             ))}
           </div>
         </section>
+        </details>
       </div>
       {error && <p role="alert">{error}</p>}
     </Panel>
@@ -4146,6 +4128,7 @@ function ConnectionPolicy({
 }
 
 function NodeCard({ node }: { node: TopologyNode }) {
+  const [detailsOpen, setDetailsOpen] = useState(false);
   const connection = connectionStatus(node);
   const media = mediaCapability(node.capability_document);
   const cache = cacheCapability(node.capability_document);
@@ -4171,6 +4154,19 @@ function NodeCard({ node }: { node: TopologyNode }) {
         </div>
         <StatusText tone={connection.tone}>{connection.label}</StatusText>
       </header>
+      <p className="topology-node__summary">
+        {node.kind === "controller" ? "Your Cueverge controller" :
+          node.assigned_resources.length ? `Used for ${node.assigned_resources.join(", ")}` :
+            node.kind === "controller_output" && node.reported_pixel_count != null ? `${node.reported_pixel_count} LEDs` :
+              "No display role assigned yet"}
+      </p>
+      {node.compatibility === "conflict" && <p role="alert">{node.compatibility_detail ?? "This device is incompatible with the controller."}</p>}
+      {(node.failed_transfers ?? 0) > 0 && <p role="alert">{node.failed_transfers} asset transfers failed. Open details for troubleshooting.</p>}
+      {node.artifact_faults?.map((fault) => <p role="alert" key={fault}>{fault}</p>)}
+      {(node.enrollment === "suspended" || node.enrollment === "revoked") && <small>{enrollmentLabel(node)}</small>}
+      {node.diagnostic && <p role="status">{node.diagnostic}</p>}
+      <button type="button" aria-label={`Details for ${node.label}`} onClick={() => setDetailsOpen(true)}>Device details</button>
+      {detailsOpen && <DetailsDialog title={`Device details: ${node.label}`} onClose={() => setDetailsOpen(false)}>
       {(node.kind === "direct_media_agent" || node.kind === "downstream_controller") && (
         <dl className="topology-node__details">
           <Detail
@@ -4378,6 +4374,7 @@ function NodeCard({ node }: { node: TopologyNode }) {
           </p>
         </>
       )}
+      </DetailsDialog>}
     </article>
   );
 }
@@ -4409,19 +4406,6 @@ function Summary({
       <StatusText tone={tone}>{detail}</StatusText>
     </article>
   );
-}
-
-function connectionStatus(node: TopologyNode): { tone: StatusTone; label: string } {
-  if (node.connection === "connected") {
-    return { tone: "success", label: "Connected" };
-  }
-  if (node.connection === "disconnected") {
-    if (node.connection_policy === "on_demand") {
-      return { tone: "neutral", label: "Standby" };
-    }
-    return { tone: "warning", label: "Disconnected" };
-  }
-  return { tone: "neutral", label: "Not independently detectable" };
 }
 
 function mediaCapability(

@@ -79,10 +79,10 @@ test("direct editing, publishing, and activation are independently opt-in", asyn
   await waitFor(() => expect(mocks.getMcpTokens).toHaveBeenCalled());
 
   const directEdit = screen.getByLabelText(
-    "Edit working drafts directly (no proposal approval)",
+    "Edit working drafts directly and run offline bakes (no proposal approval)",
   );
   const publish = screen.getByLabelText(
-    "Approve releases, publish, and stage packages",
+    "Run offline bakes, approve releases, publish, and stage packages",
   );
   const activate = screen.getByLabelText("Activate staged packages (live output)");
   expect(directEdit).not.toBeChecked();
@@ -129,10 +129,10 @@ test("new scope choices follow effective permissions and drop revoked selections
     />,
   );
   expect(screen.getByLabelText(
-    "Edit working drafts directly (no proposal approval)",
+    "Edit working drafts directly and run offline bakes (no proposal approval)",
   )).toBeEnabled();
   expect(screen.getByLabelText(
-    "Approve releases, publish, and stage packages",
+    "Run offline bakes, approve releases, publish, and stage packages",
   )).toBeDisabled();
   const activate = screen.getByLabelText("Activate staged packages (live output)");
   expect(activate).toBeDisabled();

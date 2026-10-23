@@ -1,4 +1,5 @@
 import { expect, Page, test } from "@playwright/test";
+import { openAdvancedShowWorkspace } from "./show-workspace";
 
 let savedDraft: Record<string, unknown> | null = null;
 
@@ -41,6 +42,7 @@ test("timeline ruler markers regions loop and snapping persist", async ({ page }
 
   await page.goto("/demo.html");
   await page.getByRole("button", { name: "Shows", exact: true }).click();
+  await openAdvancedShowWorkspace(page);
   await page.getByText("Timeline editor", { exact: true }).click();
 
   await expect(page.getByText("0s", { exact: true })).toBeVisible();
@@ -278,6 +280,7 @@ test("controller clock can be selected with media outputs and saved", async ({ p
   await installTimelineRoutes(page);
   await page.goto("/demo.html");
   await page.getByRole("button", { name: "Shows", exact: true }).click();
+  await openAdvancedShowWorkspace(page);
   await page.getByText("Timeline editor", { exact: true }).click();
   await page.getByLabel("Clock authority").selectOption("controller_timed");
   await expect(page.getByLabel("Clock source")).toBeDisabled();
@@ -308,6 +311,7 @@ test("LED-only scene remains valid and saves without media dependencies", async 
   await installTimelineRoutes(page, document);
   await page.goto("/demo.html");
   await page.getByRole("button", { name: "Shows", exact: true }).click();
+  await openAdvancedShowWorkspace(page);
   await page.getByText("Timeline editor", { exact: true }).click();
   await expect(page.getByLabel("Clock authority")).toHaveValue("controller_timed");
   await expect(page.getByLabel("Timeline validation")).toContainText("Timeline valid");
@@ -327,6 +331,10 @@ test("timeline marker workflow is keyboard operable", async ({ page }) => {
   await page.goto("/demo.html");
 
   await page.getByRole("button", { name: "Shows", exact: true }).focus();
+  await page.keyboard.press("Enter");
+  await page.getByRole("button", { name: /^Open show / }).first().focus();
+  await page.keyboard.press("Enter");
+  await page.getByText("Advanced authoring and history", { exact: true }).focus();
   await page.keyboard.press("Enter");
   await page.getByText("Timeline editor", { exact: true }).focus();
   await page.keyboard.press("Enter");
@@ -378,6 +386,7 @@ test("maximum asset collection remains virtualized", async ({ page }) => {
   await installTimelineRoutes(page, document, assets);
   await page.goto("/demo.html");
   await page.getByRole("button", { name: "Shows", exact: true }).click();
+  await openAdvancedShowWorkspace(page);
 
   const assetList = page.locator(
     '.virtual-list[aria-label="Assets in Home Show"]',
@@ -401,6 +410,7 @@ test("maximum timeline marker collection remains virtualized", async ({ page }) 
   await installTimelineRoutes(page, document);
   await page.goto("/demo.html");
   await page.getByRole("button", { name: "Shows", exact: true }).click();
+  await openAdvancedShowWorkspace(page);
   const startedAt = Date.now();
   await page.getByText("Timeline editor", { exact: true }).click();
   const markerList = page.locator(
@@ -465,6 +475,7 @@ test("semantic autonomous show logic persists from the project workspace", async
 
   await page.goto("/demo.html");
   await page.getByRole("button", { name: "Shows", exact: true }).click();
+  await openAdvancedShowWorkspace(page);
   await page.getByText("Autonomous show logic designer", { exact: true }).click();
   await page
     .getByRole("button", { name: "Visitor interaction template" })
@@ -641,6 +652,7 @@ test("approved revision can be compared rehearsed published and staged", async (
 
   await page.goto("/demo.html");
   await page.getByRole("button", { name: "Shows", exact: true }).click();
+  await openAdvancedShowWorkspace(page);
   await page
     .getByText("Rehearsal, publication, and rollback", { exact: true })
     .click();

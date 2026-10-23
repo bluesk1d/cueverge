@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { openLayout } from "./setup-workspace";
 
 const installationId = "demo-installation";
 const firstId = "surface-left";
@@ -67,6 +68,8 @@ test("overlap calibration is tunable and non-destructive", async ({ page }) => {
 
   await page.goto("/demo.html");
   await page.getByRole("button", { name: "Installation", exact: true }).click();
+  await openLayout(page);
+  await page.getByText("Shared projector stage coverage (advanced)", { exact: true }).click();
   const mapper = page
     .getByRole("heading", { name: "Visual Mapper" })
     .locator("xpath=ancestor::section");
@@ -94,6 +97,7 @@ test("overlap calibration is tunable and non-destructive", async ({ page }) => {
       .locator(".stage-simulation-motion-path"),
   ).toHaveCount(1);
   await mapper.getByRole("button", { name: "Edit" }).first().click();
+  await mapper.getByText("Multi-projector overlap calibration", { exact: true }).click();
   await mapper.getByLabel("Paired projector surface").selectOption(secondId);
   await mapper.getByLabel("Overlap gamma").fill("1.35");
   await mapper.getByLabel("First brightness").fill("0.82");

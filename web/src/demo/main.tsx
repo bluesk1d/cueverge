@@ -18,6 +18,7 @@ import {
 
 function VisualReviewFixture() {
   const [workspace, setWorkspace] = useState<Workspace>("overview");
+  const [setupSection, setSetupSection] = useState<"photos" | "devices" | "inputs">("photos");
   return (
     <>
       <div className="demo-banner" role="note">
@@ -27,16 +28,20 @@ function VisualReviewFixture() {
         session={demoSession}
         workspace={workspace}
         installation={demoInstallation}
-        installations={demoInstallations}
         runtime={demoRuntime}
-        runtimeError={false}
+        runtimeFreshness="fresh"
+        topologyFreshness="fresh"
         refreshing={false}
-        onNavigate={setWorkspace}
+        onNavigate={(next) => {
+          if (next === "installation") setSetupSection("photos");
+          setWorkspace(next);
+        }}
         onRefresh={() => undefined}
         onSignOut={() => undefined}
       >
         {workspace === "installation" ? (
           <InstallationPage
+            initialSection={setupSection}
             installation={demoInstallation}
             topology={demoTopology}
             installationError={false}
@@ -52,6 +57,7 @@ function VisualReviewFixture() {
             runtime={demoRuntime}
             topology={demoTopology}
             runtimeError={false}
+            runtimeFreshness="fresh"
             loading={false}
             onRefresh={async () => undefined}
           />
@@ -62,15 +68,24 @@ function VisualReviewFixture() {
             onRefresh={async () => undefined}
           />
         ) : workspace === "shows" ? (
-          <ShowsPage session={demoSession} initialProjects={demoProjects} />
+          <ShowsPage session={demoSession} initialProjects={demoProjects}
+            onInputs={() => { setSetupSection("inputs"); setWorkspace("installation"); }} />
         ) : (
           <OverviewPage
+            onManageDevices={() => { setSetupSection("devices"); setWorkspace("installation"); }}
             installation={demoInstallation}
             runtime={demoRuntime}
+            topology={demoTopology}
+            runtimeFreshness="fresh"
+            topologyFreshness="fresh"
             activity={demoActivity}
             installationError={false}
             runtimeError={false}
             loading={false}
+            onNavigate={(next) => {
+              if (next === "installation") setSetupSection("photos");
+              setWorkspace(next);
+            }}
           />
         )}
       </AppShell>

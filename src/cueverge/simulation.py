@@ -33,7 +33,7 @@ class SimulationCommandChannel:
 
 
 class ShowSimulation:
-    def __init__(self, catalog: SceneCatalog) -> None:
+    def __init__(self, catalog: SceneCatalog, *, automatic_rendering: bool = True) -> None:
         self.clock = SimulationClock()
         lighting_resources = sorted(
             {
@@ -44,11 +44,11 @@ class ShowSimulation:
         )
         self.sinks = {resource: MemoryFrameSink() for resource in lighting_resources}
         if len(self.sinks) == 1:
-            self.sink = next(iter(self.sinks.values()))
+            self.sink = next(iter(self.sinks.values()), MemoryFrameSink())
             runtime_sink: FrameSink = self.sink
         else:
             runtime_sink = FrameSinkRouter(self.sinks)
-            self.sink = next(iter(self.sinks.values()))
+            self.sink = next(iter(self.sinks.values()), MemoryFrameSink())
         agent_ids = sorted(
             {output.agent_id for scene in catalog.scenes.values() for output in scene.media_outputs}
         )
@@ -77,11 +77,14 @@ class ShowSimulation:
             command_timeout_ms=86_400_000,
             director=director,
             audience=audience,
+            automatic_rendering=automatic_rendering,
         )
         for agent_id, agent in self.agents.items():
             channel = self.channels[agent_id]
             agent.accept_welcome(self.runtime.register_agent(agent.hello(), channel))
         self.scene_history: list[str] = []
+        self.scene_timeline: list[dict[str, object]] = []
+        self.visitor_objects: dict[str, dict[str, Any]] = {}
         self._active_started_at_ms = 0
         self._attached_playback_session_id: str | None = None
         self._attached_playback_sessions: dict[str, str] = {}
@@ -93,7 +96,7 @@ class ShowSimulation:
         self._sync_active()
         await self._acknowledge_prepares()
 
-    async def advance(self, delta_ms: int) -> None:
+    async def advance(self, delta_ms: int, *, render_frames: bool = True) -> None:
         if delta_ms < 0:
             raise ValueError("simulation cannot move backward")
         target_ms = self.clock.now_ms + delta_ms
@@ -124,12 +127,15 @@ class ShowSimulation:
                 )
                 self.runtime.ingest(telemetry)
             await self.runtime.wait_for_lifecycle_idle()
+            self._sync_active()
             if self.runtime.active_scene is None:
                 break
             if self.runtime.active_scene is active:
                 break
             self._sync_active()
         self.clock.now_ms = target_ms
+        if self.runtime.active_scene is not None:
+            self.report_position()
         await self.runtime.tick_encounter()
         self._sync_active()
         await self._acknowledge_prepares()
@@ -137,7 +143,10 @@ class ShowSimulation:
             self.runtime.active_scene is not None
             and self.runtime.active_scene.clock_session is None
         ):
-            self.runtime.render_frame()
+            self.runtime.render_frame(render_pixels=render_frames)
+        await self.runtime.wait_for_lifecycle_idle()
+        self._sync_active()
+        await self._acknowledge_prepares()
 
     async def observe(
         self,
@@ -235,6 +244,9 @@ class ShowSimulation:
     def _sync_active(self) -> None:
         active = self.runtime.active_scene
         if active is None:
+            if self._attached_playback_session_id is not None:
+                self.scene_timeline.append({"scene_id": None, "at_ms": self.clock.now_ms})
+                self._attached_playback_session_id = None
             return
         for session in active.resolved_media_sessions:
             if (
@@ -252,3 +264,4 @@ class ShowSimulation:
         self._active_started_at_ms = self.clock.now_ms
         self._attached_playback_session_id = active.playback_session_id
         self.scene_history.append(active.definition.id)
+        self.scene_timeline.append({"scene_id": active.definition.id, "at_ms": self.clock.now_ms})

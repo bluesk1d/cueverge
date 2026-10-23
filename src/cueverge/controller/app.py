@@ -48,6 +48,8 @@ def create_app(
         gui_config = GuiConfig.from_environment()
         if gui_config is not None:
             configured_gui = GuiServices.create(gui_config, controller)
+    if configured_gui is not None and (ingress is None or isinstance(ingress, FrigateMqttIngress)):
+        ingress = configured_gui.input_source
     mcp_app = create_mcp_app(configured_gui) if configured_gui is not None else None
     device_listener = (
         EmbeddedDeviceListener(
@@ -62,6 +64,8 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+        if configured_gui is not None:
+            await configured_gui.apply.recover()
         controller.start_background_tasks()
         if ingress is not None:
             ingress.start()
@@ -80,6 +84,8 @@ def create_app(
                     await stack.enter_async_context(mcp_app.router.lifespan_context(mcp_app))
                 yield
         finally:
+            if configured_gui is not None:
+                await configured_gui.apply.stop()
             if asset_recovery is not None:
                 await asset_recovery
             if device_listener is not None:

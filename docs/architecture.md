@@ -2,6 +2,21 @@
 
 ## Authority
 
+The accepted [hobbyist authoring and handover decision](decisions/0016-lossless-hobbyist-authoring-and-runtime-handover.md)
+defines the usability implementation's preservation and status contracts and
+its input, apply, Preview, and monitoring gates. UP-01 establishes baselines and
+discovery clarification; later phases implement the new workflows.
+
+UP-04 implements one installation-owned Frigate/MQTT source, independent of
+show drafts. GUI-managed nonsecret settings reference a separate controller-local
+credential file protected by POSIX owner-only permissions; environment-managed
+sources remain read-only. The existing MQTT normalizer/controller ingest path
+supplies live input, with serialized reconfiguration and distinct transport,
+acceptance, freshness and audience evidence. Isolated example checks reuse the
+normalizer/presence estimator without reaching the live runtime.
+See [camera input management](operations.md#camera-input-management) for contracts,
+management precedence and recovery boundaries.
+
 Cueverge deliberately separates two kinds of authority:
 
 - The controller is authoritative for which scene instance is active, its

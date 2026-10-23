@@ -3,7 +3,16 @@ from datetime import date
 from enum import StrEnum
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    JsonValue,
+    SecretStr,
+    computed_field,
+    field_validator,
+    model_validator,
+)
 
 from cueverge.core.models import (
     AudiencePresenceDefinition,
@@ -29,6 +38,46 @@ class Role(StrEnum):
     OPERATOR = "operator"
     PUBLISHER = "publisher"
     ADMINISTRATOR = "administrator"
+
+
+class InputSourceSettings(GuiModel):
+    enabled: bool = False
+    host: str = Field(default="", max_length=253)
+    port: int = Field(default=1883, ge=1, le=65535)
+    tls: bool = False
+    topic: str = Field(default="frigate/events", min_length=1, max_length=256)
+    username: str | None = Field(default=None, max_length=128)
+    accepted_labels: tuple[str, ...] = Field(default=("person",), min_length=1, max_length=50)
+
+    @model_validator(mode="after")
+    def validate_source(self) -> "InputSourceSettings":
+        if self.enabled and not self.host:
+            raise ValueError("A broker hostname is required to enable camera events")
+        if any(character in self.host for character in "/@?#\\ \t\r\n"):
+            raise ValueError("Use a broker hostname or IP address, not a URL or credentials")
+        if "\x00" in self.topic or any(
+            not label.strip() or len(label) > 128 for label in self.accepted_labels
+        ):
+            raise ValueError("Use a valid MQTT topic and nonempty labels of at most 128 characters")
+        return self
+
+
+class ConfigureInputSourceRequest(InputSourceSettings):
+    expected_revision: int | None = Field(default=None, ge=0)
+    password: SecretStr | None = Field(
+        default=None,
+        max_length=4096,
+        description="Write-only; omitted retains the stored credential",
+    )
+    clear_password: bool = False
+
+    @model_validator(mode="after")
+    def validate_password_action(self) -> "ConfigureInputSourceRequest":
+        if self.clear_password and self.password is not None:
+            raise ValueError("Choose either replacement or removal of the password")
+        if self.password is not None and not self.password.get_secret_value():
+            raise ValueError("Use clear_password to remove a stored password")
+        return self
 
 
 def _normalize_folder(value: str | None) -> str | None:
@@ -1048,6 +1097,8 @@ McpScopeValue = Literal[
     "publish",
     "activate",
     "live_operation",
+    "input_config",
+    "installation_edit",
 ]
 
 
@@ -1444,6 +1495,7 @@ class SimulationStepRequest(GuiModel):
         "disconnect",
         "reconnect",
         "output_failure",
+        "visitor",
     ]
     delta_ms: int | None = Field(default=None, ge=0)
     event_type: str | None = Field(default=None, min_length=1)
@@ -1452,6 +1504,12 @@ class SimulationStepRequest(GuiModel):
     agent_id: str | None = Field(default=None, min_length=1)
     resource: str | None = Field(default=None, min_length=1)
     failed: bool | None = None
+    camera: str | None = Field(default=None, min_length=1, max_length=128)
+    zone: str | None = Field(default=None, max_length=128)
+    label: str = Field(default="person", min_length=1, max_length=128)
+    object_id: str = Field(default="preview-visitor", min_length=1, max_length=128)
+    observation: Literal["arrive", "stay", "leave"] = "arrive"
+    age_ms: int = Field(default=0, ge=0, le=600000)
 
     @model_validator(mode="after")
     def validate_step_fields(self) -> "SimulationStepRequest":
@@ -1461,12 +1519,72 @@ class SimulationStepRequest(GuiModel):
             "operator_start": (self.scene_id, "scene_id"),
             "request_scene": (self.scene_id, "scene_id"),
             "output_failure": (self.resource, "resource"),
+            "visitor": (self.camera, "camera"),
         }
         if self.kind in required and required[self.kind][0] is None:
             raise ValueError(f"{self.kind} simulation step requires {required[self.kind][1]}")
         if self.kind == "output_failure" and self.failed is None:
             raise ValueError("output_failure simulation step requires failed")
         return self
+
+
+class GuidedResponseRequest(GuiModel):
+    id: str | None = Field(default=None, min_length=1, max_length=128)
+    name: str = Field(min_length=1, max_length=100)
+    trigger_event: Literal[
+        "audience.arrived",
+        "audience.present",
+        "audience.departed",
+        "audience.long_idle",
+    ]
+    scene_id: str = Field(min_length=1)
+    ttl_ms: int = Field(default=30000, gt=0)
+    min_presence_ms: int = Field(default=0, ge=0)
+    acknowledgement_cooldown_ms: int = Field(default=60000, ge=0)
+    priority: int = Field(default=50, ge=0, le=100)
+    fallback_scene_id: str | None = None
+    prepare_completion: bool = False
+    qualification_context: Literal["preserve", "present", "absent", "any"] = "preserve"
+    min_absence_before_arrival_ms: int | None = Field(default=None, ge=0)
+    qualification_window_ms: int | None = Field(default=None, gt=0)
+    event_ttl_ms: int | None = Field(default=None, gt=0)
+
+
+class InteractionEditRequest(GuiModel):
+    source_revision: int = Field(ge=1)
+    operation: Literal["response", "visitors", "transition"]
+    response: GuidedResponseRequest | None = None
+    visitors: AudiencePresenceDefinition | None = None
+    transition_index: int | None = Field(default=None, ge=0)
+    scene_id: str | None = None
+
+    @model_validator(mode="after")
+    def validate_operation(self) -> "InteractionEditRequest":
+        if self.visitors is not None and any(
+            not value.strip()
+            for value in (*self.visitors.cameras, *self.visitors.zones, *self.visitors.labels)
+        ):
+            raise ValueError("Visitor camera, zone and label names must not be empty")
+        if self.operation == "response" and self.response is None:
+            raise ValueError("Response fields are required")
+        if self.operation == "visitors" and self.visitors is None:
+            raise ValueError("Visitor area fields are required")
+        if self.operation == "transition" and self.transition_index is None:
+            raise ValueError("A transition index is required")
+        if self.operation == "transition" and "scene_id" not in self.model_fields_set:
+            raise ValueError("Choose a response scene, or explicitly use null for no scene request")
+        return self
+
+
+class InteractionPreviewRequest(GuiModel):
+    source_revision: int = Field(ge=1)
+    proposed_draft: DraftProject | None = None
+    proposed_edit: InteractionEditRequest | None = None
+    steps: tuple[SimulationStepRequest, ...] = Field(default=(), max_length=200)
+    frame_index: int | None = Field(default=None, ge=0)
+    starting_scene_id: str | None = None
+    resource: str | None = None
+    pixel_limit: int = Field(default=1000, ge=1, le=4096)
 
 
 class SaveSimulationScenarioRequest(GuiModel):
@@ -1604,6 +1722,22 @@ class InstallationPhotoResponse(GuiModel):
     revision: int = Field(ge=1)
     created_at: str
     updated_at: str
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def description(self) -> str:
+        return self.name
+
+
+class PhotoDescriptionRequest(GuiModel):
+    description: str = Field(min_length=1, max_length=200)
+
+    @field_validator("description")
+    @classmethod
+    def validate_description(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("Describe what the photo shows or is used for")
+        return value
 
 
 class UpdateInstallationPhotoRequest(GuiModel):
@@ -2024,10 +2158,67 @@ class MapperDiagnosticResponse(GuiModel):
     object_ids: tuple[str, ...]
 
 
+class LoadedCatalogIdentity(GuiModel):
+    state: Literal["unreported", "loaded", "recovery_required"] = "unreported"
+    project_id: str | None = None
+    project_name: str | None = None
+    revision: int | None = None
+    digest_sha256: str | None = None
+    loaded_at: str | None = None
+    generation: str | None = None
+    error: str | None = None
+
+    @model_validator(mode="after")
+    def validate_loaded_identity(self) -> "LoadedCatalogIdentity":
+        if self.state == "loaded" and any(
+            value is None
+            for value in (
+                self.project_id,
+                self.revision,
+                self.digest_sha256,
+                self.loaded_at,
+                self.generation,
+            )
+        ):
+            raise ValueError("A loaded catalog requires an acknowledged complete identity")
+        if self.state == "recovery_required" and not self.error:
+            raise ValueError("Recovery-required catalogs must explain the failure")
+        return self
+
+
 class RuntimeStatusResponse(GuiModel):
     observed_at: str
     source: Literal["controller_runtime"] = "controller_runtime"
+    installation_id: str | None = None
+    input_health: dict[str, object] | None = None
+    apply_job: dict[str, object] | None = None
+    loaded_catalog: LoadedCatalogIdentity = LoadedCatalogIdentity()
     status: dict[str, object]
+
+    @model_validator(mode="before")
+    @classmethod
+    def populate_loaded_catalog(cls, value: object) -> object:
+        if isinstance(value, dict) and "loaded_catalog" not in value:
+            status = value.get("status")
+            if isinstance(status, dict) and isinstance(status.get("loaded_catalog"), dict):
+                return {**value, "loaded_catalog": status["loaded_catalog"]}
+        return value
+
+
+class SceneLightingPreviewRequest(GuiModel):
+    source_revision: int = Field(ge=1)
+    scene_id: str = Field(min_length=1)
+    timestamp_ms: int = Field(ge=0)
+    resource: str | None = None
+    pixel_offset: int = Field(default=0, ge=0)
+    pixel_limit: int = Field(default=1000, ge=1, le=4096)
+    proposed_draft: DraftProject | None = None
+
+
+class OutputMonitorRequest(GuiModel):
+    resource: str | None = Field(default=None, min_length=1)
+    pixel_offset: int = Field(default=0, ge=0)
+    pixel_limit: int = Field(default=1000, ge=1, le=1000)
 
 
 class OperateActionRequest(GuiModel):
@@ -2043,6 +2234,7 @@ class OperateActionRequest(GuiModel):
         "blackout",
     ]
     position_ms: int | None = Field(default=None, ge=0)
+    scene_id: str | None = Field(default=None, min_length=1)
 
     @model_validator(mode="after")
     def validate_position(self) -> "OperateActionRequest":
@@ -2050,6 +2242,8 @@ class OperateActionRequest(GuiModel):
             raise ValueError("seek action requires position_ms")
         if self.action != "seek" and self.position_ms is not None:
             raise ValueError("position_ms is valid only for seek")
+        if self.action != "start" and self.scene_id is not None:
+            raise ValueError("scene_id is valid only for start")
         return self
 
 

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
 
 import { App } from "./App";
@@ -10,10 +10,26 @@ import {
   demoTopology,
 } from "./demo/overview-fixtures";
 import { InstallationPage } from "./pages/InstallationPage";
-import { OverviewPage } from "./pages/OverviewPage";
+import { activityFailure, groupActivity, OverviewPage } from "./pages/OverviewPage";
 
 afterEach(() => {
   vi.restoreAllMocks();
+});
+
+test("activity separates audit outcomes from failures and retains reconnect history", () => {
+  const event = demoActivity[0];
+  expect(activityFailure({ ...event, action: "mcp.tool.call", result: "completed" })).toBe(false);
+  expect(activityFailure({ ...event, action: "browser.error", result: "reported" })).toBe(true);
+  expect(activityFailure({ ...event, result: "denied" })).toBe(true);
+  const events = [
+    { ...event, id: 4, occurred_at: "2026-10-22T12:01:00Z" },
+    { ...event, id: 3, action: "device.disconnected", occurred_at: "2026-10-22T12:00:50Z" },
+    { ...event, id: 2, occurred_at: "2026-10-22T12:00:40Z" },
+    { ...event, id: 1, result: "failed", occurred_at: "2026-10-22T12:00:30Z" },
+  ];
+  const groups = groupActivity(events);
+  expect(groups.map((group) => group.map((item) => item.id))).toEqual([[4, 3, 2], [1]]);
+  expect(groups.flat()).toEqual(events);
 });
 
 test("shows the authenticated shell and truthful overview", async () => {
@@ -334,17 +350,26 @@ test("navigates across the exact top-level workspaces", async () => {
 
   fireEvent.click(screen.getByRole("button", { name: "Settings" }));
   expect(screen.getByRole("heading", { name: "Settings" })).toBeInTheDocument();
-  expect(screen.getByRole("heading", { name: "Installations" })).toBeInTheDocument();
+  expect(screen.getByRole("heading", { name: "Your installation" })).toBeInTheDocument();
+  fireEvent.click(screen.getByText("Additional installation records (advanced)", { selector: "summary" }));
   expect(screen.getByRole("button", { name: "Create installation" })).toBeDisabled();
+  fireEvent.click(screen.getByRole("button", { name: "Installation settings" }));
+  fireEvent.click(screen.getByText("Organization (optional)", { selector: "summary" }));
   expect(await screen.findByRole("button", { name: "Delete" })).toBeDisabled();
   expect(
     screen.getByRole("textbox", { name: "Folder for Visual Demo Installation" }),
   ).toHaveValue("Home");
   expect(screen.getByText("Used by Home Show")).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Close" }));
 
   fireEvent.click(screen.getByRole("button", { name: "Installation" }));
-  expect(screen.getByRole("heading", { name: "Network Topology" })).toBeInTheDocument();
-  expect(screen.getByRole("heading", { name: "Device Management" })).toBeInTheDocument();
+  expect(screen.getByRole("heading", { name: "Your installation" })).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Devices" }));
+  expect(screen.getByRole("heading", { name: "Connect and manage devices" })).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Add a device" }));
+  for (const summary of ["Connection expectations", "Advanced device controls", "Assign display roles", "Connection checks", "Find another controller (advanced)"]) {
+    fireEvent.click(screen.getByText(summary, { selector: "summary" }));
+  }
   expect(screen.getByRole("button", { name: "Create one-time token" })).toBeInTheDocument();
   expect(
     screen.getByRole("combobox", { name: "Connection policy for media-client-right" }),
@@ -372,6 +397,10 @@ test("navigates across the exact top-level workspaces", async () => {
 
   fireEvent.click(screen.getByRole("button", { name: "Shows" }));
   expect(await screen.findByRole("heading", { name: "Shows" })).toBeInTheDocument();
+  fireEvent.click(await screen.findByRole("button", { name: "Open show Home Show" }));
+  fireEvent.click(screen.getByText("Show options", { exact: true }));
+  fireEvent.click(screen.getByText("Assets", { exact: true }));
+  fireEvent.click(await screen.findByText("Advanced authoring and history", { exact: true }));
   expect(screen.getByDisplayValue("Home Show")).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Duplicate" })).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Archive" })).toBeInTheDocument();
@@ -397,13 +426,16 @@ test("navigates across the exact top-level workspaces", async () => {
     name: "Search assets in Home Show",
   });
   fireEvent.change(assetSearch, { target: { value: "halloween" } });
-  expect(screen.getByText("Window loop")).toBeInTheDocument();
-  expect(screen.queryByText("Missing loop")).not.toBeInTheDocument();
-  expect(screen.getByText(/Review proxy playback/).closest("video")).toHaveAttribute(
+  const assetArea = screen.getByText("Assets", { exact: true }).closest("details");
+  if (!assetArea) throw new Error("Assets disclosure is missing");
+  const assetQueries = within(assetArea);
+  expect(assetQueries.getByText("Window loop")).toBeInTheDocument();
+  expect(assetQueries.queryByText("Missing loop")).not.toBeInTheDocument();
+  expect(assetQueries.getByText(/Review proxy playback/).closest("video")).toHaveAttribute(
     "src",
     "/api/gui/v1/assets/asset-1/artifacts/review",
   );
-  expect(screen.getByAltText("Waveform for Window loop")).toHaveAttribute(
+  expect(assetQueries.getByAltText("Waveform for Window loop")).toHaveAttribute(
     "src",
     "/api/gui/v1/assets/asset-1/artifacts/waveform",
   );
@@ -412,7 +444,7 @@ test("navigates across the exact top-level workspaces", async () => {
   expect(screen.getByRole("heading", { name: "Show controls" })).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Start show" })).toBeDisabled();
   expect(
-    screen.getByText(/Start is unavailable until all assigned media clients are connected/),
+    screen.getByText(/Start is unavailable until this starting scene's required media devices are connected/),
   ).toBeInTheDocument();
   expect(screen.getByRole("heading", { name: "Runtime counters" })).toBeInTheDocument();
   expect(screen.getByRole("heading", { name: "Recent command failures" })).toBeInTheDocument();
@@ -448,10 +480,15 @@ test("requires authentication before showing private workspaces", async () => {
 });
 
 test("shows supported runtime facts and honest unsupported states", () => {
+  vi.spyOn(globalThis, "fetch").mockImplementation(() => jsonResponse([]));
   render(
     <OverviewPage
       installation={demoInstallation}
       runtime={demoRuntime}
+      topology={demoTopology}
+      runtimeFreshness="fresh"
+      topologyFreshness="fresh"
+      onNavigate={vi.fn()}
       activity={demoActivity}
       installationError={false}
       runtimeError={false}
@@ -461,28 +498,34 @@ test("shows supported runtime facts and honest unsupported states", () => {
 
   expect(screen.getByRole("heading", { name: "Installation Overview" })).toBeInTheDocument();
   expect(screen.getByText("dual-window-sweep")).toBeInTheDocument();
-  expect(screen.getByText("00:24")).toBeInTheDocument();
+  expect(screen.getByText("Position 00:24")).toBeInTheDocument();
   expect(screen.getByText("Show identity unavailable")).toBeInTheDocument();
   expect(screen.getByText("Device Connected")).toBeInTheDocument();
-  expect(screen.getByText(/No next scene or start time is predicted/)).toBeInTheDocument();
+  expect(screen.getByText(/No next start or autonomous scene is predicted/)).toBeInTheDocument();
   expect(screen.getByText("media-client-right")).toBeInTheDocument();
-  expect(screen.getByText("Disconnected")).toBeInTheDocument();
-  expect(screen.getAllByText("Not independently detectable")).toHaveLength(2);
+  expect(screen.getByText("Offline · on demand")).toBeInTheDocument();
+  expect(screen.getByText("Connection not reported")).toBeInTheDocument();
+  expect(screen.getByText("Unknown")).toBeInTheDocument();
 });
 
 test("does not infer status when the runtime request fails", () => {
+  vi.spyOn(globalThis, "fetch").mockImplementation(() => jsonResponse([]));
   render(
     <OverviewPage
       installation={demoInstallation}
       runtime={null}
+      topology={null}
+      runtimeFreshness="unavailable"
+      topologyFreshness="unavailable"
+      onNavigate={vi.fn()}
       installationError={false}
       runtimeError
       loading={false}
     />,
   );
 
-  expect(screen.getByText("Unavailable")).toBeInTheDocument();
-  expect(screen.getByText("Current scene state could not be observed.")).toBeInTheDocument();
+  expect(screen.getByText("Playback unavailable")).toBeInTheDocument();
+  expect(screen.getByText("Status unavailable")).toBeInTheDocument();
   expect(screen.getAllByText("Unknown")).toHaveLength(4);
   expect(screen.queryByText("Running")).not.toBeInTheDocument();
 });
@@ -490,6 +533,7 @@ test("does not infer status when the runtime request fails", () => {
 test("separates topology connectivity, assignment, and unavailable diagnostics", () => {
   render(
     <InstallationPage
+      initialSection="devices"
       installation={demoInstallation}
       topology={demoTopology}
       installationError={false}
@@ -498,17 +542,18 @@ test("separates topology connectivity, assignment, and unavailable diagnostics",
     />,
   );
 
-  expect(screen.getByRole("heading", { name: "Network Topology" })).toBeInTheDocument();
+  expect(screen.getByRole("heading", { name: "Your installation" })).toBeInTheDocument();
   expect(screen.getByRole("heading", { name: "media-client-left" })).toBeInTheDocument();
   expect(screen.getByRole("heading", { name: "media-client-right" })).toBeInTheDocument();
-  expect(screen.getByText("Standby")).toBeInTheDocument();
-  expect(screen.getAllByText("Enrolled")).toHaveLength(2);
-  expect(screen.getAllByText("Not reported").length).toBeGreaterThanOrEqual(4);
-  expect(screen.getAllByText("mp4 · h264")).toHaveLength(2);
-  expect(screen.getAllByText("Pause, Seek")).toHaveLength(2);
+  expect(screen.getByText("Offline · on demand")).toBeInTheDocument();
+  expect(screen.queryByText("mp4 · h264")).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Details for media-client-left" }));
+  expect(screen.getByText("Enrolled")).toBeInTheDocument();
+  expect(screen.getByText("mp4 · h264")).toBeInTheDocument();
+  expect(screen.getByText("Pause, Seek")).toBeInTheDocument();
   expect(screen.getByText("400 GB free of 500 GB")).toBeInTheDocument();
   expect(screen.getByText("12 digest(s) · 8.4 GB · 4 pinned")).toBeInTheDocument();
-  expect(screen.getAllByText("Pinning, Resumable transfer")).toHaveLength(2);
+  expect(screen.getByText("Pinning, Resumable transfer")).toBeInTheDocument();
   expect(screen.getByText("1 active · 0 failed")).toBeInTheDocument();
   expect(screen.getAllByText("projector.left")).not.toHaveLength(0);
 });
@@ -516,6 +561,7 @@ test("separates topology connectivity, assignment, and unavailable diagnostics",
 test("shows enrolled device identity and durable assignments separately from connectivity", () => {
   render(
     <InstallationPage
+      initialSection="devices"
       installation={demoInstallation}
       topology={{
         ...demoTopology,
@@ -544,6 +590,7 @@ test("shows enrolled device identity and durable assignments separately from con
   );
 
   expect(screen.getByRole("heading", { name: "CuevergeClient01" })).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Details for CuevergeClient01" }));
   expect(screen.getByText("Enrolled")).toBeInTheDocument();
   expect(screen.getByText("media_playback, artifact_cache")).toBeInTheDocument();
   expect(screen.getByText("0.1.0")).toBeInTheDocument();

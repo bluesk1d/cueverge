@@ -312,7 +312,8 @@ def test_scene_transition_cannot_race_a_physical_test() -> None:
         entered = asyncio.Event()
         release = asyncio.Event()
 
-        async def starting(_: str) -> None:
+        async def starting(_: str, expected_generation: int) -> None:
+            assert expected_generation == runtime._scene_control_generation
             entered.set()
             await release.wait()
             raise RuntimeError("test transition ended")

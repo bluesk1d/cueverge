@@ -11,9 +11,11 @@ from fastapi.responses import StreamingResponse
 from pydantic import ValidationError
 
 from cueverge.controller.runtime import ControllerRuntime
+from cueverge.gui.asset_upload import AssetUploadError, AssetUploadService
 from cueverge.gui.device_ca import DeviceCertificateAuthority
 from cueverge.gui.device_session import DeviceSessionError, DeviceSessionRegistry
 from cueverge.gui.device_transport import peer_device_certificate
+from cueverge.gui.media_delivery import published_media_member
 from cueverge.gui.repository import (
     DeviceCertificateAuthorizationError,
     GuiRepository,
@@ -81,6 +83,7 @@ def create_device_app(
     sessions: DeviceSessionRegistry,
     runtime: ControllerRuntime | None = None,
     authority: DeviceCertificateAuthority | None = None,
+    assets: AssetUploadService | None = None,
 ) -> FastAPI:
     app = FastAPI(
         title="Cueverge Device Transport",
@@ -134,6 +137,71 @@ def create_device_app(
             _file_chunks(member.path, start),
             status_code=status_code,
             media_type="video/mp4",
+            headers=headers,
+        )
+
+    @app.get("/api/device/v2/published-media/{package_id}/{member_id}")
+    async def published_media(
+        package_id: str,
+        member_id: str,
+        request: Request,
+        range_header: str | None = Header(default=None, alias="Range"),
+    ) -> StreamingResponse:
+        try:
+            peer = peer_device_certificate(request.scope)
+            device = repository.authorize_device_certificate(
+                device_id=str(peer.device_id),
+                certificate_serial=peer.serial,
+                certificate_fingerprint_sha256=peer.fingerprint_sha256,
+            )
+            member = published_media_member(repository, package_id, member_id)
+            assignment = next(
+                (
+                    item
+                    for item in repository.list_resource_assignments()
+                    if item.resource == member["resource"]
+                ),
+                None,
+            )
+            if assignment is None or assignment.device_id != device.id:
+                raise ValueError("media is not assigned to this device")
+            asset_id, artifact_id = member.get("source_asset_id"), member.get("render_artifact_id")
+            if isinstance(asset_id, str) and assets is not None:
+                _, path = assets.get_original(asset_id)
+            elif isinstance(artifact_id, str):
+                path = repository.get_render_artifact_member(
+                    artifact_id, str(member["resource"])
+                ).path
+            else:
+                raise ValueError("media source is unavailable")
+            size, digest = member.get("size_bytes"), member.get("digest_sha256")
+            if (
+                not isinstance(size, int)
+                or not isinstance(digest, str)
+                or path.stat().st_size != size
+            ):
+                raise ValueError("media metadata is invalid")
+        except (
+            ValueError,
+            OSError,
+            AssetUploadError,
+            DeviceCertificateAuthorizationError,
+            ProjectNotFoundError,
+        ):
+            raise HTTPException(status_code=403, detail="published media access denied") from None
+        start = _range_start(range_header, size)
+        headers = {
+            "Accept-Ranges": "bytes",
+            "Content-Length": str(size - start),
+            "ETag": f'"sha256:{digest}"',
+            "Cache-Control": "private, immutable",
+        }
+        if range_header is not None:
+            headers["Content-Range"] = f"bytes {start}-{size - 1}/{size}"
+        return StreamingResponse(
+            _file_chunks(path, start),
+            status_code=206 if range_header is not None else 200,
+            media_type="application/octet-stream",
             headers=headers,
         )
 

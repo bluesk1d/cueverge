@@ -23,11 +23,18 @@ class FrameSink(Protocol):
 class MemoryFrameSink:
     frames: list[RenderedFrame] = field(default_factory=list)
     failure: str | None = None
+    max_frames: int | None = None
+
+    def __post_init__(self) -> None:
+        if self.max_frames is not None and self.max_frames < 1:
+            raise ValueError("Memory frame history limit must be positive")
 
     def send(self, frame: RenderedFrame) -> None:
         if self.failure is not None:
             raise OSError(self.failure)
         self.frames.append(frame)
+        if self.max_frames is not None:
+            del self.frames[: -self.max_frames]
 
     def close(self) -> None:
         pass

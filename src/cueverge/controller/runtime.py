@@ -4,6 +4,7 @@ from collections import deque
 from collections.abc import Awaitable, Callable, Mapping
 from contextlib import suppress
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, Literal, Protocol
@@ -11,7 +12,7 @@ from uuid import uuid4
 
 from cueverge.core.arbitration import ArbitrationDecision, ResourceArbiter
 from cueverge.core.director import ShowDirector
-from cueverge.core.encounter import EncounterEngine, EventOutcome
+from cueverge.core.encounter import EncounterEngine, EventOutcome, ObservedEventOutcome
 from cueverge.core.events import ExternalEvent
 from cueverge.core.loader import load_show_package
 from cueverge.core.models import (
@@ -23,13 +24,13 @@ from cueverge.core.models import (
 )
 from cueverge.core.opportunities import OpportunityManager
 from cueverge.lighting.ddp import DdpUdpSink
+from cueverge.lighting.evaluation import evaluate_lighting_output
 from cueverge.lighting.output_test import (
     OutputTestError,
     OutputTestRunner,
     OutputTestSegment,
     OutputTestStatus,
 )
-from cueverge.lighting.renderer import SegmentPulse, SyntheticSweep, TargetPulse
 from cueverge.lighting.sink import FrameSink, FrameSinkRouter, MemoryFrameSink, RenderedFrame
 from cueverge.lighting.timeline import LightingTimeline
 from cueverge.observation.presence import AudiencePresenceEstimator
@@ -185,6 +186,7 @@ class ControllerRuntime:
         scene_selector: SceneSelector | None = None,
         director: ShowDirector | None = None,
         audience: AudiencePresenceEstimator | None = None,
+        automatic_rendering: bool = True,
     ) -> None:
         if render_fps <= 0:
             raise ValueError("render_fps must be positive")
@@ -195,6 +197,7 @@ class ControllerRuntime:
         if lighting_delay_ms < 0:
             raise ValueError("lighting_delay_ms must be non-negative")
         self.clock = clock
+        self.automatic_rendering = automatic_rendering
         self.follower = TimecodeFollower(stale_after_ms=stale_after_ms)
         self._controller_clock: ControllerClock | None = None
         self.render_fps = render_fps
@@ -209,7 +212,7 @@ class ControllerRuntime:
             for scene in self.catalog.scenes.values()
             for output in scene.lighting_outputs
         }
-        configured_sink = sink or MemoryFrameSink()
+        configured_sink = sink or MemoryFrameSink(max_frames=120)
         if isinstance(configured_sink, FrameSinkRouter):
             configured_sink.require_resources(lighting_resources)
         elif len(lighting_resources) > 1:
@@ -284,6 +287,22 @@ class ControllerRuntime:
         self._lighting_started_at = self.clock()
         self._render_interval_total_ms = 0.0
         self._render_interval_count = 0
+        self._catalog_loading = False
+        self._catalog_command_acks: set[tuple[str, str]] | None = None
+        self._catalog_commands_sent: set[tuple[str, str]] | None = None
+        self._scene_control_generation = 0
+        self._background_enabled = False
+        self._last_output_frames: dict[str, tuple[float, RenderedFrame]] = {}
+        self._monitor_sample_at = float("-inf")
+        self._monitor_sample: tuple[tuple[str, float, RenderedFrame], ...] = ()
+        self.loaded_catalog: dict[str, object] = {
+            "state": "unreported",
+            "project_id": None,
+            "revision": None,
+            "digest_sha256": None,
+            "loaded_at": None,
+            "generation": None,
+        }
 
     @property
     def connected_agent_count(self) -> int:
@@ -298,6 +317,7 @@ class ControllerRuntime:
         return self._encounter_task is not None and not self._encounter_task.done()
 
     def start_background_tasks(self) -> None:
+        self._background_enabled = True
         if (
             self.encounter is not None or self.audience is not None
         ) and not self.encounter_loop_running:
@@ -399,6 +419,8 @@ class ControllerRuntime:
                     self._degraded_reason = f"media_output_disconnected:{media_session.output_id}"
 
     async def start_scene(self, scene_id: str) -> ActiveScene:
+        if self._catalog_loading:
+            raise RuntimeError("show catalog is changing; retry after Apply finishes")
         test = self.output_test_status()
         if self._scene_starting or (test is not None and test.state == "active"):
             raise RuntimeError(
@@ -406,11 +428,11 @@ class ControllerRuntime:
             )
         self._scene_starting = True
         try:
-            return await self._start_scene(scene_id)
+            return await self._start_scene(scene_id, self._scene_control_generation)
         finally:
             self._scene_starting = False
 
-    async def _start_scene(self, scene_id: str) -> ActiveScene:
+    async def _start_scene(self, scene_id: str, expected_generation: int) -> ActiveScene:
         scene = self.catalog.require(scene_id)
         missing_required = [
             output.agent_id
@@ -423,6 +445,8 @@ class ControllerRuntime:
         await self._stop_render_loop()
         if self.active_scene is not None:
             await self._stop_media_sessions(self.active_scene)
+        if expected_generation != self._scene_control_generation:
+            raise RuntimeError("scene start was cancelled by Stop")
         for output in scene.media_outputs:
             self._abandon_commands(output.agent_id)
         self._degraded_reason = None
@@ -457,6 +481,8 @@ class ControllerRuntime:
         self.active_scene = active
         self._failed_prepare_sessions.clear()
         for session in media_sessions:
+            if self.active_scene is not active:
+                raise RuntimeError("scene start was cancelled by Stop")
             self._last_media_positions[session.playback_session_id] = 0
         self.follower.begin(active.scene_instance_id, active.playback_session_id)
         self._controller_clock = (
@@ -529,6 +555,11 @@ class ControllerRuntime:
             self._controller_clock.seek(position_ms, self.clock())
 
     async def ingest_event(self, event: ExternalEvent) -> EventOutcome:
+        return (await self.ingest_event_with_presence(event)).outcome
+
+    async def ingest_event_with_presence(self, event: ExternalEvent) -> ObservedEventOutcome:
+        if self._catalog_loading:
+            return ObservedEventOutcome(EventOutcome(False, "catalog_loading", "inactive"), None)
         if self.show_mode is not ShowMode.AUTOMATIC:
             state = (
                 self.encounter.state
@@ -537,7 +568,10 @@ class ControllerRuntime:
                 if self.audience is not None
                 else "inactive"
             )
-            return EventOutcome(False, "show_not_automatic", state, None)
+            return ObservedEventOutcome(
+                EventOutcome(False, "show_not_automatic", state, None),
+                None,
+            )
         if self.encounter is None and self.audience is None:
             raise RuntimeError("show package does not define an encounter")
         now_ms = self.event_clock()
@@ -548,11 +582,16 @@ class ControllerRuntime:
                 self.opportunities.ingest(semantic_event, now_ms)
         if self.encounter is None:
             assert self.audience is not None
-            return EventOutcome(
-                presence_update.relevant if presence_update is not None else False,
-                None if presence_update is not None and presence_update.relevant else "irrelevant",
-                self.audience.state.value,
-                None,
+            return ObservedEventOutcome(
+                EventOutcome(
+                    presence_update.relevant if presence_update is not None else False,
+                    None
+                    if presence_update is not None and presence_update.relevant
+                    else "irrelevant",
+                    self.audience.state.value,
+                    None,
+                ),
+                presence_update.relevant if presence_update is not None else None,
             )
         await self.encounter.tick(now_ms)
         semantic_outcome = await self._ingest_semantic_events(
@@ -560,9 +599,14 @@ class ControllerRuntime:
             now_ms,
         )
         source_outcome = await self.encounter.ingest(event, now_ms)
-        return semantic_outcome if semantic_outcome is not None else source_outcome
+        return ObservedEventOutcome(
+            semantic_outcome if semantic_outcome is not None else source_outcome,
+            presence_update.relevant if presence_update is not None else None,
+        )
 
     async def tick_encounter(self) -> None:
+        if self._catalog_loading or self.show_mode is not ShowMode.AUTOMATIC:
+            return
         now_ms = self.event_clock()
         semantic_events = self.audience.tick(now_ms) if self.audience else ()
         if self.opportunities is not None:
@@ -701,6 +745,13 @@ class ControllerRuntime:
                 fallback = self.active_scene.definition.failure_scene_id
                 self.scene_failovers += 1
                 await self.start_scene(fallback)
+        elif self._catalog_command_acks is not None:
+            self._catalog_command_acks.add(
+                (
+                    pending.command.playback_session_id,
+                    pending.command.command,
+                )
+            )
         if pending.command.command == "prepare" and self.active_scene is not None:
             await self._play_when_prepared(self.active_scene)
         return TelemetryDecision(True)
@@ -722,6 +773,8 @@ class ControllerRuntime:
         *,
         target_position_ms: int | None = None,
     ) -> None:
+        if command_name != "stop" and self.active_scene is not active:
+            raise RuntimeError("scene command was cancelled by Stop")
         command = AgentCommand(
             request_id=str(uuid4()),
             command=command_name,
@@ -736,6 +789,8 @@ class ControllerRuntime:
             target_position_ms=target_position_ms,
         )
         self._pending_commands[command.request_id] = PendingCommand(command, self.clock())
+        if self._catalog_commands_sent is not None:
+            self._catalog_commands_sent.add((command.playback_session_id, command_name))
         await connection.channel.send_json(command.model_dump(mode="json"))
 
     async def _play_when_prepared(self, active: ActiveScene) -> None:
@@ -957,6 +1012,7 @@ class ControllerRuntime:
 
         self._output_test = OutputTestRunner(
             sink=self.sink,
+            on_frame=self._observe_output_frame,
             resource=resource,
             pixel_count=pixel_count,
             speed=speed,
@@ -979,7 +1035,7 @@ class ControllerRuntime:
             return self._controller_clock.estimate(self.clock())
         return self.follower.estimate(self.clock())
 
-    def render_frame(self) -> bool:
+    def render_frame(self, *, render_pixels: bool = True) -> bool:
         self.check_timeouts()
         self.render_ticks += 1
         active = self.active_scene
@@ -1003,6 +1059,8 @@ class ControllerRuntime:
                     self._schedule_scene_start(ready.definition.id, active)
             self._last_media_positions[active.playback_session_id] = estimate.position_ms
 
+        if not render_pixels:
+            return True
         rendered_at = self.clock()
         render_position_ms = max(0, estimate.position_ms - self.lighting_delay_ms)
         for output in active.scene.lighting_outputs:
@@ -1017,7 +1075,7 @@ class ControllerRuntime:
                 duration_ms=active.definition.duration_ms,
             )
             try:
-                self.sink.send(
+                self._send_output_frame(
                     RenderedFrame(
                         scene_instance_id=active.scene_instance_id,
                         position_ms=output_position_ms,
@@ -1050,76 +1108,24 @@ class ControllerRuntime:
         duration_ms: int,
     ) -> tuple[tuple[int, int, int], ...]:
         lighting = output.definition
-        if output.spatial_sequences:
-            baseline = self._render_persistent_baseline(rendered_at, output)
-            pixels = list(
-                LightingTimeline(
-                    pixel_count=output.pixel_count,
-                    cues=output.lighting_cues,
-                ).render(render_position_ms, base_frame=baseline)
-            )
-            for sequence in output.spatial_sequences:
-                frame = sequence.frame(render_position_ms)
-                if frame is None:
-                    continue
-                for offset, index in enumerate(sequence.reference.output_indices):
-                    pixels[index] = (
-                        frame[offset * 3],
-                        frame[offset * 3 + 1],
-                        frame[offset * 3 + 2],
-                    )
-            looks = self._lighting_looks_for(lighting.resource)
-            limit = min(
+        looks = self._lighting_looks_for(lighting.resource)
+        return evaluate_lighting_output(
+            output,
+            position_ms=render_position_ms,
+            duration_ms=duration_ms,
+            base_frame=(
+                self._render_persistent_baseline(rendered_at, output)
+                if output.spatial_sequences or lighting.timeline
+                else None
+            ),
+            brightness_limit=min(
                 lighting.brightness_limit,
                 looks.definition.brightness_limit if looks is not None else 1,
-            )
-            return tuple(
-                (round(red * limit), round(green * limit), round(blue * limit))
-                for red, green, blue in pixels
-            )
-        if lighting.timeline:
-            base_frame = self._render_persistent_baseline(rendered_at, output)
-            looks = self._lighting_looks_for(lighting.resource)
-            brightness_limit = (
-                min(
-                    lighting.brightness_limit,
-                    looks.definition.brightness_limit,
-                )
-                if looks is not None
-                else lighting.brightness_limit
-            )
-            return LightingTimeline(
-                pixel_count=output.pixel_count,
-                cues=output.lighting_cues,
-                brightness_limit=brightness_limit,
-            ).render(render_position_ms, base_frame=base_frame)
-        if lighting.effect == "segment_pulse":
-            segment = output.lighting_segment
-            if output.lighting_target_indices:
-                return TargetPulse(
-                    pixel_count=output.pixel_count,
-                    target_indices=output.lighting_target_indices,
-                    pulse_times_ms=lighting.pulse_times_ms,
-                    pulse_duration_ms=lighting.pulse_duration_ms,
-                    color=output.color,
-                ).render(render_position_ms)
-            if segment is not None:
-                return SegmentPulse(
-                    pixel_count=output.pixel_count,
-                    segment_start=segment.start,
-                    segment_end=segment.end,
-                    pulse_times_ms=lighting.pulse_times_ms,
-                    pulse_duration_ms=lighting.pulse_duration_ms,
-                    color=output.color,
-                ).render(render_position_ms)
-            raise RuntimeError("segment_pulse scene has no bound pixel target")
-        return SyntheticSweep(
-            pixel_count=output.pixel_count,
-            cycle_ms=duration_ms,
-            color=output.color,
-        ).render(render_position_ms)
+            ),
+        )
 
     async def stop(self, *, continue_queue: bool = True) -> None:
+        self._scene_control_generation += 1
         test = self.output_test_status()
         if test is not None and test.state == "active":
             await self.stop_output_test()
@@ -1169,7 +1175,7 @@ class ControllerRuntime:
                 brightness_limit=looks.definition.brightness_limit,
             ).render(0)
             try:
-                self.sink.send(
+                self._send_output_frame(
                     RenderedFrame(
                         scene_instance_id="safe-state",
                         position_ms=0,
@@ -1200,7 +1206,7 @@ class ControllerRuntime:
             for output in scene.lighting_outputs
         }
         for resource, pixel_count in outputs.items():
-            self.sink.send(
+            self._send_output_frame(
                 RenderedFrame(
                     scene_instance_id="blackout",
                     position_ms=0,
@@ -1209,6 +1215,94 @@ class ControllerRuntime:
                 )
             )
             self.rendered_frames += 1
+
+    def _observe_output_frame(self, frame: RenderedFrame) -> None:
+        if frame.resource is None:
+            return
+        self._last_output_frames.pop(frame.resource, None)
+        self._last_output_frames[frame.resource] = (self.clock(), frame)
+        if len(self._last_output_frames) > 32:
+            del self._last_output_frames[next(iter(self._last_output_frames))]
+
+    def _send_output_frame(self, frame: RenderedFrame) -> None:
+        self.sink.send(frame)
+        self._observe_output_frame(frame)
+
+    def output_monitor(
+        self,
+        resource: str | None = None,
+        pixel_offset: int = 0,
+        pixel_limit: int = 1000,
+    ) -> dict[str, object]:
+        if pixel_offset < 0 or not 1 <= pixel_limit <= 1000:
+            raise ValueError("Monitor offset must be nonnegative and limit between 1 and 1000")
+        now = self.clock()
+        if now - self._monitor_sample_at >= 0.2:
+            self._monitor_sample_at = now
+            self._monitor_sample = tuple(
+                (key, observed, frame)
+                for key, (observed, frame) in self._last_output_frames.items()
+            )
+        bindings = [
+            item for item in self.catalog.installation.resources if item.kind == "pixel_output"
+        ]
+        if resource is not None and resource not in {item.resource for item in bindings}:
+            raise ValueError("Monitor resource is not a loaded LED output")
+        samples = {key: (observed, frame) for key, observed, frame in self._monitor_sample}
+        budget = 4096
+        outputs: list[dict[str, object]] = []
+        selected = (
+            [item for item in bindings if item.resource == resource] if resource else bindings[:32]
+        )
+        for binding in selected:
+            value = samples.get(binding.resource)
+            observed, frame = value if value else (None, None)
+            count = len(frame.pixels) if frame else binding.pixel_count or 0
+            end = min(count, pixel_offset + min(pixel_limit, budget))
+            colors = frame.pixels[pixel_offset:end] if frame else ()
+            budget -= len(colors)
+            age = max(0, round((now - observed) * 1000)) if observed is not None else None
+            outputs.append(
+                {
+                    "resource": binding.resource,
+                    "output_id": binding.resource,
+                    "scene_instance_id": frame.scene_instance_id if frame else None,
+                    "source": (
+                        "physical_test"
+                        if frame and frame.scene_instance_id.startswith("output-test")
+                        else "blackout"
+                        if frame and frame.scene_instance_id == "blackout"
+                        else "safe_state"
+                        if frame and frame.scene_instance_id == "safe-state"
+                        else "scene"
+                        if frame
+                        else "unobserved"
+                    ),
+                    "age_ms": age,
+                    "stale": bool(frame and self.active_scene and age is not None and age > 1000),
+                    "held": bool(frame and self.active_scene is None),
+                    "error": self._lighting_output_errors.get(binding.resource),
+                    "pixel_count": count,
+                    "pixel_offset": pixel_offset,
+                    "output_position_ms": frame.position_ms if frame else None,
+                    "colors": [list(color) for color in colors],
+                    "next_pixel_offset": end if end < count else None,
+                    "limitations": [
+                        "Last successful sink send, not proof of visible physical output."
+                    ],
+                }
+            )
+        return {
+            "observed_at": datetime.now(UTC).isoformat(),
+            "source": "successful_controller_sink_frames",
+            "loaded_catalog": dict(self.loaded_catalog),
+            "sample_interval_ms": 200,
+            "maximum_resources": 32,
+            "maximum_samples": 4096,
+            "truncated_resources": max(0, len(bindings) - 32),
+            "hardware_commands_sent": False,
+            "outputs": outputs,
+        }
 
     async def _stop_media_sessions(self, active: ActiveScene) -> None:
         for session in active.resolved_media_sessions:
@@ -1228,11 +1322,208 @@ class ControllerRuntime:
                 await task
         self.sink.close()
 
+    def validate_catalog_handover(self, catalog: SceneCatalog) -> None:
+        if self._scene_starting or self._catalog_loading:
+            raise RuntimeError("another scene/catalog change is in progress")
+        test = self.output_test_status()
+        if test is not None and test.state == "active":
+            raise RuntimeError("finish the active physical output test before Apply")
+        current = {item.resource: item for item in self.catalog.installation.resources}
+        used = {
+            resource for scene in catalog.scenes.values() for resource in scene.definition.resources
+        }
+        look_resources = set(catalog.lighting_looks_by_resource)
+        if catalog.lighting_looks is not None:
+            look_resources.add(catalog.lighting_looks.definition.resource)
+        used.update(look_resources)
+        for binding in catalog.installation.resources:
+            if binding.resource not in used:
+                continue
+            previous = current.get(binding.resource)
+            if (
+                previous is None
+                or previous.kind != binding.kind
+                or previous.target != binding.target
+                or previous.pixel_count != binding.pixel_count
+            ):
+                raise RuntimeError(
+                    f"resource {binding.resource} changes deployment routing; "
+                    "configure the controller deployment before applying"
+                )
+        if isinstance(self.sink, FrameSinkRouter):
+            self.sink.require_resources(
+                {
+                    output.definition.resource
+                    for scene in catalog.scenes.values()
+                    for output in scene.lighting_outputs
+                }
+                | look_resources
+            )
+        if self.active_scene is not None:
+            missing = [
+                session.agent_id
+                for session in self.active_scene.resolved_media_sessions
+                if session.agent_id not in self._agents
+            ]
+            if missing:
+                raise RuntimeError("cannot acknowledge stop for disconnected playing devices")
+
+    async def replace_catalog(
+        self,
+        catalog: SceneCatalog,
+        *,
+        identity: dict[str, object],
+        start_scene_id: str | None = None,
+        before_load: Callable[[], Awaitable[object]] | None = None,
+    ) -> None:
+        self.validate_catalog_handover(catalog)
+        if start_scene_id is not None:
+            catalog.require(start_scene_id)
+        self._catalog_loading = True
+        self._catalog_command_acks = set()
+        self._catalog_commands_sent = set()
+        was_background = self._background_enabled
+        try:
+            await self._stop_encounter_loop()
+            for task in tuple(self._lifecycle_tasks):
+                task.cancel()
+            for task in tuple(self._lifecycle_tasks):
+                with suppress(asyncio.CancelledError):
+                    await task
+            errors = self.command_errors
+            await self.stop(continue_queue=False)
+            handover_generation = self._scene_control_generation
+            expected_stop_acks = {
+                (item.command.playback_session_id, "stop")
+                for item in self._pending_commands.values()
+                if item.command.command == "stop"
+            }
+            deadline = asyncio.get_running_loop().time() + 8
+            while not expected_stop_acks.issubset(self._catalog_command_acks):
+                pending_stops = {
+                    (item.command.playback_session_id, "stop")
+                    for item in self._pending_commands.values()
+                    if item.command.command == "stop"
+                }
+                if expected_stop_acks.difference(self._catalog_command_acks, pending_stops):
+                    raise RuntimeError(
+                        "stop acknowledgement failed or was abandoned; catalog unchanged"
+                    )
+                if asyncio.get_running_loop().time() >= deadline:
+                    raise RuntimeError(
+                        "playing devices did not acknowledge stop; catalog unchanged"
+                    )
+                await asyncio.sleep(0.02)
+            if self.command_errors != errors:
+                raise RuntimeError("a playing device rejected stop; catalog unchanged")
+            self._emit_blackout()
+            if before_load is not None:
+                await before_load()
+            if handover_generation != self._scene_control_generation:
+                raise RuntimeError("catalog load was cancelled by Stop")
+            self.catalog = catalog
+            self._last_output_frames.clear()
+            self._monitor_sample = ()
+            self._monitor_sample_at = float("-inf")
+            self.audience = (
+                AudiencePresenceEstimator(catalog.audience) if catalog.audience else None
+            )
+            self.director = (
+                ShowDirector(
+                    catalog.program,
+                    clock=self.event_clock,
+                    context_provider=self.audience.context if self.audience else None,
+                )
+                if catalog.program
+                else None
+            )
+            self.opportunities = (
+                OpportunityManager(
+                    catalog.opportunities,
+                    self.audience.context if self.audience else lambda: {},
+                )
+                if catalog.opportunities
+                else None
+            )
+            self.scene_selector = (
+                self._select_next_scene if self.director or self.opportunities else None
+            )
+            self.encounter = (
+                EncounterEngine(
+                    catalog.encounter,
+                    self.request_scene,
+                    self._stop_encounter_scene,
+                )
+                if catalog.encounter
+                else None
+            )
+            self.arbiter = ResourceArbiter()
+            self._handled_completion_sessions.clear()
+            self._completion_history.clear()
+            self._last_media_positions.clear()
+            self._media_sessions_with_telemetry.clear()
+            self._failed_prepare_sessions.clear()
+            self._lighting_output_errors.clear()
+            self._lighting_started_at = self.clock()
+            self.loaded_catalog = dict(identity)
+            if start_scene_id is not None:
+                self._scene_starting = True
+                try:
+                    await self._start_scene(start_scene_id, handover_generation)
+                finally:
+                    self._scene_starting = False
+                deadline = asyncio.get_running_loop().time() + 8
+                while True:
+                    if self.active_scene is None:
+                        raise RuntimeError("show restart was cancelled by Stop")
+                    required = {
+                        session.playback_session_id
+                        for session in self.active_scene.resolved_media_sessions
+                        if session.required
+                    }
+                    if required.intersection(self._failed_prepare_sessions):
+                        raise RuntimeError("a device rejected the new show")
+                    pending = any(
+                        item.command.playback_session_id in required
+                        for item in self._pending_commands.values()
+                    )
+                    expected_start_acks = {
+                        (session_id, command)
+                        for session_id in required
+                        for command in ("prepare", "play")
+                    }
+                    pending_pairs = {
+                        (item.command.playback_session_id, item.command.command)
+                        for item in self._pending_commands.values()
+                    }
+                    if expected_start_acks.intersection(self._catalog_commands_sent).difference(
+                        self._catalog_command_acks,
+                        pending_pairs,
+                    ):
+                        raise RuntimeError("a required start acknowledgement was lost or timed out")
+                    if (
+                        not pending
+                        and expected_start_acks.issubset(self._catalog_command_acks)
+                        and self.status().get("playback_state") in {"playing", "completed"}
+                    ):
+                        break
+                    if asyncio.get_running_loop().time() >= deadline:
+                        raise RuntimeError("new show playback was not acknowledged")
+                    await asyncio.sleep(0.02)
+        finally:
+            self._catalog_loading = False
+            self._catalog_command_acks = None
+            self._catalog_commands_sent = None
+            if was_background:
+                self.start_background_tasks()
+
     async def wait_for_lifecycle_idle(self) -> None:
         while self._lifecycle_tasks:
             await asyncio.gather(*tuple(self._lifecycle_tasks), return_exceptions=True)
 
     def _schedule_completion(self, active: ActiveScene) -> None:
+        if self._catalog_loading:
+            return
         session_id = active.playback_session_id
         if session_id in self._handled_completion_sessions:
             return
@@ -1359,6 +1650,8 @@ class ControllerRuntime:
                 self._encounter_task = None
 
     def _ensure_render_loop(self, scene_instance_id: str) -> None:
+        if not self.automatic_rendering:
+            return
         if self.render_loop_running:
             return
         self._render_task = asyncio.create_task(
@@ -1486,6 +1779,7 @@ class ControllerRuntime:
         )
         return {
             "controller_epoch": self.controller_epoch,
+            "loaded_catalog": dict(self.loaded_catalog),
             "active_scene": self.active_scene.definition.id if self.active_scene else None,
             "scene_instance_id": self.active_scene.scene_instance_id if self.active_scene else None,
             "playback_session_id": self.active_scene.playback_session_id
@@ -1558,6 +1852,26 @@ class ControllerRuntime:
             "operations": {
                 "show_enabled": self.show_mode is ShowMode.AUTOMATIC,
                 "mode": self.show_mode.value,
+                "output_resources": [
+                    {"resource": item.resource, "pixel_count": item.pixel_count}
+                    for item in self.catalog.installation.resources
+                    if item.kind == "pixel_output"
+                ],
+                "scene_options": [
+                    {
+                        "id": scene.definition.id,
+                        "name": scene.definition.name,
+                        "ready": all(
+                            output.agent_id in self._agents
+                            for output in scene.media_outputs
+                            if output.definition.required
+                        ),
+                    }
+                    for scene in self.catalog.scenes.values()
+                ],
+                "starting_scene_id": self.catalog.program.initial_scene_id
+                if self.catalog.program
+                else None,
             },
             "health": {
                 "media_agent": ("connected" if self.connected_agent_count > 0 else "disconnected"),

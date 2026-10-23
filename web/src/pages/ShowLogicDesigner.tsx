@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import {
   AudiencePresenceDefinition,
@@ -43,12 +43,23 @@ export function ShowLogicDesigner({
   draft,
   onSave,
   projectId,
+  onInputs,
+  openRequest = 0,
 }: {
   canEdit: boolean;
   draft: ProjectDraftRecord;
   onSave: (document: ProjectDraftRecord["draft"]) => Promise<void>;
   projectId: string;
+  onInputs?: () => void;
+  openRequest?: number;
 }) {
+  const disclosure = useRef<HTMLDetailsElement>(null);
+  useEffect(() => {
+    if (openRequest && disclosure.current) {
+      disclosure.current.open = true;
+      disclosure.current.scrollIntoView({ block: "start" });
+    }
+  }, [openRequest]);
   const scenes = draft.draft.scenes;
   const [program, setProgram] = useState<ShowProgramDefinition>(() =>
     initialProgram(draft),
@@ -161,8 +172,9 @@ export function ShowLogicDesigner({
   }
 
   return (
-    <details className="show-logic-designer">
+    <details ref={disclosure} className="show-logic-designer">
       <summary>Autonomous show logic designer</summary>
+      {onInputs && <p>Visitor responses need camera events. <button onClick={onInputs}>Inputs & connections</button></p>}
       <div className="show-logic-toolbar">
         <button
           disabled={!canEdit}
@@ -436,45 +448,52 @@ export function ShowLogicDesigner({
           onChange={setEncounter}
         />
         <EncounterGraph encounter={encounter} />
-        <table aria-label="Accessible encounter transition editor">
-          <thead>
-            <tr>
-              <th>Event</th>
-              <th>From states</th>
-              <th>To state</th>
-              <th>Scene</th>
-              <th>Minimum state age</th>
-              <th />
-            </tr>
-          </thead>
-          <tbody>
-            {encounter.transitions.map((transition, index) => (
-              <EncounterTransitionRow
-                canEdit={canEdit}
-                key={`${index}:${transition.event_type}`}
-                onChange={(updated) =>
-                  setEncounter({
-                    ...encounter,
-                    transitions: encounter.transitions.map(
-                      (candidate, candidateIndex) =>
-                        candidateIndex === index ? updated : candidate,
-                    ),
-                  })
-                }
-                onRemove={() =>
-                  setEncounter({
-                    ...encounter,
-                    transitions: encounter.transitions.filter(
-                      (_, candidateIndex) => candidateIndex !== index,
-                    ),
-                  })
-                }
-                scenes={editedScenes}
-                transition={transition}
-              />
-            ))}
-          </tbody>
-        </table>
+        <div
+          className="show-logic-table-scroll"
+          role="region"
+          aria-label="Encounter transitions"
+          tabIndex={0}
+        >
+          <table aria-label="Accessible encounter transition editor">
+            <thead>
+              <tr>
+                <th>Event</th>
+                <th>From states</th>
+                <th>To state</th>
+                <th>Scene</th>
+                <th>Minimum state age</th>
+                <th />
+              </tr>
+            </thead>
+            <tbody>
+              {encounter.transitions.map((transition, index) => (
+                <EncounterTransitionRow
+                  canEdit={canEdit}
+                  key={`${index}:${transition.event_type}`}
+                  onChange={(updated) =>
+                    setEncounter({
+                      ...encounter,
+                      transitions: encounter.transitions.map(
+                        (candidate, candidateIndex) =>
+                          candidateIndex === index ? updated : candidate,
+                      ),
+                    })
+                  }
+                  onRemove={() =>
+                    setEncounter({
+                      ...encounter,
+                      transitions: encounter.transitions.filter(
+                        (_, candidateIndex) => candidateIndex !== index,
+                      ),
+                    })
+                  }
+                  scenes={editedScenes}
+                  transition={transition}
+                />
+              ))}
+            </tbody>
+          </table>
+        </div>
         <div className="show-logic-create-row">
           <select
             aria-label="New encounter event"
@@ -933,6 +952,8 @@ function OpportunityEditor({
           {SEMANTIC_EVENTS.map((eventType) => (
             <option key={eventType}>{eventType}</option>
           ))}
+          {!SEMANTIC_EVENTS.some((eventType) => eventType === opportunity.trigger_event) &&
+            <option value={opportunity.trigger_event}>Custom event: {opportunity.trigger_event}</option>}
         </select>
       </label>
       <label>
@@ -985,15 +1006,20 @@ function OpportunityEditor({
         <select
           aria-label={`Required audience state ${opportunity.id}`}
           disabled={!canEdit}
-          value={String(opportunity.required_context.audience_state ?? "")}
-          onChange={(event) =>
+          value={String(opportunity.required_context.audience_state ??
+            (opportunity.required_context.audience === true ? "present" :
+              opportunity.required_context.audience === false ? "absent" : ""))}
+          onChange={(event) => {
+            const context = { ...opportunity.required_context };
+            delete context.audience;
+            delete context.audience_state;
             onChange({
               ...opportunity,
               required_context: event.target.value
-                ? { audience_state: event.target.value }
-                : {},
-            })
-          }
+                ? { ...context, audience_state: event.target.value }
+                : context,
+            });
+          }}
         >
           <option value="">Any semantic state</option>
           <option value="absent">Absent</option>
@@ -1266,75 +1292,82 @@ function SceneLogicTable({
   return (
     <section className="show-logic-section" aria-label="Scene transition analysis">
       <h4>Scene completion, fallback, arbitration, and resources</h4>
-      <table>
-        <thead>
-          <tr>
-            <th>Scene</th>
-            <th>Completion</th>
-            <th>Target</th>
-            <th>Failure fallback</th>
-            <th>Priority</th>
-            <th>Interruption</th>
-            <th>Safe points</th>
-            <th>Resources</th>
-          </tr>
-        </thead>
-        <tbody>
-          {scenes.map((scene, index) => {
-            const completion =
-              typeof scene.completion === "object" && scene.completion
-                ? scene.completion
-                : {};
-            const scheduling =
-              typeof scene.scheduling === "object" && scene.scheduling
-                ? scene.scheduling
-                : {};
-            return (
-              <tr key={scene.id}>
-                <td>{scene.name}</td>
-                <td>{String(completion.policy ?? "stop")}</td>
-                <td>{String(completion.target_scene_id ?? "director / none")}</td>
-                <td>
-                  <select
-                    aria-label={`Failure fallback ${scene.id}`}
-                    disabled={!canEdit}
-                    value={scene.failure_scene_id ?? ""}
-                    onChange={(event) =>
-                      onChange(
-                        scenes.map((candidate, candidateIndex) =>
-                          candidateIndex === index
-                            ? {
+      <div
+        className="show-logic-table-scroll"
+        role="region"
+        aria-label="Scene transition details"
+        tabIndex={0}
+      >
+        <table>
+          <thead>
+            <tr>
+              <th>Scene</th>
+              <th>Completion</th>
+              <th>Target</th>
+              <th>Failure fallback</th>
+              <th>Priority</th>
+              <th>Interruption</th>
+              <th>Safe points</th>
+              <th>Resources</th>
+            </tr>
+          </thead>
+          <tbody>
+            {scenes.map((scene, index) => {
+              const completion =
+                typeof scene.completion === "object" && scene.completion
+                  ? scene.completion
+                  : {};
+              const scheduling =
+                typeof scene.scheduling === "object" && scene.scheduling
+                  ? scene.scheduling
+                  : {};
+              return (
+                <tr key={scene.id}>
+                  <td>{scene.name}</td>
+                  <td>{String(completion.policy ?? "stop")}</td>
+                  <td>{String(completion.target_scene_id ?? "director / none")}</td>
+                  <td>
+                    <select
+                      aria-label={`Failure fallback ${scene.id}`}
+                      disabled={!canEdit}
+                      value={scene.failure_scene_id ?? ""}
+                      onChange={(event) =>
+                        onChange(
+                          scenes.map((candidate, candidateIndex) =>
+                            candidateIndex === index
+                              ? {
                                 ...candidate,
                                 failure_scene_id: event.target.value || null,
                               }
-                            : candidate,
-                        ),
-                      )
-                    }
-                  >
-                    <option value="">Missing fallback</option>
-                    {scenes
-                      .filter((candidate) => candidate.id !== scene.id)
-                      .map((candidate) => (
-                        <option key={candidate.id} value={candidate.id}>
-                          {candidate.name}
-                        </option>
-                      ))}
-                  </select>
-                </td>
-                <td>{String(scene.priority ?? 50)}</td>
-                <td>{String(scene.interruption ?? "replace_by_priority")}</td>
-                <td>
-                  {Array.isArray(scheduling.safe_points_ms)
-                    ? scheduling.safe_points_ms.join(", ") || "none"
-                    : "none"}
-                </td>
-                <td>{scene.resources?.join(", ") || "none"}</td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
+                              : candidate,
+                          ),
+                        )
+                      }
+                    >
+                      <option value="">Missing fallback</option>
+                      {scenes
+                        .filter((candidate) => candidate.id !== scene.id)
+                        .map((candidate) => (
+                          <option key={candidate.id} value={candidate.id}>
+                            {candidate.name}
+                          </option>
+                        ))}
+                    </select>
+                  </td>
+                  <td>{String(scene.priority ?? 50)}</td>
+                  <td>{String(scene.interruption ?? "replace_by_priority")}</td>
+                  <td>
+                    {Array.isArray(scheduling.safe_points_ms)
+                      ? scheduling.safe_points_ms.join(", ") || "none"
+                      : "none"}
+                  </td>
+                  <td>{scene.resources?.join(", ") || "none"}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
     </section>
   );
 }

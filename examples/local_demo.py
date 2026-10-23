@@ -213,6 +213,7 @@ def serve(root: Path) -> None:
             "CUEVERGE_GUI_SECURE_COOKIES": "false",
             "CUEVERGE_DDP_ENABLED": "false",
             "CUEVERGE_FRIGATE_MQTT_ENABLED": "false",
+            "CUEVERGE_INPUT_MANAGEMENT": "gui",
             "CUEVERGE_DEVICE_ENROLLMENT_ENABLED": "false",
             "CUEVERGE_DEVICE_LISTENER_ENABLED": "false",
         }

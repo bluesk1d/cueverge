@@ -1,5 +1,8 @@
+import asyncio
+import hashlib
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -13,6 +16,7 @@ from starlette.testclient import WebSocketDisconnect
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from cueverge.controller.runtime import ControllerRuntime
+from cueverge.gui.artifact_deployment import ArtifactDeploymentError
 from cueverge.gui.contracts import Role
 from cueverge.gui.device_app import create_device_app
 from cueverge.gui.device_ca import DeviceCertificateAuthority
@@ -21,6 +25,7 @@ from cueverge.gui.device_transport import (
     PEER_CERTIFICATE_STATE_KEY,
     peer_device_certificate,
 )
+from cueverge.gui.media_delivery import stage_media_members
 from cueverge.gui.repository import GuiRepository
 from cueverge.protocol.device_v2 import (
     DeviceCapabilityDocument,
@@ -34,6 +39,115 @@ from cueverge.protocol.device_v2 import (
 DEVICE_ID = UUID("9c004799-7704-48f1-b5f4-f083628c7faa")
 NOW = datetime(2026, 10, 13, 17, 0, tzinfo=UTC)
 TOKEN = "pairing-token-that-is-never-stored-in-plaintext"
+
+
+def test_published_media_download_requires_peer_and_assignment_and_supports_ranges(
+    tmp_path: Path, monkeypatch
+) -> None:
+    repository, certificate, _ = _enrolled_device(tmp_path)
+    repository.set_resource_assignment(
+        resource="projector",
+        device_id=str(DEVICE_ID),
+        capability_kind="media_playback",
+        device_output=None,
+        expected_revision=None,
+        actor="admin",
+        role=Role.ADMINISTRATOR,
+        occurred_at=NOW.isoformat(),
+    )
+    content = b"original synthetic media delivery bytes"
+    path = tmp_path / "original.mp4"
+    path.write_bytes(content)
+    member = {
+        "resource": "projector",
+        "source_asset_id": "original",
+        "render_artifact_id": None,
+        "size_bytes": len(content),
+        "digest_sha256": hashlib.sha256(content).hexdigest(),
+    }
+    monkeypatch.setattr("cueverge.gui.device_app.published_media_member", lambda *_: member)
+    assets = SimpleNamespace(get_original=lambda _: (None, path))
+    app = create_device_app(repository, DeviceSessionRegistry(), assets=assets)
+    url = "/api/device/v2/published-media/package/member"
+    with TestClient(app) as client:
+        assert client.get(url).status_code == 403
+    with TestClient(_with_peer_certificate(app, certificate)) as client:
+        result = client.get(url)
+        assert result.status_code == 200
+        assert result.content == content
+        assert result.headers["etag"] == f'"sha256:{member["digest_sha256"]}"'
+        assert result.headers["cache-control"] == "private, immutable"
+        for offset in (0, 8):
+            result = client.get(url, headers={"Range": f"bytes={offset}-"})
+            assert result.status_code == 206
+            assert result.content == content[offset:]
+            assert (
+                result.headers["content-range"]
+                == f"bytes {offset}-{len(content) - 1}/{len(content)}"
+            )
+        assert client.get(url, headers={"Range": "bytes=999-"}).status_code == 416
+        member["resource"] = "unassigned"
+        assert client.get(url).status_code == 403
+
+
+@pytest.mark.parametrize("required,wrong_ack", [(True, False), (True, True), (False, True)])
+def test_runtime_media_staging_checks_exact_ack_and_uses_https(
+    tmp_path: Path, required: bool, wrong_ack: bool
+):
+    repository, _, _ = _enrolled_device(tmp_path)
+    repository.set_resource_assignment(
+        resource="projector",
+        device_id=str(DEVICE_ID),
+        capability_kind="media_playback",
+        device_output=None,
+        expected_revision=None,
+        actor="admin",
+        role=Role.ADMINISTRATOR,
+        occurred_at=NOW.isoformat(),
+    )
+    commands = []
+    epoch = uuid4()
+
+    async def request(device_id, request_id, command):
+        assert device_id == DEVICE_ID
+        commands.append(command)
+        return {
+            "request_id": str(request_id),
+            "device_session_id": str(UUID(int=0)),
+            "controller_epoch": str(epoch),
+            "activation_identity": str(command.activation_identity),
+            "digest_sha256": "b" * 64 if wrong_ack else command.digest_sha256,
+            "status": "completed",
+        }
+
+    sessions = SimpleNamespace(controller_epoch=epoch, request=request)
+
+    async def scenario():
+        return await stage_media_members(
+            repository,
+            sessions,
+            "wss://controller.example:7443/api/device/v2/agent/ws",
+            str(uuid4()),
+            [
+                {
+                    "resource": "projector",
+                    "member_id": "member",
+                    "required": required,
+                    "digest_sha256": "a" * 64,
+                    "size_bytes": 12,
+                }
+            ],
+            ("c" * 64,),
+        )
+
+    if wrong_ack and required:
+        with pytest.raises(ArtifactDeploymentError, match="not verified"):
+            asyncio.run(scenario())
+    else:
+        warnings = asyncio.run(scenario())
+        assert bool(warnings) is wrong_ack
+    assert str(commands[0].download_url).startswith("https://controller.example:7443/")
+    assert commands[0].protected_digests == ("c" * 64,)
 
 
 def test_authenticated_device_session_is_fenced_and_heartbeat_acknowledged(

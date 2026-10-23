@@ -14,7 +14,8 @@ test("read-only viewers can navigate but cannot draw", () => {
   );
   const canvas = screen.getByRole("img", { name: "Reference image" });
   expect(screen.queryByRole("button", { name: "Draw" })).not.toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "Hand" })).toHaveAttribute("aria-pressed", "true");
+  expect(screen.getByRole("button", { name: "Select" })).toHaveAttribute("aria-pressed", "true");
+  fireEvent.click(screen.getByRole("button", { name: "Hand" }));
   fireEvent.click(screen.getByRole("button", { name: "Zoom in" }));
   expect(screen.getByLabelText("Canvas zoom")).toHaveTextContent("125%");
   fireEvent.keyDown(canvas, { key: "ArrowRight" });

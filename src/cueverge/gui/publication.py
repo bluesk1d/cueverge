@@ -1,3 +1,4 @@
+import builtins
 import hashlib
 import json
 import os
@@ -10,10 +11,12 @@ from uuid import uuid4
 
 from pydantic import JsonValue
 
+from cueverge.core.models import MultiLightingLooksDefinition
 from cueverge.gui.artifact_deployment import ArtifactDeploymentService
 from cueverge.gui.asset_upload import AssetUploadService
 from cueverge.gui.compiler import DraftCompiler
 from cueverge.gui.mapper_export import MapperExportError
+from cueverge.gui.media_delivery import media_members, stage_media_members
 from cueverge.gui.render_jobs import RenderJobError, RenderJobService
 from cueverge.gui.repository import GuiRepository
 from cueverge.protocol.device_v2 import ArtifactCacheCapability, MediaPlaybackCapability
@@ -267,7 +270,16 @@ class PublicationService:
             for assignment in self.repository.list_resource_assignments()
         }
         devices = {device.id: device for device in self.repository.list_devices()}
+        used_resources = {resource for scene in draft.scenes for resource in scene.resources}
+        required_media = {
+            output.resource
+            for scene in draft.scenes
+            for output in (scene.media if isinstance(scene.media, tuple) else (scene.media,))
+            if getattr(output, "required", True)
+        }
         for binding in draft.installation.resources:
+            if binding.resource not in used_resources:
+                continue
             if binding.kind.value != "media_agent":
                 continue
             assignment = assignments.get(binding.resource)
@@ -275,6 +287,7 @@ class PublicationService:
                 add(
                     "resource_unassigned",
                     f"Media resource {binding.resource} has no enrolled client assignment.",
+                    "error" if binding.resource in required_media else "warning",
                 )
                 continue
             device = devices.get(assignment.device_id)
@@ -409,6 +422,7 @@ class PublicationService:
         revision: int,
         actor: str,
         occurred_at: str,
+        lighting_looks: MultiLightingLooksDefinition | None = None,
     ) -> PublishedPackage:
         release = self.release(project_id, revision)
         if release.approval_state != "approved":
@@ -421,11 +435,25 @@ class PublicationService:
             )
         stored = self.repository.get_revision(project_id, revision)
         lighting_artifacts = self.render_jobs.lighting_artifacts(project_id, revision)
+        media = media_members(
+            stored.draft,
+            project_id,
+            revision,
+            self.assets,
+            self.render_jobs,
+            self.repository,
+            lighting_artifacts,
+        )
         compiled = self.compiler.compile(
             project_id=project_id,
             revision=revision,
             draft=stored.draft,
             lighting_artifacts=lighting_artifacts,
+            media_assets={
+                (str(item["scene_id"]), str(item["output_id"])): str(item["digest_sha256"])
+                for item in media
+            },
+            lighting_looks=lighting_looks,
         )
         jobs = self.render_jobs.list(project_id)
         compositions = _object_map(stored.draft.editor_metadata.get("compositions"))
@@ -467,6 +495,7 @@ class PublicationService:
         package_id = str(uuid4())
         manifest: dict[str, JsonValue] = {
             "schema_version": 1,
+            "preserved_controller_lighting": lighting_looks is not None,
             "package_id": package_id,
             "project_id": project_id,
             "source_revision": revision,
@@ -477,8 +506,9 @@ class PublicationService:
             "compiled_digest_sha256": compiled.digest,
             "files": cast(list[JsonValue], file_manifest),
             "assets": cast(list[JsonValue], asset_manifest),
+            "media_members": cast(list[JsonValue], media),
             "render_artifact_ids": list(artifact_ids),
-            "required_capabilities": ["artifact_cache", "media_playback"],
+            "required_capabilities": ["artifact_cache", "media_playback"] if media else [],
             "validation": [cast(JsonValue, item.__dict__) for item in diagnostics],
         }
         digest = hashlib.sha256(
@@ -542,7 +572,13 @@ class PublicationService:
             raise PublicationError("published package does not exist")
         return _published(row)
 
-    async def stage(self, package_id: str, occurred_at: str) -> PublishedPackage:
+    async def stage(
+        self,
+        package_id: str,
+        occurred_at: str,
+        *,
+        additional_protected_digests: tuple[str, ...] = (),
+    ) -> PublishedPackage:
         package = self.get(package_id)
         retained = [
             item
@@ -555,7 +591,7 @@ class PublicationService:
                     digest
                     for retained_package in retained
                     for digest in self._package_artifact_digests(retained_package)
-                }
+                }.union(additional_protected_digests)
             )
         )
         for artifact_id in _manifest_artifact_ids(package.manifest):
@@ -563,6 +599,19 @@ class PublicationService:
                 artifact_id,
                 protected_digests=protected_digests,
             )
+        raw_media = package.manifest.get("media_members", [])
+        if not isinstance(raw_media, list) or any(not isinstance(item, dict) for item in raw_media):
+            raise PublicationError("Published media manifest is invalid")
+        await stage_media_members(
+            self.repository,
+            self.deployment.sessions,
+            str(self.deployment.config.device_listener_public_url)
+            if self.deployment.config.device_listener_public_url
+            else None,
+            package.id,
+            cast(list[dict[str, object]], raw_media),
+            protected_digests,
+        )
         self._set_state(package_id, "staged", "staged_at", occurred_at)
         return self.get(package_id)
 
@@ -600,6 +649,45 @@ class PublicationService:
             )
             connection.commit()
         return self.get(package_id)
+
+    async def stage_runtime(
+        self,
+        package_id: str,
+        occurred_at: str,
+        additional_protected_digests: tuple[str, ...] = (),
+    ) -> tuple[PublishedPackage, builtins.list[str]]:
+        package = self.get(package_id)
+        media = package.manifest.get("media_members", [])
+        if not isinstance(media, list) or any(not isinstance(item, dict) for item in media):
+            raise PublicationError("Published media members are invalid")
+        protected = tuple(
+            sorted(set(additional_protected_digests).union(self._package_artifact_digests(package)))
+        )
+        warnings = await stage_media_members(
+            self.repository,
+            self.deployment.sessions,
+            str(self.deployment.config.device_listener_public_url)
+            if self.deployment.config.device_listener_public_url
+            else None,
+            package.id,
+            cast(list[dict[str, object]], media),
+            protected,
+        )
+        self._set_state(package_id, "staged", "staged_at", occurred_at)
+        return self.get(package_id), warnings
+
+    def record_runtime_load(self, package_id: str, occurred_at: str) -> None:
+        package = self.get(package_id)
+        with self._connect() as connection:
+            connection.execute(
+                "UPDATE published_packages SET state='inactive',deactivated_at=? "
+                "WHERE state='active' AND id != ?",
+                (occurred_at, package_id),
+            )
+            connection.execute(
+                "UPDATE published_packages SET state='active',activated_at=? WHERE id=?",
+                (occurred_at, package.id),
+            )
 
     def deactivate(self, package_id: str, occurred_at: str) -> PublishedPackage:
         package = self.get(package_id)
@@ -643,6 +731,16 @@ class PublicationService:
                 if not isinstance(digest, str):
                     raise PublicationError("render artifact digest is invalid")
                 digests.append(digest)
+        media = package.manifest.get("media_members", [])
+        if not isinstance(media, list):
+            raise PublicationError("published media members are invalid")
+        for member in media:
+            if not isinstance(member, dict):
+                raise PublicationError("published media digest is invalid")
+            digest = member.get("digest_sha256")
+            if not isinstance(digest, str):
+                raise PublicationError("published media digest is invalid")
+            digests.append(digest)
         return tuple(digests)
 
     def _set_state(

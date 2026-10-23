@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from itertools import islice
 from typing import Protocol
 
 from cueverge.core.events import ExternalEvent
@@ -41,6 +42,7 @@ class OpportunityManager:
         self.created_count = 0
         self.consumed_count = 0
         self.expired_count = 0
+        self.qualification_expired_count = 0
 
     def ingest(self, event: ExternalEvent, now_ms: int) -> tuple[EngagementOpportunity, ...]:
         self.expire(now_ms)
@@ -101,11 +103,13 @@ class OpportunityManager:
         for opportunity_id in expired:
             del self._active[opportunity_id]
         self.expired_count += len(expired)
+        previous_candidates = len(self._candidates)
         self._candidates = {
             key: candidate
             for key, candidate in self._candidates.items()
             if now_ms < candidate.expires_at_ms
         }
+        self.qualification_expired_count += previous_candidates - len(self._candidates)
         self._seen_events = {
             key: expires_at_ms
             for key, expires_at_ms in self._seen_events.items()
@@ -121,6 +125,7 @@ class OpportunityManager:
                     "scene_id": opportunity.scene_id,
                     "created_at_ms": opportunity.created_at_ms,
                     "expires_at_ms": opportunity.expires_at_ms,
+                    "remaining_ms": max(0, opportunity.expires_at_ms - now_ms),
                     "priority": opportunity.priority,
                 }
                 for opportunity in sorted(
@@ -129,6 +134,20 @@ class OpportunityManager:
                 )
             ],
             "qualifying_count": len(self._candidates),
+            "qualifying": [
+                {
+                    "id": candidate.definition.id,
+                    "scene_id": candidate.definition.scene_id,
+                    "expires_at_ms": candidate.expires_at_ms,
+                    "blocked_by": self._qualification_blockers(
+                        candidate.definition,
+                        self._context_provider(),
+                        now_ms,
+                    ),
+                }
+                for candidate in islice(self._candidates.values(), 20)
+            ],
+            "qualification_expired_count": self.qualification_expired_count,
             "created_count": self.created_count,
             "consumed_count": self.consumed_count,
             "expired_count": self.expired_count,
@@ -158,25 +177,7 @@ class OpportunityManager:
         now_ms: int,
     ) -> EngagementOpportunity | None:
         definition = candidate.definition
-        if definition.id in self._active:
-            return None
-        if not all(
-            context.get(name) == expected for name, expected in definition.required_context.items()
-        ):
-            return None
-        presence_ms = context.get("audience_present_ms", 0)
-        if not isinstance(presence_ms, int | float) or presence_ms < definition.min_presence_ms:
-            return None
-        absence_ms = context.get("audience_previous_absence_ms", 0)
-        if (
-            not isinstance(absence_ms, int | float)
-            or absence_ms < definition.min_absence_before_arrival_ms
-        ):
-            return None
-        acknowledged_at = self._acknowledged_at.get(definition.id)
-        if acknowledged_at is not None and (
-            now_ms - acknowledged_at < definition.acknowledgement_cooldown_ms
-        ):
+        if self._qualification_blockers(definition, context, now_ms):
             return None
         opportunity = EngagementOpportunity(
             opportunity_id=definition.id,
@@ -194,3 +195,32 @@ class OpportunityManager:
         }
         self.created_count += 1
         return opportunity
+
+    def _qualification_blockers(
+        self,
+        definition: OpportunityDefinition,
+        context: dict[str, str | int | float | bool],
+        now_ms: int,
+    ) -> list[str]:
+        blockers: list[str] = []
+        if definition.id in self._active:
+            blockers.append("already_waiting")
+        if not all(
+            context.get(name) == expected for name, expected in definition.required_context.items()
+        ):
+            blockers.append("visitor_conditions")
+        presence_ms = context.get("audience_present_ms", 0)
+        if not isinstance(presence_ms, int | float) or presence_ms < definition.min_presence_ms:
+            blockers.append("presence_duration")
+        absence_ms = context.get("audience_previous_absence_ms", 0)
+        if (
+            not isinstance(absence_ms, int | float)
+            or absence_ms < definition.min_absence_before_arrival_ms
+        ):
+            blockers.append("prior_absence")
+        acknowledged_at = self._acknowledged_at.get(definition.id)
+        if acknowledged_at is not None and (
+            now_ms - acknowledged_at < definition.acknowledgement_cooldown_ms
+        ):
+            blockers.append("repeat_wait")
+        return blockers

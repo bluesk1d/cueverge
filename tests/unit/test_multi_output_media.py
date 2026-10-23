@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from cueverge.controller.runtime import ControllerRuntime
 from cueverge.core.loader import load_show_package
 from cueverge.media_agent.fake import FakeMediaAgent
@@ -382,6 +384,98 @@ def test_partial_stop_failure_is_reported_without_retaining_scene(tmp_path: Path
         assert status["active_scene"] is None
         assert status["command_errors"] == 1
         assert status["degraded_reason"] == "command_error:player_stop_failed"
+        await runtime.shutdown()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    ["success", "stop_error", "stop_timeout", "start_error", "play_error", "play_timeout"],
+)
+def test_catalog_handover_requires_real_stop_and_restart_acknowledgements(
+    tmp_path: Path, outcome: str
+) -> None:
+    async def scenario():
+        clock = ManualClock()
+        runtime = ControllerRuntime(catalog=load_show_package(_package(tmp_path)), clock=clock)
+        agents = [FakeMediaAgent(agent_id=value) for value in ("media-primary", "media-secondary")]
+        channels = [MemoryCommandChannel([]), MemoryCommandChannel([])]
+        for agent, channel in zip(agents, channels, strict=True):
+            agent.accept_welcome(runtime.register_agent(agent.hello(), channel))
+        processed = [0, 0]
+
+        async def acknowledge(error_command=None, skip_play=False):
+            for _ in range(3):
+                for index, (agent, channel) in enumerate(zip(agents, channels, strict=True)):
+                    while processed[index] < len(channel.sent):
+                        command = channel.sent[processed[index]]
+                        processed[index] += 1
+                        if skip_play and index == 1 and command["command"] == "play":
+                            continue
+                        failure = index == 1 and command["command"] == error_command
+                        ack = agent.acknowledge(
+                            command["request_id"],
+                            status="error" if failure else "completed",
+                            error_code="original_ack_failure" if failure else None,
+                        )
+                        await runtime.acknowledge_command(ack)
+
+        await runtime.start_scene("multi-media")
+        await acknowledge()
+        original = runtime.catalog
+        identity = {
+            "state": "loaded",
+            "project_id": "synthetic",
+            "revision": 1,
+            "digest_sha256": "a" * 64,
+            "loaded_at": "2026-10-23T00:00:00Z",
+            "generation": "new",
+        }
+        task = asyncio.create_task(
+            runtime.replace_catalog(original, identity=identity, start_scene_id="multi-media")
+        )
+        await asyncio.sleep(0.03)
+        assert runtime.active_scene is None
+        assert not task.done()
+        if outcome == "stop_timeout":
+            clock.now += runtime.command_timeout_ms / 1000 + 1
+            runtime.check_timeouts()
+        else:
+            await acknowledge("stop" if outcome == "stop_error" else None)
+        if outcome in {"stop_error", "stop_timeout"}:
+            with pytest.raises(RuntimeError, match="stop"):
+                await asyncio.wait_for(task, 1)
+            assert runtime.loaded_catalog["state"] == "unreported"
+        else:
+            await asyncio.sleep(0.03)
+            assert not task.done()
+            await acknowledge(
+                "prepare"
+                if outcome == "start_error"
+                else "play"
+                if outcome == "play_error"
+                else None,
+                skip_play=outcome == "play_timeout",
+            )
+            if outcome == "play_timeout":
+                clock.now += runtime.command_timeout_ms / 1000 + 1
+                runtime.check_timeouts()
+                with pytest.raises(RuntimeError, match="lost or timed out"):
+                    await asyncio.wait_for(task, 1)
+            elif outcome in {"start_error", "play_error"}:
+                with pytest.raises(RuntimeError, match="rejected"):
+                    await asyncio.wait_for(task, 1)
+            else:
+                active = runtime.active_scene
+                assert active is not None
+                for agent in agents:
+                    session = active.session_for_agent(agent.agent_id)
+                    assert session is not None
+                    agent.attach(active.scene_instance_id, session.playback_session_id)
+                    runtime.ingest(agent.position(0))
+                await asyncio.wait_for(task, 1)
+                assert runtime.loaded_catalog == identity
         await runtime.shutdown()
 
     asyncio.run(scenario())

@@ -73,7 +73,89 @@ export type McpScope =
   | "publish_prepare"
   | "publish"
   | "activate"
-  | "live_operation";
+  | "live_operation"
+  | "input_config"
+  | "installation_edit";
+
+export interface InputSourceSettings {
+  enabled: boolean;
+  host: string;
+  port: number;
+  tls: boolean;
+  topic: string;
+  username: string | null;
+  accepted_labels: string[];
+}
+
+export interface InputSourceSnapshot {
+  validation_context_digest: string;
+  installation_id: string | null;
+  observed_at_ms: number;
+  management: "gui" | "environment";
+  configuration_revision: number;
+  settings: InputSourceSettings;
+  credential_present: boolean;
+  state: "unavailable" | "disabled" | "connecting" | "subscribed" | "stopped";
+  error: string | null;
+  freshness: "no_events" | "fresh" | "stale";
+  freshness_ms: number;
+  messages_received: number;
+  invalid_messages: number;
+  filtered_messages: number;
+  events_delivered: number;
+  controller_accepted: number;
+  controller_rejected: number;
+  audience_matches: number;
+  connection_attempts: number;
+  last_received_at_ms: number | null;
+  recent_events: {
+    received_at_ms: number;
+    occurred_at_ms?: number;
+    event_type?: string;
+    camera?: string;
+    zone?: string;
+    label?: string;
+    reason?: string | null;
+    accepted?: boolean;
+    audience_relevant?: boolean | null;
+  }[];
+  loaded_rules: {
+    audience: AudiencePresenceDefinition | null;
+    encounter: boolean;
+    opportunities: boolean;
+    show_mode: string | null;
+    audience_state: Record<string, unknown> | null;
+  };
+  recovery: string;
+}
+
+export interface InputSourceValidation {
+  validation_context_digest: string;
+  simulation: true;
+  hardware_commands_sent: false;
+  label_filtered: boolean;
+  audience_configured: boolean;
+  events: { event_type: string; camera: string; zone: string | null; stale: boolean; audience_relevant: boolean | null }[];
+  note: string;
+}
+
+export function getInputSource(signal?: AbortSignal): Promise<InputSourceSnapshot> {
+  return request("/api/gui/v1/input-source", { signal, cache: "no-store" });
+}
+
+export function configureInputSource(settings: InputSourceSettings & {
+  expected_revision: number; password?: string; clear_password: boolean;
+}): Promise<InputSourceSnapshot> {
+  return request("/api/gui/v1/input-source", {
+    method: "PUT", headers: mutationHeaders(), body: JSON.stringify(settings),
+  }, true);
+}
+
+export function validateInputSourcePayload(payload: Record<string, unknown>): Promise<InputSourceValidation> {
+  return request("/api/gui/v1/input-source/validate", {
+    method: "POST", headers: mutationHeaders(), body: JSON.stringify(payload),
+  }, true);
+}
 
 export interface McpToken {
   id: string;
@@ -138,6 +220,7 @@ export interface InstallationPhoto {
   id: string;
   installation_id: string;
   name: string;
+  description?: string;
   viewpoint: string;
   original_filename: string;
   media_type: string;
@@ -503,6 +586,69 @@ export interface RevisionSummary {
   created_at: string;
 }
 
+export interface SceneLightingPreview {
+  project_id: string;
+  source_revision: number;
+  scene_id: string;
+  timestamp_ms: number;
+  duration_ms: number;
+  unsaved: boolean;
+  evaluation: "production_lighting_renderer";
+  hardware_commands_sent: false;
+  outputs: {
+    output_id: string;
+    resource: string;
+    pixel_count: number;
+    pixel_offset: number;
+    output_position_ms: number;
+    colors: [number, number, number][];
+    next_pixel_offset: number | null;
+    limitations: string[];
+  }[];
+}
+
+export type LightingFrameView = Pick<SceneLightingPreview, "timestamp_ms" | "unsaved" | "outputs">;
+export interface OutputMonitor {
+  observed_at: string;
+  source: "successful_controller_sink_frames";
+  loaded_catalog: RuntimeStatus["loaded_catalog"];
+  sample_interval_ms: number; maximum_resources: number; maximum_samples: number;
+  truncated_resources: number; hardware_commands_sent: false;
+  outputs: (SceneLightingPreview["outputs"][number] & {
+    source: "scene" | "safe_state" | "blackout" | "physical_test" | "unobserved";
+    scene_instance_id: string | null; age_ms: number | null; stale: boolean; held: boolean; error: string | null;
+  })[];
+}
+export function getOutputMonitor(resource?: string, pixelOffset = 0, signal?: AbortSignal): Promise<OutputMonitor> {
+  const query = new URLSearchParams({ pixel_offset: String(pixelOffset), pixel_limit: "1000" });
+  if (resource) query.set("resource", resource);
+  return request(`/api/gui/v1/runtime/output-monitor?${query}`, { signal, cache: "no-store" });
+}
+
+export async function previewSceneLighting(
+  projectId: string,
+  sourceRevision: number,
+  sceneId: string,
+  timestampMs: number,
+  resource: string,
+  proposedDraft?: ProjectDraftRecord["draft"],
+  signal?: AbortSignal,
+): Promise<SceneLightingPreview> {
+  return request<SceneLightingPreview>(
+    `/api/gui/v1/projects/${encodeURIComponent(projectId)}/scene-lighting-preview`,
+    {
+      method: "POST",
+      headers: mutationHeaders(),
+      signal,
+      body: JSON.stringify({
+        source_revision: sourceRevision, scene_id: sceneId, timestamp_ms: timestampMs,
+        resource, proposed_draft: proposedDraft, pixel_limit: 4096,
+      }),
+    },
+    true,
+  );
+}
+
 export interface RevisionRelease {
   project_id: string;
   revision: number;
@@ -593,6 +739,19 @@ export interface AssetUploadRecord {
 export interface RuntimeStatus {
   observed_at: string;
   source: "controller_runtime";
+  installation_id?: string | null;
+  apply_job?: { id: string; project_id: string; state: string } | null;
+  input_health?: Pick<InputSourceSnapshot, "state" | "freshness" | "error" | "observed_at_ms" | "events_delivered" | "audience_matches" | "last_received_at_ms"> & { visitor_rules_loaded: boolean };
+  loaded_catalog?: {
+    state: "unreported" | "loaded" | "recovery_required";
+    project_id: string | null;
+    project_name?: string | null;
+    revision: number | null;
+    digest_sha256: string | null;
+    loaded_at: string | null;
+    generation: string | null;
+    error?: string | null;
+  };
   status: {
     controller_epoch: string;
     active_scene: string | null;
@@ -646,11 +805,46 @@ export interface RuntimeStatus {
     encounter_loop_running: boolean;
     queued_scenes: string[];
     operations: {
+      scene_options?: { id: string; name: string; ready: boolean }[];
+      starting_scene_id?: string | null;
+      output_resources?: { resource: string; pixel_count: number | null }[];
       mode: string;
       show_enabled: boolean;
     };
     health: Record<string, string>;
   };
+}
+
+export interface ApplyJob {
+  id: string; project_id: string; source_revision: number;
+  state: "preparing" | "publishing" | "staging" | "handover" | "completed" | "failed" | "cancelled";
+  package_id: string | null; previous_package_id: string | null;
+  error: string | null; cancel_requested: boolean; interrupted: boolean;
+  loaded: boolean; running: boolean; warnings?: string[];
+  loaded_catalog?: NonNullable<RuntimeStatus["loaded_catalog"]>;
+  starting_scene_id?: string | null;
+  scene_options?: { id: string; name: string }[];
+}
+export interface ApplyInput {
+  source_revision: number; expected_head_revision: number; confirm_interruption: boolean;
+  approve_release: boolean; starting_scene_id?: string; restore_package_id?: string;
+  preserve_controller_looks: boolean;
+}
+export function applySavedShow(projectId: string, input: ApplyInput): Promise<ApplyJob> {
+  return request(`/api/gui/v1/projects/${encodeURIComponent(projectId)}/apply`, {
+    method: "POST", headers: mutationHeaders(), body: JSON.stringify(input),
+  }, true);
+}
+export function getApplyJobs(projectId: string, signal?: AbortSignal): Promise<ApplyJob[]> {
+  return request(`/api/gui/v1/projects/${encodeURIComponent(projectId)}/apply-jobs`, { signal, cache: "no-store" });
+}
+export function getApplyJob(projectId: string, jobId: string, signal?: AbortSignal): Promise<ApplyJob> {
+  return request(`/api/gui/v1/projects/${encodeURIComponent(projectId)}/apply-jobs/${encodeURIComponent(jobId)}`, { signal, cache: "no-store" });
+}
+export function cancelApply(projectId: string, jobId: string): Promise<ApplyJob> {
+  return request(`/api/gui/v1/projects/${encodeURIComponent(projectId)}/apply-jobs/${encodeURIComponent(jobId)}/cancel`, {
+    method: "POST", headers: mutationHeaders(),
+  }, true);
 }
 
 export interface RenderJob {
@@ -673,6 +867,7 @@ export interface RenderJob {
 }
 
 export type SimulationStep =
+  | { kind: "visitor"; camera: string; zone?: string; label?: string; object_id?: string; observation: "arrive" | "stay" | "leave"; age_ms?: number }
   | { kind: "advance"; delta_ms: number }
   | {
       kind: "observe";
@@ -682,6 +877,77 @@ export type SimulationStep =
   | { kind: "operator_start" | "request_scene"; scene_id: string }
   | { kind: "disconnect" | "reconnect"; agent_id?: string | null }
   | { kind: "output_failure"; resource: string; failed: boolean };
+
+interface InteractionCardBase {
+  key: string; name: string; when: string; scene_id: string | null;
+  scene_name: string | null; timing: string; afterward: string; editable: boolean; note: string;
+}
+export type InteractionCard =
+  | (InteractionCardBase & { kind: "response"; id: string; definition: OpportunityDefinition })
+  | (InteractionCardBase & { kind: "transition"; index: number; definition: EncounterTransitionDefinition });
+
+export interface InteractionOverview {
+  source_revision: number; cards: InteractionCard[]; visitors: AudiencePresenceDefinition | null;
+  warnings: string[];
+  normal_playback: { starting_scene_id: string | null; default_pool_id: string | null; pools: ScenePoolDefinition[] };
+}
+
+export interface GuidedResponse {
+  id?: string; name: string; trigger_event: string; scene_id: string; ttl_ms: number;
+  min_presence_ms: number; acknowledgement_cooldown_ms: number; priority: number;
+  fallback_scene_id?: string; prepare_completion: boolean;
+  qualification_context?: "preserve" | "present" | "absent" | "any";
+  min_absence_before_arrival_ms?: number; qualification_window_ms?: number; event_ttl_ms?: number;
+}
+export interface InteractionEdit {
+  source_revision: number; operation: "response" | "visitors" | "transition";
+  response?: GuidedResponse; visitors?: AudiencePresenceDefinition;
+  transition_index?: number; scene_id?: string | null;
+}
+export interface InteractionCheckpoint {
+  index: number; at_ms: number; action: string;
+  observations: { event_type?: string; accepted?: boolean; audience_relevant?: boolean | null; reason?: string | null; decision?: string; note?: string }[];
+  scene_history: string[];
+  status: {
+    active_scene: string | null; estimated_position_ms: number | null;
+    completion_policy: string | null;
+    playback_state: string | null; degraded_reason: string | null;
+    audience: { state: string; active_objects: number; relevant_observations: number } | null;
+    encounter: { state: string; cooldown_until_ms: number | null; rejected_events: number; accepted_events: number } | null;
+    opportunities: {
+      pending: { id: string; scene_id: string; expires_at_ms: number; remaining_ms: number; priority: number }[];
+      qualifying_count: number; qualifying: { id: string; scene_id: string; blocked_by: string[] }[];
+      created_count: number; consumed_count: number; expired_count: number;
+      qualification_expired_count: number;
+    } | null;
+    director: { eligible_scene_ids: string[]; active_pool_id: string; eligibility: Record<string, { available: boolean; cooldown_remaining_ms: number; conditions_match: boolean }> } | null;
+  };
+}
+export interface InteractionPreview {
+  project_id: string; source_revision: number; draft_digest: string; unsaved: boolean;
+  trace: InteractionCheckpoint[]; selected_index: number;
+  frame: SceneLightingPreview | null; frame_unavailable_reason: string | null;
+  scene_timeline: { scene_id: string | null; at_ms: number }[];
+  hardware_adapters_opened: false; hardware_commands_sent: false; limitations: string[];
+}
+export interface InteractionPreviewInput {
+  source_revision: number; proposed_edit?: InteractionEdit;
+  steps: SimulationStep[]; frame_index?: number; starting_scene_id?: string;
+  resource?: string; pixel_limit?: number;
+}
+export function getInteractions(projectId: string, signal?: AbortSignal): Promise<InteractionOverview> {
+  return request(`/api/gui/v1/projects/${encodeURIComponent(projectId)}/interactions`, { signal });
+}
+export function updateInteraction(projectId: string, edit: InteractionEdit): Promise<ProjectDraftRecord> {
+  return request(`/api/gui/v1/projects/${encodeURIComponent(projectId)}/interactions`, {
+    method: "PUT", headers: mutationHeaders(), body: JSON.stringify(edit),
+  }, true);
+}
+export function previewInteractions(projectId: string, input: InteractionPreviewInput, signal?: AbortSignal): Promise<InteractionPreview> {
+  return request(`/api/gui/v1/projects/${encodeURIComponent(projectId)}/interaction-preview`, {
+    method: "POST", headers: mutationHeaders(), body: JSON.stringify(input), signal,
+  }, true);
+}
 
 export interface SimulationScenario {
   id: string;
@@ -1159,12 +1425,12 @@ export async function logout(): Promise<void> {
   });
 }
 
-export async function getInstallation(): Promise<InstallationStatus> {
-  return request<InstallationStatus>("/api/gui/v1/installation");
+export async function getInstallation(signal?: AbortSignal): Promise<InstallationStatus> {
+  return request<InstallationStatus>("/api/gui/v1/installation", { signal, cache: "no-store" });
 }
 
-export async function getInstallations(): Promise<InstallationSummary[]> {
-  return request<InstallationSummary[]>("/api/gui/v1/installations");
+export async function getInstallations(signal?: AbortSignal): Promise<InstallationSummary[]> {
+  return request<InstallationSummary[]>("/api/gui/v1/installations", { signal, cache: "no-store" });
 }
 
 export async function createInstallation(name: string): Promise<InstallationSummary> {
@@ -1272,7 +1538,7 @@ export async function uploadInstallationPhoto(
   installationId: string,
   file: File,
   name: string,
-  viewpoint: string,
+  viewpoint?: string,
 ): Promise<InstallationPhoto> {
   return request<InstallationPhoto>(
     `/api/gui/v1/installations/${encodeURIComponent(installationId)}/photos`,
@@ -1281,13 +1547,21 @@ export async function uploadInstallationPhoto(
       headers: {
         ...mutationHeaders(),
         "Content-Type": file.type,
-        "X-Photo-Name": name,
-        "X-Photo-Viewpoint": viewpoint,
-        "X-Original-Filename": file.name,
+        "X-Photo-Description": encodeURIComponent(name),
+        "X-Photo-Metadata-Encoding": "uri",
+        ...(viewpoint === undefined ? {} : { "X-Photo-Viewpoint": encodeURIComponent(viewpoint) }),
+        "X-Original-Filename": encodeURIComponent(file.name),
       },
       body: file,
     },
   );
+}
+
+export function describeInstallationPhoto(photo: InstallationPhoto, description: string): Promise<InstallationPhoto> {
+  return request(`/api/gui/v1/installation-photos/${encodeURIComponent(photo.id)}/description`, {
+    method: "PATCH", headers: { ...mutationHeaders(), "If-Match": `"${photo.revision}"` },
+    body: JSON.stringify({ description }),
+  }, true);
 }
 
 export async function updateInstallationPhoto(
@@ -1783,8 +2057,8 @@ export async function updateProjectDraft(
   );
 }
 
-export async function createProjectFromActive(name: string): Promise<void> {
-  await request("/api/gui/v1/projects/from-active", {
+export async function createProjectFromActive(name: string): Promise<ProjectDraftRecord> {
+  return request<ProjectDraftRecord>("/api/gui/v1/projects/from-active", {
     method: "POST",
     headers: mutationHeaders(),
     body: JSON.stringify({ name }),
@@ -1934,20 +2208,20 @@ export async function uploadAsset(
   return upload;
 }
 
-export async function getRuntimeStatus(): Promise<RuntimeStatus> {
-  return request<RuntimeStatus>("/api/gui/v1/runtime/status");
+export async function getRuntimeStatus(signal?: AbortSignal): Promise<RuntimeStatus> {
+  return request<RuntimeStatus>("/api/gui/v1/runtime/status", { signal, cache: "no-store" });
 }
 
-export async function getTopology(): Promise<Topology> {
-  return request<Topology>("/api/gui/v1/topology");
+export async function getTopology(signal?: AbortSignal): Promise<Topology> {
+  return request<Topology>("/api/gui/v1/topology", { signal, cache: "no-store" });
 }
 
-export async function getResourceAssignments(): Promise<ResourceAssignment[]> {
-  return request<ResourceAssignment[]>("/api/gui/v1/resource-assignments");
+export async function getResourceAssignments(signal?: AbortSignal): Promise<ResourceAssignment[]> {
+  return request<ResourceAssignment[]>("/api/gui/v1/resource-assignments", { signal });
 }
 
-export async function getActivity(): Promise<ActivityEvent[]> {
-  return request<ActivityEvent[]>("/api/gui/v1/activity");
+export async function getActivity(signal?: AbortSignal): Promise<ActivityEvent[]> {
+  return request<ActivityEvent[]>("/api/gui/v1/activity", { signal, cache: "no-store" });
 }
 
 export async function setResourceAssignment(
@@ -2063,6 +2337,7 @@ export async function testDeviceConnection(deviceId: string): Promise<DeviceConn
 export async function operate(
   action: OperateAction,
   positionMs?: number,
+  sceneId?: string,
 ): Promise<void> {
   await request("/api/gui/v1/operate/actions", {
     method: "POST",
@@ -2070,6 +2345,7 @@ export async function operate(
     body: JSON.stringify({
       action,
       ...(positionMs === undefined ? {} : { position_ms: positionMs }),
+      ...(sceneId === undefined ? {} : { scene_id: sceneId }),
     }),
   });
 }

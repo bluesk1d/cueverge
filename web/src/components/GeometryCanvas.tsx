@@ -7,7 +7,7 @@ type Gesture = {
   id: number;
   start: Point;
   last: Point;
-  kind: "pan" | "point" | "draw";
+  kind: "pan" | "point" | "draw" | "select";
   index: number;
 };
 
@@ -41,6 +41,9 @@ export function GeometryCanvas({
   canEdit,
   onPlacePoint,
   onMovePoint,
+  onSelectGeometry,
+  drawing = false,
+  canDraw = false,
   children,
 }: {
   label: string;
@@ -48,12 +51,16 @@ export function GeometryCanvas({
   canEdit: boolean;
   onPlacePoint: (point: Point) => void;
   onMovePoint: (index: number, point: Point) => void;
+  onSelectGeometry?: (id: string) => void;
+  drawing?: boolean;
+  canDraw?: boolean;
   children: (zoom: number) => ReactNode;
 }) {
   const svgRef = useRef<SVGSVGElement>(null);
   const viewRef = useRef(fitView);
   const [view, setView] = useState(fitView);
-  const [tool, setTool] = useState<"draw" | "hand">("draw");
+  const [tool, setTool] = useState<"select" | "draw" | "hand">("select");
+  useEffect(() => setTool(drawing ? "draw" : "select"), [drawing]);
   const [space, setSpace] = useState(false);
   const spaceRef = useRef(false);
   const [panning, setPanning] = useState(false);
@@ -61,7 +68,8 @@ export function GeometryCanvas({
   const pointers = useRef(new Map<number, Point>());
   const gesture = useRef<Gesture | null>(null);
   const suppressClick = useRef(false);
-  const hand = tool === "hand" || space || !canEdit;
+  const selectionTarget = useRef<string | null>(null);
+  const hand = tool === "hand" || space;
 
   function updateView(next: View) {
     viewRef.current = next;
@@ -169,15 +177,22 @@ export function GeometryCanvas({
     const handle = event.target instanceof Element
       ? event.target.closest("[data-geometry-point]")
       : null;
+    selectionTarget.current = event.target instanceof Element
+      ? event.target.closest("[data-layout-object]")?.getAttribute("data-layout-object") ?? null
+      : null;
     const index = Number(handle?.getAttribute("data-geometry-point") ?? -1);
     const kind = hand || spaceRef.current || event.button === 1 ? "pan"
-      : canEdit && handle ? "point" : "draw";
+      : canEdit && handle ? "point" : tool === "draw" && canDraw ? "draw" : "select";
     gesture.current = { id: event.pointerId, start: point, last: point, kind, index };
-    suppressClick.current = kind !== "draw";
+    suppressClick.current = kind === "pan" || kind === "point";
     setPanning(kind === "pan");
   }
 
   function pointerMove(event: ReactPointerEvent<SVGSVGElement>) {
+    if (gesture.current?.kind === "select" &&
+        Math.hypot(event.clientX - gesture.current.start.x, event.clientY - gesture.current.start.y) > 4) {
+      suppressClick.current = true;
+    }
     const previous = pointers.current.get(event.pointerId);
     if (!previous) return;
     const next = { x: event.clientX, y: event.clientY };
@@ -232,8 +247,9 @@ export function GeometryCanvas({
   return (
     <>
       <div className="geometry-mapper__canvas-tools" role="group" aria-label="Canvas navigation">
-        {canEdit && <button type="button" aria-pressed={tool === "draw"} onClick={() => setTool("draw")}>Draw</button>}
-        <button type="button" aria-pressed={tool === "hand" || !canEdit} onClick={() => setTool("hand")}>Hand</button>
+        <button type="button" aria-pressed={tool === "select"} onClick={() => setTool("select")}>Select</button>
+        {canEdit && canDraw && <button type="button" aria-pressed={tool === "draw"} onClick={() => setTool("draw")}>Draw</button>}
+        <button type="button" aria-pressed={tool === "hand"} onClick={() => setTool("hand")}>Hand</button>
         <button type="button" aria-label="Zoom out" disabled={view.zoom <= 0.5} onClick={() => zoomAt({ x: 0.5, y: 0.5 }, viewRef.current.zoom / 1.25)}>-</button>
         <output aria-label="Canvas zoom">{Math.round(view.zoom * 100)}%</output>
         <button type="button" aria-label="Zoom in" disabled={view.zoom >= 8} onClick={() => zoomAt({ x: 0.5, y: 0.5 }, viewRef.current.zoom * 1.25)}>+</button>
@@ -243,7 +259,7 @@ export function GeometryCanvas({
       <svg
         ref={svgRef}
         aria-label={label}
-        className={`${className}${hand ? " geometry-canvas--hand" : ""}${panning ? " geometry-canvas--panning" : ""}`}
+        className={`${className}${tool === "select" ? " geometry-canvas--select" : ""}${hand ? " geometry-canvas--hand" : ""}${panning ? " geometry-canvas--panning" : ""}`}
         role="img"
         tabIndex={0}
         viewBox={`${view.x} ${view.y} ${1000 / view.zoom} ${600 / view.zoom}`}
@@ -255,7 +271,15 @@ export function GeometryCanvas({
         onPointerCancel={endPointer}
         onLostPointerCapture={endPointer}
         onClick={(event) => {
-          if (!canEdit || hand || suppressClick.current) return;
+          if (hand || suppressClick.current) return;
+          if (tool === "select") {
+            const object = event.target instanceof Element ? event.target.closest("[data-layout-object]") : null;
+            const id = object?.getAttribute("data-layout-object") ?? selectionTarget.current;
+            selectionTarget.current = null;
+            if (id) onSelectGeometry?.(id);
+            return;
+          }
+          if (!canEdit || !canDraw) return;
           const point = worldPosition(viewRef.current, screenPosition(event.currentTarget, { x: event.clientX, y: event.clientY }));
           onPlacePoint({ x: point.x / 1000, y: point.y / 600 });
         }}

@@ -15,6 +15,8 @@ technical handover required for changed runtime scene logic.
 
 ## Supporting references
 
+- [Usability pass milestone](usability-pass.md): completed first-pass UX review,
+  approved decisions, and the ordered UP-00 through UP-09 implementation plan.
 - [Persistent local UI sandbox](local-demo.md): generated demo assets and a
   hardware-free local controller for testing uploads, mapping, and UI changes.
 - [Operations and simulation](operations.md): modes, diagnostics, MCP,

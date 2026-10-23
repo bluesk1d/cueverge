@@ -12,7 +12,7 @@ class FrigateEventError(ValueError):
 
 
 class _FrigateObject(BaseModel):
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(extra="ignore", allow_inf_nan=False)
 
     id: str = Field(min_length=1)
     label: str = Field(min_length=1)

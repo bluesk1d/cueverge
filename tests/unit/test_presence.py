@@ -146,6 +146,18 @@ def test_runtime_can_drive_encounter_from_semantic_arrival() -> None:
     asyncio.run(scenario())
 
 
+def test_prior_quiet_time_survives_candidate_arrival_for_response_qualification() -> None:
+    estimator = AudiencePresenceEstimator(
+        _definition(arrival_confirmation_ms=0).model_copy(update={"absence_grace_ms": 0})
+    )
+    estimator.ingest(_event("first", "frigate.zone.entered", "first-object"), 0)
+    estimator.ingest(_event("leave", "frigate.object.end", "first-object"), 1000)
+    assert estimator.state.value == "absent"
+    estimator.ingest(_event("second", "frigate.zone.entered", "second-object"), 6000)
+    assert estimator.context()["audience_previous_absence_ms"] == 5000
+    assert estimator.state.value == "present"
+
+
 def _definition(
     *,
     arrival_confirmation_ms: int = 1000,

@@ -79,7 +79,7 @@ Alert at 80 percent of a budget and re-profile before increasing a limit.
 | Device transport | TCP 7443, `wss://controller-host:7443/api/device/v2/agent/ws` | Dedicated mTLS listener, not an ordinary browser WebSocket proxy |
 | Enrollment | HTTPS controller origin | One-time pairing token, reviewed capabilities, device-generated private key |
 | RGB DDP | UDP 4048 outbound by default | Private output network; configure exact destination and pixel count |
-| Frigate MQTT | TCP 1883 by default | Optional private broker connectivity; credentials stay in private configuration |
+| Frigate MQTT | TCP 1883 by default; choose a TLS broker port explicitly | Optional private broker connectivity; GUI-managed write-only credentials or private operator environment |
 | MCP | `/mcp/` on the GUI origin | Project-scoped bearer token; explicitly granted scopes |
 
 Only publish ports that are needed. The supplied Compose file publishes HTTP
@@ -321,6 +321,16 @@ this service. Add those keys explicitly to a private Compose override and add
 the required mounts and port mappings. Do not enable hardware in a generic
 example deployment.
 
+Camera inputs can instead be configured under **Installation > Inputs &
+connections** without forwarding broker secrets into Compose. Keep the GUI data
+volume persistent and controller-owned. GUI-managed credentials require a private
+POSIX directory and nonsymlink files with owner-only access; use
+`CUEVERGE_INPUT_MANAGEMENT=environment` on platforms without that enforcement.
+Back up the input directory together with its matching GUI database, never as a
+show export. See [camera input management](operations.md#camera-input-management)
+for management precedence, TLS, credential rotation and recovery. An explicit
+GUI/environment management-mode change requires restart.
+
 ### 3. Verify persistence and dependencies
 
 The named `cueverge-data` volume must remain attached across recreation.
@@ -531,9 +541,11 @@ Merging fails if the working revision has changed. Separately scoped direct
 edits save a new revision without proposal approval. Publication tokens can
 approve release metadata in chat; package validation, staging prerequisites,
 and simulation-mode activation restrictions are not bypassed. MCP activation
-deploys media artifacts, not the running controller scene catalog, and no MCP
-tool starts scenes, enrolls devices, or grants access. `live_operation` remains
-reserved and does not imply any of the new scopes.
+alone deploys media artifacts, not the running controller scene catalog.
+Separately authorized `apply_saved_show` loads a verified saved catalog;
+`operate_loaded_show` requires explicitly opted-in `live_operation`, current
+operator/admin live permission, loaded-project matching and physical confirmation.
+Neither grants device enrollment or access administration.
 
 Revoke compromised tokens, review `mcp.tool.call`, `mcp.draft.update`,
 `mcp.revision.release.update`, `mcp.package.*`, and `mcp.proposal.*` audit entries,
@@ -565,12 +577,27 @@ stdout logs are not automatically a durable log archive.
 
 ## Release handover and upgrades
 
-**Current boundary:** publishing creates an immutable package; staging and
+**Advanced artifact boundary:** publishing creates an immutable package; staging and
 activation deploy rendered artifacts and update release records. They do
 not replace the running controller's scene catalog. Deactivation changes the
 publication record and is not a replacement for **Stop** or **Blackout**.
 
-For a changed scene catalog, plan an explicit technical handover:
+Prefer **Shows > Apply saved changes** for a saved show on the same deployed
+resources. It validates/approves/publishes, verifies checksummed device media,
+stops safely, replaces the actual catalog, rebuilds scene/visitor scheduling
+and acknowledges the loaded generation. Playing restarts from zero; paused/
+stopped remains stopped. Durable jobs support cancellation before interruption
+and retained-package restore; Stop/Blackout win during handover.
+
+Managed startup recovery loads the retained package stopped before camera
+ingress. Corrupt retained state is `recovery_required`, never a successful
+bootstrap fallback. Preserve the GUI database and published directory together.
+Once a managed catalog is retained, changing `CUEVERGE_SHOW_PACKAGE` alone does
+not override it on restart: recover/apply the intended managed version, or
+perform an explicit controlled backup/state migration. Do not delete private
+state to make a label appear correct.
+
+For an external catalog or deployment-routing change, plan a technical handover:
 
 1. Review the approved source revision, publication diagnostics, asset and
    artifact checksums, resource assignments, and rollback candidate.
@@ -588,9 +615,9 @@ For a changed scene catalog, plan an explicit technical handover:
    and perform a supervised physical test before resuming automatic operation.
 
 Retain the previous image, package path, device artifacts, configuration,
-and consistent backup. Rollback of scene logic requires restoring the prior
-package setting and restarting the controller as well as restoring any
-device artifacts. Do not edit files inside a content-addressed package.
+and consistent backup. Managed scene rollback uses retained-version restore and leaves authoring
+untouched. External-catalog rollback requires its prior package/configuration
+and consistent private state as well as device artifacts. Do not edit files inside a content-addressed package.
 
 For an application upgrade, use the same maintenance procedure: build and
 qualify the candidate image separately, stop before backup, start the

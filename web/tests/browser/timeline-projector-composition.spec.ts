@@ -1,4 +1,6 @@
 import { expect, test } from "@playwright/test";
+import { openLayout, openProjectorDetails } from "./setup-workspace";
+import { openAdvancedShowWorkspace } from "./show-workspace";
 
 const installationId = "demo-installation";
 const geometryId = "projector-surface";
@@ -106,6 +108,7 @@ test("projector-native edit returns to root and maps through every photo view", 
 
   await page.goto("/demo.html");
   await page.getByRole("button", { name: "Shows", exact: true }).click();
+  await openAdvancedShowWorkspace(page);
   await page.getByText("Timeline editor", { exact: true }).click();
   await page.getByLabel("Editing space").selectOption("projector-composition");
   await expect(
@@ -208,10 +211,12 @@ test("projector-native edit returns to root and maps through every photo view", 
   await expect(page.getByText(/Authored once in scene root · ambient/)).toBeVisible();
 
   await page.getByRole("button", { name: "Installation", exact: true }).click();
+  await openLayout(page);
   const mapper = page
     .getByRole("heading", { name: "Visual Mapper" })
     .locator("xpath=ancestor::section");
   await mapper.getByRole("button", { name: "Edit" }).click();
+  await openProjectorDetails(mapper);
   for (const photoId of photoIds) {
     await expect(mapper.getByText(new RegExp(`Photo view ${photoId}:`))).toBeVisible();
   }
@@ -275,6 +280,7 @@ test("installation overlay saves LED selection and queues one mixed bake", async
   });
   await page.goto("/demo.html");
   await page.getByRole("button", { name: "Shows", exact: true }).click();
+  await openAdvancedShowWorkspace(page);
   await page.getByText("Timeline editor", { exact: true }).click();
   await page.getByLabel("Editing space").selectOption("projector-composition");
   await expect(page.getByLabel("Include LED surface roofline")).not.toBeChecked();

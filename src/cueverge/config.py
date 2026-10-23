@@ -102,6 +102,25 @@ class FrigateMqttConfig(RuntimeConfig):
     password: SecretStr | None = None
     reconnect_delay_ms: int = Field(default=5000, ge=100)
     accepted_labels: tuple[str, ...] = ("person",)
+    tls: bool = False
+
+    @classmethod
+    def from_environment(cls) -> "FrigateMqttConfig":
+        return cls(
+            enabled=_env_enabled("CUEVERGE_FRIGATE_MQTT_ENABLED"),
+            host=os.environ.get("CUEVERGE_FRIGATE_MQTT_HOST"),
+            port=int(os.environ.get("CUEVERGE_FRIGATE_MQTT_PORT", "1883")),
+            topic=os.environ.get("CUEVERGE_FRIGATE_MQTT_TOPIC", "frigate/events"),
+            username=os.environ.get("CUEVERGE_FRIGATE_MQTT_USERNAME"),
+            password=_optional_secret(os.environ.get("CUEVERGE_FRIGATE_MQTT_PASSWORD")),
+            reconnect_delay_ms=int(
+                os.environ.get("CUEVERGE_FRIGATE_MQTT_RECONNECT_DELAY_MS", "5000")
+            ),
+            accepted_labels=_csv_values(
+                os.environ.get("CUEVERGE_FRIGATE_ACCEPTED_LABELS", "person")
+            ),
+            tls=_env_enabled("CUEVERGE_FRIGATE_MQTT_TLS"),
+        )
 
     @model_validator(mode="after")
     def validate_connection(self) -> "FrigateMqttConfig":
@@ -133,7 +152,10 @@ class ControllerConfig(RuntimeConfig):
     @classmethod
     def from_environment(cls) -> "ControllerConfig":
         ddp_enabled = _env_enabled("CUEVERGE_DDP_ENABLED")
-        frigate_enabled = _env_enabled("CUEVERGE_FRIGATE_MQTT_ENABLED")
+        gui_managed_input = (
+            _env_enabled("CUEVERGE_GUI_ENABLED")
+            and os.environ.get("CUEVERGE_INPUT_MANAGEMENT") == "gui"
+        )
         output_config_value = os.environ.get("CUEVERGE_OUTPUT_CONFIG")
         output_config_file = Path(output_config_value) if output_config_value else None
         output_deployment = (
@@ -155,19 +177,8 @@ class ControllerConfig(RuntimeConfig):
                 expected_pixel_count=_optional_int(os.environ.get("CUEVERGE_DDP_PIXEL_COUNT")),
                 brightness_limit=float(os.environ.get("CUEVERGE_DDP_BRIGHTNESS_LIMIT", "1.0")),
             ),
-            frigate_mqtt=FrigateMqttConfig(
-                enabled=frigate_enabled,
-                host=os.environ.get("CUEVERGE_FRIGATE_MQTT_HOST"),
-                port=int(os.environ.get("CUEVERGE_FRIGATE_MQTT_PORT", "1883")),
-                topic=os.environ.get("CUEVERGE_FRIGATE_MQTT_TOPIC", "frigate/events"),
-                username=os.environ.get("CUEVERGE_FRIGATE_MQTT_USERNAME"),
-                password=_optional_secret(os.environ.get("CUEVERGE_FRIGATE_MQTT_PASSWORD")),
-                reconnect_delay_ms=int(
-                    os.environ.get("CUEVERGE_FRIGATE_MQTT_RECONNECT_DELAY_MS", "5000")
-                ),
-                accepted_labels=_csv_values(
-                    os.environ.get("CUEVERGE_FRIGATE_ACCEPTED_LABELS", "person")
-                ),
+            frigate_mqtt=(
+                FrigateMqttConfig() if gui_managed_input else FrigateMqttConfig.from_environment()
             ),
         )
 

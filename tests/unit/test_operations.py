@@ -42,10 +42,8 @@ def test_operations_modes_gate_observations_but_preserve_operator_control() -> N
         assert runtime.active_scene.definition.id == "ambient"
 
         status = runtime.status()
-        assert status["operations"] == {
-            "show_enabled": False,
-            "mode": "blackout",
-        }
+        assert status["operations"]["show_enabled"] is False
+        assert status["operations"]["mode"] == "blackout"
         assert status["health"] == {
             "media_agent": "connected",
             "lighting_output": "MemoryFrameSink",
