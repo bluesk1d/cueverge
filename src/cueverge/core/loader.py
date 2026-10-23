@@ -243,7 +243,8 @@ def load_show_package(package_root: Path) -> SceneCatalog:
         mismatched = sorted(
             scene.definition.id
             for scene in scenes.values()
-            if looks_definition.resource
+            if scene.lighting_outputs
+            and looks_definition.resource
             not in {output.definition.resource for output in scene.lighting_outputs}
         )
         if mismatched:
@@ -373,22 +374,27 @@ def _bind_scene(
         _bind_lighting_output(scene.id, definition, bindings) for definition in lighting_definitions
     )
     primary_media = media_outputs[0] if media_outputs else None
-    primary_lighting = lighting_outputs[0]
+    primary_lighting = lighting_outputs[0] if lighting_outputs else None
     return LoadedScene(
         definition=scene,
         media_outputs=media_outputs,
         lighting_outputs=lighting_outputs,
         clock_source_id=clock_source_id,
         agent_id=primary_media.agent_id if primary_media is not None else None,
-        pixel_count=primary_lighting.pixel_count,
-        pixel_segments=primary_lighting.pixel_segments,
-        lighting_segment=primary_lighting.lighting_segment,
-        lighting_target_kind=primary_lighting.lighting_target_kind,
-        lighting_target_id=primary_lighting.lighting_target_id,
-        lighting_target_indices=primary_lighting.lighting_target_indices,
-        lighting_target_precedence=primary_lighting.lighting_target_precedence,
-        lighting_cues=primary_lighting.lighting_cues,
-        color=primary_lighting.color,
+        # Legacy primary-lighting aliases are empty for media-only scenes.
+        pixel_count=primary_lighting.pixel_count if primary_lighting else 0,
+        pixel_segments=primary_lighting.pixel_segments if primary_lighting else (),
+        lighting_segment=primary_lighting.lighting_segment if primary_lighting else None,
+        lighting_target_kind=primary_lighting.lighting_target_kind if primary_lighting else None,
+        lighting_target_id=primary_lighting.lighting_target_id if primary_lighting else None,
+        lighting_target_indices=primary_lighting.lighting_target_indices
+        if primary_lighting
+        else (),
+        lighting_target_precedence=primary_lighting.lighting_target_precedence
+        if primary_lighting
+        else 0,
+        lighting_cues=primary_lighting.lighting_cues if primary_lighting else (),
+        color=primary_lighting.color if primary_lighting else (0, 0, 0),
         asset_id=primary_media.asset_id if primary_media is not None else None,
     )
 

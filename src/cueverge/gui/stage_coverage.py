@@ -36,7 +36,8 @@ class StageCoverageService:
         with self._connect() as connection:
             rows = connection.execute(
                 """
-                SELECT m.*, g.photo_id, g.points_json, g.semantic_id
+                SELECT m.*, g.photo_id, g.points_json, g.semantic_id, g.installation_id,
+                       g.coordinate_space_id
                 FROM projector_surface_mappings AS m
                 JOIN installation_geometry AS g ON g.id = m.geometry_id
                 WHERE g.installation_id = ?
@@ -119,11 +120,12 @@ class StageCoverageService:
                 """
                 SELECT semantic_id, points_json
                 FROM installation_geometry
-                WHERE photo_id = ? AND kind = 'mask'
+                WHERE installation_id = ? AND coordinate_space_id = ? AND kind = 'mask'
                   AND semantic_id IN (SELECT value FROM json_each(?))
                 """,
                 (
-                    str(mapping["photo_id"]),
+                    mapping["installation_id"],
+                    mapping["coordinate_space_id"],
                     json.dumps(mask_ids, separators=(",", ":")),
                 ),
             ).fetchall()

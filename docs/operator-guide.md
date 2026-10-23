@@ -163,7 +163,7 @@ topology, with fresh connection/capability information. Independently check
 video, audio, and pixels; "not independently detectable" is not a fault to
 hide or a health check to waive.
 
-### 3. Add reference photos
+### 3. Optionally add or replace reference photos
 
 1. Open **Installation > Photos & Layout**.
 2. Enter one **Photo description**, such as "Wide front view for roofline placement".
@@ -176,10 +176,25 @@ hide or a health check to waive.
 5. Add useful alternate angles or close-ups, within the 12-photo budget.
 
 Use non-sensitive photos where practical. Photos describe viewpoints, not
-separate physical outputs. The Visual Mapper becomes available after a photo
-has been uploaded. **Open Layout** on a card enters that exact photo.
+separate physical outputs. Photos are optional: **Open layout without a photo**
+opens an editable installation canvas immediately. **Open Layout** on a card
+uses that image as a reference background for the same installation geometry.
 Use **Refresh photos** after external/MCP changes; revision conflicts never
 silently overwrite another edit.
+
+To update an image, choose **Replace photo** on its card (also available in
+**Photo details**). Choose a JPEG, PNG or WebP, acknowledge the alignment review,
+then **Replace photo, keep layout**. This preserves the photo's ID, description,
+view identity, crop/orientation/scale metadata and every geometry, wiring and
+calibration record. Geometry is never automatically moved or rescaled to fit a
+different photograph. Review alignment when framing or camera angle changes.
+Save/cancel pending layout edits before changing its existing photo.
+
+**Remove photo** now removes only the reference image record: geometry remains
+editable on the installation canvas, with its semantic/landmark IDs, pixel
+allocations and calibration intact. Delete geometry explicitly in Layout only
+when the installation object itself should be removed. This does not recover
+geometry already deleted by older application versions.
 
 ### 4. Map geometry and outputs
 
@@ -413,17 +428,21 @@ deliberately. Do not repeatedly submit an obsolete revision.
 1. In the project **Assets** area choose **Add visual or audio asset**.
 2. Wait for upload verification and processing, not just completion of the
    browser progress indicator.
-3. Review the asset state, metadata, original availability, thumbnails,
-   proxies, waveforms, and any processing/scanner diagnostics.
+3. Review each asset card's name and processing state, filename/size, media
+   properties, organization, and file availability. Thumbnails, review proxies,
+   waveforms, and processing errors remain visible where available.
 4. Set useful names, folder/tags/favorite state, ownership, license,
    provenance, review state, and expiry where appropriate.
 5. Place a ready asset into the intended scene/output or composition.
 
 Managed formats include MP4/QuickTime/WebM video, FLAC/MP3/Ogg/WAV audio,
 and JPEG/PNG/WebP images. A format name alone does not guarantee the codec or
-profile works on a target device. A scan marked `unavailable` is not a
-clean scan. Failed, quarantined, missing, or incomplete assets must be resolved
-before release.
+profile works on a target device. Failed, quarantined, missing, or incomplete
+assets must be resolved before release.
+
+Asset details wrap on narrow screens. Expand **Organization & governance** to
+edit metadata; cards resize without overlapping neighboring assets. If the show
+has no media outputs, add one to a scene before placing an asset.
 
 Review proxies are editorial aids. Preserve the originals and verify the
 actual render/playback output. Package-relative media used outside the managed
@@ -487,6 +506,40 @@ Under **Advanced authoring and history**, use **Scenes & reusable presets** to o
 reusable presets, and apply them to a selected scene. Check resource references
 after reuse. Presets do not make an installation-specific resource portable by
 renaming it automatically.
+
+### Add scenes and outputs
+
+Open a show in **Scenes**, then choose **Add scene**. Enter a name, duration,
+end behavior, installation resource, and output name/ID. A scene starts with
+one output; add others with **Add output** on the selected scene.
+Save or cancel pending scene and visitor-response edits first.
+
+- Choose a video/audio resource for a media-only scene, an LED resource for a
+  lighting-only scene, or add both kinds for a mixed scene.
+- New lighting outputs contain an editable, full-duration **Blackout** cue.
+  New media outputs have no asset: open **Assets**, select the new
+  **scene name · output name** under **Place in scene output**, then **Place asset**.
+  Assign the media before publication.
+- The resource list includes the show's saved installation bindings and new
+  resources from its bound running installation. Saving copies only the selected
+  new binding; it never replaces existing bindings or pixel topology. An unbound
+  show, or a show bound to another installation, cannot import runtime resources.
+- Projector surfaces describe mapping/geometry, not independent playback slots.
+  Several surfaces on the same projector share one media-agent resource/output;
+  configure surface-mapped compositions separately in advanced authoring.
+- New scenes expose **Scene clock** explicitly. Adding an output preserves the
+  existing clock unless **Use this media output as the scene clock** is selected.
+  In particular, adding video to a controller-timed preshow does not make its
+  lighting depend on media telemetry.
+- Adding an output to a schema-v1 scene upgrades it to schema v2, preserving its
+  old outputs as `media` and `lighting`, together with cues, timing, policies,
+  asset references and unrelated editor metadata.
+
+These actions save a revision only. They do not add scenes to automatic-program
+pools or visitor responses, create a surface composition, publish, Apply, or
+change live playback. Configure those separately. A media-only scene sends no
+lighting frames during playback, including persistent baselines; it is not a
+background overlay. Explicit stop still applies configured safe-state lighting.
 
 ### Edit scene-native lighting
 

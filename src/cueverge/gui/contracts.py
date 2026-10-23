@@ -20,6 +20,7 @@ from cueverge.core.models import (
     InstallationDefinition,
     LightingCue,
     OpportunityProgramDefinition,
+    ResourceBinding,
     SceneDefinitionV1,
     SceneDefinitionV2,
     ShowProgramDefinition,
@@ -1099,6 +1100,7 @@ McpScopeValue = Literal[
     "live_operation",
     "input_config",
     "installation_edit",
+    "photo_replace",
 ]
 
 
@@ -1787,8 +1789,22 @@ GeometryKind = Literal[
 ]
 
 
-class InstallationGeometryRequest(GuiModel):
+class ReplaceInstallationPhotoRequest(GuiModel):
     photo_id: str = Field(min_length=1)
+    source_revision: int = Field(ge=1)
+    asset_id: str = Field(min_length=1)
+    confirm_alignment_review: bool
+
+    @field_validator("confirm_alignment_review")
+    @classmethod
+    def require_alignment_review(cls, value: bool) -> bool:
+        if not value:
+            raise ValueError("Confirm that the new photo alignment must be reviewed")
+        return value
+
+
+class InstallationGeometryRequest(GuiModel):
+    photo_id: str | None = Field(default=None, min_length=1)
     kind: GeometryKind
     name: str = Field(min_length=1, max_length=200)
     points: tuple[GeometryPoint, ...] = Field(min_length=1, max_length=500)
@@ -1934,7 +1950,7 @@ class ProjectorMappingResponse(ProjectorMappingRequest):
 
 class ProjectorPhotoViewResponse(GuiModel):
     geometry_id: str
-    photo_id: str
+    photo_id: str | None
     points: tuple[GeometryPoint, ...]
     homography: tuple[float, ...] | None
 
@@ -2208,6 +2224,39 @@ class RuntimeStatusResponse(GuiModel):
 class DeleteSceneRequest(GuiModel):
     scene_id: str = Field(min_length=1)
     base_revision: int = Field(ge=1)
+
+
+class SceneOutputCreate(GuiModel):
+    output_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
+    resource: str = Field(min_length=1)
+
+
+class CreateSceneRequest(GuiModel):
+    scene_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
+    name: str = Field(min_length=1, max_length=200)
+    duration_ms: int = Field(gt=0)
+    mode: Literal["controller_timed", "media_synchronized"] = "controller_timed"
+    completion_policy: Literal["loop", "hold", "stop"] = "loop"
+    output: SceneOutputCreate
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("Scene name must not be blank.")
+        return value.strip()
+
+
+class AddSceneOutputRequest(SceneOutputCreate):
+    make_clock_source: bool = False
+
+
+class SceneAuthoringOptions(GuiModel):
+    project_id: str
+    revision: int
+    installation_id: str | None
+    resources: tuple[ResourceBinding, ...]
+    importable_resources: tuple[str, ...]
 
 
 class SceneLightingPreviewRequest(GuiModel):

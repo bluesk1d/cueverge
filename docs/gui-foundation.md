@@ -434,19 +434,36 @@ Each photo records a display name, named viewpoint, original filename and media
 type, orientation in 90-degree increments, an optional normalized crop
 rectangle, and an optional positive scale hint. Crop coordinates must be
 complete and remain inside the image. Metadata updates and deletion use the
-photo's independent optimistic revision. These viewpoints are the durable
-background layer for later geometry, surface, and calibration tools.
+photo's independent optimistic revision. These viewpoints are optional
+reference backgrounds, not owners of installation geometry.
 
-Installation geometry uses normalized coordinates in a selected photo
-viewpoint. Revisioned geometry records support outputs, pixel segments,
+Installation geometry is installation-owned. Its optional `photo_id` reference
+is nullable and uses `ON DELETE SET NULL`, not cascading geometry deletion.
+Layout canvas coordinates remain normalized in the existing 1000 x 600 view;
+shared-stage coordinates and measured/native calibration stay explicit and
+are not invented from a missing photo. Revisioned geometry records support outputs, pixel segments,
 fixtures, ordered paths, projector surfaces, masks, audience zones, and
 safety/no-output zones. Area objects require a closed polygon with at least
 three points, paths and pixel segments require at least two ordered points, and
-fixtures require exactly one point. The initial SVG mapper provides
-photo selection, click-to-draw points, overlay rendering, selection for edit,
-optimistic updates, and audited removal. These photo coordinates remain a view
-layer; shared stage coordinates and projector-native transforms are separate
-later GUI-03 models.
+fixtures require exactly one point. The SVG mapper supports a blank installation
+canvas, optional backgrounds, click-to-draw, overlays, selection, optimistic
+updates and audited removal. Existing linked views retain their own rows,
+landmarks and coordinates; display selection prefers a matching view rather than
+merging or deleting saved placements. Geometry is visible without a photograph.
+
+Migration 41 transactionally preserves existing geometry IDs, data, dependent
+tables and indexes while rebuilding photo ownership. A private coordinate-space
+identity preserves the relationship between projector surfaces and masks from
+each existing view, even after every background is removed. Foreign-key checks
+are required before commit. Removing a background advances affected geometry
+revisions to reject stale edits, without altering wiring or calibration.
+
+`PUT /api/gui/v1/installation-photos/{id}/content` replaces validated raster
+bytes under the same photo ID. It requires author/CSRF/origin checks, `If-Match`,
+an encoded original filename, and explicit alignment-review acknowledgement.
+It retains all geometry and metadata, atomically updates the digest/revision,
+and keeps the original content-addressed bytes for normal storage lifecycle
+handling. New image URLs include the revision to avoid stale browser previews.
 
 Projector-surface mappings bind a four-corner projector-surface geometry record
 to a logical projector resource, native pixel dimensions, normalized native

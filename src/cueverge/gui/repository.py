@@ -1,6 +1,7 @@
 import hashlib
 import json
 import sqlite3
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -1261,6 +1262,86 @@ class GuiRepository:
                 VALUES (37, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
                 """
             )
+
+        self._migrate_optional_geometry_photos()
+
+    def _migrate_optional_geometry_photos(self) -> None:
+        with closing(self._connect()) as connection:
+            connection.execute("PRAGMA foreign_keys = OFF")
+            with connection:
+                connection.execute("BEGIN IMMEDIATE")
+                geometry_columns = {
+                    row["name"]
+                    for row in connection.execute("PRAGMA table_info(installation_geometry)")
+                }
+                if "coordinate_space_id" not in geometry_columns:
+                    connection.execute(
+                        "ALTER TABLE installation_geometry ADD COLUMN "
+                        "coordinate_space_id TEXT NOT NULL DEFAULT ''"
+                    )
+                    connection.execute(
+                        "UPDATE installation_geometry "
+                        "SET coordinate_space_id=COALESCE(photo_id,installation_id)"
+                    )
+                photo_column = next(
+                    row
+                    for row in connection.execute("PRAGMA table_info(installation_geometry)")
+                    if row["name"] == "photo_id"
+                )
+                photo_key = next(
+                    row
+                    for row in connection.execute("PRAGMA foreign_key_list(installation_geometry)")
+                    if row["from"] == "photo_id"
+                )
+                if photo_column["notnull"] or photo_key["on_delete"] != "SET NULL":
+                    schema = connection.execute(
+                        "SELECT sql FROM sqlite_schema WHERE type='table' "
+                        "AND name='installation_geometry'"
+                    ).fetchone()["sql"]
+                    schema = schema.replace(
+                        "installation_geometry", "installation_geometry_optional", 1
+                    )
+                    schema = schema.replace("photo_id TEXT NOT NULL", "photo_id TEXT")
+                    schema = schema.replace(
+                        "REFERENCES installation_photos(id) ON DELETE CASCADE",
+                        "REFERENCES installation_photos(id) ON DELETE SET NULL",
+                    )
+                    dependents = connection.execute(
+                        "SELECT sql FROM sqlite_schema WHERE tbl_name='installation_geometry' "
+                        "AND type IN ('index','trigger') AND sql IS NOT NULL"
+                    ).fetchall()
+                    connection.execute(schema)
+                    connection.execute(
+                        "INSERT INTO installation_geometry_optional "
+                        "SELECT * FROM installation_geometry"
+                    )
+                    connection.execute("DROP TABLE installation_geometry")
+                    connection.execute(
+                        "ALTER TABLE installation_geometry_optional RENAME TO installation_geometry"
+                    )
+                    for dependent in dependents:
+                        connection.execute(dependent["sql"])
+                updated_photo_column = next(
+                    row
+                    for row in connection.execute("PRAGMA table_info(installation_geometry)")
+                    if row["name"] == "photo_id"
+                )
+                updated_photo_key = next(
+                    row
+                    for row in connection.execute("PRAGMA foreign_key_list(installation_geometry)")
+                    if row["from"] == "photo_id"
+                )
+                if updated_photo_column["notnull"] or updated_photo_key["on_delete"] != "SET NULL":
+                    raise RuntimeError(
+                        "Geometry photo ownership migration could not be applied safely"
+                    )
+                if connection.execute("PRAGMA foreign_key_check").fetchone() is not None:
+                    raise RuntimeError("Geometry photo migration failed foreign-key validation")
+                connection.execute(
+                    "INSERT OR IGNORE INTO schema_migrations(version,applied_at) "
+                    "VALUES (41,strftime('%Y-%m-%dT%H:%M:%fZ','now'))"
+                )
+            connection.execute("PRAGMA foreign_keys = ON")
 
     def upsert_discovered_endpoint(
         self,

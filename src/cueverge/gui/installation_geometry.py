@@ -33,7 +33,7 @@ class InstallationGeometryConflictError(InstallationGeometryError):
 class StoredInstallationGeometry:
     id: str
     installation_id: str
-    photo_id: str
+    photo_id: str | None
     kind: GeometryKind
     name: str
     semantic_id: str
@@ -62,7 +62,7 @@ class InstallationGeometryService:
         self,
         *,
         installation_id: str,
-        photo_id: str,
+        photo_id: str | None,
         kind: GeometryKind,
         name: str,
         points: tuple[tuple[float, float], ...],
@@ -91,7 +91,13 @@ class InstallationGeometryService:
                 """,
                 (photo_id, installation_id),
             ).fetchone()
-            if photo is None:
+            installation = connection.execute(
+                "SELECT 1 FROM installations WHERE id=?",
+                (installation_id,),
+            ).fetchone()
+            if installation is None:
+                raise InstallationGeometryError("installation does not exist")
+            if photo_id is not None and photo is None:
                 raise InstallationGeometryError("installation photo does not exist")
             if semantic_id is None:
                 semantic_id = str(uuid4())
@@ -121,8 +127,8 @@ class InstallationGeometryService:
                     id, installation_id, photo_id, kind, name, semantic_id,
                     landmark_ids_json, color, label_visible, locked, hidden, z_index,
                     direction, start_index, pixel_count, points_json, closed,
-                    stage_points_json, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    stage_points_json, created_at, updated_at, coordinate_space_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     geometry_id,
@@ -149,6 +155,7 @@ class InstallationGeometryService:
                     ),
                     occurred_at,
                     occurred_at,
+                    photo_id if photo_id is not None else installation_id,
                 ),
             )
             _audit(
@@ -191,7 +198,7 @@ class InstallationGeometryService:
         *,
         geometry_id: str,
         expected_revision: int,
-        photo_id: str,
+        photo_id: str | None,
         kind: GeometryKind,
         name: str,
         points: tuple[tuple[float, float], ...],
@@ -230,7 +237,7 @@ class InstallationGeometryService:
                 """,
                 (photo_id, str(row["installation_id"])),
             ).fetchone()
-            if photo is None:
+            if photo_id is not None and photo is None:
                 raise InstallationGeometryError(
                     "target photo does not belong to the geometry installation"
                 )
@@ -245,6 +252,7 @@ class InstallationGeometryService:
                     color = ?, label_visible = ?, locked = ?, hidden = ?, z_index = ?,
                     direction = ?, start_index = ?, pixel_count = ?,
                     points_json = ?, closed = ?, stage_points_json = ?,
+                    coordinate_space_id = CASE WHEN ? IS NULL THEN coordinate_space_id ELSE ? END,
                     revision = ?, updated_at = ?
                 WHERE id = ?
                 """,
@@ -268,6 +276,8 @@ class InstallationGeometryService:
                         if stage_points is not None
                         else None
                     ),
+                    photo_id,
+                    photo_id,
                     next_revision,
                     occurred_at,
                     geometry_id,
@@ -421,7 +431,7 @@ def _stored_geometry(row: sqlite3.Row) -> StoredInstallationGeometry:
     return StoredInstallationGeometry(
         id=str(row["id"]),
         installation_id=str(row["installation_id"]),
-        photo_id=str(row["photo_id"]),
+        photo_id=str(row["photo_id"]) if row["photo_id"] is not None else None,
         kind=cast(GeometryKind, kind_value),
         name=str(row["name"]),
         semantic_id=str(row["semantic_id"]),

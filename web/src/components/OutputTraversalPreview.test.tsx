@@ -27,6 +27,17 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+test("wiring traversal works on the installation canvas with no photo", () => {
+  vi.stubGlobal("matchMedia", vi.fn(() => ({ matches: true })));
+  const { container } = render(<OutputTraversalPreview
+    geometry={[{ ...geometry, photo_id: null }]} resources={{ strand: "roof" }}
+    resource="roof" pixelCount={10} installationId="installation" onClose={() => {}} />);
+  expect(screen.getByRole("img", { name: "Output traversal for roof on installation canvas" })).toBeVisible();
+  expect(container.querySelector("image")).toBeNull();
+  expect(container.querySelector('[data-output-index="0"]')).toHaveAttribute("cx", "900");
+  expect(screen.getByLabelText("Current traversal pixel")).toHaveTextContent("Strand");
+});
+
 test("reduced motion starts paused and scrubbing exposes exact reversed pixel locations", () => {
   vi.stubGlobal("matchMedia", vi.fn(() => ({ matches: true })));
   const onClose = vi.fn();

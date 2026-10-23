@@ -407,7 +407,7 @@ test("navigates across the exact top-level workspaces", async () => {
   expect(screen.getByRole("button", { name: "Export" })).toBeInTheDocument();
   expect(await screen.findByText(/1920×1080/)).toBeInTheDocument();
   expect(screen.getByText(/-18.2 LUFS/)).toBeInTheDocument();
-  expect(screen.getAllByText("Malware scan: unavailable")).toHaveLength(2);
+  expect(screen.queryByText(/Malware scan/i)).not.toBeInTheDocument();
   expect(screen.getByText("Original file: available")).toBeInTheDocument();
   expect(screen.getByText("Used by Ambient (left-window)")).toBeInTheDocument();
   expect(screen.getByText("Original file: missing")).toBeInTheDocument();

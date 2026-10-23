@@ -94,7 +94,7 @@ export function OverviewPage({
             <ErrorState title="Photo unavailable" description="The installation photo could not be loaded." />
           ) : photo ? (
             <img
-              src={installationPhotoUrl(photo.id)}
+              src={installationPhotoUrl(photo.id, photo.revision)}
               alt={`${photo.name} · ${photo.viewpoint}`}
               onError={() => setPhotoError(true)}
             />

@@ -5,10 +5,11 @@ import {
   getLightingSurface, InstallationGeometry, InstallationPhoto, installationPhotoUrl,
   previewSceneLighting, ProjectDraftRecord, SceneLightingPreview, LightingFrameView,
 } from "../api";
-import { photoPixelPoints } from "../components/pixel-traversal";
+import { geometryForBackground, photoPixelPoints } from "../components/pixel-traversal";
 import { nightPreviewColor } from "../components/led-preview";
 import { AssetPreview, hasAssetArtifact } from "../components/AssetPreview";
 import { ErrorState } from "../components/ui";
+import { SceneAuthoringDialog } from "../components/SceneAuthoringDialog";
 
 type Document = ProjectDraftRecord["draft"];
 type Scene = Document["scenes"][number];
@@ -48,7 +49,7 @@ function time(value: number): string {
 
 export function SceneWorkspace({
   draft, sceneId, canEdit, assets, onSelectScene, onSave, onDirtyChange,
-  onOpenAdvanced, onDelete,
+  onOpenAdvanced, onDelete, canAdd, onCreated,
 }: {
   draft: ProjectDraftRecord;
   sceneId: string;
@@ -59,6 +60,8 @@ export function SceneWorkspace({
   onDirtyChange: (dirty: boolean) => void;
   onOpenAdvanced: () => void;
   onDelete: (id: string) => Promise<void>;
+  canAdd: boolean;
+  onCreated: (updated: ProjectDraftRecord, selectedSceneId: string) => void;
 }) {
   const [document, setDocument] = useState<Document>(() => structuredClone(draft.draft));
   const [base, setBase] = useState({ revision: draft.revision, sceneId, document: draft.draft });
@@ -68,6 +71,7 @@ export function SceneWorkspace({
   const [position, setPosition] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [authoring, setAuthoring] = useState<"scene" | "output" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [pulseTimes, setPulseTimes] = useState<string | null>(null);
   const [targetNames, setTargetNames] = useState<Record<string, string>>({});
@@ -260,10 +264,19 @@ export function SceneWorkspace({
         {draft.draft.scenes.map((candidate) => (
           <button key={candidate.id} aria-pressed={candidate.id === sceneId} onClick={() => choose(candidate.id)}>
             <strong>{candidate.name}</strong>
-            <small>{time(candidate.duration_ms ?? 0)} · {lighting(candidate).length} lighting outputs</small>
+            <small>{time(candidate.duration_ms ?? 0)} · {Array.isArray(candidate.media) ? candidate.media.length : 1} media · {lighting(candidate).length} lighting outputs</small>
           </button>
         ))}
       </nav>
+      {canEdit && <div className="scene-save-controls">
+        <button disabled={dirty || saving || !canAdd} onClick={() => setAuthoring("scene")}>Add scene</button>
+        <button disabled={dirty || saving || !canAdd} onClick={() => setAuthoring("output")}>Add output</button>
+        {(dirty || !canAdd) && <small>Save or cancel pending scene and visitor-response edits before adding scenes or outputs.</small>}
+      </div>}
+      {authoring && <SceneAuthoringDialog kind={authoring} draft={draft} sceneId={sceneId}
+        onClose={() => setAuthoring(null)} onSaved={(updated, id) => {
+          setAuthoring(null); onCreated(updated, id);
+        }} />}
       <header className="scene-heading">
         <div>
           <h2>{scene.name}</h2>
@@ -291,6 +304,7 @@ export function SceneWorkspace({
       </header>
       <div className="scene-editor-grid">
         <div>
+          {outputs.length > 0 ? <>
           <ScenePreview
             projectId={draft.project.id} revision={draft.revision} document={document}
             dirty={dirty} sceneId={sceneId} resource={resource} position={position}
@@ -345,11 +359,12 @@ export function SceneWorkspace({
             ] }));
             setEffectId(id);
           }}>Add light effect</button>}
+          </> : <p>This is a media-only scene. Preview assigned assets below, or use Add output to include lighting.</p>}
           {advancedContributions > 0 && <div className="scene-advanced">
             <p>This scene also has {advancedContributions} synchronized cues, transform layers, or compositions. They are preserved separately.</p>
             <button onClick={onOpenAdvanced}>Open advanced timeline</button>
           </div>}
-          {media.length > 0 && <details className="scene-advanced">
+          {media.length > 0 && <details className="scene-advanced" open={outputs.length === 0}>
             <summary>Media in this scene ({media.length})</summary>
             <button onClick={onOpenAdvanced}>Open media and composition timeline</button>
             {media.map((value, index) => {
@@ -365,7 +380,7 @@ export function SceneWorkspace({
         </div>
         <form id={formId} className="scene-effect-inspector" aria-label="Selected lighting effect"
           onSubmit={(event) => { event.preventDefault(); void save(); }}>
-          <h3>{cue ? text(cue.id).replaceAll("-", " ") : "Legacy lighting"}</h3>
+          <h3>{cue ? text(cue.id).replaceAll("-", " ") : output ? "Legacy lighting" : "Scene settings"}</h3>
           <fieldset disabled={!canEdit || saving}>
             {cue && !supported ? <p role="alert">This effect is not supported by this editor. Its data is preserved; use advanced authoring.</p>
               : cue ? <>
@@ -442,7 +457,7 @@ export function SceneWorkspace({
                       }} />
                   </label>
                 </>}
-              </> : <p role="alert">No supported lighting output is available. Existing content has not been replaced.</p>}
+              </> : <p>No lighting outputs are configured in this scene.</p>}
             {output && <details className="scene-advanced"><summary>Output details</summary>
               <p>Resource: {resource}</p>
               {cues.length > 0 && <NumberField label="Output brightness limit (%)" value={numeric(output.brightness_limit, 1)} scale={100} min={0} max={100} onChange={(value) => changeOutput((item) => ({ ...item, brightness_limit: value }))} />}
@@ -588,7 +603,8 @@ export function ScenePreview({ projectId, revision, document, dirty, sceneId, re
   }, [installationId, retry, onTargetNames]);
   const photo = photos.find((value) => value.id === photoId);
   const output = frame?.outputs[0];
-  const photoGeometry = geometry.filter((value) => value.photo_id === photoId && resources[value.id] === resource);
+  const photoGeometry = geometryForBackground(geometry, photoId || null)
+    .filter((value) => resources[value.id] === resource);
   const allocationMismatch = output && photoGeometry.some((value) =>
     (value.start_index ?? 0) + (value.pixel_count ?? 0) > output.pixel_count);
   const mapped = (allocationMismatch ? [] : photoGeometry)
@@ -596,15 +612,16 @@ export function ScenePreview({ projectId, revision, document, dirty, sceneId, re
       pixel.outputIndex < output.pixel_offset + output.colors.length);
   return <section className="scene-preview" aria-label={intent ? "Controller intended LED output" : "Scene lighting preview"}>
     <header><strong>{intent ? "Last sent LED colors" : "Scene preview"}</strong><span>{intent ? "Read-only observation · not physical feedback" : "Simulation only · no hardware commands"}</span></header>
-    {photos.length > 1 && <label>Preview photo<select value={photoId} onChange={(event) => setPhotoId(event.target.value)}>
+    {photos.length > 0 && <label>Preview photo<select value={photoId} onChange={(event) => setPhotoId(event.target.value)}>
+      <option value="">Installation canvas (no photo)</option>
       {photos.map((value) => <option key={value.id} value={value.id}>{value.name}</option>)}
     </select></label>}
     {photoFailed && <ErrorState title="Photo unavailable" description="The photo could not be loaded; evaluated colors remain available below." />}
-    {photo && !photoFailed && <div className="scene-photo">
+    {(!photoFailed && (photo || mapped.length > 0)) && <div className="scene-photo">
       <svg viewBox="0 0 1000 600" role="img" aria-label={intent ? "Last sent LED colors on installation photo" : "Evaluated LED colors on installation photo"}>
-        <title>{photo.name}</title>
-        <image href={installationPhotoUrl(photo.id)} width="1000" height="600"
-          preserveAspectRatio="xMidYMid meet" onError={() => setPhotoFailed(true)} />
+        <title>{photo?.name ?? "Installation layout"}</title>
+        {photo && <image href={installationPhotoUrl(photo.id, photo.revision)} width="1000" height="600"
+          preserveAspectRatio="xMidYMid meet" onError={() => setPhotoFailed(true)} />}
         <g className="scene-led-overlay">
           {mapped.map((pixel, index) => {
             const raw = output!.colors[pixel.outputIndex - output!.pixel_offset];
@@ -616,7 +633,7 @@ export function ScenePreview({ projectId, revision, document, dirty, sceneId, re
         </g>
       </svg>
     </div>}
-    {photo && !photoFailed && mapped.length > 0 && <small>Nighttime visualization · enhanced LED glow; output brightness is unchanged.</small>}
+    {!photoFailed && mapped.length > 0 && <small>Nighttime visualization · enhanced LED glow; output brightness is unchanged.</small>}
     {mapError && <p role="status">{mapError}</p>}
     {allocationMismatch && <p role="status">The saved photo uses a different LED allocation. The overlay is withheld; evaluated output colors remain available below.</p>}
     {error && <ErrorState title="Scene preview unavailable" description={error} />}
@@ -627,7 +644,7 @@ export function ScenePreview({ projectId, revision, document, dirty, sceneId, re
         : loading ? "Preparing scene preview…" : "No evaluated frame"}
     </p>
     {frame && <div>
-      {!mapped.length && <p>No matching photo mapping. Add a photo and map your lights in Installation to preview their placement.</p>}
+      {!mapped.length && <p>No matching layout mapping. Map your lights in Installation to preview their placement; a photo is optional.</p>}
       <details>
         <summary>LED output details</summary>
         <p>Pixel address order, not physical placement. Scroll horizontally to inspect LED colors.</p>

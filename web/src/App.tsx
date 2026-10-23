@@ -774,6 +774,8 @@ function ProjectCard({
       {draft && showView === "scenes" && <Suspense fallback={<p>Loading scene workspace…</p>}>
         <SceneWorkspace
           draft={draft} sceneId={sceneId} canEdit={canEditScene && !project.archived_at}
+          canAdd={!interactionDirty}
+          onCreated={(updated, id) => { setSceneId(id); setDraft(updated); }}
           assets={assets ?? []} onSelectScene={setSceneId} onDirtyChange={updateSceneDirty}
           onOpenAdvanced={() => {
             setAdvancedOpen(true);
@@ -846,29 +848,31 @@ function ProjectCard({
       </details>
       <details className="project-assets">
         <summary>Assets</summary>
-        <input
-          aria-label={`Search assets in ${project.name}`}
-          placeholder="Find media"
-          type="search"
-          value={assetSearch}
-          onChange={(event) => setAssetSearch(event.target.value)}
-        />
-        {canAuthor && !project.archived_at && (
-          <label className="file-button file-button--compact">
-            Add visual or audio asset
-            <input
-              accept="video/mp4,video/webm,video/quicktime,audio/mpeg,audio/wav,audio/flac,audio/ogg,image/png,image/jpeg,image/webp"
-              disabled={uploadProgress !== null}
-              type="file"
-              onChange={(event) => {
-                const file = event.target.files?.[0];
-                if (file) {
-                  void upload(file);
-                }
-              }}
-            />
-          </label>
-        )}
+        <div className="asset-toolbar">
+          <input
+            aria-label={`Search assets in ${project.name}`}
+            placeholder="Find media"
+            type="search"
+            value={assetSearch}
+            onChange={(event) => setAssetSearch(event.target.value)}
+          />
+          {canAuthor && !project.archived_at && (
+            <label className="file-button file-button--compact">
+              Add visual or audio asset
+              <input
+                accept="video/mp4,video/webm,video/quicktime,audio/mpeg,audio/wav,audio/flac,audio/ogg,image/png,image/jpeg,image/webp"
+                disabled={uploadProgress !== null}
+                type="file"
+                onChange={(event) => {
+                  const file = event.target.files?.[0];
+                  if (file) {
+                    void upload(file);
+                  }
+                }}
+              />
+            </label>
+          )}
+        </div>
         {uploadProgress !== null && (
           <div className="upload-progress" role="status">
             <span style={{ width: `${uploadProgress}%` }} />
@@ -882,47 +886,74 @@ function ProjectCard({
           <VirtualizedList
             ariaLabel={`Assets in ${project.name}`}
             estimateSize={420}
+            measureItems
             items={visibleAssets}
             keyFor={(asset) => asset.id}
             renderItem={(asset) => (
               <div className="virtual-asset-row">
                 <AssetPreview asset={asset} />
-                <div>
-                  <strong>{asset.name}</strong>
-                  <small>
+                <div className="asset-card__details">
+                  <header className="asset-card__header">
+                    <strong>{asset.name}</strong>
+                    <StatusText
+                      tone={
+                        asset.original_file_status === "missing" ||
+                        asset.original_file_status === "size_mismatch" ||
+                        asset.artifact_faults.length
+                          ? "danger"
+                          : asset.status === "ready"
+                          ? "success"
+                          : asset.status === "failed" || asset.status === "quarantined"
+                            ? "danger"
+                            : "info"
+                      }
+                    >
+                      {asset.original_file_status === "missing"
+                        ? "missing"
+                        : asset.original_file_status === "size_mismatch"
+                          ? "corrupt"
+                          : asset.artifact_faults.length
+                            ? "artifact fault"
+                            : asset.status === "uploading"
+                              ? "processing"
+                              : asset.status}
+                    </StatusText>
+                  </header>
+                  <p className="asset-card__file">
                     {asset.original_filename ?? "Upload pending"} ·{" "}
                     {asset.size_bytes === null ? "—" : formatAssetBytes(asset.size_bytes)}
-                  </small>
-                  <small>
+                  </p>
+                  {asset.metadata && <p className="asset-card__metadata">{formatAssetMetadata(asset.metadata)}</p>}
+                  <p className="asset-card__organization">
                     {asset.favorite ? "Favorite · " : ""}
                     {asset.folder ?? "Unfiled"}
                     {asset.tags.length ? ` · ${asset.tags.join(", ")}` : ""}
-                  </small>
-                  {asset.metadata && <small>{formatAssetMetadata(asset.metadata)}</small>}
-                  <small>Malware scan: {asset.scan_status ?? "pending"}</small>
-                  <small>Original file: {asset.original_file_status.replace("_", " ")}</small>
-                  {asset.artifact_faults.map((fault) => (
-                    <small className="asset-diagnostic asset-diagnostic--danger" key={fault}>
-                      Artifact {fault}
-                    </small>
-                  ))}
-                  {asset.unused ? (
-                    <small className="asset-diagnostic asset-diagnostic--warning">
-                      Unused in the current draft
-                    </small>
-                  ) : (
-                    <small>
-                      Used by{" "}
-                      {asset.references
-                        .map((reference) =>
-                          reference.output_id
-                            ? `${reference.scene_name} (${reference.output_id})`
-                            : reference.scene_name,
-                        )
-                        .join(", ")}
-                    </small>
-                  )}
-                  {asset.error && <small role="alert">{asset.error}</small>}
+                  </p>
+                  <div className="asset-card__diagnostics">
+                    <small>Original file: {asset.original_file_status.replace("_", " ")}</small>
+                    {asset.artifact_faults.map((fault) => (
+                      <small className="asset-diagnostic asset-diagnostic--danger" key={fault}>
+                        Artifact {fault}
+                      </small>
+                    ))}
+                    {asset.unused ? (
+                      <small className="asset-diagnostic asset-diagnostic--warning">
+                        Unused in the current draft
+                      </small>
+                    ) : (
+                      <small>
+                        Used by{" "}
+                        {asset.references
+                          .map((reference) =>
+                            reference.output_id
+                              ? `${reference.scene_name} (${reference.output_id})`
+                              : reference.scene_name,
+                          )
+                          .join(", ")}
+                      </small>
+                    )}
+                    {asset.error && <small role="alert">{asset.error}</small>}
+                  </div>
                   <AssetGovernance
                     asset={asset}
                     canEdit={canAuthor && !project.archived_at}
@@ -946,29 +977,6 @@ function ProjectCard({
                     />
                   )}
                 </div>
-                <StatusText
-                  tone={
-                    asset.original_file_status === "missing" ||
-                    asset.original_file_status === "size_mismatch" ||
-                    asset.artifact_faults.length
-                      ? "danger"
-                      : asset.status === "ready"
-                      ? "success"
-                      : asset.status === "failed" || asset.status === "quarantined"
-                        ? "danger"
-                        : "info"
-                  }
-                >
-                  {asset.original_file_status === "missing"
-                    ? "missing"
-                    : asset.original_file_status === "size_mismatch"
-                      ? "corrupt"
-                      : asset.artifact_faults.length
-                        ? "artifact fault"
-                        : asset.status === "uploading"
-                          ? "processing"
-                          : asset.status}
-                </StatusText>
               </div>
             )}
           />
@@ -1566,6 +1574,12 @@ function AssetPlacement({
     } finally {
       setPlacing(false);
     }
+  }
+
+  if (!options.length) {
+    return <p className="asset-placement__empty">
+      No media outputs in this show. Add a media output to a scene before placing this asset.
+    </p>;
   }
 
   return (

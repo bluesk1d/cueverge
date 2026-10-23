@@ -1,5 +1,19 @@
 import type { InstallationGeometry } from "../api";
 
+export function geometryForBackground(
+  geometry: InstallationGeometry[], photoId: string | null,
+): InstallationGeometry[] {
+  const selected = new Map<string, InstallationGeometry>();
+  const rank = (item: InstallationGeometry) => item.photo_id === photoId ? 0 : item.photo_id === null ? 1 : 2;
+  for (const item of geometry) {
+    if (photoId !== null && item.photo_id !== null && item.photo_id !== photoId) continue;
+    const key = `${item.kind}:${item.semantic_id}`;
+    const previous = selected.get(key);
+    if (!previous || rank(item) < rank(previous)) selected.set(key, item);
+  }
+  return [...selected.values()];
+}
+
 export function photoPixelPoints(
   geometry: InstallationGeometry,
 ): { outputIndex: number; x: number; y: number }[] {
@@ -69,7 +83,8 @@ export function outputTraversal(
     }
   }
   const segments = [...linked.values()]
-    .map((views) => views.find((item) => item.photo_id === photoId) ?? views[0])
+    .map((views) => views.find((item) => item.photo_id === photoId) ??
+      views.find((item) => item.photo_id === null) ?? views[0])
     .sort((left, right) =>
       (left.start_index ?? Infinity) - (right.start_index ?? Infinity) ||
       left.semantic_id.localeCompare(right.semantic_id),

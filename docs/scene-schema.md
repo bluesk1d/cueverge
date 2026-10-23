@@ -179,6 +179,40 @@ on later render ticks.
 Scene schema version 1 retains its singular `media` and `lighting` objects and
 is normalized to the same loaded representation.
 
+### Media-only scenes
+
+Schema v2 permits `lighting: []` when at least one media output is present.
+Both media-synchronized and controller-timed clocks are supported. A scene
+cannot have both output arrays empty. For example:
+
+```json
+{
+  "schema_version": 2,
+  "id": "window-ghost",
+  "name": "Window ghost",
+  "mode": "media_synchronized",
+  "clock_source": "window",
+  "resources": ["projector.demo"],
+  "duration_ms": 30000,
+  "media": [{"id": "window", "resource": "projector.demo", "asset": "ghost.mp4"}],
+  "lighting": [],
+  "completion": {"policy": "stop"}
+}
+```
+
+Media-only scenes prepare and transport their media normally but send no
+lighting frames. A persistent baseline is not a separate running layer and
+does not add lighting outputs or claims to these scenes. Legacy single-resource
+lighting-look packages may include media-only scenes; scenes that do contain
+lighting must still match that legacy look's resource. Explicit stop still
+applies any configured safe-state lighting looks.
+
+The GUI **Add scene** / **Add output** workflows create schema-v2 definitions.
+Adding to a v1 scene retains its old singular outputs under IDs `media` and
+`lighting`; media remains the clock unless the author explicitly changes it.
+New lighting starts with a blackout timeline, while new media awaits asset
+placement. See the [operator workflow](operator-guide.md#add-scenes-and-outputs).
+
 ### Controller-timed scenes
 
 Schema version 2 also supports `mode: "controller_timed"` with

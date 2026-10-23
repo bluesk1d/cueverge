@@ -653,6 +653,14 @@ keep at least one known-good copy outside the controller host.
 
 ### Consistent backup and restore procedure
 
+Before upgrading to optional photo backgrounds (migration 41), take a consistent
+backup using the procedure below. The migration transactionally rebuilds the
+photo association while retaining geometry IDs, linked view coordinate spaces,
+indexes and downstream calibration, and checks foreign keys before committing.
+Photo removal then detaches references instead of cascading into geometry.
+It cannot reconstruct geometry already deleted by an older version. Do not
+downgrade an upgraded database in place; use its matching pre-upgrade backup.
+
 1. Stop the show, confirm safe output, and stop the controller before a
    file-level backup, or use a storage snapshot with a consistency guarantee.
    Never copy only the main SQLite file while writes are in progress.

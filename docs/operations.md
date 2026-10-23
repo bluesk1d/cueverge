@@ -67,6 +67,11 @@ is the `read` scope. Additional independent scopes are:
   scoped tool. Requires global installation-author and bound-project author
   permission; `direct_edit` alone is insufficient. It does not grant device
   enrollment, assignment, geometry writes or physical control.
+- `photo_replace`: replace an installation reference image from a ready original
+  image asset owned by the token's project. Requires installation-author and
+  bound-project author permission, the runtime installation binding, current
+  photo revision and explicit alignment review. Existing installation_edit
+  tokens do not gain this grant. It does not grant device or geometry control.
 
 All optional scopes start unchecked. Draft/deployment scopes remain
 independent: `direct_edit` does not grant `publish` or `activate`, and `publish`
@@ -236,6 +241,67 @@ Device enrollment/assignment remain administrator GUI workflows with their
 existing authorization, CSRF, TLS, protocol, idle/disconnect and lifecycle
 confirmation checks. No MCP device-control grant or geometry-write capability
 was added for this presentation pass.
+
+### Optional photo backgrounds and safe replacement
+
+Geometry belongs to the installation, not to the reference image.
+`InstallationGeometryRequest.photo_id` accepts `null` or omission for a
+background-free layout. Existing linked placements keep their IDs, landmarks,
+coordinates, wiring and calibration. **Open layout without a photo** works even
+in an installation with no images. Blank-canvas scene, visitor, intended-output
+and wiring previews do not require uploading a dummy photograph.
+
+For example, an installation author can create a background-free fixture through
+the existing authenticated GUI/REST geometry workflow (normal origin/CSRF checks
+still apply; this is not a newly granted MCP geometry write):
+
+```json
+{
+  "photo_id": null,
+  "kind": "fixture",
+  "name": "Porch decoration",
+  "points": [{"x": 0.25, "y": 0.6}],
+  "closed": false
+}
+```
+
+Deleting a photo detaches its reference and advances affected geometry revisions;
+it does not delete geometry or calibration. Removing an installation or explicitly
+deleting a geometry object remains destructive and uses existing authorization.
+The ownership migration cannot recover records already deleted by older versions.
+
+For replacement, use **Replace photo > Replace photo, keep layout**. The
+authenticated author endpoint is `PUT /api/gui/v1/installation-photos/{id}/content`
+with raw JPEG/PNG/WebP bytes (25 MB maximum), `Content-Type`, `If-Match`,
+`X-Original-Filename`, optional `X-Photo-Metadata-Encoding: uri`, and required
+`X-Confirm-Alignment-Review: true`. It preserves photo ID/metadata and all
+geometry/mappings. Invalid bytes or stale revisions fail without changing the
+photo. Revisioned image URLs refresh the displayed background.
+
+MCP `replace_installation_photo` has a **separate, unchecked-by-default**
+`photo_replace` scope. It uses an existing ready original image asset in the
+token's project; it accepts no local paths or arbitrary URLs. Current installation
+and bound-project author roles, runtime installation binding and the photo's
+revision are rechecked. `installation_edit` remains description-only.
+Discover the standalone schema under `get_capabilities.installation_setup` or
+`get_authoring_schema.x-installation-setup`.
+
+```json
+{
+  "request": {
+    "photo_id": "PHOTO_ID",
+    "source_revision": 3,
+    "asset_id": "READY_IMAGE_ASSET_ID",
+    "confirm_alignment_review": true
+  }
+}
+```
+
+A new photograph does not automatically reposition geometry or establish valid
+physical calibration. Review different framing/camera angles before relying on
+the overlay. Old view coordinate spaces, including projector-mask relationships,
+are retained independently of image records. No geometry-write, live-output,
+device-enrollment or access-management grant is added.
 
 Layout defaults to Select; Add explicitly enables drawing, and canvas/list
 selection reveals contextual properties. Optional strand labels, associations,
@@ -468,6 +534,64 @@ the scene from editor-only range results.
 The accepted [UP-01 architecture decisions](decisions/0016-lossless-hobbyist-authoring-and-runtime-handover.md)
 record the accepted preservation, explicit Apply, unified Preview and monitoring
 contracts. Discover current tool schemas and grants before attempting a workflow.
+
+### Creating scenes and adding outputs
+
+Discover `get_capabilities.features.scene_creation`, `scene_output_creation`,
+and `media_only_scenes`, plus `get_authoring_schema.x-scene-authoring`.
+`get_scene_authoring_options` requires `read` and returns the token-bound
+project's current revision, usable media/pixel bindings and
+`importable_resources`. New bindings are discoverable only when the show is
+bound to the running installation. Existing show bindings take precedence;
+choosing one new resource imports only that binding.
+
+Both writes require `direct_edit` and a current `base_revision`. For example:
+
+```json
+{
+  "name": "create_scene",
+  "arguments": {
+    "base_revision": 7,
+    "request": {
+      "scene_id": "halloween-preshow",
+      "name": "Halloween preshow",
+      "duration_ms": 180000,
+      "mode": "controller_timed",
+      "completion_policy": "loop",
+      "output": {"output_id": "roofline", "resource": "roofline.demo"}
+    }
+  }
+}
+```
+
+Then call `add_scene_output` with `scene_id`, the returned revision as
+`base_revision`, and a `request` such as
+`{"output_id":"window-video","resource":"projector.demo","make_clock_source":false}`.
+Resource names must come from discovery. Output/scene IDs use 1–100 ASCII
+letters, numbers, dots, underscores or hyphens, beginning with a letter/number.
+Output IDs, output resources, and bound media agents must be unique per scene.
+
+New lighting contains a full-duration blackout cue. New media is unassigned;
+use asset placement before publishing. Media-only scenes are valid without
+dummy LED outputs. Adding outputs preserves the existing clock by default;
+`make_clock_source: true` explicitly selects the new required media output and
+switches to media-synchronized mode. Schema-v1 scenes are upgraded with old
+output IDs `media`/`lighting`, preserving their content and metadata.
+
+HTTP equivalents are read-authorized
+`GET /api/gui/v1/projects/{project_id}/scene-authoring-options` and
+designer-authorized, CSRF-protected `POST .../projects/{project_id}/scenes`
+and `POST .../projects/{project_id}/scenes/{scene_id}/outputs`, using the same
+request schemas and `If-Match` revision fence. Writes return the saved draft
+and ETag; MCP returns project/scene/output IDs, base/new revisions and
+`hardware_commands_sent: false`. Archived shows and revision conflicts cannot
+be edited. Neither path publishes, Applies, configures device enrollment,
+creates mapped compositions, or modifies automatic-program/visitor-response
+membership.
+
+`preview_interaction_workflow` can simulate a new media-only scene using
+`starting_scene_id`. It returns the decision trace with no sampled LED frame
+and an explicit explanation that media is simulated rather than streamed.
 
 ### Scene-native LED preview
 

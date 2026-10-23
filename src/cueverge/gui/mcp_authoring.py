@@ -43,6 +43,7 @@ class McpScope(StrEnum):
     LIVE_OPERATION = "live_operation"
     INPUT_CONFIG = "input_config"
     INSTALLATION_EDIT = "installation_edit"
+    PHOTO_REPLACE = "photo_replace"
 
 
 def allowed_mcp_scopes(
@@ -60,6 +61,7 @@ def allowed_mcp_scopes(
         Role.ADMINISTRATOR,
     }:
         scopes.add(McpScope.INSTALLATION_EDIT)
+        scopes.add(McpScope.PHOTO_REPLACE)
     if effective_role in {Role.DESIGNER, Role.PUBLISHER, Role.ADMINISTRATOR}:
         scopes.update({McpScope.DRAFT_EDIT, McpScope.DIRECT_EDIT})
     if effective_role in {Role.DESIGNER, Role.OPERATOR, Role.PUBLISHER, Role.ADMINISTRATOR}:

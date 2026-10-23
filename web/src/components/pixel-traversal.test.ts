@@ -1,7 +1,7 @@
 import { expect, test } from "vitest";
 
 import type { InstallationGeometry } from "../api";
-import { outputTraversal, photoPixelPoints } from "./pixel-traversal";
+import { geometryForBackground, outputTraversal, photoPixelPoints } from "./pixel-traversal";
 
 function segment(
   id: string,
@@ -45,6 +45,18 @@ test("orders all segments by physical index, not geometry list or drawing order"
   expect(plan.segments.map((item) => item.order)).toEqual([1, 2]);
   expect(plan.segments[0].color).not.toBe(plan.segments[1].color);
   expect(plan.diagnostics).toEqual([]);
+});
+
+test("optional backgrounds choose the matching linked placement without losing other views", () => {
+  const front = segment("front-view", 0, 3, { semantic_id: "same", photo_id: "front" });
+  const side = segment("side-view", 0, 3, { semantic_id: "same", photo_id: "side",
+    points: [{ x: 0.3, y: 0.7 }, { x: 0.7, y: 0.7 }] });
+  const independent = segment("canvas-view", 3, 3, { photo_id: null });
+  const original = structuredClone([front, side, independent]);
+  expect(geometryForBackground([front, side, independent], "side")).toEqual([side, independent]);
+  expect(geometryForBackground([front, side, independent], "new-photo")).toEqual([independent]);
+  expect(geometryForBackground([front, side, independent], null)).toEqual([front, independent]);
+  expect([front, side, independent]).toEqual(original);
 });
 
 test("samples pixel-count-weighted positions along bends and reverses each segment", () => {

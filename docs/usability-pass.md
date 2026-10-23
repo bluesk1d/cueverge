@@ -792,6 +792,40 @@ exact outcomes; browser workflow/viewport evidence; MCP tools/workflows exercise
 or a reason no MCP change applies; related guide/schema/example updates; remaining
 limitations. Check off only implemented and verified items.
 
+### Follow-up: installation-owned geometry and optional backgrounds
+
+- Geometry is owned by the installation, not an image. Migration 41 preserves
+  geometry/semantic/landmark IDs, pixel allocations, linked placements, calibration
+  and dependent records; photo removal detaches its reference. Independent
+  coordinate-space identities preserve projector-mask relationships when
+  multiple linked photographs are removed. Already deleted data is not recovered.
+- Layout is usable on a blank canvas without any photo. Add controls are visible
+  for an empty layout. Scene/visitor/intended-output and wiring traversal previews
+  support background-free geometry; existing photo-specific placements remain
+  separate rather than being merged or painted on an unrelated photograph.
+- Replace photo retains photo ID, descriptive/calibration metadata, geometry and
+  wiring, uses a revision guard and verified JPEG/PNG/WebP bytes, and explicitly
+  asks for review of the new background alignment. No geometry or calibration
+  is moved automatically; revised image URLs prevent stale background caches.
+- MCP discovery/authoring schemas expose optional photo ownership and the
+  replacement workflow. Separately opted-in `photo_replace` uses a ready original
+  image asset in the token's bound project; old description grants do not expand.
+  No geometry-write or device-control grant was introduced.
+- Regression coverage exercises legacy-schema migration/idempotence, LED and
+  projector calibration retention, independent linked-view masks, raw replacement
+  validation/revision/CSRF, scoped MCP replacement, blank-canvas creation and
+  non-destructive removal. The real isolated local MCP workflow also replaced a
+  synthetic photo, preserved its geometry, removed only the background and read
+  the detached object. Its temporary token/objects were cleaned up; the original
+  local geometry matches the consistent pre-migration backup exactly.
+- Final workspace qualification passed: 463 Python tests, 47 frontend units,
+  106 browser tests, format/lint/type checks and the production frontend build.
+  A fresh authenticated browser against the real local controller displayed
+  11 logical layout objects on a canvas containing no image, with Add visible.
+- Production was inspected read-only and was not migrated or modified. Take a
+  consistent database/assets backup before deployment; this change does not
+  restore the geometry removed by the previous production delete operation.
+
 ### Scope boundaries
 
 - No new wall-clock scheduler in this milestone; correct availability messaging.

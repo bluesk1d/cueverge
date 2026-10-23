@@ -47,6 +47,7 @@ from cueverge.gui.contracts import (
     AcceptedCalibrationResponse,
     ActivationRequest,
     ActivityEventResponse,
+    AddSceneOutputRequest,
     ApplyScenePresetRequest,
     ArtifactDeploymentResponse,
     AssetMetadataConflictResponse,
@@ -77,6 +78,7 @@ from cueverge.gui.contracts import (
     CreateProjectRequest,
     CreateRenderJobRequest,
     CreateScenePresetRequest,
+    CreateSceneRequest,
     DeviceArtifactResponse,
     DeviceConnectionPolicyResponse,
     DeviceConnectionTestResponse,
@@ -153,6 +155,7 @@ from cueverge.gui.contracts import (
     Role,
     RuntimeStatusResponse,
     SaveSimulationScenarioRequest,
+    SceneAuthoringOptions,
     SceneLightingPreviewRequest,
     SessionResponse,
     SetDeviceConnectionPolicyRequest,
@@ -269,6 +272,7 @@ from cueverge.gui.repository import (
     StoredRevision,
 )
 from cueverge.gui.scene_authoring import delete_scene as delete_draft_scene
+from cueverge.gui.scene_authoring import save_scene_edit, scene_authoring_options
 from cueverge.gui.scene_preview import (
     ScenePreviewBusyError,
     ScenePreviewError,
@@ -1309,6 +1313,82 @@ def create_gui_router(services: GuiServices) -> APIRouter:
             True,
             _now_iso(),
         )
+        response.headers["ETag"] = _etag(revision.revision)
+        return _project_draft(revision)
+
+    @router.get(
+        "/projects/{project_id}/scene-authoring-options",
+        response_model=SceneAuthoringOptions,
+        dependencies=[project_reader],
+    )
+    def get_scene_authoring_options(project_id: str) -> SceneAuthoringOptions:
+        try:
+            return scene_authoring_options(services, project_id)
+        except ProjectNotFoundError as error:
+            raise HTTPException(status_code=404, detail={"code": "project_not_found"}) from error
+
+    @router.post("/projects/{project_id}/scenes", response_model=ProjectDraftResponse)
+    def create_scene(
+        project_id: str,
+        body: CreateSceneRequest,
+        response: Response,
+        identity: Annotated[AuthenticatedSession, project_designer],
+        if_match: Annotated[str | None, Header(alias="If-Match")] = None,
+    ) -> ProjectDraftResponse | JSONResponse:
+        expected_revision = _parse_if_match(if_match)
+        try:
+            revision = save_scene_edit(
+                services,
+                project_id=project_id,
+                base_revision=expected_revision,
+                request=body,
+                actor=identity.username,
+                role=identity.role,
+            )
+        except ProjectNotFoundError as error:
+            raise HTTPException(status_code=404, detail={"code": "project_not_found"}) from error
+        except ValueError as error:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "scene_creation_invalid", "message": str(error)},
+            ) from error
+        except RevisionConflictError as error:
+            return _revision_conflict_response(error)
+        response.headers["ETag"] = _etag(revision.revision)
+        return _project_draft(revision)
+
+    @router.post(
+        "/projects/{project_id}/scenes/{scene_id}/outputs",
+        response_model=ProjectDraftResponse,
+    )
+    def add_scene_output(
+        project_id: str,
+        scene_id: str,
+        body: AddSceneOutputRequest,
+        response: Response,
+        identity: Annotated[AuthenticatedSession, project_designer],
+        if_match: Annotated[str | None, Header(alias="If-Match")] = None,
+    ) -> ProjectDraftResponse | JSONResponse:
+        expected_revision = _parse_if_match(if_match)
+        try:
+            revision = save_scene_edit(
+                services,
+                project_id=project_id,
+                scene_id=scene_id,
+                base_revision=expected_revision,
+                request=body,
+                actor=identity.username,
+                role=identity.role,
+            )
+        except ProjectNotFoundError as error:
+            raise HTTPException(status_code=404, detail={"code": "project_not_found"}) from error
+        except ValueError as error:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "scene_output_invalid", "message": str(error)},
+            ) from error
+        except RevisionConflictError as error:
+            return _revision_conflict_response(error)
         response.headers["ETag"] = _etag(revision.revision)
         return _project_draft(revision)
 
@@ -3047,7 +3127,60 @@ def create_gui_router(services: GuiServices) -> APIRouter:
                 status_code=404,
                 detail={"code": "installation_photo_not_found"},
             ) from error
-        return FileResponse(path, media_type=media_type, headers={"Cache-Control": "private"})
+        return FileResponse(
+            path, media_type=media_type, headers={"Cache-Control": "private, no-cache"}
+        )
+
+    @router.put("/installation-photos/{photo_id}/content", response_model=InstallationPhotoResponse)
+    async def replace_installation_photo(
+        photo_id: str,
+        request: Request,
+        identity: Annotated[AuthenticatedSession, author],
+        original_filename: Annotated[str, Header(alias="X-Original-Filename")],
+        content_type: Annotated[str, Header(alias="Content-Type")],
+        confirm_alignment_review: Annotated[
+            Literal["true"], Header(alias="X-Confirm-Alignment-Review")
+        ],
+        if_match: Annotated[str | None, Header(alias="If-Match")] = None,
+        metadata_encoding: Annotated[
+            Literal["uri"] | None, Header(alias="X-Photo-Metadata-Encoding")
+        ] = None,
+    ) -> InstallationPhotoResponse:
+        revision = _parse_if_match(if_match)
+        try:
+            if metadata_encoding == "uri":
+                original_filename = unquote(original_filename, errors="strict")
+        except UnicodeError as error:
+            raise HTTPException(422, detail={"code": "invalid_photo_filename"}) from error
+        content = bytearray()
+        async for chunk in request.stream():
+            content.extend(chunk)
+            if len(content) > MAX_PHOTO_BYTES:
+                raise HTTPException(413, detail={"code": "installation_photo_too_large"})
+        try:
+            photo = services.installation_photos.replace(
+                photo_id=photo_id,
+                expected_revision=revision,
+                original_filename=original_filename,
+                media_type=content_type,
+                content=bytes(content),
+                actor=identity.username,
+                role=identity.role,
+                occurred_at=_now_iso(),
+            )
+        except InstallationPhotoConflictError as error:
+            raise HTTPException(
+                409,
+                detail={
+                    "code": "installation_photo_conflict",
+                    "message": "This photo changed. Refresh and review it before replacing.",
+                },
+            ) from error
+        except InstallationPhotoError as error:
+            raise HTTPException(
+                422, detail={"code": "installation_photo_rejected", "message": str(error)}
+            ) from error
+        return _installation_photo(photo)
 
     @router.patch(
         "/installation-photos/{photo_id}/description", response_model=InstallationPhotoResponse

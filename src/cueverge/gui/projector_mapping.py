@@ -59,7 +59,7 @@ class StoredProjectorMapping:
 @dataclass(frozen=True)
 class ProjectorPhotoView:
     geometry_id: str
-    photo_id: str
+    photo_id: str | None
     points: tuple[tuple[float, float], ...]
     homography: tuple[float, ...] | None
 
@@ -414,7 +414,7 @@ class ProjectorMappingService:
             views.append(
                 ProjectorPhotoView(
                     geometry_id=str(row["id"]),
-                    photo_id=str(row["photo_id"]),
+                    photo_id=str(row["photo_id"]) if row["photo_id"] is not None else None,
                     points=points,
                     homography=(
                         _homography(

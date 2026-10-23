@@ -91,7 +91,7 @@ test("linked fixture synchronizes across twelve photo viewpoints", async ({ page
     .getByRole("heading", { name: "Visual Mapper" })
     .locator("xpath=ancestor::section");
   const viewpoint = mapper.getByRole("combobox").first();
-  await expect(viewpoint.locator("option")).toHaveCount(12);
+  await expect(viewpoint.locator("option")).toHaveCount(13);
   const fixtureCircle = mapper.locator(".geometry-shape--fixture");
 
   await expect(fixtureCircle).toHaveAttribute("cx", "200");

@@ -41,6 +41,7 @@ class ShowSimulation:
                 for scene in catalog.scenes.values()
                 for output in scene.lighting_outputs
             }
+            | set(catalog.lighting_looks_by_resource)
         )
         self.sinks = {resource: MemoryFrameSink() for resource in lighting_resources}
         if len(self.sinks) == 1:

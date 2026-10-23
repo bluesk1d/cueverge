@@ -98,7 +98,8 @@ export function ShowPreviewWorkspace({ draft, candidateEdit, visitorOnly = false
     return () => window.clearInterval(timer);
   }, [playing, mode, duration]);
   const onFrameFailure = useCallback(() => setPlaying(false), []);
-  const sceneResource = resource || lightingResources(scene)[0] || "";
+  const sceneOutputs = lightingResources(scene);
+  const sceneResource = sceneOutputs.includes(resource) ? resource : sceneOutputs[0] ?? "";
   const checkpoint = result?.trace[result.selected_index];
   const frame = result?.frame ?? null;
   function add(step: SimulationStep) {
@@ -115,15 +116,17 @@ export function ShowPreviewWorkspace({ draft, candidateEdit, visitorOnly = false
       <button aria-pressed={mode === "scene"} onClick={() => { setMode("scene"); setPlaying(false); }}>Scene preview</button>
       <button disabled={!canTestVisitors} aria-pressed={mode === "visitors"} onClick={() => { setMode("visitors"); setPlaying(false); }}>Visitor test</button>
     </div>}
-    <label>Preview output<select value={resource} onChange={(event) => setResource(event.target.value)}>
+    {(mode !== "scene" || sceneOutputs.length > 0) && <label>Preview output<select
+      value={mode === "scene" && !sceneOutputs.includes(resource) ? "" : resource}
+      onChange={(event) => setResource(event.target.value)}>
       <option value="">Scene outputs</option>
-      {resourceOptions.map((value) => <option key={value}>{value}</option>)}
-    </select></label>
+      {(mode === "scene" ? sceneOutputs : resourceOptions).map((value) => <option key={value}>{value}</option>)}
+    </select></label>}
     {mode === "scene" ? <>
       <label>Preview scene<select value={scene.id} onChange={(event) => { setSceneId(event.target.value); setPosition(0); setPlaying(false); }}>
         {draft.draft.scenes.map((value) => <option key={value.id} value={value.id}>{value.name}</option>)}
       </select></label>
-      <ScenePreview projectId={draft.project.id} revision={draft.revision} document={draft.draft}
+      {sceneResource ? <><ScenePreview projectId={draft.project.id} revision={draft.revision} document={draft.draft}
         dirty={false} sceneId={scene.id} resource={sceneResource} position={position}
         valid={durationValid} onFailure={onFrameFailure} onTargetNames={noNames} />
       {!durationValid && <ErrorState title="Scene duration unavailable" description="Reopen the saved show before previewing this scene." />}
@@ -132,6 +135,7 @@ export function ShowPreviewWorkspace({ draft, candidateEdit, visitorOnly = false
         <label>Scene preview position<input disabled={!durationValid} type="range" min="0" max={duration - 1} step={1} value={position} onChange={(event) => { setPosition(event.target.valueAsNumber); setPlaying(false); }} /></label>
         <span>{clock(position)}</span>
       </div>
+      </> : <p role="status">This scene has only media outputs. Preview assigned assets in Scenes; visitor tests simulate media rather than streaming it.</p>}
     </> : <>
       <div className="visitor-test-controls">
         <label>Test camera<input value={camera} onChange={(event) => setCamera(event.target.value)} /></label>

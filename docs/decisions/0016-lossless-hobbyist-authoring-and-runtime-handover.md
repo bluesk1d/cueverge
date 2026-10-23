@@ -224,6 +224,27 @@ camera streaming or guaranteed physical feedback.
   client. MCP must expose equivalent supported facts, not misleadingly advertise
   a full live-rendering capability before it exists.
 
+### 7. Installation-owned geometry, optional photo backgrounds
+
+Following the production photo-removal incident, geometry must not be owned by
+an image record. Installation objects, semantic/landmark identities, pixel
+allocations, shared-stage measurements and calibration survive photo removal.
+Photographs are optional reference views. An installation can be created, edited
+and previewed on the existing normalized layout canvas without any photo;
+this does not infer physical XYZ measurements or calibration.
+
+Use a lossless transactional migration: keep geometry IDs and every linked
+placement; change the optional photo association from cascade deletion to
+detach-on-delete; preserve dependent mappings and independent view coordinate
+spaces. In particular, detached projector views must not start sharing masks
+merely because their photo IDs both became null.
+
+Replacing an image retains its photo identity, metadata, geometry and calibration
+and requires revision/alignment review. No automatic coordinate scaling, merging
+of linked views, physical recalibration or hardware activation is authorized.
+Existing MCP description grants do not silently gain image-replacement authority.
+Recovery of geometry deleted by older software is a separate backup/export task.
+
 ## Verification and consequences
 
 UP-01's shared synthetic fixture is exercised through browser saves, MCP

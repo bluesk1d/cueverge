@@ -7,7 +7,7 @@ import { GeometryCanvas } from "../components/GeometryCanvas";
 import { InstallationPhotoCard } from "../components/InstallationPhotoCard";
 import { DetailsDialog } from "../components/DetailsDialog";
 import { mapperDiagnostics } from "../components/mapper-diagnostics";
-import { photoPixelPoints } from "../components/pixel-traversal";
+import { geometryForBackground, photoPixelPoints } from "../components/pixel-traversal";
 import {
   Cable,
   Clock3,
@@ -315,7 +315,7 @@ function InstallationPhotos({
     setLayoutChanged(value); onDirtyChange(value);
   }, [onDirtyChange]);
   useEffect(() => {
-    if (layoutOpen && layoutPhotoId) layout.current?.scrollIntoView({ block: "start" });
+    if (layoutOpen && layoutPhotoId !== null) layout.current?.scrollIntoView({ block: "start" });
   }, [layoutOpen, layoutRequest, layoutPhotoId]);
   const [busy, setBusy] = useState(false);
   const [photoFile, setPhotoFile] = useState<File | null>(null);
@@ -380,6 +380,12 @@ function InstallationPhotos({
         description="Choose a photo of your display, then open Layout to arrange lights and decorations."
       >
         <button type="button" disabled={busy} onClick={() => void load()}>Refresh photos</button>
+        <button type="button" className="primary-button" onClick={() => {
+          if (layoutChanged && !window.confirm("Discard unsaved layout changes and open the installation canvas?")) return;
+          setLayoutPhotoId(""); setLayoutVisited(true); setLayoutOpen(true);
+          setLayoutRequest((value) => value + 1);
+        }}>Open layout without a photo</button>
+        {layoutChanged && <p role="status">Save or cancel layout edits before changing an existing photo.</p>}
         {canEdit && (
           <form className="photo-upload" onSubmit={(event) => { event.preventDefault(); if (photoFile) void upload(photoFile); }}>
             <label>Photo description
@@ -417,7 +423,7 @@ function InstallationPhotos({
               <InstallationPhotoCard
                 key={photo.id}
                 photo={photo}
-                canEdit={canEdit}
+                canEdit={canEdit && !layoutChanged}
                 onRefresh={load}
                 mappedCount={geometry.filter((item) => item.photo_id === photo.id).length}
                 onLayout={() => {
@@ -430,11 +436,11 @@ function InstallationPhotos({
         ) : photoLoadFailed ? <ErrorState title="Photo library unavailable" description="Retry loading photos before adding or arranging them." /> : !photosLoaded ? <p>Loading photos…</p> : (
           <EmptyState
             title="No installation photos"
-            description="Add wide views, close-ups, or alternate angles before mapping geometry."
+            description="Photos are optional reference backgrounds. Open the layout canvas to arrange your installation without one."
           />
         )}
       </Panel>
-      {photos.length > 0 && (
+      {photosLoaded && (
         <details ref={layout} className="installation-layout" open={layoutOpen}
           onToggle={(event) => {
             setLayoutOpen(event.currentTarget.open);
@@ -444,7 +450,7 @@ function InstallationPhotos({
         {layoutVisited && <>
         <Panel
           title="Visual Mapper"
-          description="Select an existing decoration to edit it, or choose Add. This is layout and wiring setup, not show playback."
+          description="Select a decoration or choose Add. Installation geometry and wiring are independent of optional photo backgrounds."
         >
           <GeometryMapper
             installationId={installationId}
@@ -535,10 +541,10 @@ function GeometryMapper({
   }, [changed, onDirtyChange]);
   useEffect(() => () => onDirtyChange(false), [onDirtyChange]);
   useEffect(() => {
-    if (initialPhotoId && initialPhotoId !== photoId) { reset(); setPhotoId(initialPhotoId); }
+    if (initialPhotoId !== null && initialPhotoId !== undefined && initialPhotoId !== photoId) { reset(); setPhotoId(initialPhotoId); }
   }, [initialPhotoId, openRequest]);
   useEffect(() => {
-    if (!photos.some((value) => value.id === photoId)) { reset(); setPhotoId(photos[0]?.id ?? ""); }
+    if (photoId && !photos.some((value) => value.id === photoId)) { reset(); setPhotoId(""); }
   }, [photos, photoId]);
   const [kind, setKind] = useState<InstallationGeometryKind>("projector_surface");
   const [name, setName] = useState("");
@@ -688,15 +694,15 @@ function GeometryMapper({
   const [pixelCorrectionIndex, setPixelCorrectionIndex] = useState(0);
   const [pixelCorrectionX, setPixelCorrectionX] = useState(0);
   const [pixelCorrectionY, setPixelCorrectionY] = useState(0);
-  const photo = photos.find((candidate) => candidate.id === photoId) ?? photos[0];
+  const photo = photos.find((candidate) => candidate.id === photoId);
   const secondaryPhoto =
     photos.find(
       (candidate) =>
         candidate.id === secondaryPhotoId && candidate.id !== photo?.id,
     ) ??
     photos.find((candidate) => candidate.id !== photo?.id);
-  const visible = geometry
-    .filter((item) => item.photo_id === photo?.id && !item.hidden)
+  const visible = geometryForBackground(geometry, photo?.id ?? null)
+    .filter((item) => !item.hidden)
     .sort((left, right) => left.z_index - right.z_index);
   const semanticTargets = [...new Set(visible.map((item) => item.semantic_id))];
   const simulationGeometry = filterSimulationGeometry(
@@ -707,10 +713,8 @@ function GeometryMapper({
   );
   const secondarySimulationGeometry = secondaryPhoto
     ? filterSimulationGeometry(
-        geometry
-          .filter(
-            (item) => item.photo_id === secondaryPhoto.id && !item.hidden,
-          )
+        geometryForBackground(geometry, secondaryPhoto.id)
+          .filter((item) => !item.hidden)
           .sort((left, right) => left.z_index - right.z_index),
         simulationPreviewMode,
         simulationTarget,
@@ -848,7 +852,7 @@ function GeometryMapper({
     setTraversalPreview(false);
     setCreationMethod("trace");
     setEditing(item);
-    setPhotoId(item.photo_id);
+    if (item.photo_id !== null) setPhotoId(item.photo_id);
     setKind(item.kind);
     setName(item.name);
     setPoints(item.points);
@@ -975,7 +979,7 @@ function GeometryMapper({
   }
 
   async function save() {
-    if (!photo || !name.trim()) {
+    if (!name.trim()) {
       return;
     }
     setSavingGeometry(true); setSaveError(null);
@@ -984,7 +988,7 @@ function GeometryMapper({
     const saved = await saveInstallationGeometry(
       installationId,
       {
-        photo_id: photo.id,
+        photo_id: editing ? editing.photo_id : photo?.id ?? null,
         kind,
         name,
         points,
@@ -1209,8 +1213,8 @@ function GeometryMapper({
   return (
     <section className="geometry-mapper">
       <div className="geometry-mapper__tools">
-        {canEdit && <details className="layout-add">
-          <summary>Add to photo</summary>
+        {canEdit && <details className="layout-add" open={visible.length === 0}>
+          <summary className="primary-button" role="button">{photo ? "Add to photo" : "Add to layout"}</summary>
           <div className="setup-actions">
             {GEOMETRY_KINDS.map((value) => <button type="button" key={value} onClick={(event) => {
               if (changed && !window.confirm("Discard unsaved layout changes and add a new object?")) return;
@@ -1221,10 +1225,11 @@ function GeometryMapper({
         </details>}
         <label>
           Photo view
-          <select value={photo?.id} onChange={(event) => {
+          <select value={photo?.id ?? ""} onChange={(event) => {
             if (changed && !window.confirm("Discard unsaved layout changes and change photo?")) return;
             reset(); setPhotoId(event.target.value);
           }}>
+          <option value="">Installation canvas (no photo)</option>
           {photos.map((candidate) => (
             <option key={candidate.id} value={candidate.id}>
               {candidate.description ?? candidate.name}
@@ -1372,7 +1377,7 @@ function GeometryMapper({
                   aria-pressed={creationMethod === "trace"}
                   onClick={() => setCreationMethod("trace")}
                 >
-                  Trace on photo
+                  {photo ? "Trace on photo" : "Trace on canvas"}
                 </button>
                 <button
                   aria-pressed={creationMethod === "generate"}
@@ -1930,7 +1935,7 @@ function GeometryMapper({
           </small>
           {mapping?.photo_views.map((view) => (
             <small key={view.geometry_id}>
-              Photo view {view.photo_id}:{" "}
+              {view.photo_id ? `Photo view ${view.photo_id}` : "Installation canvas"}:{" "}
               {view.homography
                 ? `homography ${view.homography.map((value) => value.toFixed(4)).join(", ")}`
                 : "no single homography"}
@@ -2646,21 +2651,22 @@ function GeometryMapper({
         </section>
         </details>
       )}
-      {photo && traversalPreview && kind === "pixel_segment" &&
+      {traversalPreview && kind === "pixel_segment" &&
         !allocationLoading && !allocationCheckError && selectedPixelOutput?.pixel_count != null &&
         selectedPixelOutput.pixel_count > 0 && (
           <OutputTraversalPreview
-            key={`${photo.id}:${lightingValues.resource}:${selectedPixelOutput.pixel_count}`}
+            key={`${photo?.id ?? "canvas"}:${lightingValues.resource}:${selectedPixelOutput.pixel_count}`}
             geometry={geometry}
             resources={allocationResources}
             resource={lightingValues.resource}
             pixelCount={selectedPixelOutput.pixel_count}
             photo={photo}
+            installationId={installationId}
             onClose={() => setTraversalPreview(false)}
             canTest={canPreview}
           />
       )}
-      {photo && (
+      {(
         <div
           className={
             simulationOverlay && sideBySideSimulation
@@ -2688,8 +2694,8 @@ function GeometryMapper({
           </div>
         )}
         <GeometryCanvas
-          key={photo.id}
-          label={`Geometry editor for ${photo.name}`}
+          key={photo?.id ?? "installation-canvas"}
+          label={photo ? `Geometry editor for ${photo.name}` : "Installation layout canvas"}
           className={`geometry-canvas${traversalPreview ? " geometry-canvas--traversal" : ""}${traversalPreview && kind === "path" ? " geometry-canvas--path-traversal" : ""}${simulationOverlay ? " geometry-canvas--simulation" : ""}`}
           canEdit={canEdit && !editing?.locked}
           drawing={adding}
@@ -2734,13 +2740,13 @@ function GeometryMapper({
           }}
         >
           {(zoom) => <>
-          <image
+          {photo && <image
             width="1000"
             height="600"
-            href={installationPhotoUrl(photo.id)}
+            href={installationPhotoUrl(photo.id, photo.revision)}
             preserveAspectRatio="xMidYMid meet"
-          />
-          {simulationOverlay && (
+          />}
+          {simulationOverlay && photo && (
             <ProjectorSimulationOverlays
               photo={photo}
               geometry={simulationGeometry}
@@ -2890,7 +2896,7 @@ function GeometryMapper({
       </details>}
       </div>
       </div>
-      {!adding && !editing && <p className="muted">Select a decoration on the photo or in the list. Use Add to photo to draw a new one.</p>}
+      {!adding && !editing && <p className="muted">Select a decoration on the canvas or in the list. Use {photo ? "Add to photo" : "Add to layout"} to draw a new one. A photo is optional.</p>}
       {visibleSuggestions.length > 0 && (
         <ul className="geometry-list geometry-suggestion-list">
           {visibleSuggestions.map((suggestion) => (
@@ -3252,7 +3258,7 @@ function SimulationPhotoCanvas({
       <image
         width="1000"
         height="600"
-        href={installationPhotoUrl(photo.id)}
+        href={installationPhotoUrl(photo.id, photo.revision)}
         preserveAspectRatio="xMidYMid meet"
       />
       <ProjectorSimulationOverlays

@@ -1,5 +1,6 @@
 import { expect, Page, test } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
+import type { InstallationGeometry } from "../../src/api";
 import { demoInstallation, demoInstallations, demoRuntime, demoTopology } from "../../src/demo/overview-fixtures";
 
 const photo = {
@@ -9,7 +10,7 @@ const photo = {
   crop_x: 0.1, crop_y: 0.1, crop_width: 0.8, crop_height: 0.8, scale_hint: 1e-10,
   revision: 1, created_at: "2026-10-20T12:00:00Z", updated_at: "2026-10-20T12:00:00Z",
 };
-const object = {
+const object: InstallationGeometry = {
   id: "roof", installation_id: "demo-installation", photo_id: photo.id,
   semantic_id: "original-roof", kind: "pixel_segment", name: "Roofline",
   points: [{ x: 0.2, y: 0.3 }, { x: 0.8, y: 0.3 }], closed: false,
@@ -18,12 +19,13 @@ const object = {
   landmark_ids: [], revision: 1, created_at: "", updated_at: "",
 };
 
-async function setup(page: Page, deviceFault = false) {
+async function setup(page: Page, deviceFault = false, noPhoto = false) {
   await page.context().addCookies([{ name: "cueverge_csrf", value: "setup-csrf", url: "http://127.0.0.1:4173" }]);
   const state = {
-    photos: [structuredClone(photo)], objects: [structuredClone(object)],
+    photos: noPhoto ? [] : [structuredClone(photo)], objects: noPhoto ? [] : [structuredClone(object)],
     descriptions: [] as Record<string, unknown>[], geometryMethods: [] as string[],
     uploads: [] as Record<string, string>[], failSurfaceOnce: false,
+    replacements: [] as Record<string, string>[],
   };
   await page.route("**/api/gui/v1/**", async (route) => {
     const request = route.request(), path = new URL(request.url()).pathname;
@@ -35,7 +37,18 @@ async function setup(page: Page, deviceFault = false) {
       ...demoTopology, nodes: demoTopology.nodes.map((node, index) =>
         index === 1 ? { ...node, artifact_faults: ["Original simulated storage fault"], failed_transfers: 1 } : node),
     } : demoTopology });
-    if (["POST", "PUT", "PATCH"].includes(request.method()) && request.headers()["x-csrf-token"] !== "setup-csrf") return route.fulfill({ status: 403 });
+    if (["POST", "PUT", "PATCH", "DELETE"].includes(request.method()) && request.headers()["x-csrf-token"] !== "setup-csrf") return route.fulfill({ status: 403 });
+    if (path.endsWith("/front-photo/content") && request.method() === "PUT") {
+      state.replacements.push(request.headers());
+      state.photos[0] = { ...state.photos[0], original_filename: decodeURIComponent(request.headers()["x-original-filename"]),
+        digest_sha256: "b".repeat(64), revision: state.photos[0].revision + 1 };
+      return route.fulfill({ json: state.photos[0] });
+    }
+    if (path.endsWith("/installation-photos/front-photo") && request.method() === "DELETE") {
+      state.photos = [];
+      state.objects = state.objects.map((value) => ({ ...value, photo_id: null, revision: value.revision + 1 }));
+      return route.fulfill({ status: 204 });
+    }
     if (path.endsWith("/photos")) {
       if (request.method() === "POST") {
         state.uploads.push(request.headers());
@@ -90,9 +103,66 @@ async function setup(page: Page, deviceFault = false) {
   });
   await page.goto("/");
   await page.getByRole("button", { name: "Installation", exact: true }).click();
-  await expect(page.getByRole("button", { name: "Open Layout", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: noPhoto ? "Open layout without a photo" : "Open Layout", exact: true })).toBeVisible();
   return state;
 }
+
+test("replacing the reference photo preserves object identities and requests alignment review", async ({ page }) => {
+  const state = await setup(page);
+  const original = structuredClone(state.objects);
+  await page.getByRole("button", { name: "Replace photo", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Photo details" });
+  const replace = dialog.getByRole("button", { name: "Replace photo, keep layout" });
+  await dialog.getByLabel("Replacement photo", { exact: true }).setInputFiles({
+    name: "new-front.png", mimeType: "image/png", buffer: Buffer.from("original synthetic upload fixture"),
+  });
+  await expect(replace).toBeDisabled();
+  await dialog.getByLabel("I will review the new background alignment", { exact: false }).check();
+  await replace.click();
+  await expect(dialog).toHaveCount(0);
+  expect(state.objects).toEqual(original);
+  expect(state.photos[0].id).toBe(photo.id);
+  expect(state.photos[0].viewpoint).toBe(photo.viewpoint);
+  expect(state.replacements[0]).toMatchObject({ "if-match": '"1"', "x-confirm-alignment-review": "true" });
+  await expect(page.getByRole("img", { name: "Front porch", exact: true })).toHaveAttribute("src", /revision=2/);
+});
+
+test("an installation without photos has an editable layout and visible add controls", async ({ page }) => {
+  const state = await setup(page, false, true);
+  await page.getByRole("button", { name: "Open layout without a photo", exact: true }).click();
+  await expect(page.getByRole("button", { name: "LED segment", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "LED segment", exact: true }).click();
+  const canvas = page.getByRole("img", { name: "Installation layout canvas", exact: true });
+  await expect(canvas).toBeVisible();
+  const box = await canvas.boundingBox();
+  if (!box) throw new Error("Missing layout canvas");
+  await canvas.click({ position: { x: box.width * 0.2, y: box.height * 0.3 } });
+  await canvas.click({ position: { x: box.width * 0.8, y: box.height * 0.3 } });
+  await page.getByLabel("Geometry name", { exact: true }).fill("No-photo LEDs");
+  await page.getByLabel("First pixel index", { exact: true }).fill("0");
+  await page.getByLabel("Pixel count", { exact: true }).fill("8");
+  await page.getByRole("button", { name: "Save segment", exact: true }).click();
+  await expect.poll(() => state.objects.length).toBe(1);
+  expect(state.objects[0].photo_id).toBeNull();
+  expect(state.geometryMethods).toEqual(["POST"]);
+  await expect(page.getByText("No-photo LEDs", { exact: true }).first()).toBeVisible();
+});
+
+test("removing a photo leaves existing layout objects editable without a background", async ({ page }) => {
+  const state = await setup(page);
+  await page.getByRole("button", { name: "Open Layout", exact: true }).click();
+  await page.getByRole("button", { name: "Photo details", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Photo details" });
+  await dialog.locator("summary").filter({ hasText: "Remove photo" }).click();
+  page.once("dialog", (value) => value.accept());
+  await dialog.getByRole("button", { name: "Remove photo", exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(page.getByRole("img", { name: "Installation layout canvas", exact: true })).toBeVisible();
+  expect(state.objects[0].id).toBe(object.id);
+  expect(state.objects[0].photo_id).toBeNull();
+  await page.locator(".geometry-list").getByRole("button", { name: "Edit", exact: true }).click();
+  await expect(page.getByLabel("Geometry name", { exact: true })).toHaveValue("Roofline");
+});
 
 test("photo-first setup hides metadata and description editing preserves legacy details", async ({ page }) => {
   const state = await setup(page);

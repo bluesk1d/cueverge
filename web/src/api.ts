@@ -75,7 +75,8 @@ export type McpScope =
   | "activate"
   | "live_operation"
   | "input_config"
-  | "installation_edit";
+  | "installation_edit"
+  | "photo_replace";
 
 export interface InputSourceSettings {
   enabled: boolean;
@@ -250,7 +251,7 @@ export type InstallationGeometryKind =
 export interface InstallationGeometry {
   id: string;
   installation_id: string;
-  photo_id: string;
+  photo_id: string | null;
   kind: InstallationGeometryKind;
   name: string;
   semantic_id: string;
@@ -324,7 +325,7 @@ export interface ProjectorMapping {
   fit_diagnostics: string[];
   photo_views: {
     geometry_id: string;
-    photo_id: string;
+    photo_id: string | null;
     points: { x: number; y: number }[];
     homography: number[] | null;
   }[];
@@ -569,13 +570,39 @@ export interface ProjectDraftRecord {
         [key: string]: unknown;
       };
       media:
-        | { asset: string | null }
-        | { id: string; asset: string | null }[];
+        | { resource?: string; asset: string | null }
+        | { id: string; resource?: string; asset: string | null }[];
       lighting?: unknown;
       [key: string]: unknown;
     }[];
     [key: string]: unknown;
   };
+}
+
+export interface SceneAuthoringOptions {
+  project_id: string;
+  revision: number;
+  installation_id: string | null;
+  resources: InstallationResource[];
+  importable_resources: string[];
+}
+
+export interface SceneOutputCreate {
+  output_id: string;
+  resource: string;
+}
+
+export interface CreateSceneRequest {
+  scene_id: string;
+  name: string;
+  duration_ms: number;
+  mode: "controller_timed" | "media_synchronized";
+  completion_policy: "loop" | "hold" | "stop";
+  output: SceneOutputCreate;
+}
+
+export interface AddSceneOutputRequest extends SceneOutputCreate {
+  make_clock_source: boolean;
 }
 
 export interface RevisionSummary {
@@ -1530,8 +1557,18 @@ export async function getInstallationPhotos(
   );
 }
 
-export function installationPhotoUrl(photoId: string): string {
-  return `/api/gui/v1/installation-photos/${encodeURIComponent(photoId)}/content`;
+export function installationPhotoUrl(photoId: string, revision?: number): string {
+  return `/api/gui/v1/installation-photos/${encodeURIComponent(photoId)}/content${revision === undefined ? "" : `?revision=${revision}`}`;
+}
+
+export function replaceInstallationPhoto(photo: InstallationPhoto, file: File): Promise<InstallationPhoto> {
+  return request(`/api/gui/v1/installation-photos/${encodeURIComponent(photo.id)}/content`, {
+    method: "PUT", headers: {
+      ...mutationHeaders(), "Content-Type": file.type, "If-Match": `"${photo.revision}"`,
+      "X-Original-Filename": encodeURIComponent(file.name), "X-Photo-Metadata-Encoding": "uri",
+      "X-Confirm-Alignment-Review": "true",
+    }, body: file,
+  }, true);
 }
 
 export async function uploadInstallationPhoto(
@@ -2055,6 +2092,30 @@ export async function updateProjectDraft(
       body: JSON.stringify(draft),
     },
   );
+}
+
+export function getSceneAuthoringOptions(projectId: string): Promise<SceneAuthoringOptions> {
+  return request(`/api/gui/v1/projects/${encodeURIComponent(projectId)}/scene-authoring-options`);
+}
+
+export function createScene(
+  projectId: string, revision: number, body: CreateSceneRequest,
+): Promise<ProjectDraftRecord> {
+  return request(`/api/gui/v1/projects/${encodeURIComponent(projectId)}/scenes`, {
+    method: "POST",
+    headers: { ...mutationHeaders(), "If-Match": `"${revision}"` },
+    body: JSON.stringify(body),
+  }, true);
+}
+
+export function addSceneOutput(
+  projectId: string, revision: number, sceneId: string, body: AddSceneOutputRequest,
+): Promise<ProjectDraftRecord> {
+  return request(`/api/gui/v1/projects/${encodeURIComponent(projectId)}/scenes/${encodeURIComponent(sceneId)}/outputs`, {
+    method: "POST",
+    headers: { ...mutationHeaders(), "If-Match": `"${revision}"` },
+    body: JSON.stringify(body),
+  }, true);
 }
 
 export async function deleteScene(

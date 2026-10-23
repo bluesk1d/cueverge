@@ -13,12 +13,14 @@ export function OutputTraversalPreview({
   photo,
   onClose,
   canTest = false,
+  installationId,
 }: {
   geometry: InstallationGeometry[];
   resources: Record<string, string>;
   resource: string;
   pixelCount: number;
-  photo: InstallationPhoto;
+  photo?: InstallationPhoto;
+  installationId?: string;
   onClose: () => void;
   canTest?: boolean;
 }) {
@@ -39,7 +41,7 @@ export function OutputTraversalPreview({
   }, [resource]);
   const { segments, diagnostics } = useMemo(
     () => {
-      const plan = outputTraversal(geometry, resources, resource, photo.id, pixelCount);
+      const plan = outputTraversal(geometry, resources, resource, photo?.id ?? "", pixelCount);
       return {
         ...plan,
         segments: plan.segments.map((segment) => ({
@@ -48,7 +50,7 @@ export function OutputTraversalPreview({
         })),
       };
     },
-    [geometry, resources, resource, photo.id, pixelCount],
+    [geometry, resources, resource, photo?.id, pixelCount],
   );
   const index = Math.floor(position);
   const active = segments.filter((segment) => index >= segment.start && index < segment.end);
@@ -109,9 +111,9 @@ export function OutputTraversalPreview({
         Pixel {index} / {pixelCount - 1} ·{" "}
         {active.length
           ? active.map((segment) => `${segment.order}. ${segment.geometry.name}${
-              segment.geometry.photo_id === photo.id ? "" : " (on another photo)"
+              !photo || segment.geometry.photo_id === null || segment.geometry.photo_id === photo.id ? "" : " (on another photo)"
             }`).join("; ")
-          : "Unmapped: no photo location for this output index"}
+          : "Unmapped: no layout location for this output index"}
       </output>
       {followingPhysical && <small>Following physical test: controller position sampled once per second.</small>}
       {diagnostics.length > 0 && (
@@ -122,16 +124,16 @@ export function OutputTraversalPreview({
       <svg
         className="geometry-canvas output-traversal__canvas"
         role="img"
-        aria-label={`Output traversal for ${resource} on ${photo.name}`}
+        aria-label={`Output traversal for ${resource} on ${photo?.name ?? "installation canvas"}`}
         viewBox="0 0 1000 600"
       >
-        <image
+        {photo && <image
           width="1000"
           height="600"
-          href={installationPhotoUrl(photo.id)}
+          href={installationPhotoUrl(photo.id, photo.revision)}
           preserveAspectRatio="xMidYMid meet"
-        />
-        {segments.filter((segment) => segment.geometry.photo_id === photo.id).map((segment) => {
+        />}
+        {segments.filter((segment) => !photo || segment.geometry.photo_id === null || segment.geometry.photo_id === photo.id).map((segment) => {
           const first = segment.pixels[0];
           const last = segment.pixels.at(-1)!;
           return (
@@ -173,7 +175,7 @@ export function OutputTraversalPreview({
             <span className="output-traversal__swatch" style={{ background: segment.color }} />
             {segment.geometry.name} · {segment.start}-{segment.end - 1} ·{" "}
             {segment.geometry.direction === "forward" ? "first point to last" : "last point to first"}
-            {segment.geometry.photo_id !== photo.id && " · on another photo"}
+            {photo && segment.geometry.photo_id !== null && segment.geometry.photo_id !== photo.id && " · on another photo"}
             {segment.geometry.hidden && " · hidden layer shown in preview"}
           </li>
         ))}
@@ -188,7 +190,7 @@ export function OutputTraversalPreview({
             <PhysicalOutputTestControls
               canOperate={canTest}
               resource={resource}
-              installationId={photo.installation_id}
+              installationId={installationId ?? photo?.installation_id}
               initialSpeed={speed}
               onTestUpdate={syncPhysicalTest}
             />

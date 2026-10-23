@@ -3,9 +3,12 @@ import json
 import os
 import sqlite3
 from dataclasses import dataclass
+from io import BytesIO
 from pathlib import Path, PurePath
 from typing import Literal, cast
 from uuid import uuid4
+
+from PIL import Image, UnidentifiedImageError
 
 from cueverge.gui.config import GuiConfig
 from cueverge.gui.contracts import Role
@@ -52,6 +55,23 @@ class InstallationPhotoService:
         self.object_root = config.data_root / "assets" / "objects"
         self.object_root.mkdir(parents=True, exist_ok=True, mode=0o700)
 
+    def _store_content(self, content: bytes) -> str:
+        digest = hashlib.sha256(content).hexdigest()
+        object_path = self.object_root / digest[:2] / digest
+        object_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        temporary = object_path.with_name(f".{uuid4().hex}.photo")
+        if not object_path.exists():
+            descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            try:
+                with os.fdopen(descriptor, "wb") as target:
+                    target.write(content)
+                    target.flush()
+                    os.fsync(target.fileno())
+                os.replace(temporary, object_path)
+            finally:
+                temporary.unlink(missing_ok=True)
+        return digest
+
     def create(
         self,
         *,
@@ -76,20 +96,7 @@ class InstallationPhotoService:
             self.repository.get_installation(installation_id)
         except InstallationNotFoundError as error:
             raise InstallationPhotoError("installation does not exist") from error
-        digest = hashlib.sha256(content).hexdigest()
-        object_path = self.object_root / digest[:2] / digest
-        object_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        temporary = object_path.with_name(f".{uuid4().hex}.photo")
-        if not object_path.exists():
-            descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-            try:
-                with os.fdopen(descriptor, "wb") as target:
-                    target.write(content)
-                    target.flush()
-                    os.fsync(target.fileno())
-                os.replace(temporary, object_path)
-            finally:
-                temporary.unlink(missing_ok=True)
+        digest = self._store_content(content)
         photo_id = str(uuid4())
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -121,6 +128,70 @@ class InstallationPhotoService:
                 role=role,
                 occurred_at=occurred_at,
                 context={"installation_id": installation_id, "digest_sha256": digest},
+            )
+            connection.commit()
+        return self.get(photo_id)
+
+    def replace(
+        self,
+        *,
+        photo_id: str,
+        expected_revision: int,
+        original_filename: str,
+        media_type: str,
+        content: bytes,
+        actor: str,
+        role: Role,
+        occurred_at: str,
+    ) -> StoredInstallationPhoto:
+        _validate_plain_filename(original_filename)
+        if media_type not in ALLOWED_PHOTO_TYPES or not 0 < len(content) <= MAX_PHOTO_BYTES:
+            raise InstallationPhotoError(
+                "Replacement must be a JPEG, PNG or WebP image up to 25 MB"
+            )
+        try:
+            with Image.open(BytesIO(content)) as image:
+                if (
+                    image.format
+                    != {"image/jpeg": "JPEG", "image/png": "PNG", "image/webp": "WEBP"}[media_type]
+                ):
+                    raise InstallationPhotoError(
+                        "Replacement bytes do not match the declared image type"
+                    )
+                image.verify()
+        except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError) as error:
+            raise InstallationPhotoError("Replacement image could not be verified") from error
+        digest = self._store_content(content)
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT revision,digest_sha256 FROM installation_photos WHERE id=?",
+                (photo_id,),
+            ).fetchone()
+            if row is None:
+                raise InstallationPhotoError("installation photo does not exist")
+            if row["revision"] != expected_revision:
+                raise InstallationPhotoConflictError(int(row["revision"]))
+            connection.execute(
+                "UPDATE installation_photos SET original_filename=?,media_type=?,digest_sha256=?,"
+                "size_bytes=?,revision=revision+1,updated_at=? WHERE id=?",
+                (original_filename, media_type, digest, len(content), occurred_at, photo_id),
+            )
+            _insert_audit(
+                connection,
+                actor=actor,
+                action="installation.photo.replace",
+                target=photo_id,
+                role=role,
+                occurred_at=occurred_at,
+                context={
+                    "previous_revision": expected_revision,
+                    "created_revision": expected_revision + 1,
+                    "previous_digest_sha256": row["digest_sha256"],
+                    "digest_sha256": digest,
+                    "geometry_preserved": True,
+                    "alignment_review_required": True,
+                },
             )
             connection.commit()
         return self.get(photo_id)
@@ -268,6 +339,11 @@ class InstallationPhotoService:
             current_revision = int(row["revision"])
             if current_revision != expected_revision:
                 raise InstallationPhotoConflictError(current_revision)
+            detached = connection.execute(
+                "UPDATE installation_geometry SET photo_id=NULL,revision=revision+1,updated_at=? "
+                "WHERE photo_id=?",
+                (occurred_at, photo_id),
+            ).rowcount
             connection.execute("DELETE FROM installation_photos WHERE id = ?", (photo_id,))
             _insert_audit(
                 connection,
@@ -276,7 +352,7 @@ class InstallationPhotoService:
                 target=photo_id,
                 role=role,
                 occurred_at=occurred_at,
-                context={"deleted_revision": current_revision},
+                context={"deleted_revision": current_revision, "retained_geometry_count": detached},
             )
             connection.commit()
 

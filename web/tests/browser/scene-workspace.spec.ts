@@ -2,6 +2,7 @@ import { expect, Page, test } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
 import baseline from "../../../tests/fixtures/usability-authoring.json" with { type: "json" };
 import { demoInstallation, demoInstallations, demoRuntime, demoTopology, demoProjects } from "../../src/demo/overview-fixtures";
+import type { InstallationResource, ProjectDraftRecord } from "../../src/api";
 
 async function sceneRoutes(page: Page, readOnly = false, cueCount = 10) {
   const document = structuredClone(baseline);
@@ -102,6 +103,208 @@ async function sceneRoutes(page: Page, readOnly = false, cueCount = 10) {
   });
   return state;
 }
+
+async function creationRoutes(page: Page) {
+  const root = await sceneRoutes(page);
+  const document: ProjectDraftRecord["draft"] = structuredClone(root.document);
+  const resources: InstallationResource[] = [
+    { resource: "roofline.demo", kind: "pixel_output", target: "memory", pixel_count: 12 },
+    { resource: "projector.demo", kind: "media_agent", target: "fake-media-1", pixel_count: null },
+    { resource: "projector.extra", kind: "media_agent", target: "extra-player", pixel_count: null },
+    { resource: "pixels.extra", kind: "pixel_output", target: "memory-extra", pixel_count: 12 },
+  ];
+  const state = {
+    document, revision: 1, writes: [] as { path: string; body: Record<string, unknown> }[],
+    writeError: null as string | null, optionsError: false,
+  };
+  const asset = {
+    id: "ghost-asset", project_id: "demo-project", name: "Ghost loop", status: "ready",
+    current_revision: 1, metadata_revision: 1, owner: null, license: null, provenance: null,
+    review_status: "approved", expires_on: null, folder: null, tags: [], favorite: false,
+    error: null, digest_sha256: "a".repeat(64), size_bytes: 1024, media_type: "video/mp4",
+    original_filename: "ghost.mp4", scan_status: "clean", metadata: null,
+    original_file_status: "available", artifact_faults: [], references: [], unused: true,
+    created_at: "2026-10-14T12:00:00Z", updated_at: "2026-10-14T12:00:00Z",
+  };
+  await page.route("**/api/gui/v1/projects/demo-project/**", async (route) => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    const record = () => ({
+      project: { ...root.project, head_revision: state.revision },
+      revision: state.revision, draft: state.document,
+    });
+    if (path.endsWith("/scene-authoring-options")) {
+      if (state.optionsError) return route.fulfill({ status: 503, json: { detail: "Discovery unavailable" } });
+      return route.fulfill({ json: {
+        project_id: "demo-project", revision: state.revision, installation_id: "demo-installation",
+        resources, importable_resources: ["projector.extra", "pixels.extra"],
+      } });
+    }
+    if (path.endsWith("/draft") && request.method() === "GET") return route.fulfill({ json: record() });
+    if (path.endsWith("/assets")) return route.fulfill({ json: [asset] });
+    if (request.method() === "POST" && (/\/scenes$/.test(path) || /\/outputs$/.test(path) || /\/place$/.test(path))) {
+      if (state.writeError) return route.fulfill({ status: 409, json: {
+        detail: { code: "scene_authoring_conflict", message: state.writeError },
+      } });
+      expect(request.headers()["if-match"]).toBe(`"${state.revision}"`);
+      const body = request.postDataJSON();
+      state.writes.push({ path, body });
+      if (path.endsWith("/scenes")) {
+        const binding = resources.find((item) => item.resource === body.output.resource)!;
+        state.document.scenes.push({
+          schema_version: 2, id: body.scene_id, name: body.name, duration_ms: body.duration_ms,
+          mode: body.mode, clock_source: body.mode === "controller_timed" ? "controller" : body.output.output_id,
+          resources: [body.output.resource], completion: { policy: body.completion_policy },
+          media: binding.kind === "media_agent" ? [{
+            id: body.output.output_id, resource: body.output.resource, asset: null,
+          }] : [],
+          lighting: binding.kind === "pixel_output" ? [{
+            id: body.output.output_id, resource: body.output.resource, required: true,
+            timeline: [{ id: "blackout", primitive: "blackout", start_ms: 0, duration_ms: body.duration_ms, color: "#000000" }],
+          }] : [],
+        });
+      } else if (path.endsWith("/outputs")) {
+        const scene = state.document.scenes.find((item) => item.id === path.split("/").at(-2))!;
+        const binding = resources.find((item) => item.resource === body.resource)!;
+        if (binding.kind === "media_agent") {
+          scene.media = [...(Array.isArray(scene.media) ? scene.media : []), {
+            id: body.output_id, resource: body.resource, asset: null,
+          }];
+          if (body.make_clock_source) {
+            scene.mode = "media_synchronized"; scene.clock_source = body.output_id;
+          }
+        } else {
+          scene.lighting = [...(Array.isArray(scene.lighting) ? scene.lighting : []), {
+            id: body.output_id, resource: body.resource, required: true,
+            timeline: [{ id: "blackout", primitive: "blackout", start_ms: 0, duration_ms: scene.duration_ms, color: "#000000" }],
+          }];
+        }
+        scene.resources = [...(scene.resources ?? []), body.resource];
+      } else {
+        const scene = state.document.scenes.find((item) => item.id === body.scene_id)!;
+        if (!Array.isArray(scene.media)) throw new Error("Expected multi-output scene");
+        scene.media = scene.media.map((item) => item.id === body.output_id ? { ...item, asset: asset.id } : item);
+        state.document.editor_metadata.asset_bindings = { [asset.id]: 1 };
+      }
+      state.revision++; root.revision = state.revision;
+      return route.fulfill({ json: record() });
+    }
+    return route.fallback();
+  });
+  return state;
+}
+
+async function openScenes(page: Page) {
+  await page.goto("/");
+  await page.getByRole("button", { name: "Shows", exact: true }).click();
+  await page.getByRole("button", { name: "Open show Home Show" }).click();
+}
+
+test("add a lighting scene, add its media output, and place an asset with revisioned persistence", async ({ page }) => {
+  const state = await creationRoutes(page);
+  const original = structuredClone(state.document.scenes);
+  await openScenes(page);
+  await page.getByRole("button", { name: "Add scene", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Add scene", exact: true });
+  await dialog.getByLabel("Scene name", { exact: true }).fill("Halloween preshow");
+  await dialog.getByLabel("Scene duration (seconds)", { exact: true }).fill("180");
+  await dialog.getByLabel("Installation resource").selectOption("roofline.demo");
+  await dialog.getByLabel("Output name / ID").fill("roofline");
+  await dialog.getByRole("button", { name: "Add scene", exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "Halloween preshow", exact: true })).toBeVisible();
+  const id = state.document.scenes.at(-1)!.id;
+  expect(state.writes[0].body).toMatchObject({ duration_ms: 180000, mode: "controller_timed" });
+  await page.getByRole("button", { name: "Add output", exact: true }).click();
+  const outputDialog = page.getByRole("dialog", { name: "Add output", exact: true });
+  await expect(outputDialog.getByLabel("Installation resource").getByRole("option", { name: /^roofline.demo/ })).toHaveCount(0);
+  await outputDialog.getByLabel("Installation resource").selectOption("projector.extra");
+  await outputDialog.getByLabel("Output name / ID").fill("window-video");
+  await expect(outputDialog.getByLabel("Use this media output as the scene clock")).not.toBeChecked();
+  await outputDialog.getByRole("button", { name: "Add output", exact: true }).click();
+  await expect(outputDialog).toHaveCount(0);
+  expect(state.document.scenes.at(-1)!.clock_source).toBe("controller");
+  expect(state.document.scenes.slice(0, -1)).toEqual(original);
+  await page.getByText("Assets", { exact: true }).click();
+  const placement = page.getByLabel("Place in scene output");
+  await placement.selectOption({ label: "Halloween preshow · window-video" });
+  await page.getByRole("button", { name: "Place asset", exact: true }).click();
+  await expect.poll(() => state.writes.length).toBe(3);
+  expect(state.document.scenes.at(-1)!.media).toEqual([
+    { id: "window-video", resource: "projector.extra", asset: "ghost-asset" },
+  ]);
+  await page.reload();
+  await page.getByRole("button", { name: "Shows", exact: true }).click();
+  await page.getByRole("button", { name: "Open show Home Show" }).click();
+  await page.getByRole("button", { name: /^Halloween preshow/ }).click();
+  await expect(page.getByRole("heading", { name: "Halloween preshow", exact: true })).toBeVisible();
+  expect(state.document.scenes.at(-1)!.id).toBe(id);
+  await page.getByText("Media in this scene (1)", { exact: true }).click();
+  await expect(page.getByText("Ghost loop", { exact: true }).first()).toBeVisible();
+});
+
+test("media-only creation has intentional preview UX and can gain lighting without changing its media clock", async ({ page }) => {
+  const state = await creationRoutes(page);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await openScenes(page);
+  await page.getByRole("button", { name: "Add scene", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Add scene", exact: true });
+  await dialog.getByLabel("Scene name", { exact: true }).fill("Window ghost");
+  await dialog.getByLabel("Scene duration (seconds)", { exact: true }).fill("1.001");
+  await dialog.getByLabel("Installation resource").selectOption("projector.extra");
+  await expect(dialog.getByLabel("Scene clock")).toHaveValue("media_synchronized");
+  await dialog.getByLabel("Output name / ID").fill("ghost");
+  await expect(dialog.getByRole("button", { name: "Add scene", exact: true })).toBeEnabled();
+  await expect(dialog).toHaveJSProperty("scrollWidth", await dialog.evaluate((element) => element.clientWidth));
+  await dialog.getByRole("button", { name: "Add scene", exact: true }).click();
+  await expect(page.getByText(/This is a media-only scene/)).toBeVisible();
+  await expect(page.getByText("No managed media assigned", { exact: true })).toBeVisible();
+  await expect(page.getByRole("combobox", { name: "Lighting output", exact: true })).toHaveCount(0);
+  expect(state.writes[0].body.duration_ms).toBe(1001);
+  const sceneId = state.document.scenes.at(-1)!.id;
+  await page.getByRole("button", { name: "Preview", exact: true }).click();
+  await page.getByRole("combobox", { name: "Preview scene", exact: true }).selectOption(sceneId);
+  await expect(page.getByText(/This scene has only media outputs/)).toBeVisible();
+  await expect(page.getByRole("button", { name: "Play preview", exact: true })).toHaveCount(0);
+  await page.getByRole("button", { name: "Scenes", exact: true }).click();
+  const originalMedia = structuredClone(state.document.scenes.at(-1)!.media);
+  await page.getByRole("button", { name: "Add output", exact: true }).click();
+  const outputDialog = page.getByRole("dialog", { name: "Add output", exact: true });
+  await outputDialog.getByLabel("Installation resource").selectOption("pixels.extra");
+  await outputDialog.getByRole("button", { name: "Add output", exact: true }).click();
+  await expect(page.getByRole("combobox", { name: "Lighting output", exact: true })).toBeVisible();
+  expect(state.document.scenes.at(-1)!.media).toEqual(originalMedia);
+  expect(state.document.scenes.at(-1)!.clock_source).toBe("ghost");
+});
+
+test("creation cancellation, discovery retry, duplicate IDs and server conflicts preserve the saved show", async ({ page }) => {
+  const state = await creationRoutes(page);
+  const original = structuredClone(state.document);
+  state.optionsError = true;
+  await openScenes(page);
+  await page.getByRole("button", { name: "Add output", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Add output", exact: true });
+  await expect(dialog.getByRole("alert")).toBeVisible();
+  state.optionsError = false;
+  await dialog.getByRole("button", { name: "Retry resource discovery" }).click();
+  await dialog.getByLabel("Installation resource").selectOption("projector.demo");
+  await dialog.getByLabel("Output name / ID").fill("leds");
+  await expect(dialog.getByText(/An output with this ID already exists/)).toBeVisible();
+  await expect(dialog.getByRole("button", { name: "Add output", exact: true })).toBeDisabled();
+  await dialog.getByLabel("Output name / ID").fill("new-video");
+  state.writeError = "The show changed. Reload and retry.";
+  await dialog.getByRole("button", { name: "Add output", exact: true }).click();
+  await expect(dialog.getByRole("alert")).toContainText("The show changed");
+  await expect(dialog.getByLabel("Output name / ID")).toHaveValue("new-video");
+  await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+  expect(state.document).toEqual(original);
+  expect(state.writes).toHaveLength(0);
+  await page.getByRole("spinbutton", { name: "Effect brightness (%)", exact: true }).fill("40");
+  await expect(page.getByRole("button", { name: "Add scene", exact: true })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Add output", exact: true })).toBeDisabled();
+  await page.getByRole("button", { name: "Cancel scene edits", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Add scene", exact: true })).toBeEnabled();
+});
 
 test("library opens a scene directly and all 56 raw effects survive an isolated edit", async ({ page }) => {
   const state = await sceneRoutes(page, false, 56);
@@ -212,6 +415,8 @@ test("project permissions still protect editing when collaboration is closed", a
   await expect(page.getByRole("spinbutton", { name: "Effect brightness (%)", exact: true })).toBeDisabled();
   await expect(page.getByRole("button", { name: "Save scene" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Delete scene", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Add scene", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Add output", exact: true })).toHaveCount(0);
   await expect(page.getByRole("region", { name: "Collaboration" })).toHaveCount(0);
   expect(state.saves).toHaveLength(0);
   expect(state.collaborationReads).toBe(0);
@@ -461,7 +666,7 @@ test("night visualization keeps off LEDs transparent and makes low output visibl
 test("a failed preview photo keeps raw frames available and can be retried", async ({ page }) => {
   const state = await mappedPhotoRoutes(page, 800, 600);
   let failed = true;
-  await page.route("**/installation-photos/alignment-photo/content", (route) => failed
+  await page.route("**/installation-photos/alignment-photo/content*", (route) => failed
     ? route.fulfill({ status: 503, body: "Original image temporarily unavailable" })
     : route.fallback());
   await page.goto("/");

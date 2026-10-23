@@ -30,7 +30,9 @@ from cueverge.gui.asset_upload import AssetUploadError
 from cueverge.gui.authoring_schema import authoring_schema
 from cueverge.gui.compiler import CompilationError
 from cueverge.gui.contracts import (
+    AddSceneOutputRequest,
     ConfigureInputSourceRequest,
+    CreateSceneRequest,
     DeleteSceneRequest,
     DraftProject,
     InteractionEditRequest,
@@ -38,13 +40,14 @@ from cueverge.gui.contracts import (
     OperateActionRequest,
     OutputMonitorRequest,
     PhotoDescriptionRequest,
+    ReplaceInstallationPhotoRequest,
     Role,
     SceneLightingPreviewRequest,
     UpdateRevisionReleaseRequest,
 )
 from cueverge.gui.device_session import DeviceSessionError
 from cueverge.gui.input_sources import InputSourceError
-from cueverge.gui.installation_photos import InstallationPhotoError
+from cueverge.gui.installation_photos import MAX_PHOTO_BYTES, InstallationPhotoError
 from cueverge.gui.interaction_preview import preview_interactions
 from cueverge.gui.interactions import (
     InteractionError,
@@ -70,8 +73,9 @@ from cueverge.gui.mcp_authoring import (
 from cueverge.gui.projector_renderer import ProjectorRenderError, preview_projector_composition
 from cueverge.gui.publication import ApprovalState, PublicationError, PublishedPackage
 from cueverge.gui.render_jobs import RenderJobError, StoredRenderJob
-from cueverge.gui.repository import ProjectNotFoundError
+from cueverge.gui.repository import ProjectNotFoundError, RevisionConflictError
 from cueverge.gui.scene_authoring import delete_scene as delete_draft_scene
+from cueverge.gui.scene_authoring import save_scene_edit, scene_authoring_options
 from cueverge.gui.scene_preview import ScenePreviewError, preview_project_scene
 from cueverge.gui.service import GuiServices
 from cueverge.gui.spatial_authoring import (
@@ -390,6 +394,8 @@ def create_mcp_app(services: GuiServices) -> Starlette:
             {
                 "installation_id": installation.id,
                 "photos": [{**asdict(photo), "description": photo.name} for photo in photos],
+                "geometry_owner": "installation",
+                "photo_optional": True,
                 "layout_objects": [
                     {
                         "id": item.id,
@@ -453,6 +459,54 @@ def create_mcp_app(services: GuiServices) -> Starlette:
             raise ToolError(str(error)) from error
         return _bounded_result(
             {**asdict(updated), "description": updated.name, "hardware_commands_sent": False}
+        )
+
+    @server.tool()
+    def replace_installation_photo(request: dict[str, JsonValue]) -> dict[str, JsonValue]:
+        """Replace a reference image from a verified original image asset in this project.
+
+        Requires separately opted-in photo_replace and current installation/project
+        author permission. installation_edit alone does not authorize replacement.
+        Retains photo ID, all installation geometry, linked views, wiring and calibration.
+        Geometry is not repositioned: explicitly confirm a review of background alignment.
+        Existing photo metadata is retained. No file paths, arbitrary URLs or hardware control.
+        """
+        token = input_installation_token(McpScope.PHOTO_REPLACE)
+        try:
+            parsed = ReplaceInstallationPhotoRequest.model_validate(request)
+            photo = services.installation_photos.get(parsed.photo_id)
+            if photo.installation_id != services.repository.get_runtime_installation().id:
+                raise ToolError("Photo is outside the bound runtime installation")
+            asset = services.asset_upload.get_asset(parsed.asset_id)
+            if asset.project_id != token.project_id:
+                raise ToolError("Replacement asset is outside the token project")
+            if asset.status != "ready":
+                raise ToolError("Replacement asset must be ready and not quarantined or failed")
+            if asset.size_bytes is None or not 0 < asset.size_bytes <= MAX_PHOTO_BYTES:
+                raise ToolError("Replacement asset exceeds the 25 MB photo limit")
+            if asset.original_filename is None or asset.media_type is None:
+                raise ToolError("Replacement asset has no verified original image metadata")
+            _, path = services.asset_upload.get_original(asset.id)
+            updated = services.installation_photos.replace(
+                photo_id=photo.id,
+                expected_revision=parsed.source_revision,
+                original_filename=asset.original_filename,
+                media_type=asset.media_type,
+                content=path.read_bytes(),
+                actor=token.username,
+                role=_token_role(services, token),
+                occurred_at=_now_iso(),
+            )
+        except (ValidationError, InstallationPhotoError, AssetUploadError) as error:
+            raise ToolError(str(error)) from error
+        return _bounded_result(
+            {
+                **asdict(updated),
+                "description": updated.name,
+                "geometry_preserved": True,
+                "alignment_review_required": True,
+                "hardware_commands_sent": False,
+            }
         )
 
     @server.tool()
@@ -565,6 +619,103 @@ def create_mcp_app(services: GuiServices) -> Starlette:
             "project_id": token.project_id,
             "revision": stored.revision,
             "draft": stored.draft.model_dump(mode="json"),
+        }
+
+    @server.tool()
+    def get_scene_authoring_options() -> dict[str, JsonValue]:
+        """Discover media/lighting resources available to this token's show.
+
+        Uses the show's saved bindings and newly available resources only from its
+        bound runtime installation. Importable bindings are copied only when selected;
+        existing bindings are never overwritten. Surfaces are geometry, not extra
+        projector playback slots. Requires read; sends no hardware commands.
+        """
+        token = _authorize(services, McpScope.READ)
+        try:
+            return scene_authoring_options(services, token.project_id).model_dump(mode="json")
+        except ProjectNotFoundError as error:
+            raise ToolError(str(error)) from error
+
+    @server.tool()
+    def create_scene(base_revision: int, request: CreateSceneRequest) -> dict[str, JsonValue]:
+        """Add a saved scene with one initial media or lighting output (direct_edit).
+
+        Read get_scene_authoring_options first. Media-only scenes are supported.
+        Lighting starts with a full-duration blackout cue; assign media separately.
+        Choose controller_timed or media_synchronized explicitly. Does not add program
+        entries, surface compositions, publish, apply, or send hardware commands.
+        """
+        token = _authorize(services, McpScope.DIRECT_EDIT)
+        try:
+            updated = save_scene_edit(
+                services,
+                project_id=token.project_id,
+                base_revision=base_revision,
+                request=request,
+                actor=token.username,
+                role=_token_role(services, token),
+            )
+        except (ProjectNotFoundError, ValueError, RevisionConflictError) as error:
+            raise ToolError(str(error)) from error
+        _audit(
+            services,
+            token,
+            "mcp.scene.create",
+            request.scene_id,
+            "success",
+            details={"base_revision": base_revision, "created_revision": updated.revision},
+        )
+        return {
+            "project_id": token.project_id,
+            "scene_id": request.scene_id,
+            "output_id": request.output.output_id,
+            "base_revision": base_revision,
+            "revision": updated.revision,
+            "hardware_commands_sent": False,
+            "requires_human_approval": False,
+        }
+
+    @server.tool()
+    def add_scene_output(
+        scene_id: str, base_revision: int, request: AddSceneOutputRequest
+    ) -> dict[str, JsonValue]:
+        """Add a saved media or lighting output and its resource claim (direct_edit).
+
+        Discover resources with get_scene_authoring_options. Preserves existing
+        content, bindings and clock unless make_clock_source explicitly selects the
+        new required media output. Converts v1 to v2 using existing IDs media/lighting.
+        Refuses duplicate output IDs, resources or media agents. New lighting starts
+        black; new media awaits asset placement. No publish, apply or hardware commands.
+        """
+        token = _authorize(services, McpScope.DIRECT_EDIT)
+        try:
+            updated = save_scene_edit(
+                services,
+                project_id=token.project_id,
+                scene_id=scene_id,
+                base_revision=base_revision,
+                request=request,
+                actor=token.username,
+                role=_token_role(services, token),
+            )
+        except (ProjectNotFoundError, ValueError, RevisionConflictError) as error:
+            raise ToolError(str(error)) from error
+        _audit(
+            services,
+            token,
+            "mcp.scene.output.add",
+            scene_id,
+            "success",
+            details={"base_revision": base_revision, "created_revision": updated.revision},
+        )
+        return {
+            "project_id": token.project_id,
+            "scene_id": scene_id,
+            "output_id": request.output_id,
+            "base_revision": base_revision,
+            "revision": updated.revision,
+            "hardware_commands_sent": False,
+            "requires_human_approval": False,
         }
 
     @server.tool()
@@ -809,6 +960,12 @@ def create_mcp_app(services: GuiServices) -> Starlette:
                     "authorization": "current_operator_or_administrator_and_live_output_grant",
                 },
                 "installation_setup": {
+                    "geometry_owner": "installation",
+                    "photo_optional": True,
+                    "photo_removal": "detach_reference_preserve_geometry_wiring_and_calibration",
+                    "replacement_tool": "replace_installation_photo",
+                    "replacement_scope": "photo_replace",
+                    "replacement_schema": ReplaceInstallationPhotoRequest.model_json_schema(),
                     "available_for_project": (
                         revision.draft.editor_metadata.get("installation_id")
                         == services.repository.get_runtime_installation().id
@@ -870,6 +1027,9 @@ def create_mcp_app(services: GuiServices) -> Starlette:
                     "led_only_scenes": True,
                     "scene_lighting_preview": True,
                     "scene_deletion": True,
+                    "scene_creation": True,
+                    "scene_output_creation": True,
+                    "media_only_scenes": True,
                     "geometry_editing": False,
                     "live_media_rendering": False,
                 },
@@ -896,6 +1056,9 @@ def create_mcp_app(services: GuiServices) -> Starlette:
                     "propose": "propose_project_revision",
                     "direct_edit": "update_project_draft",
                     "delete_scene": "delete_scene",
+                    "scene_authoring_options": "get_scene_authoring_options",
+                    "create_scene": "create_scene",
+                    "add_scene_output": "add_scene_output",
                     "preview": "preview_composition",
                     "scene_lighting_preview": "preview_scene_lighting",
                     "bake": "create_render_job",

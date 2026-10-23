@@ -352,9 +352,8 @@ test("timeline marker workflow is keyboard operable", async ({ page }) => {
   await expect.poll(() => savedDraft).not.toBeNull();
 });
 
-test("maximum asset collection remains virtualized", async ({ page }) => {
-  const document = draftDocument();
-  const assets = Array.from({ length: 5000 }, (_, index) => ({
+function assetRecord(index: number) {
+  return {
     id: `asset-${index}`,
     project_id: "demo-project",
     name: `Scale asset ${index}`,
@@ -382,7 +381,81 @@ test("maximum asset collection remains virtualized", async ({ page }) => {
     unused: true,
     created_at: "2026-10-14T12:00:00Z",
     updated_at: "2026-10-14T12:00:00Z",
-  }));
+  };
+}
+
+for (const width of [1280, 390]) {
+  test(`asset cards wrap and expanded metadata never overlaps adjacent cards at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 900 });
+    const assets = Array.from({ length: 3 }, (_, index) => ({
+      ...assetRecord(index),
+      name: `Halloween feature ${index} ${"long-name-".repeat(20)}`,
+      original_filename: `${"long-original-filename-".repeat(12)}${index}.mp4`,
+      media_type: "video/mp4",
+      size_bytes: 212700000,
+      metadata: { duration_ms: 40130, width: 1072, height: 1928, frame_rate: 24, video_codecs: ["h264"] },
+      scan_status: "unavailable",
+      tags: ["window", "halloween"],
+    }));
+    await installTimelineRoutes(page, draftDocument(), assets);
+    await page.goto("/demo.html");
+    await page.getByRole("button", { name: "Shows", exact: true }).click();
+    await openAdvancedShowWorkspace(page);
+    const list = page.getByRole("list", { name: "Assets in Home Show" });
+    const cards = list.locator(".virtual-asset-row");
+    await expect(cards).toHaveCount(3);
+    await expect(list.getByText(/malware|scan:/i)).toHaveCount(0);
+    const first = cards.nth(0);
+    const second = cards.nth(1);
+    await first.locator("summary").click();
+    await expect(first.getByLabel("Owner", { exact: true })).toBeVisible();
+    await first.getByLabel("Owner", { exact: true }).fill("Halloween production");
+    await first.getByLabel("Provenance notes", { exact: true }).fill("Original production notes");
+    await expect.poll(async () => {
+      const firstBounds = await first.boundingBox();
+      const secondBounds = await second.boundingBox();
+      return firstBounds && secondBounds ? secondBounds.y - firstBounds.y - firstBounds.height : -1;
+    }).toBeGreaterThanOrEqual(0);
+    const layout = await first.evaluate((card) => {
+      const header = card.querySelector("header")!.getBoundingClientRect();
+      const file = card.querySelector(".asset-card__file")!.getBoundingClientRect();
+      const details = card.querySelector(".asset-card__details")!;
+      return {
+        filenameBelowHeader: file.top >= header.bottom,
+        cardFits: card.scrollWidth <= card.clientWidth,
+        detailsFit: details.scrollWidth <= details.clientWidth,
+        pageFits: document.documentElement.scrollWidth <= window.innerWidth,
+      };
+    });
+    expect(layout).toEqual({
+      filenameBelowHeader: true, cardFits: true, detailsFit: true, pageFits: true,
+    });
+    const expanded = (await first.boundingBox())!.height;
+    await first.locator("summary").click();
+    await expect.poll(async () => (await first.boundingBox())!.height).toBeLessThan(expanded);
+    await expect.poll(async () => {
+      const firstBounds = (await first.boundingBox())!;
+      return Math.floor((await second.boundingBox())!.y - firstBounds.y - firstBounds.height);
+    }).toBe(8);
+  });
+}
+
+test("assets explain when no scene media output is available", async ({ page }) => {
+  const document = draftDocument();
+  document.scenes[0].media = [];
+  await installTimelineRoutes(page, document, [assetRecord(0)]);
+  await page.goto("/demo.html");
+  await page.getByRole("button", { name: "Shows", exact: true }).click();
+  await openAdvancedShowWorkspace(page);
+  const list = page.getByRole("list", { name: "Assets in Home Show" });
+  await expect(list.getByText(/No media outputs in this show/)).toBeVisible();
+  await expect(list.getByLabel("Place in scene output")).toHaveCount(0);
+  await expect(list.getByRole("button", { name: "Place asset", exact: true })).toHaveCount(0);
+});
+
+test("maximum asset collection remains virtualized", async ({ page }) => {
+  const document = draftDocument();
+  const assets = Array.from({ length: 5000 }, (_, index) => assetRecord(index));
   await installTimelineRoutes(page, document, assets);
   await page.goto("/demo.html");
   await page.getByRole("button", { name: "Shows", exact: true }).click();
@@ -393,6 +466,11 @@ test("maximum asset collection remains virtualized", async ({ page }) => {
   );
   await expect(assetList).toHaveAttribute("data-total-count", "5000");
   expect(await assetList.locator('[role="listitem"]').count()).toBeLessThan(20);
+  await assetList.evaluate((element) => { element.scrollTop = element.scrollHeight; });
+  await expect(assetList.getByText("Scale asset 4999", { exact: true })).toBeVisible();
+  expect(await assetList.locator('[role="listitem"]').count()).toBeLessThan(20);
+  await page.getByRole("searchbox", { name: "Search assets in Home Show" }).fill("Scale asset 42");
+  await expect(assetList.getByText("Scale asset 42", { exact: true })).toBeVisible();
 });
 
 test("maximum timeline marker collection remains virtualized", async ({ page }) => {

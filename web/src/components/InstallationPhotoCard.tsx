@@ -1,7 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   ApiError, deleteInstallationPhoto, describeInstallationPhoto, InstallationPhoto,
-  installationPhotoUrl, updateInstallationPhoto,
+  installationPhotoUrl, updateInstallationPhoto, replaceInstallationPhoto,
 } from "../api";
 import { DetailsDialog } from "./DetailsDialog";
 import { ErrorState } from "./ui";
@@ -14,7 +14,7 @@ export function InstallationPhotoCard({ photo, canEdit, onRefresh, onLayout, map
   const [missing, setMissing] = useState(false);
   const [retry, setRetry] = useState(0);
   return <article className="installation-photo-card">
-    <img alt={photo.description ?? photo.name} src={`${installationPhotoUrl(photo.id)}?retry=${retry}`}
+    <img alt={photo.description ?? photo.name} src={`${installationPhotoUrl(photo.id, photo.revision)}&retry=${retry}`}
       style={{ transform: `rotate(${photo.orientation_degrees}deg)` }}
       onError={() => setMissing(true)} onLoad={() => setMissing(false)} />
     <strong>{photo.description ?? photo.name}</strong>
@@ -22,6 +22,7 @@ export function InstallationPhotoCard({ photo, canEdit, onRefresh, onLayout, map
     {missing && <><p role="alert">This photo could not be loaded.</p><button onClick={() => setRetry((value) => value + 1)}>Retry photo</button></>}
     <div className="setup-actions">
       <button type="button" className="primary-button" onClick={onLayout}>Open Layout</button>
+      {canEdit && <button type="button" onClick={() => setOpen(true)}>Replace photo</button>}
       <button type="button" onClick={() => setOpen(true)}>{canEdit ? "Photo details" : "Photo information"}</button>
     </div>
     {open && <PhotoEditor key={`${photo.id}:${photo.revision}`} photo={photo} canEdit={canEdit}
@@ -42,11 +43,15 @@ function PhotoEditor({ photo, canEdit, mappedCount, onClose, onRefresh }: {
   });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [replacement, setReplacement] = useState<File | null>(null);
+  const replacementInput = useRef<HTMLInputElement>(null);
+  const [reviewAlignment, setReviewAlignment] = useState(false);
   const metadataChanged = orientation !== photo.orientation_degrees ||
     scale !== (photo.scale_hint?.toString() ?? "") ||
     crop.x !== (photo.crop_x?.toString() ?? "") || crop.y !== (photo.crop_y?.toString() ?? "") ||
     crop.width !== (photo.crop_width?.toString() ?? "") || crop.height !== (photo.crop_height?.toString() ?? "");
-  const dirty = description !== (photo.description ?? photo.name) || metadataChanged;
+  const metadataDirty = description !== (photo.description ?? photo.name) || metadataChanged;
+  const dirty = metadataDirty || replacement !== null;
   useEffect(() => {
     const guard = (event: BeforeUnloadEvent) => { if (dirty) event.preventDefault(); };
     window.addEventListener("beforeunload", guard);
@@ -77,15 +82,27 @@ function PhotoEditor({ photo, canEdit, mappedCount, onClose, onRefresh }: {
     } finally { setBusy(false); }
   }
   async function remove() {
-    if (!window.confirm(`Remove "${photo.name}"? ${mappedCount} linked layout objects will also be removed. This cannot be undone.`)) return;
+    if (!window.confirm(`Remove the reference photo "${photo.name}"? Its ${mappedCount} layout objects, wiring and calibration will be kept on the installation canvas. Use Replace photo to change only the image.`)) return;
     setBusy(true); setError(null);
     try { await deleteInstallationPhoto(photo); await onRefresh(); onClose(); }
     catch (failure) { setError(failure instanceof Error ? failure.message : "The photo could not be removed."); }
     finally { setBusy(false); }
   }
+  async function replace() {
+    if (!replacement || !reviewAlignment) return;
+    setBusy(true); setError(null);
+    try {
+      await replaceInstallationPhoto(photo, replacement);
+      await onRefresh(); onClose();
+    } catch (failure) {
+      setError(failure instanceof ApiError && failure.status === 409
+        ? "This photo changed. Close, refresh photos, then review the replacement again."
+        : failure instanceof Error ? failure.message : "Photo replacement failed.");
+    } finally { setBusy(false); }
+  }
   return <DetailsDialog title="Photo details" onClose={close}>
     <form onSubmit={(event) => { event.preventDefault(); void save(); }}>
-      <fieldset disabled={busy || !canEdit}>
+      <fieldset disabled={busy || !canEdit || replacement !== null}>
         <label>Photo description<input autoFocus required maxLength={200} value={description} onChange={(event) => setDescription(event.target.value)} /></label>
         <small>Describe what this photo shows or how you use it. Existing view identities and mappings are retained.</small>
         <details><summary>Image and calibration details</summary>
@@ -98,12 +115,28 @@ function PhotoEditor({ photo, canEdit, mappedCount, onClose, onRefresh }: {
           <p>Crop values use the original image's normalized coordinates. Set all four or leave all blank.</p>
           {(["x", "y", "width", "height"] as const).map((field) => <label key={field}>Crop {field}<input type="number" min={0} max={1} step="any" value={crop[field]} onChange={(event) => setCrop({ ...crop, [field]: event.target.value })} /></label>)}
         </details>
-        {canEdit && <button className="primary-button" disabled={!dirty || !description.trim()}>{busy ? "Saving…" : "Save photo"}</button>}
+        {canEdit && <button className="primary-button" disabled={!metadataDirty || !description.trim()}>{busy ? "Saving…" : "Save photo"}</button>}
       </fieldset>
       {error && <ErrorState title="Photo action failed" description={error} />}
     </form>
+    {canEdit && <section aria-label="Replace photo">
+      <h3>Replace photo</h3>
+      <p>Change only the image. Keep the photo identity and all {mappedCount} layout objects, wiring, calibration and view placements. A different camera angle may need alignment review; nothing is repositioned automatically.</p>
+      <fieldset disabled={busy || metadataChanged || description !== (photo.description ?? photo.name)}>
+        <label>Replacement photo<input ref={replacementInput} type="file" accept="image/jpeg,image/png,image/webp" onChange={(event) => {
+          setReplacement(event.target.files?.[0] ?? null); setReviewAlignment(false);
+        }} /></label>
+        <label><input type="checkbox" checked={reviewAlignment} onChange={(event) => setReviewAlignment(event.target.checked)} />I will review the new background alignment; geometry and calibration are not moved.</label>
+        <button type="button" className="primary-button" disabled={!replacement || !reviewAlignment} onClick={() => void replace()}>Replace photo, keep layout</button>
+        {replacement && <button type="button" onClick={() => {
+          setReplacement(null); setReviewAlignment(false);
+          if (replacementInput.current) replacementInput.current.value = "";
+        }}>Cancel photo replacement</button>}
+      </fieldset>
+      {(metadataChanged || description !== (photo.description ?? photo.name)) && <p>Save or discard description/calibration edits before replacing the image.</p>}
+    </section>}
     {canEdit && <details><summary>Remove photo</summary>
-      <p>Removing this photo also removes its {mappedCount} linked layout objects. Other photo views retain their own mappings.</p>
+      <p>Only this reference background is removed. Its {mappedCount} layout objects, wiring and calibration stay available without a photo. Geometry must be deleted explicitly in Layout.</p>
       <button type="button" className="danger-button" disabled={busy} onClick={() => void remove()}>Remove photo</button>
     </details>}
   </DetailsDialog>;

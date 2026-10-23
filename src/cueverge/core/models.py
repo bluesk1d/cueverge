@@ -339,13 +339,19 @@ class SceneDefinitionV2(SceneDefinitionBase):
             "starts, but its telemetry is diagnostic and does not drive scene time."
         )
     )
-    lighting: tuple[LightingOutputDefinition, ...] = Field(min_length=1)
+    lighting: tuple[LightingOutputDefinition, ...] = Field(
+        description=(
+            "Use [] for media-only scenes. At least one media or lighting output is required."
+        )
+    )
 
     @model_validator(mode="after")
     def validate_outputs(self) -> "SceneDefinitionV2":
         self._validate_common()
         output_ids = [output.id for output in self.media]
         output_ids.extend(output.id for output in self.lighting)
+        if not output_ids:
+            raise ValueError("scene must contain at least one media or lighting output")
         if len(output_ids) != len(set(output_ids)):
             raise ValueError("scene output IDs must be unique")
         media_ids = {output.id for output in self.media}
@@ -399,7 +405,7 @@ class LoadedLightingOutput(FrozenModel):
 class LoadedScene(FrozenModel):
     definition: SceneDefinition
     media_outputs: tuple[LoadedMediaOutput, ...]
-    lighting_outputs: tuple[LoadedLightingOutput, ...] = Field(min_length=1)
+    lighting_outputs: tuple[LoadedLightingOutput, ...]
     clock_source_id: str
     agent_id: str | None
     pixel_count: int

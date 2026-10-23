@@ -6806,7 +6806,7 @@ function IntegratedPhotoPreview({
             >
               <image
                 height="600"
-                href={installationPhotoUrl(photo.id)}
+                href={installationPhotoUrl(photo.id, photo.revision)}
                 preserveAspectRatio="none"
                 width="1000"
               />

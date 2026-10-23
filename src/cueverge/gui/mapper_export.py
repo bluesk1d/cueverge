@@ -144,10 +144,10 @@ class MapperExportService:
         with self._connect() as connection:
             ambiguous = connection.execute(
                 """
-                SELECT semantic_id, photo_id, GROUP_CONCAT(id) AS ids
+                SELECT semantic_id, coordinate_space_id, GROUP_CONCAT(id) AS ids
                 FROM installation_geometry
                 WHERE installation_id = ?
-                GROUP BY semantic_id, photo_id
+                GROUP BY semantic_id, coordinate_space_id
                 HAVING COUNT(*) > 1
                 """,
                 (installation_id,),
@@ -157,7 +157,7 @@ class MapperExportService:
                     code="ambiguous_semantic_geometry",
                     message=(
                         f"Semantic object {row['semantic_id']} has multiple instances "
-                        f"in photo {row['photo_id']}."
+                        f"in layout coordinate space {row['coordinate_space_id']}."
                     ),
                     object_ids=tuple(str(row["ids"]).split(",")),
                 )

@@ -24,6 +24,7 @@ const optionalScopes: { value: McpScope; label: string }[] = [
   { value: "live_operation", label: "Operate the loaded show (physical output; operator/admin)" },
   { value: "input_config", label: "Configure installation camera connections (administrator; real events can trigger shows)" },
   { value: "installation_edit", label: "Edit installation photo descriptions (installation author; does not grant device control)" },
+  { value: "photo_replace", label: "Replace reference photos using this project's image assets (keeps geometry; no device control)" },
 ];
 
 export function McpWorkspace({
@@ -58,6 +59,7 @@ export function McpWorkspace({
     live_operation: canOperate,
     input_config: canConfigureInputs,
     installation_edit: canConfigureInstallation,
+    photo_replace: canConfigureInstallation,
   };
 
   useEffect(() => {
@@ -69,7 +71,8 @@ export function McpWorkspace({
           (scope !== "activate" || canActivate) &&
           (scope !== "live_operation" || canOperate) &&
           (scope !== "input_config" || canConfigureInputs) &&
-          (scope !== "installation_edit" || canConfigureInstallation),
+          (scope !== "installation_edit" || canConfigureInstallation) &&
+          (scope !== "photo_replace" || canConfigureInstallation),
       ),
     );
   }, [canDesign, canPublish, canActivate, canOperate, canConfigureInputs, canConfigureInstallation]);

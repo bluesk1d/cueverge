@@ -4,14 +4,18 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from cueverge.gui.apply import ApplyRequest
 from cueverge.gui.contracts import (
+    AddSceneOutputRequest,
     ConfigureInputSourceRequest,
+    CreateSceneRequest,
     DeleteSceneRequest,
     DraftProject,
+    InstallationGeometryRequest,
     InteractionEditRequest,
     InteractionPreviewRequest,
     OperateActionRequest,
     OutputMonitorRequest,
     PhotoDescriptionRequest,
+    ReplaceInstallationPhotoRequest,
 )
 from cueverge.gui.spatial_effects import SpatialRipple
 
@@ -160,6 +164,28 @@ class SpatialMetadata(MetadataSchema):
 def authoring_schema() -> dict[str, Any]:
     """Describe known spatial metadata while retaining other GUI-owned metadata."""
     schema = DraftProject.model_json_schema()
+    schema["x-scene-authoring"] = {
+        "options_tool": "get_scene_authoring_options",
+        "create_tool": "create_scene",
+        "create_schema": CreateSceneRequest.model_json_schema(),
+        "add_output_tool": "add_scene_output",
+        "add_output_schema": AddSceneOutputRequest.model_json_schema(),
+        "read_scope": "read",
+        "write_scope": "direct_edit",
+        "requires_current_base_revision": True,
+        "media_only_scenes": True,
+        "requires_initial_output": True,
+        "new_lighting": "full-duration blackout cue",
+        "new_media": "unassigned; place an asset before publication",
+        "clock_preserved_unless_explicitly_changed": True,
+        "v1_upgrade": {"schema_version": 2, "media_id": "media", "lighting_id": "lighting"},
+        "resource_import": (
+            "Only selected bindings from the bound runtime installation; "
+            "never overwrite saved bindings."
+        ),
+        "creates_surface_composition": False,
+        "changes_live_playback": False,
+    }
     schema["x-scene-deletion"] = {
         "tool": "delete_scene",
         "schema": DeleteSceneRequest.model_json_schema(),
@@ -199,6 +225,13 @@ def authoring_schema() -> dict[str, Any]:
         "schema_usage": "Extract each nested schema as its own JSON Schema document.",
     }
     schema["x-installation-setup"] = {
+        "geometry_owner": "installation",
+        "photo_optional": True,
+        "geometry_schema": InstallationGeometryRequest.model_json_schema(),
+        "photo_removal": "detach_reference_preserve_geometry_wiring_and_calibration",
+        "replacement_tool": "replace_installation_photo",
+        "replacement_scope": "photo_replace",
+        "replacement_schema": ReplaceInstallationPhotoRequest.model_json_schema(),
         "read_tool": "get_installation_setup",
         "description_tool": "describe_installation_photo",
         "description_scope": "installation_edit",
