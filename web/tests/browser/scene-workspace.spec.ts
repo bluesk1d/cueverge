@@ -4,6 +4,11 @@ import baseline from "../../../tests/fixtures/usability-authoring.json" with { t
 import { demoInstallation, demoInstallations, demoRuntime, demoTopology, demoProjects } from "../../src/demo/overview-fixtures";
 import type { InstallationResource, ProjectDraftRecord } from "../../src/api";
 
+async function openShowScenes(page: Page) {
+  await page.getByRole("button", { name: "Open show Home Show" }).click();
+  await page.getByRole("group", { name: "Show workspace", exact: true }).getByRole("button", { name: "Scenes", exact: true }).click();
+}
+
 async function sceneRoutes(page: Page, readOnly = false, cueCount = 10) {
   const document = structuredClone(baseline);
   const output = document.scenes[0].lighting;
@@ -197,8 +202,29 @@ async function creationRoutes(page: Page) {
 async function openScenes(page: Page) {
   await page.goto("/");
   await page.getByRole("button", { name: "Shows", exact: true }).click();
-  await page.getByRole("button", { name: "Open show Home Show" }).click();
+  await openShowScenes(page);
 }
+
+test("object names reach effect targets and show navigation retains the explicit definition scope", async ({ page }) => {
+  const state = await sceneRoutes(page);
+  Object.assign(state.document.editor_metadata, { installation_object_details: [{
+    resource: "roofline.demo", kind: "fixture", id: "outline", name: "Porch outline", geometry_semantic_ids: [],
+  }] });
+  await page.route("**/installation-objects", (route) => route.fulfill({ json: {
+    project_id: state.project.id, project_name: state.project.name, revision: state.revision,
+    archived: false, installation_id: "demo-installation", layout_available: true,
+    resources: [], objects: [], geometry: [], editable_kinds: ["fixture", "path"],
+  } }));
+  await openScenes(page);
+  await page.getByRole("button", { name: "Edit effect sample-1", exact: true }).click();
+  await expect(page.getByRole("combobox", { name: "Target decorations" })
+    .getByRole("option", { name: "Porch outline · fixture" })).toHaveAttribute("value", "fixture:outline");
+  await page.getByRole("button", { name: "Manage installation objects" }).click();
+  await expect(page.getByRole("button", { name: "Objects", exact: true })).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByRole("combobox", { name: "Definitions from show" })).toHaveValue(state.project.id);
+  await expect(page.getByText("Working draft revision", { exact: false })).toBeVisible();
+  expect(state.saves).toHaveLength(0);
+});
 
 test("add a lighting scene, add its media output, and place an asset with revisioned persistence", async ({ page }) => {
   const state = await creationRoutes(page);
@@ -235,7 +261,7 @@ test("add a lighting scene, add its media output, and place an asset with revisi
   ]);
   await page.reload();
   await page.getByRole("button", { name: "Shows", exact: true }).click();
-  await page.getByRole("button", { name: "Open show Home Show" }).click();
+  await openShowScenes(page);
   await page.getByRole("button", { name: /^Halloween preshow/ }).click();
   await expect(page.getByRole("heading", { name: "Halloween preshow", exact: true })).toBeVisible();
   expect(state.document.scenes.at(-1)!.id).toBe(id);
@@ -314,7 +340,7 @@ test("library opens a scene directly and all 56 raw effects survive an isolated 
   await expect(page.getByRole("heading", { name: "Your shows" })).toBeVisible();
   await expect(page.getByRole("region", { name: "Collaboration" })).toHaveCount(0);
   await expect(page.getByLabel("Revision name", { exact: true })).toHaveCount(0);
-  await page.getByRole("button", { name: "Open show Home Show" }).click();
+  await openShowScenes(page);
   await expect(page.getByRole("heading", { name: "Original synthetic timeline" })).toBeVisible();
   await expect(page.getByRole("button", { name: /^Edit effect sample-/ })).toHaveCount(56);
   await expect(page.getByText("56 effects · whole scene fitted below")).toBeVisible();
@@ -347,7 +373,7 @@ test("invalid raw cue timing is explained and never saved", async ({ page }) => 
   const state = await sceneRoutes(page);
   await page.goto("/");
   await page.getByRole("button", { name: "Shows", exact: true }).click();
-  await page.getByRole("button", { name: "Open show Home Show" }).click();
+  await openShowScenes(page);
   await page.getByRole("spinbutton", { name: "Start (seconds)", exact: true }).fill("180");
   await expect(page.getByText(/sample-1: start and duration must fit inside the scene/)).toBeVisible();
   await expect(page.getByRole("button", { name: "Save scene" })).toBeDisabled();
@@ -362,7 +388,7 @@ test("scene deletion requires confirmation, persists, and protects the last scen
   state.document.scenes = state.document.scenes.slice(0, 2);
   await page.goto("/");
   await page.getByRole("button", { name: "Shows", exact: true }).click();
-  await page.getByRole("button", { name: "Open show Home Show" }).click();
+  await openShowScenes(page);
   const remove = page.getByRole("button", { name: "Delete scene", exact: true });
   page.once("dialog", (dialog) => dialog.dismiss());
   await remove.click();
@@ -383,7 +409,7 @@ test("scene deletion requires confirmation, persists, and protects the last scen
   await expect(page.getByText("Keep at least one scene in the show.")).toBeVisible();
   await page.reload();
   await page.getByRole("button", { name: "Shows", exact: true }).click();
-  await page.getByRole("button", { name: "Open show Home Show" }).click();
+  await openShowScenes(page);
   await expect(page.getByRole("heading", { name: "Original synthetic legacy sweep", exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: /^Original synthetic timeline/ })).toHaveCount(0);
 });
@@ -395,7 +421,7 @@ test(`failed scene deletion explains ${status} and preserves the selected scene`
   state.deletionError = "Scene is still used by: automatic program starting scene. Update these references first.";
   await page.goto("/");
   await page.getByRole("button", { name: "Shows", exact: true }).click();
-  await page.getByRole("button", { name: "Open show Home Show" }).click();
+  await openShowScenes(page);
   page.once("dialog", (dialog) => dialog.accept());
   await page.getByRole("button", { name: "Delete scene", exact: true }).click();
   await expect(page.getByRole("alert").filter({ hasText: status === 409
@@ -410,7 +436,7 @@ test("project permissions still protect editing when collaboration is closed", a
   const state = await sceneRoutes(page, true);
   await page.goto("/");
   await page.getByRole("button", { name: "Shows", exact: true }).click();
-  await page.getByRole("button", { name: "Open show Home Show" }).click();
+  await openShowScenes(page);
   await expect(page.getByRole("combobox", { name: "Effect", exact: true })).toBeDisabled();
   await expect(page.getByRole("spinbutton", { name: "Effect brightness (%)", exact: true })).toBeDisabled();
   await expect(page.getByRole("button", { name: "Save scene" })).toHaveCount(0);
@@ -426,7 +452,7 @@ test("scene selection is shared with the advanced timeline without silent edit l
   const state = await sceneRoutes(page);
   await page.goto("/");
   await page.getByRole("button", { name: "Shows", exact: true }).click();
-  await page.getByRole("button", { name: "Open show Home Show" }).click();
+  await openShowScenes(page);
   await page.getByRole("button", { name: /^Original synthetic legacy sweep/ }).click();
   await page.getByText("Advanced authoring and history", { exact: true }).click();
   await page.getByText("Timeline editor", { exact: true }).click();
@@ -448,7 +474,7 @@ test("slow preview frames are serialized and still reach the screen while playin
   state.previewDelay = 450;
   await page.goto("/");
   await page.getByRole("button", { name: "Shows", exact: true }).click();
-  await page.getByRole("button", { name: "Open show Home Show" }).click();
+  await openShowScenes(page);
   const preview = page.getByRole("region", { name: "Scene lighting preview" });
   await expect(preview.getByText(/Evaluated 0:00/)).toBeVisible();
   await page.getByRole("button", { name: "Play scene preview", exact: true }).click();
@@ -476,7 +502,7 @@ test("three-minute looping preview keeps whole-millisecond timestamps across com
   const state = await sceneRoutes(page);
   await page.goto("/");
   await page.getByRole("button", { name: "Shows", exact: true }).click();
-  await page.getByRole("button", { name: "Open show Home Show" }).click();
+  await openShowScenes(page);
   const preview = page.getByRole("region", { name: "Scene lighting preview" });
   await expect(preview.getByText(/Evaluated 0:00/)).toBeVisible();
   await page.getByLabel("Scene preview time (seconds)", { exact: true }).fill("179.999");
@@ -506,7 +532,7 @@ for (const width of [1280, 390]) {
     state.previewPixelCount = 600;
     await page.goto("/");
     await page.getByRole("button", { name: "Shows", exact: true }).click();
-    await page.getByRole("button", { name: "Open show Home Show" }).click();
+    await openShowScenes(page);
     const preview = page.getByRole("region", { name: "Scene lighting preview" });
     await expect(preview.getByText(/Evaluated 0:00/)).toBeVisible();
     const strip = preview.getByRole("region", { name: "LED colors in pixel address order" });
@@ -553,7 +579,7 @@ test("small valid percentages survive unrelated edits and zero output limit is r
   output[0].timeline[6].brightness = 0.14;
   await page.goto("/");
   await page.getByRole("button", { name: "Shows", exact: true }).click();
-  await page.getByRole("button", { name: "Open show Home Show" }).click();
+  await openShowScenes(page);
   await page.getByRole("button", { name: "Edit effect sample-7", exact: true }).click();
   await expect(page.getByRole("spinbutton", { name: "Effect brightness (%)", exact: true })).toHaveValue("14");
   await page.getByRole("spinbutton", { name: "Effect brightness (%)", exact: true }).fill("50");
@@ -618,7 +644,7 @@ for (const viewport of [1280, 390]) {
       await mappedPhotoRoutes(page, width, height);
       await page.goto("/");
       await page.getByRole("button", { name: "Shows", exact: true }).click();
-      await page.getByRole("button", { name: "Open show Home Show" }).click();
+      await openShowScenes(page);
       const photo = page.locator(".scene-photo");
       await expect(photo.locator("circle").first()).toBeVisible();
       const difference = await photo.evaluate((element, dimensions) => {
@@ -643,7 +669,7 @@ test("night visualization keeps off LEDs transparent and makes low output visibl
   const state = await mappedPhotoRoutes(page, 800, 600, [[0, 0, 0], [3, 0, 0], [26, 0, 0]]);
   await page.goto("/");
   await page.getByRole("button", { name: "Shows", exact: true }).click();
-  await page.getByRole("button", { name: "Open show Home Show" }).click();
+  await openShowScenes(page);
   const photo = page.locator(".scene-photo");
   await expect(photo.locator("circle")).toHaveCount(2);
   const style = await photo.locator("circle").first().evaluate((element) => ({
@@ -671,7 +697,7 @@ test("a failed preview photo keeps raw frames available and can be retried", asy
     : route.fallback());
   await page.goto("/");
   await page.getByRole("button", { name: "Shows", exact: true }).click();
-  await page.getByRole("button", { name: "Open show Home Show" }).click();
+  await openShowScenes(page);
   const preview = page.getByRole("region", { name: "Scene lighting preview", exact: true });
   await expect(preview.getByText("Photo unavailable", { exact: true })).toBeVisible();
   await expect(preview.getByText(/Evaluated 0:00/)).toBeVisible();

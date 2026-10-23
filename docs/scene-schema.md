@@ -88,6 +88,34 @@ pixel order for traveling effects. Each section can reverse its local wiring
 direction without changing the authoritative segment range. A target cannot
 repeat a segment, and every referenced segment must exist on the same output.
 
+The GUI exposes these definitions under **Installation > Objects**, scoped to an
+explicitly selected show's working draft. MCP exposes the same inventory and
+validated edits through `get_installation_objects` and `edit_installation_object`.
+Unplaced fixtures are valid and remain visible in both interfaces.
+
+Friendly names and optional layout associations are editor metadata, not extra
+fields in `installation.json`. The show draft stores
+`editor_metadata.installation_object_details` as a list of:
+
+```json
+{
+  "resource": "roofline",
+  "kind": "fixture",
+  "id": "mouth",
+  "name": "Talking mouth",
+  "geometry_semantic_ids": []
+}
+```
+
+The tuple `(resource, kind, id)` identifies a logical object; geometry links use
+installation semantic IDs so linked photo views retain their identity. Member
+geometry on the same output is discovered by matching exact segment pixel
+ranges. Links and names do not alter runtime addressing, segment order or
+precedence. They survive project export/import as editor metadata, while runtime
+packages retain the existing fixture/path schema. See the
+[object workflow](operator-guide.md#managing-fixtures-and-installation-objects)
+for placement and safe deletion.
+
 `segment_pulse` can target a segment, fixture, or path:
 
 ```json
@@ -478,6 +506,11 @@ director; without one, the active scene is held and status reports
 `scene_selector_unavailable`.
 
 ## Show programming
+
+The browser **Show plan** and MCP `get_show_plan`/`update_show_plan` present this
+program and each scene's completion in plain language: the default pool is the
+"shuffle list" and completion policies are "When it ends" choices. See
+[Show plan authoring](operations.md#show-plan-authoring).
 
 An optional `program.json` defines continuous scene selection:
 

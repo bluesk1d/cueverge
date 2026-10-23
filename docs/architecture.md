@@ -2,6 +2,19 @@
 
 ## Authority
 
+Author-facing REST/MCP capabilities require an equivalent discoverable UI
+workflow, sharing validation, permissions and revision boundaries. Objects
+created through any interface must be inspectable and editable through the
+others, including objects without geometry. Intentionally headless/operator-only
+exceptions must be documented and verified.
+
+Logical LED fixtures and ordered paths are show-draft resource definitions.
+The installation object inventory joins those definitions with installation-owned
+geometry without merging ownership: member geometry is identified by output and
+pixel range, and optional show-owned semantic links reference existing geometry.
+Definition edits never rewrite wiring, calibration or live playback. REST, MCP
+and the Objects UI use the same revisioned object-authoring service.
+
 The accepted [hobbyist authoring and handover decision](decisions/0016-lossless-hobbyist-authoring-and-runtime-handover.md)
 defines the usability implementation's preservation and status contracts and
 its input, apply, Preview, and monitoring gates. UP-01 establishes baselines and

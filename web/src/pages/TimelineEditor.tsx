@@ -117,6 +117,7 @@ type Composition = {
   local_time_offset_ms: number;
   children: string[];
   stage_lighting_surfaces: string[];
+  stage_projector_resources?: string[];
   safe_points_ms: number[];
   protected_intervals: { start_ms: number; end_ms: number }[];
   render_settings: {
@@ -207,6 +208,14 @@ type TransformLayer = {
   source_color_space: "srgb" | "bt709" | "linear_srgb" | null;
   scaling_behavior: "fit" | "fill" | "stretch" | "native" | null;
   keyframes: TransformKeyframe[];
+  corner_pin?: [number, number][] | null;
+  mask?: LayerMask | null;
+};
+
+type LayerMask = {
+  points: [number, number][];
+  feather: number;
+  invert: boolean;
 };
 
 type EditorialAudioSource = {
@@ -517,7 +526,7 @@ export function TimelineEditor({
     typeof draft.draft.editor_metadata.installation_id === "string"
       ? draft.draft.editor_metadata.installation_id
       : null;
-  const stageProjectorResources = (mapperExport?.projectors ?? []).flatMap(
+  const mappedProjectorResources = (mapperExport?.projectors ?? []).flatMap(
     (value) => {
       const projector = metadataRecord(value);
       return typeof projector.resource === "string"
@@ -525,6 +534,12 @@ export function TimelineEditor({
         : [];
     },
   );
+  const stageProjectorResources =
+    composition?.space_kind === "stage" && composition.stage_projector_resources
+      ? mappedProjectorResources.filter((resource) =>
+          composition.stage_projector_resources?.includes(resource),
+        )
+      : mappedProjectorResources;
   const completedRenderJobs = renderJobs.filter(
     (job) =>
       job.composition_id === composition?.id &&
@@ -1816,6 +1831,14 @@ export function TimelineEditor({
                 selectedTransformKeyframe.id,
                 (keyframe) => ({ ...keyframe, position }),
               );
+            }
+          }}
+          onCornerPinChange={(points) => {
+            if (selectedTransformLayer && canEdit) {
+              updateTransformLayer(selectedTransformLayer.id, (layer) => ({
+                ...layer,
+                corner_pin: points,
+              }));
             }
           }}
         />
@@ -3487,47 +3510,17 @@ export function TimelineEditor({
             <div className="timeline-render-jobs">
               <strong>Controller render jobs</strong>
               {composition.space_kind === "stage" && (
-                <fieldset aria-label="Installation overlay LED outputs">
-                  <legend>Installation-wide overlay</legend>
-                  <small>
-                    Projectors render the shared stage. Selected LED surfaces sample
-                    the same animation at their calibrated stage positions. Save the
-                    timeline before baking.
-                  </small>
-                  {(mapperExport?.lighting_surfaces ?? []).map((surface) => (
-                    <label key={surface.semantic_id}>
-                      <input
-                        type="checkbox"
-                        aria-label={`Include LED surface ${surface.semantic_id}`}
-                        disabled={!canEdit}
-                        checked={composition.stage_lighting_surfaces.includes(surface.semantic_id)}
-                        onChange={(event) => {
-                          const checked = event.target.checked;
-                          setCompositions((current) => ({
-                            ...current,
-                            [composition.id]: {
-                              ...current[composition.id],
-                              stage_lighting_surfaces: checked
-                                ? [...current[composition.id].stage_lighting_surfaces, surface.semantic_id]
-                                : current[composition.id].stage_lighting_surfaces.filter(
-                                    (id) => id !== surface.semantic_id,
-                                  ),
-                            },
-                          }));
-                        }}
-                      />
-                      {surface.semantic_id} · {surface.resource}
-                    </label>
-                  ))}
-                  {composition.stage_lighting_surfaces.length > 0 && (
-                    <small role="status">
-                      Bake produces projector videos and LED sequences together.
-                      Publish the package to include controller LED playback;
-                      client-group activation alone does not install LED sequences.
-                      Rehearse mixed-device latency before live use.
-                    </small>
-                  )}
-                </fieldset>
+                <StageOutputSelector
+                  composition={composition}
+                  mapperExport={mapperExport}
+                  canEdit={canEdit}
+                  onChange={(update) =>
+                    setCompositions((current) => ({
+                      ...current,
+                      [composition.id]: update(current[composition.id]),
+                    }))
+                  }
+                />
               )}
               {composition.space_kind === "stage" && (
                 <div className="timeline-sync-rehearsal">
@@ -4298,6 +4291,16 @@ export function TimelineEditor({
                 </select>
               </label>
             )}
+            {selectedTransformLayer.kind !== "audio" &&
+              composition?.space_kind === "stage" && (
+                <StageLayerShape
+                  layer={selectedTransformLayer}
+                  composition={composition}
+                  mapperExport={mapperExport}
+                  canEdit={canEdit}
+                  onChange={(update) => updateTransformLayer(selectedTransformLayer.id, update)}
+                />
+              )}
             <label>
               Layer duration
               <input
@@ -5264,11 +5267,15 @@ export function TimelineEditor({
             <select
               aria-label="New composition space"
               value={newCompositionSpace}
-              onChange={(event) =>
-                setNewCompositionSpace(
-                  event.target.value as Composition["space_kind"],
-                )
-              }
+              onChange={(event) => {
+                const space = event.target.value as Composition["space_kind"];
+                setNewCompositionSpace(space);
+                if (space === "stage" && mapperExport?.stage) {
+                  setNewCompositionWidth(roundStage(mapperExport.stage.width));
+                  setNewCompositionHeight(roundStage(mapperExport.stage.height));
+                  if (!newCompositionTarget) setNewCompositionTarget("shared-stage");
+                }
+              }}
             >
               <option value="projector_native">Projector native pixels</option>
               <option value="lighting_surface">Lighting surface local</option>
@@ -6343,6 +6350,372 @@ function LightingSurfaceCompositionPreview({
 }
 
 
+type StagePoint = [number, number];
+
+export function stageOutputPoints(
+  composition: Pick<Composition, "stage_projector_resources" | "stage_lighting_surfaces">,
+  mapperExport: InstallationMapperExport | null,
+): StagePoint[] {
+  const points: StagePoint[] = [];
+  for (const value of mapperExport?.projectors ?? []) {
+    const projector = metadataRecord(value);
+    if (
+      typeof projector.resource !== "string" ||
+      (composition.stage_projector_resources &&
+        !composition.stage_projector_resources.includes(projector.resource))
+    ) {
+      continue;
+    }
+    points.push(...projectorStageFootprint(projector));
+  }
+  for (const surface of mapperExport?.lighting_surfaces ?? []) {
+    if (!composition.stage_lighting_surfaces.includes(surface.semantic_id)) continue;
+    for (const pixel of surface.pixels ?? []) points.push([pixel.stage_x, pixel.stage_y]);
+  }
+  return points;
+}
+
+export function projectorStageFootprint(projector: Record<string, unknown>): StagePoint[] {
+  const matrix = projector.stage_homography;
+  if (Array.isArray(matrix) && matrix.length === 9 && matrix.every((item) => typeof item === "number")) {
+    const h = matrix as number[];
+    return ([[0, 0], [1, 0], [1, 1], [0, 1]] as StagePoint[]).map(([u, v]) => {
+      const w = h[6] * u + h[7] * v + h[8];
+      return [(h[0] * u + h[1] * v + h[2]) / w, (h[3] * u + h[4] * v + h[5]) / w];
+    });
+  }
+  const extent = projector.stage_extent;
+  if (Array.isArray(extent) && extent.length === 4 && extent.every((item) => typeof item === "number")) {
+    const [x, y, width, height] = extent as number[];
+    return [[x, y], [x + width, y], [x + width, y + height], [x, y + height]];
+  }
+  return [];
+}
+
+export function convexHull(points: StagePoint[]): StagePoint[] {
+  const sorted = [...points].sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  if (sorted.length < 3) return sorted;
+  const cross = (o: StagePoint, a: StagePoint, b: StagePoint) =>
+    (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+  const lower: StagePoint[] = [];
+  for (const point of sorted) {
+    while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], point) <= 0) lower.pop();
+    lower.push(point);
+  }
+  const upper: StagePoint[] = [];
+  for (const point of [...sorted].reverse()) {
+    while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], point) <= 0) upper.pop();
+    upper.push(point);
+  }
+  return [...lower.slice(0, -1), ...upper.slice(0, -1)];
+}
+
+export function isConvexQuad(points: StagePoint[]): boolean {
+  if (points.length !== 4) return false;
+  const crosses = points.map((point, index) => {
+    const next = points[(index + 1) % 4];
+    const after = points[(index + 2) % 4];
+    return (next[0] - point[0]) * (after[1] - next[1]) - (next[1] - point[1]) * (after[0] - next[0]);
+  });
+  return crosses.every((value) => value > 0) || crosses.every((value) => value < 0);
+}
+
+function boundsOf(points: StagePoint[]): [number, number, number, number] | null {
+  if (!points.length) return null;
+  const xs = points.map((point) => point[0]);
+  const ys = points.map((point) => point[1]);
+  return [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
+}
+
+function rectanglePoints([x0, y0, x1, y1]: [number, number, number, number]): StagePoint[] {
+  return [[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
+}
+
+function ellipsePoints([x0, y0, x1, y1]: [number, number, number, number], segments = 48): StagePoint[] {
+  const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2, rx = (x1 - x0) / 2, ry = (y1 - y0) / 2;
+  return Array.from({ length: segments }, (_, index) => {
+    const angle = (index / segments) * Math.PI * 2;
+    return [roundStage(cx + rx * Math.cos(angle)), roundStage(cy + ry * Math.sin(angle))] as StagePoint;
+  });
+}
+
+function StageLayerShape({
+  layer,
+  composition,
+  mapperExport,
+  canEdit,
+  onChange,
+}: {
+  layer: TransformLayer;
+  composition: Composition;
+  mapperExport: InstallationMapperExport | null;
+  canEdit: boolean;
+  onChange: (update: (layer: TransformLayer) => TransformLayer) => void;
+}) {
+  const outputs = stageOutputPoints(composition, mapperExport);
+  const outputBounds = boundsOf(outputs);
+  const compositionBounds: [number, number, number, number] = [0, 0, composition.width, composition.height];
+  const clamp = ([x0, y0, x1, y1]: [number, number, number, number]): [number, number, number, number] => [
+    Math.max(0, x0), Math.max(0, y0), Math.min(composition.width, x1), Math.min(composition.height, y1),
+  ];
+  const minimumSize = Math.max(composition.width, composition.height) * 0.05;
+  const padded = (bounds: [number, number, number, number]): [number, number, number, number] => {
+    const [x0, y0, x1, y1] = bounds;
+    const padX = Math.max(0, (minimumSize - (x1 - x0)) / 2);
+    const padY = Math.max(0, (minimumSize - (y1 - y0)) / 2);
+    return [x0 - padX, y0 - padY, x1 + padX, y1 + padY];
+  };
+  const fitBounds = outputBounds ? clamp(padded(outputBounds)) : compositionBounds;
+  const pinConvex = !layer.corner_pin || isConvexQuad(layer.corner_pin);
+  const maskBounds = boundsOf(layer.corner_pin ?? []) ?? fitBounds;
+  const maskKind = layer.mask ? "custom" : "none";
+  return (
+    <fieldset className="stage-layer-shape" aria-label="Shape on stage">
+      <legend>Shape on stage</legend>
+      <label>
+        <input
+          type="checkbox"
+          aria-label="Stretch to four corners"
+          disabled={!canEdit}
+          checked={Boolean(layer.corner_pin)}
+          onChange={(event) => {
+            const enabled = event.target.checked;
+            onChange((current) => {
+              const { corner_pin: _pin, ...rest } = current;
+              return enabled
+                ? { ...rest, corner_pin: rectanglePoints(fitBounds).map(([x, y]) => [roundStage(x), roundStage(y)]) }
+                : rest;
+            });
+          }}
+        />
+        Stretch to four corners
+      </label>
+      <small>
+        {layer.corner_pin
+          ? "Drag the corner handles on the stage preview. Position, scale and rotation keyframes are ignored; opacity and crop still animate."
+          : "Uses the position, scale and rotation keyframes."}
+      </small>
+      {!pinConvex && (
+        <small role="alert">
+          The corners cross or fold over. Drag them back into top-left, top-right,
+          bottom-right, bottom-left order before saving.
+        </small>
+      )}
+      <button
+        type="button"
+        disabled={!canEdit || !outputBounds}
+        title={outputBounds ? undefined : "Select projectors or LED outputs for this effect first."}
+        onClick={() =>
+          onChange((current) => ({
+            ...current,
+            corner_pin: rectanglePoints(fitBounds).map(([x, y]) => [roundStage(x), roundStage(y)]),
+          }))
+        }
+      >
+        Fit to selected outputs
+      </button>
+      <label>
+        Shape mask
+        <select
+          aria-label="Layer shape mask"
+          disabled={!canEdit}
+          value={maskKind}
+          onChange={(event) => {
+            const kind = event.target.value;
+            onChange((current) => {
+              const { mask: _mask, ...rest } = current;
+              const feather = current.mask?.feather ?? 0;
+              const invert = current.mask?.invert ?? false;
+              if (kind === "ellipse") return { ...rest, mask: { points: ellipsePoints(maskBounds), feather, invert } };
+              if (kind === "rectangle") return { ...rest, mask: { points: rectanglePoints(maskBounds), feather, invert } };
+              if (kind === "outputs") {
+                const hull = convexHull(outputs).map(([x, y]) => [roundStage(x), roundStage(y)] as StagePoint);
+                return hull.length >= 3 ? { ...rest, mask: { points: hull, feather, invert } } : rest;
+              }
+              return rest;
+            });
+          }}
+        >
+          <option value="none">No mask</option>
+          {maskKind === "custom" && <option value="custom">Current shape ({layer.mask?.points.length} points)</option>}
+          <option value="ellipse">Ellipse</option>
+          <option value="rectangle">Rectangle</option>
+          <option value="outputs" disabled={outputs.length < 3}>Outline of selected outputs</option>
+        </select>
+      </label>
+      {layer.mask && (
+        <>
+          <label>
+            Soft edge ({mapperExport?.stage?.unit ?? "stage units"})
+            <input
+              aria-label="Layer mask soft edge"
+              type="number"
+              min="0"
+              step="any"
+              disabled={!canEdit}
+              value={layer.mask.feather}
+              onChange={(event) => {
+                const feather = Math.max(0, Number(event.target.value) || 0);
+                onChange((current) => current.mask ? { ...current, mask: { ...current.mask, feather } } : current);
+              }}
+            />
+          </label>
+          <label>
+            <input
+              type="checkbox"
+              aria-label="Invert layer mask"
+              disabled={!canEdit}
+              checked={layer.mask.invert}
+              onChange={(event) => {
+                const invert = event.target.checked;
+                onChange((current) => current.mask ? { ...current, mask: { ...current.mask, invert } } : current);
+              }}
+            />
+            Show outside the mask instead
+          </label>
+        </>
+      )}
+    </fieldset>
+  );
+}
+
+function StageOutputSelector({
+  composition,
+  mapperExport,
+  canEdit,
+  onChange,
+}: {
+  composition: Composition;
+  mapperExport: InstallationMapperExport | null;
+  canEdit: boolean;
+  onChange: (update: (current: Composition) => Composition) => void;
+}) {
+  const projectors = (mapperExport?.projectors ?? []).flatMap((value) => {
+    const projector = metadataRecord(value);
+    return typeof projector.resource === "string" ? [projector.resource] : [];
+  });
+  const selectedProjectors = composition.stage_projector_resources ?? projectors;
+  const stage = mapperExport?.stage ?? null;
+  const sizeMismatch =
+    stage !== null &&
+    (Math.abs(composition.width - stage.width) > 1e-3 ||
+      Math.abs(composition.height - stage.height) > 1e-3);
+  return (
+    <fieldset className="stage-output-selector" aria-label="Outputs in this effect">
+      <legend>Outputs in this effect</legend>
+      <small>
+        Every selected projector and LED output shows its own part of this one stage
+        animation, in sync. Save the timeline before baking.
+      </small>
+      {stage === null && (
+        <small role="note">
+          The installation has no stage view yet. Choose one under Installation › Stage map so
+          outputs line up with the photo.
+        </small>
+      )}
+      {sizeMismatch && stage && (
+        <div className="stage-output-selector__mismatch" role="alert">
+          <span>
+            This composition is {roundStage(composition.width)} × {roundStage(composition.height)}{" "}
+            but the installation stage is {roundStage(stage.width)} × {roundStage(stage.height)}{" "}
+            {stage.unit}. LEDs outside the composition cannot be baked.
+          </span>
+          <button
+            type="button"
+            disabled={!canEdit}
+            onClick={() =>
+              onChange((current) => {
+                const [renderWidth, renderHeight] = suggestedStageRenderResolution(mapperExport);
+                return {
+                  ...current,
+                  width: roundStage(stage.width),
+                  height: roundStage(stage.height),
+                  render_settings: {
+                    ...current.render_settings,
+                    render_width: renderWidth,
+                    render_height: renderHeight,
+                  },
+                };
+              })
+            }
+          >
+            Match installation stage
+          </button>
+        </div>
+      )}
+      <div className="stage-output-selector__group" role="group" aria-label="Projectors in this effect">
+        <strong>Projectors</strong>
+        {projectors.length === 0 && <small>No projectors are mapped.</small>}
+        {projectors.map((resource) => {
+          const checked = selectedProjectors.includes(resource);
+          return (
+            <label key={resource}>
+              <input
+                type="checkbox"
+                aria-label={`Include projector ${resource}`}
+                disabled={!canEdit || (checked && selectedProjectors.length === 1)}
+                checked={checked}
+                onChange={(event) => {
+                  const include = event.target.checked;
+                  onChange((current) => {
+                    const base = current.stage_projector_resources ?? projectors;
+                    const next = include
+                      ? projectors.filter((item) => item === resource || base.includes(item))
+                      : base.filter((item) => item !== resource);
+                    const { stage_projector_resources: _omitted, ...rest } = current;
+                    return next.length === projectors.length
+                      ? rest
+                      : { ...rest, stage_projector_resources: next };
+                  });
+                }}
+              />
+              {resource}
+            </label>
+          );
+        })}
+      </div>
+      <div
+        className="stage-output-selector__group"
+        role="group"
+        aria-label="Installation overlay LED outputs"
+      >
+        <strong>LED outputs</strong>
+        {(mapperExport?.lighting_surfaces ?? []).length === 0 && <small>No LED outputs are mapped.</small>}
+        {(mapperExport?.lighting_surfaces ?? []).map((surface) => {
+          const label = (surface as { name?: string }).name ?? surface.semantic_id;
+          return (
+            <label key={surface.semantic_id}>
+              <input
+                type="checkbox"
+                aria-label={`Include LED surface ${surface.semantic_id}`}
+                disabled={!canEdit}
+                checked={composition.stage_lighting_surfaces.includes(surface.semantic_id)}
+                onChange={(event) => {
+                  const checked = event.target.checked;
+                  onChange((current) => ({
+                    ...current,
+                    stage_lighting_surfaces: checked
+                      ? [...current.stage_lighting_surfaces, surface.semantic_id]
+                      : current.stage_lighting_surfaces.filter((id) => id !== surface.semantic_id),
+                  }));
+                }}
+              />
+              {label} · {surface.resource}
+            </label>
+          );
+        })}
+        {composition.stage_lighting_surfaces.length > 0 && (
+          <small role="status">
+            Bake produces projector videos and LED sequences together. Publish the package to
+            include controller LED playback; client-group activation alone does not install LED
+            sequences. Rehearse mixed-device latency before live use.
+          </small>
+        )}
+      </div>
+    </fieldset>
+  );
+}
+
 function StageCompositionPreview({
   composition,
   compositions,
@@ -6356,6 +6729,7 @@ function StageCompositionPreview({
   snapMode,
   onSnapModeChange,
   onMoveKeyframe,
+  onCornerPinChange,
   timestampMs,
 }: {
   composition: Composition;
@@ -6370,8 +6744,13 @@ function StageCompositionPreview({
   snapMode: "none" | "landmarks" | "surfaces" | "all";
   onSnapModeChange: (mode: "none" | "landmarks" | "surfaces" | "all") => void;
   onMoveKeyframe: (position: [number, number]) => void;
+  onCornerPinChange: (points: [number, number][]) => void;
   timestampMs: number;
 }) {
+  const [showRenderedFrame, setShowRenderedFrame] = useState(true);
+  const [showCoverage, setShowCoverage] = useState(true);
+  const [draggingCorner, setDraggingCorner] = useState<number | null>(null);
+  const svgRef = useRef<SVGSVGElement>(null);
   const [lightingPreviews, setLightingPreviews] = useState<
     Record<string, LightingPreview>
   >({});
@@ -6428,7 +6807,7 @@ function StageCompositionPreview({
   }, [lightingCompositions, projectId, timestampMs]);
   useEffect(() => {
     let active = true;
-    getStageLightingPreview(projectId, composition.id, timestampMs)
+    getStageLightingPreview(projectId, composition.id, timestampMs, true)
       .then((preview) => {
         if (active) {
           setStageLightingPreview(preview);
@@ -6487,14 +6866,37 @@ function StageCompositionPreview({
     previewBySurface.set(surface.surface_semantic_id, surface);
     previewBySurface.set(surface.surface_resource, surface);
   }
-  const minimumX = coverage.minimum_x;
-  const minimumY = coverage.minimum_y;
-  const width = coverage.maximum_x - minimumX || composition.width;
-  const height = coverage.maximum_y - minimumY || composition.height;
+  const stage = mapperExport.stage ?? null;
+  const minimumX = stage ? 0 : coverage.minimum_x;
+  const minimumY = stage ? 0 : coverage.minimum_y;
+  const width = stage ? stage.width : coverage.maximum_x - minimumX || composition.width;
+  const height = stage ? stage.height : coverage.maximum_y - minimumY || composition.height;
+  const screenWidth = 800;
+  // Without a stage reference, keep the legacy stretched 2:1 frame.
+  const screenHeight = stage
+    ? Math.round(Math.min(1200, Math.max(160, (screenWidth * height) / width)))
+    : 400;
   const screenPoint = ([x, y]: [number, number]): [number, number] => [
-    ((x - minimumX) / width) * 800,
-    ((y - minimumY) / height) * 400,
+    ((x - minimumX) / width) * screenWidth,
+    ((y - minimumY) / height) * screenHeight,
   ];
+  const stagePointFromEvent = (clientX: number, clientY: number): [number, number] | null => {
+    const svg = svgRef.current;
+    const matrix = svg?.getScreenCTM();
+    if (!svg || !matrix) return null;
+    const local = new DOMPoint(clientX, clientY).matrixTransform(matrix.inverse());
+    return [
+      roundStage(minimumX + (local.x / screenWidth) * width),
+      roundStage(minimumY + (local.y / screenHeight) * height),
+    ];
+  };
+  const referencePhoto = stage?.reference_photo_id
+    ? photos.find((candidate) => candidate.id === stage.reference_photo_id)
+    : undefined;
+  const compositionTopLeft = screenPoint([0, 0]);
+  const compositionBottomRight = screenPoint([composition.width, composition.height]);
+  const cornerPin = selectedLayer?.corner_pin ?? null;
+  const layerMask = selectedLayer?.mask ?? null;
   const point = (value: [number, number]) => screenPoint(value).join(",");
   const keyframes = selectedLayer?.keyframes ?? [];
   const selectedIndex = selectedKeyframe
@@ -6556,19 +6958,56 @@ function StageCompositionPreview({
           <option value="all">Landmarks, surfaces, and seams</option>
         </select>
       </label>
+      <div className="stage-composition-preview__toggles">
+        <label>
+          <input
+            type="checkbox"
+            checked={showRenderedFrame}
+            onChange={(event) => setShowRenderedFrame(event.target.checked)}
+          />
+          Show rendered frame
+        </label>
+        <label>
+          <input
+            type="checkbox"
+            checked={showCoverage}
+            onChange={(event) => setShowCoverage(event.target.checked)}
+          />
+          Show projector coverage
+        </label>
+        {stage && (
+          <small>
+            Stage {roundStage(stage.width)} × {roundStage(stage.height)} {stage.unit}
+            {referencePhoto ? ` · seen from ${referencePhoto.description ?? referencePhoto.name}` : ""}
+          </small>
+        )}
+      </div>
       <svg
+        ref={svgRef}
         aria-label="Stage composition overlay"
         role="img"
-        viewBox="0 0 800 400"
+        viewBox={`0 0 ${screenWidth} ${screenHeight}`}
+        onPointerMove={(event) => {
+          if (draggingCorner === null || !cornerPin) return;
+          const next = stagePointFromEvent(event.clientX, event.clientY);
+          if (!next) return;
+          onCornerPinChange(
+            cornerPin.map((corner, index) => (index === draggingCorner ? next : corner)),
+          );
+        }}
+        onPointerUp={() => setDraggingCorner(null)}
+        onPointerCancel={() => setDraggingCorner(null)}
         onClick={(event) => {
-          if (!canEdit || !selectedKeyframe) {
+          if (!canEdit || !selectedKeyframe || cornerPin) {
             return;
           }
           const bounds = event.currentTarget.getBoundingClientRect();
-          const raw: [number, number] = [
-            minimumX + ((event.clientX - bounds.left) / bounds.width) * width,
-            minimumY + ((event.clientY - bounds.top) / bounds.height) * height,
-          ];
+          const raw: [number, number] = stage
+            ? stagePointFromEvent(event.clientX, event.clientY) ?? [minimumX, minimumY]
+            : [
+                minimumX + ((event.clientX - bounds.left) / bounds.width) * width,
+                minimumY + ((event.clientY - bounds.top) / bounds.height) * height,
+              ];
           const nearest = candidates
             .map((candidate) => ({
               ...candidate,
@@ -6583,13 +7022,44 @@ function StageCompositionPreview({
           );
         }}
       >
-        {coverage.regions.map((region, index) => (
-          <polygon
-            key={`${region.kind}:${index}`}
-            className={`stage-region stage-region--${region.kind}`}
-            points={region.points.map(point).join(" ")}
+        {referencePhoto && (
+          <image
+            className="stage-composition-photo"
+            href={installationPhotoUrl(referencePhoto.id, referencePhoto.revision)}
+            width={screenWidth}
+            height={screenHeight}
+            preserveAspectRatio="xMidYMid meet"
           />
-        ))}
+        )}
+        {showRenderedFrame && stageLightingPreview?.canvas_png_base64 && (
+          <image
+            aria-label="Rendered stage frame"
+            className="stage-composition-frame"
+            href={`data:image/png;base64,${stageLightingPreview.canvas_png_base64}`}
+            x={compositionTopLeft[0]}
+            y={compositionTopLeft[1]}
+            width={Math.max(1, compositionBottomRight[0] - compositionTopLeft[0])}
+            height={Math.max(1, compositionBottomRight[1] - compositionTopLeft[1])}
+            preserveAspectRatio="none"
+          />
+        )}
+        {showCoverage &&
+          coverage.regions.map((region, index) => (
+            <polygon
+              key={`${region.kind}:${index}`}
+              className={`stage-region stage-region--${region.kind}`}
+              points={region.points.map(point).join(" ")}
+            />
+          ))}
+        <rect
+          className="stage-composition-bounds"
+          x={compositionTopLeft[0]}
+          y={compositionTopLeft[1]}
+          width={Math.max(1, compositionBottomRight[0] - compositionTopLeft[0])}
+          height={Math.max(1, compositionBottomRight[1] - compositionTopLeft[1])}
+        >
+          <title>Composition area</title>
+        </rect>
         {mapperExport.zones.map((zone) => (
           <polygon
             key={zone.semantic_id}
@@ -6641,8 +7111,8 @@ function StageCompositionPreview({
                   className="stage-composition-pixel-footprint"
                   cx={center[0]}
                   cy={center[1]}
-                  rx={Math.max(4, (pixel.footprint_width / width) * 400)}
-                  ry={Math.max(4, (pixel.footprint_height / height) * 200)}
+                  rx={Math.max(4, (pixel.footprint_width / width) * (screenWidth / 2))}
+                  ry={Math.max(4, (pixel.footprint_height / height) * (screenHeight / 2))}
                 />
                 <circle
                   className="stage-composition-pixel"
@@ -6671,7 +7141,35 @@ function StageCompositionPreview({
             );
           });
         })}
-        {motionPath && (
+        {layerMask && (
+          <polygon
+            aria-label="Layer mask outline"
+            className={`stage-layer-mask${layerMask.invert ? " stage-layer-mask--inverted" : ""}`}
+            points={layerMask.points.map(point).join(" ")}
+          />
+        )}
+        {cornerPin && (
+          <g aria-label="Layer corner pin">
+            <polygon className="stage-layer-pin" points={cornerPin.map(point).join(" ")} />
+            {cornerPin.map((corner, index) => (
+              <circle
+                key={index}
+                aria-label={`${["Top left", "Top right", "Bottom right", "Bottom left"][index]} corner`}
+                className="stage-layer-pin-handle"
+                cx={screenPoint(corner)[0]}
+                cy={screenPoint(corner)[1]}
+                r="9"
+                onPointerDown={(event) => {
+                  if (!canEdit) return;
+                  event.stopPropagation();
+                  svgRef.current?.setPointerCapture(event.pointerId);
+                  setDraggingCorner(index);
+                }}
+              />
+            ))}
+          </g>
+        )}
+        {motionPath && !cornerPin && (
           <path className="stage-motion-path" d={motionPath}>
             <title>{selectedLayer?.name} motion path</title>
           </path>
@@ -7341,6 +7839,7 @@ function transformLayerMap(value: unknown): Record<string, TransformLayer[]> {
                           ? layer.scaling_behavior
                           : "fit",
                     keyframes,
+                    ...(kind !== "audio" ? layerGeometry(layer) : {}),
                   },
                 ]
               : [];
@@ -7348,6 +7847,36 @@ function transformLayerMap(value: unknown): Record<string, TransformLayer[]> {
         : [],
     ]),
   );
+}
+
+function pointPairs(value: unknown): [number, number][] {
+  return Array.isArray(value)
+    ? value.flatMap((point) =>
+        Array.isArray(point) &&
+        point.length === 2 &&
+        point.every((item) => typeof item === "number" && Number.isFinite(item))
+          ? [[point[0], point[1]] as [number, number]]
+          : [],
+      )
+    : [];
+}
+
+function layerGeometry(
+  layer: Record<string, unknown>,
+): Pick<TransformLayer, "corner_pin" | "mask"> {
+  const result: Pick<TransformLayer, "corner_pin" | "mask"> = {};
+  const pin = pointPairs(layer.corner_pin);
+  if (pin.length === 4) result.corner_pin = pin;
+  const mask = metadataRecord(layer.mask);
+  const maskPoints = pointPairs(mask.points);
+  if (maskPoints.length >= 3) {
+    result.mask = {
+      points: maskPoints,
+      feather: numberValue(mask.feather, 0),
+      invert: mask.invert === true,
+    };
+  }
+  return result;
 }
 
 function transformKeyframeArray(value: unknown): TransformKeyframe[] {
@@ -7992,6 +8521,10 @@ function compositionMap(value: unknown): Record<string, Composition> {
             ),
             children: stringArray(composition.children),
             stage_lighting_surfaces: stringArray(composition.stage_lighting_surfaces),
+            ...(Array.isArray(composition.stage_projector_resources) &&
+            composition.stage_projector_resources.length > 0
+              ? { stage_projector_resources: stringArray(composition.stage_projector_resources) }
+              : {}),
             safe_points_ms: numberArray(composition.safe_points_ms),
             protected_intervals: intervalArray(
               composition.protected_intervals,
@@ -8046,9 +8579,35 @@ function defaultRenderSettings(
   };
 }
 
+function roundStage(value: number): number {
+  return Math.round(value * 1000) / 1000;
+}
+
 function suggestedStageRenderResolution(
   mapperExport: InstallationMapperExport | null,
 ): [number, number] {
+  const stage = mapperExport?.stage;
+  if (stage) {
+    const ppu = Math.max(
+      1920 / stage.width,
+      ...(mapperExport?.projectors ?? []).flatMap((value) => {
+        const projector = metadataRecord(value);
+        const extent = projector.stage_extent;
+        return Array.isArray(extent) &&
+          typeof extent[2] === "number" &&
+          typeof extent[3] === "number" &&
+          typeof projector.native_width === "number" &&
+          typeof projector.native_height === "number"
+          ? [projector.native_width / extent[2], projector.native_height / extent[3]]
+          : [];
+      }),
+    );
+    const scale = Math.min(1, 3840 / (stage.width * ppu), 2160 / (stage.height * ppu));
+    return [
+      Math.max(2, 2 * Math.round((stage.width * ppu * scale) / 2)),
+      Math.max(2, 2 * Math.round((stage.height * ppu * scale) / 2)),
+    ];
+  }
   if (!mapperExport?.projectors.length) {
     return [1920, 1080];
   }

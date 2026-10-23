@@ -6,24 +6,30 @@ import {
 import { DetailsDialog } from "./DetailsDialog";
 import { ErrorState } from "./ui";
 
-export function InstallationPhotoCard({ photo, canEdit, onRefresh, onLayout, mappedCount }: {
+export function InstallationPhotoCard({ photo, canEdit, onRefresh, onLayout, mappedCount, isStageView = false, selected = false }: {
   photo: InstallationPhoto; canEdit: boolean; onRefresh: () => Promise<void>;
-  onLayout: () => void; mappedCount: number;
+  onLayout: () => void; mappedCount: number; isStageView?: boolean; selected?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [missing, setMissing] = useState(false);
   const [retry, setRetry] = useState(0);
-  return <article className="installation-photo-card">
-    <img alt={photo.description ?? photo.name} src={`${installationPhotoUrl(photo.id, photo.revision)}&retry=${retry}`}
-      style={{ transform: `rotate(${photo.orientation_degrees}deg)` }}
-      onError={() => setMissing(true)} onLoad={() => setMissing(false)} />
-    <strong>{photo.description ?? photo.name}</strong>
-    <small>{mappedCount ? `${mappedCount} mapped ${mappedCount === 1 ? "object" : "objects"}` : "Ready to arrange your lights and decorations"}</small>
+  return <article className={`installation-photo-card${selected ? " installation-photo-card--selected" : ""}`}
+    aria-current={selected ? "true" : undefined}>
+    <div className="installation-photo-card__thumb">
+      <img alt={photo.description ?? photo.name} src={`${installationPhotoUrl(photo.id, photo.revision)}&retry=${retry}`}
+        style={{ transform: `rotate(${photo.orientation_degrees}deg)` }}
+        onError={() => setMissing(true)} onLoad={() => setMissing(false)} />
+      {isStageView && <span className="installation-photo-card__badge">Stage view</span>}
+    </div>
+    <div className="installation-photo-card__body">
+      <strong>{photo.description ?? photo.name}</strong>
+      <small>{mappedCount ? `${mappedCount} mapped ${mappedCount === 1 ? "object" : "objects"}` : "Nothing arranged yet"}</small>
+    </div>
     {missing && <><p role="alert">This photo could not be loaded.</p><button onClick={() => setRetry((value) => value + 1)}>Retry photo</button></>}
-    <div className="setup-actions">
+    <div className="installation-photo-card__actions">
       <button type="button" className="primary-button" onClick={onLayout}>Open Layout</button>
-      {canEdit && <button type="button" onClick={() => setOpen(true)}>Replace photo</button>}
-      <button type="button" onClick={() => setOpen(true)}>{canEdit ? "Photo details" : "Photo information"}</button>
+      {canEdit && <button type="button" className="ghost-button" onClick={() => setOpen(true)}>Replace photo</button>}
+      <button type="button" className="ghost-button" onClick={() => setOpen(true)}>{canEdit ? "Photo details" : "Photo information"}</button>
     </div>
     {open && <PhotoEditor key={`${photo.id}:${photo.revision}`} photo={photo} canEdit={canEdit}
       mappedCount={mappedCount} onClose={() => setOpen(false)} onRefresh={onRefresh} />}

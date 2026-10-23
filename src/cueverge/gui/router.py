@@ -94,6 +94,9 @@ from cueverge.gui.contracts import (
     InstallationGeometryRequest,
     InstallationGeometryResponse,
     InstallationMapperExportResponse,
+    InstallationObjectDeleteRequest,
+    InstallationObjectEditRequest,
+    InstallationObjectInventory,
     InstallationPhotoResponse,
     InstallationResourceResponse,
     InstallationStatusResponse,
@@ -161,9 +164,12 @@ from cueverge.gui.contracts import (
     SetDeviceConnectionPolicyRequest,
     SetDeviceEnrollmentStateRequest,
     SetResourceAssignmentRequest,
+    ShowPlanEditRequest,
     SimulationRunResponse,
     SimulationScenarioResponse,
     StageCoverageResponse,
+    StageMapResponse,
+    StageReferenceRequest,
     StageRegionResponse,
     StartOutputTestRequest,
     StartTimingCalibrationRequest,
@@ -192,6 +198,10 @@ from cueverge.gui.installation_geometry import (
     InstallationGeometryConflictError,
     InstallationGeometryError,
     StoredInstallationGeometry,
+)
+from cueverge.gui.installation_objects import (
+    installation_object_inventory,
+    save_installation_object,
 )
 from cueverge.gui.installation_photos import (
     MAX_PHOTO_BYTES,
@@ -279,9 +289,15 @@ from cueverge.gui.scene_preview import (
     preview_project_scene,
 )
 from cueverge.gui.service import GuiServices
+from cueverge.gui.show_plan import ShowPlanError, apply_show_plan_edit, describe_show_plan
 from cueverge.gui.simulation_scenarios import (
     SimulationScenarioError,
     StoredSimulationScenario,
+)
+from cueverge.gui.stage_reference import (
+    StageReferenceConflictError,
+    StageReferenceError,
+    stage_map_response,
 )
 from cueverge.gui.stage_renderer import (
     preview_stage_composition_member,
@@ -1326,6 +1342,57 @@ def create_gui_router(services: GuiServices) -> APIRouter:
             return scene_authoring_options(services, project_id)
         except ProjectNotFoundError as error:
             raise HTTPException(status_code=404, detail={"code": "project_not_found"}) from error
+
+    @router.get(
+        "/projects/{project_id}/installation-objects",
+        response_model=InstallationObjectInventory,
+        dependencies=[project_reader],
+    )
+    def get_installation_objects(project_id: str) -> InstallationObjectInventory:
+        try:
+            return installation_object_inventory(services, project_id)
+        except ProjectNotFoundError as error:
+            raise HTTPException(status_code=404, detail={"code": "project_not_found"}) from error
+        except ValueError as error:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "installation_object_inventory_invalid", "message": str(error)},
+            ) from error
+
+    @router.post(
+        "/projects/{project_id}/installation-objects/{action}",
+        response_model=ProjectDraftResponse,
+    )
+    def edit_installation_object(
+        project_id: str,
+        action: Literal["create", "update", "delete"],
+        body: InstallationObjectEditRequest | InstallationObjectDeleteRequest,
+        response: Response,
+        identity: Annotated[AuthenticatedSession, project_designer],
+        if_match: Annotated[str | None, Header(alias="If-Match")] = None,
+    ) -> ProjectDraftResponse | JSONResponse:
+        expected_revision = _parse_if_match(if_match)
+        try:
+            revision = save_installation_object(
+                services,
+                project_id=project_id,
+                base_revision=expected_revision,
+                request=body,
+                action=action,
+                actor=identity.username,
+                role=identity.role,
+            )
+        except ProjectNotFoundError as error:
+            raise HTTPException(status_code=404, detail={"code": "project_not_found"}) from error
+        except ValueError as error:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "installation_object_invalid", "message": str(error)},
+            ) from error
+        except RevisionConflictError as error:
+            return _revision_conflict_response(error)
+        response.headers["ETag"] = _etag(revision.revision)
+        return _project_draft(revision)
 
     @router.post("/projects/{project_id}/scenes", response_model=ProjectDraftResponse)
     def create_scene(
@@ -2378,6 +2445,7 @@ def create_gui_router(services: GuiServices) -> APIRouter:
         project_id: str,
         composition_id: str,
         timestamp_ms: int,
+        include_canvas: bool = False,
     ) -> dict[str, object]:
         try:
             revision = services.repository.get_revision(project_id)
@@ -2414,6 +2482,7 @@ def create_gui_router(services: GuiServices) -> APIRouter:
                 assets=services.asset_upload,
                 mapper_export=mapper_export,
                 device_reported_scales=device_scales,
+                include_canvas=include_canvas,
             )
         except ProjectNotFoundError as error:
             raise HTTPException(
@@ -2618,6 +2687,41 @@ def create_gui_router(services: GuiServices) -> APIRouter:
         except (InteractionError, McpAuthoringError) as error:
             raise HTTPException(
                 422, detail={"code": "interaction_invalid", "message": str(error)}
+            ) from error
+        return _project_draft(updated)
+
+    @router.get("/projects/{project_id}/show-plan", dependencies=[project_reader])
+    def show_plan(project_id: str) -> dict[str, object]:
+        stored = services.repository.get_revision(project_id)
+        return {"source_revision": stored.revision, **describe_show_plan(stored.draft)}
+
+    @router.put("/projects/{project_id}/show-plan", response_model=ProjectDraftResponse)
+    def edit_show_plan(
+        project_id: str,
+        body: ShowPlanEditRequest,
+        identity: Annotated[AuthenticatedSession, project_designer],
+    ) -> ProjectDraftResponse:
+        stored = services.repository.get_revision(project_id)
+        if stored.revision != body.source_revision:
+            raise HTTPException(
+                409,
+                detail={
+                    "code": "revision_conflict",
+                    "message": "This show changed. Reload saved data before editing.",
+                },
+            )
+        try:
+            candidate = apply_show_plan_edit(stored.draft, body)
+            updated = services.mcp_authoring.update_project_draft(
+                project_id=project_id,
+                base_revision=stored.revision,
+                proposed_document=candidate.model_dump(mode="json"),
+                username=identity.username,
+                role=identity.role,
+            )
+        except (ShowPlanError, ValueError, McpAuthoringError) as error:
+            raise HTTPException(
+                422, detail={"code": "show_plan_invalid", "message": str(error)}
             ) from error
         return _project_draft(updated)
 
@@ -3656,6 +3760,103 @@ def create_gui_router(services: GuiServices) -> APIRouter:
                 for region in coverage.regions
             ),
         )
+
+    @router.get(
+        "/installations/{installation_id}/stage-reference",
+        response_model=StageMapResponse,
+        dependencies=[reader],
+    )
+    def stage_reference(installation_id: str, response: Response) -> StageMapResponse:
+        stage_map = services.stage_reference.status(installation_id)
+        if stage_map.reference is not None:
+            response.headers["ETag"] = _etag(stage_map.reference.revision)
+        return stage_map_response(stage_map)
+
+    @router.put(
+        "/installations/{installation_id}/stage-reference",
+        response_model=StageMapResponse,
+    )
+    def update_stage_reference(
+        installation_id: str,
+        body: StageReferenceRequest,
+        response: Response,
+        identity: Annotated[AuthenticatedSession, author],
+        if_match: Annotated[str | None, Header(alias="If-Match")] = None,
+    ) -> StageMapResponse | JSONResponse:
+        expected_revision = _parse_optional_if_match(if_match)
+        try:
+            reference = services.stage_reference.update(
+                installation_id=installation_id,
+                expected_revision=expected_revision,
+                photo_id=body.photo_id,
+                unit_label=body.unit_label,
+                stage_width=body.stage_width,
+                scale_points=(
+                    (
+                        (body.scale_points[0].x, body.scale_points[0].y),
+                        (body.scale_points[1].x, body.scale_points[1].y),
+                    )
+                    if body.scale_points is not None
+                    else None
+                ),
+                scale_distance=body.scale_distance,
+                actor=identity.username,
+                role=identity.role,
+                occurred_at=_now_iso(),
+            )
+        except StageReferenceConflictError as error:
+            return JSONResponse(
+                status_code=409,
+                content={
+                    "code": "stage_reference_conflict",
+                    "requested_revision": expected_revision,
+                    "current_revision": error.current_revision,
+                },
+            )
+        except StageReferenceError as error:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "stage_reference_invalid", "message": str(error)},
+            ) from error
+        response.headers["ETag"] = _etag(reference.revision)
+        return stage_map_response(services.stage_reference.status(installation_id))
+
+    @router.post(
+        "/installations/{installation_id}/stage-reference/apply",
+        response_model=StageMapResponse,
+    )
+    def apply_stage_reference(
+        installation_id: str,
+        response: Response,
+        identity: Annotated[AuthenticatedSession, author],
+        if_match: Annotated[str | None, Header(alias="If-Match")] = None,
+    ) -> StageMapResponse | JSONResponse:
+        expected_revision = _parse_if_match(if_match)
+        try:
+            stage_map = services.stage_reference.apply(
+                installation_id=installation_id,
+                expected_revision=expected_revision,
+                actor=identity.username,
+                role=identity.role,
+                occurred_at=_now_iso(),
+            )
+        except StageReferenceConflictError as error:
+            return JSONResponse(
+                status_code=409,
+                content={
+                    "code": "stage_reference_conflict",
+                    "requested_revision": expected_revision,
+                    "current_revision": error.current_revision,
+                },
+            )
+        except StageReferenceError as error:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "stage_reference_invalid", "message": str(error)},
+            ) from error
+        assert stage_map.reference is not None
+        response.headers["ETag"] = _etag(stage_map.reference.revision)
+        return stage_map_response(stage_map)
 
     @router.get(
         "/installations/{installation_id}/mapper-export",
@@ -5464,6 +5665,7 @@ def _projector_mapping(mapping: StoredProjectorMapping) -> ProjectorMappingRespo
         revision=mapping.revision,
         created_at=mapping.created_at,
         updated_at=mapping.updated_at,
+        stage_homography=mapping.stage_homography,
     )
 
 

@@ -94,7 +94,13 @@ def spatial_context(
         "schema_version": 1,
         "layout_digest": layout_digest(mapper),
         "coordinate_space": "stage",
-        "units": "installation units; do not assume metres or photo pixels",
+        "units": (
+            f"stage units ({_stage_unit(mapper)}); match stage composition width/height "
+            "to stage.width/height"
+            if mapper.get("stage")
+            else "installation units; do not assume metres or photo pixels"
+        ),
+        "stage": cast(JsonValue, mapper.get("stage")),
         "stage_bounds": _bounds(points),
         "surfaces": summaries,
         "projectors": projectors,
@@ -224,3 +230,9 @@ def _bounds(points: list[tuple[float, float]]) -> list[float] | None:
         max(x for x, _ in points),
         max(y for _, y in points),
     ]
+
+
+def _stage_unit(mapper: dict[str, object]) -> str:
+    stage = mapper.get("stage")
+    unit = stage.get("unit") if isinstance(stage, dict) else None
+    return unit if isinstance(unit, str) else "units"

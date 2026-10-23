@@ -1264,6 +1264,40 @@ class GuiRepository:
             )
 
         self._migrate_optional_geometry_photos()
+        self._migrate_stage_reference()
+
+    def _migrate_stage_reference(self) -> None:
+        with closing(self._connect()) as connection, connection:
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS installation_stage_references (
+                    installation_id TEXT PRIMARY KEY
+                        REFERENCES installations(id) ON DELETE CASCADE,
+                    photo_id TEXT REFERENCES installation_photos(id) ON DELETE SET NULL,
+                    units_per_canvas REAL NOT NULL CHECK (units_per_canvas > 0),
+                    unit_label TEXT NOT NULL
+                        CHECK (unit_label IN ('ft', 'm', 'in', 'cm', 'units')),
+                    scale_points_json TEXT,
+                    scale_distance REAL CHECK (scale_distance IS NULL OR scale_distance > 0),
+                    revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
+                    applied_at TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            mapping_columns = {
+                str(row["name"])
+                for row in connection.execute("PRAGMA table_info(projector_surface_mappings)")
+            }
+            if "stage_homography_json" not in mapping_columns:
+                connection.execute(
+                    "ALTER TABLE projector_surface_mappings ADD COLUMN stage_homography_json TEXT"
+                )
+            connection.execute(
+                "INSERT OR IGNORE INTO schema_migrations(version,applied_at) "
+                "VALUES (42,strftime('%Y-%m-%dT%H:%M:%fZ','now'))"
+            )
 
     def _migrate_optional_geometry_photos(self) -> None:
         with closing(self._connect()) as connection:

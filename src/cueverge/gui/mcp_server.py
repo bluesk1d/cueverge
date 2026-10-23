@@ -35,6 +35,8 @@ from cueverge.gui.contracts import (
     CreateSceneRequest,
     DeleteSceneRequest,
     DraftProject,
+    InstallationObjectDeleteRequest,
+    InstallationObjectEditRequest,
     InteractionEditRequest,
     InteractionPreviewRequest,
     OperateActionRequest,
@@ -43,10 +45,16 @@ from cueverge.gui.contracts import (
     ReplaceInstallationPhotoRequest,
     Role,
     SceneLightingPreviewRequest,
+    ShowPlanEditRequest,
+    StageReferenceRequest,
     UpdateRevisionReleaseRequest,
 )
 from cueverge.gui.device_session import DeviceSessionError
 from cueverge.gui.input_sources import InputSourceError
+from cueverge.gui.installation_objects import (
+    installation_object_inventory,
+    save_installation_object,
+)
 from cueverge.gui.installation_photos import MAX_PHOTO_BYTES, InstallationPhotoError
 from cueverge.gui.interaction_preview import preview_interactions
 from cueverge.gui.interactions import (
@@ -78,6 +86,7 @@ from cueverge.gui.scene_authoring import delete_scene as delete_draft_scene
 from cueverge.gui.scene_authoring import save_scene_edit, scene_authoring_options
 from cueverge.gui.scene_preview import ScenePreviewError, preview_project_scene
 from cueverge.gui.service import GuiServices
+from cueverge.gui.show_plan import ShowPlanError, apply_show_plan_edit, describe_show_plan
 from cueverge.gui.spatial_authoring import (
     layout_digest,
     lighting_preview_png,
@@ -85,6 +94,11 @@ from cueverge.gui.spatial_authoring import (
     spatial_context,
 )
 from cueverge.gui.spatial_effects import SpatialRipple, spatial_effect_catalog
+from cueverge.gui.stage_reference import (
+    StageReferenceConflictError,
+    StageReferenceError,
+    stage_map_response,
+)
 from cueverge.gui.stage_renderer import (
     preview_stage_composition_member,
     preview_stage_lighting_samples,
@@ -510,6 +524,89 @@ def create_mcp_app(services: GuiServices) -> Starlette:
         )
 
     @server.tool()
+    def get_stage_map() -> dict[str, JsonValue]:
+        """Read the stage reference view, scale and per-object shared-stage placement.
+
+        Requires read and this runtime's installation binding. Status is placed,
+        needs_update (reference view drawing differs from saved stage data), manual
+        (stage data not derived from the reference view) or unplaced. Read-only.
+        """
+        input_installation_token(McpScope.READ)
+        installation = services.repository.get_runtime_installation()
+        return _bounded_result(
+            {
+                **stage_map_response(services.stage_reference.status(installation.id)).model_dump(
+                    mode="json"
+                ),
+                "hardware_commands_sent": False,
+            }
+        )
+
+    @server.tool()
+    def update_stage_reference(
+        request: dict[str, JsonValue],
+        source_revision: int | None = None,
+        apply: bool = True,
+    ) -> dict[str, JsonValue]:
+        """Choose the stage reference photo view and scale, then optionally re-derive placement.
+
+        Requires explicit installation_edit, an installation author role and the
+        runtime installation binding. source_revision is the current stage reference
+        revision (omit only when none exists). apply=True rewrites stage points, LED
+        stage transforms and projector stage homographies for objects drawn on the
+        reference view; photo calibration, wiring and native pixels are unchanged.
+        Sends no hardware commands. Re-read with get_stage_map on conflict.
+        """
+        token = input_installation_token(McpScope.INSTALLATION_EDIT)
+        installation = services.repository.get_runtime_installation()
+        role = _token_role(services, token)
+        try:
+            parsed = StageReferenceRequest.model_validate(request)
+            reference = services.stage_reference.update(
+                installation_id=installation.id,
+                expected_revision=source_revision,
+                photo_id=parsed.photo_id,
+                unit_label=parsed.unit_label,
+                stage_width=parsed.stage_width,
+                scale_points=(
+                    (
+                        (parsed.scale_points[0].x, parsed.scale_points[0].y),
+                        (parsed.scale_points[1].x, parsed.scale_points[1].y),
+                    )
+                    if parsed.scale_points is not None
+                    else None
+                ),
+                scale_distance=parsed.scale_distance,
+                actor=token.username,
+                role=role,
+                occurred_at=_now_iso(),
+            )
+            stage_map = (
+                services.stage_reference.apply(
+                    installation_id=installation.id,
+                    expected_revision=reference.revision,
+                    actor=token.username,
+                    role=role,
+                    occurred_at=_now_iso(),
+                )
+                if apply
+                else services.stage_reference.status(installation.id)
+            )
+        except StageReferenceConflictError as error:
+            raise ToolError(
+                f"Stage reference revision conflict; current revision {error.current_revision}"
+            ) from error
+        except (ValidationError, StageReferenceError) as error:
+            raise ToolError(str(error)) from error
+        return _bounded_result(
+            {
+                **stage_map_response(stage_map).model_dump(mode="json"),
+                "applied": apply,
+                "hardware_commands_sent": False,
+            }
+        )
+
+    @server.tool()
     def get_input_source() -> dict[str, JsonValue]:
         """Read secret-free Frigate/MQTT settings, connection and event/visitor health.
 
@@ -635,6 +732,67 @@ def create_mcp_app(services: GuiServices) -> Starlette:
             return scene_authoring_options(services, token.project_id).model_dump(mode="json")
         except ProjectNotFoundError as error:
             raise ToolError(str(error)) from error
+
+    @server.tool()
+    def get_installation_objects() -> dict[str, JsonValue]:
+        """List this show's logical fixtures, segments and ordered paths, including unplaced ones.
+
+        Requires read. Includes revision, membership/traversal, reference paths, layout
+        links and available geometry from the bound runtime installation. Definitions
+        belong to the working draft; geometry belongs to the installation. Segments
+        are inspected here, not repartitioned. Equivalent UI: Installation > Objects.
+        """
+        token = _authorize(services, McpScope.READ)
+        try:
+            return _bounded_result(
+                installation_object_inventory(services, token.project_id).model_dump(mode="json")
+            )
+        except (ProjectNotFoundError, ValueError) as error:
+            raise ToolError(str(error)) from error
+
+    @server.tool()
+    def edit_installation_object(
+        action: Literal["create", "update", "delete"],
+        base_revision: int,
+        request: InstallationObjectEditRequest | InstallationObjectDeleteRequest,
+    ) -> dict[str, JsonValue]:
+        """Create, update or safely delete a fixture/ordered path in this show's working draft.
+
+        Requires direct_edit and the current base_revision from get_installation_objects.
+        IDs stay stable; update cannot rename them. Validates unique known member segments,
+        reversal and fixture precedence. Deletion refuses effect/authoring references.
+        Optional geometry_semantic_ids link existing geometry in the bound installation;
+        clearing links or deleting a definition never deletes installation geometry.
+        Does not edit wiring, place new geometry, publish, apply or send hardware commands.
+        Equivalent UI: Installation > Objects > properties and layout links.
+        """
+        token = _authorize(services, McpScope.DIRECT_EDIT)
+        try:
+            updated = save_installation_object(
+                services,
+                project_id=token.project_id,
+                base_revision=base_revision,
+                request=request,
+                action=action,
+                actor=token.username,
+                role=_token_role(services, token),
+            )
+        except (ProjectNotFoundError, ValueError, RevisionConflictError) as error:
+            raise ToolError(str(error)) from error
+        _audit(
+            services,
+            token,
+            f"mcp.installation.object.{action}",
+            request.id,
+            "success",
+            details={"base_revision": base_revision, "created_revision": updated.revision},
+        )
+        return {
+            "project_id": token.project_id,
+            "revision": updated.revision,
+            "hardware_commands_sent": False,
+            "requires_human_approval": False,
+        }
 
     @server.tool()
     def create_scene(base_revision: int, request: CreateSceneRequest) -> dict[str, JsonValue]:
@@ -892,6 +1050,50 @@ def create_mcp_app(services: GuiServices) -> Starlette:
         }
 
     @server.tool()
+    def get_show_plan() -> dict[str, JsonValue]:
+        """Read how scenes are put together: starting scene, main-show order, scene
+        endings, shuffle list (default program pool), visitor responses and unused scenes.
+        Read scope. Plain-language projection of program/completion/opportunity data.
+        """
+        token = _authorize(services, McpScope.READ)
+        stored = services.repository.get_revision(token.project_id)
+        return _bounded_result(
+            {"source_revision": stored.revision, **describe_show_plan(stored.draft)}
+        )
+
+    @server.tool()
+    def update_show_plan(edit: dict[str, JsonValue]) -> dict[str, JsonValue]:
+        """Set the starting scene, one scene's ending, or the shuffle list.
+
+        Requires direct_edit and a current source_revision. Endings map to scene
+        completion: repeat=loop, play_next=transition_to, shuffle=select_next,
+        freeze=hold, stop=stop. Shuffle-list edits preserve existing cooldowns,
+        conditions and availability. Saves only: never publishes, applies or
+        commands hardware.
+        """
+        token = _authorize(services, McpScope.DIRECT_EDIT)
+        try:
+            request = ShowPlanEditRequest.model_validate(edit)
+            stored = services.repository.get_revision(token.project_id)
+            if stored.revision != request.source_revision:
+                raise ShowPlanError("Source revision changed; reload before editing")
+            candidate = apply_show_plan_edit(stored.draft, request)
+            updated = services.mcp_authoring.update_project_draft(
+                project_id=token.project_id,
+                base_revision=stored.revision,
+                proposed_document=candidate.model_dump(mode="json"),
+                username=token.username,
+                role=_token_role(services, token),
+            )
+        except (ValidationError, ValueError, McpAuthoringError) as error:
+            raise ToolError(str(error)) from error
+        return {
+            "project_id": token.project_id,
+            "revision": updated.revision,
+            "hardware_commands_sent": False,
+        }
+
+    @server.tool()
     async def preview_interaction_workflow(request: dict[str, JsonValue]) -> dict[str, JsonValue]:
         """Run a bounded isolated visitor test with production qualification/arbitration/rendering.
 
@@ -977,6 +1179,21 @@ def create_mcp_app(services: GuiServices) -> Starlette:
                     "description_authority": "legacy_photo_name",
                     "viewpoint_identity_preserved": True,
                     "geometry_editing": False,
+                    "stage_reference": {
+                        "read_tool": "get_stage_map",
+                        "update_tool": "update_stage_reference",
+                        "update_scope": "installation_edit",
+                        "request_schema": StageReferenceRequest.model_json_schema(),
+                        "statuses": ["placed", "needs_update", "manual", "unplaced"],
+                        "coordinates": (
+                            "stage = layout point x 1000 x units_per_canvas, "
+                            "y x 600 x units_per_canvas"
+                        ),
+                        "writes": (
+                            "geometry stage points, LED stage transforms and projector "
+                            "stage homographies only"
+                        ),
+                    },
                     "device_writes": "administrator_gui_only",
                     "safe_defaults": {"layout_tool": "select", "details": "contextual"},
                 },
@@ -995,6 +1212,22 @@ def create_mcp_app(services: GuiServices) -> Starlette:
                         "pixel_work": 20000000,
                     },
                     "preview_hardware_commands": False,
+                },
+                "show_plan": {
+                    "read_tool": "get_show_plan",
+                    "edit_tool": "update_show_plan",
+                    "edit_scope": "direct_edit",
+                    "edit_schema": ShowPlanEditRequest.model_json_schema(),
+                    "endings": {
+                        "repeat": "loop",
+                        "play_next": "transition_to",
+                        "shuffle": "select_next",
+                        "freeze": "hold",
+                        "stop": "stop",
+                    },
+                    "shuffle_list": "program default pool",
+                    "preview_tool": "preview_interaction_workflow",
+                    "hardware_commands_sent": False,
                 },
                 "input_source": {
                     "available_for_project": (
@@ -1018,9 +1251,11 @@ def create_mcp_app(services: GuiServices) -> Starlette:
                 },
                 "composition_spaces": ["lighting_surface", "projector_native", "stage"],
                 "features": {
+                    "installation_objects": True,
                     "spatial_layout": True,
                     "projector_geometry": True,
                     "shared_stage_overlays": True,
+                    "stage_reference": True,
                     "image_video_gif": True,
                     "mixed_output_bakes": True,
                     "controller_timed_scenes": True,
@@ -1050,6 +1285,10 @@ def create_mcp_app(services: GuiServices) -> Starlette:
                     "media_drift_correction": False,
                 },
                 "tools": {
+                    "installation_objects": "get_installation_objects",
+                    "stage_map": "get_stage_map",
+                    "update_stage_reference": "update_stage_reference",
+                    "edit_installation_object": "edit_installation_object",
                     "layout": "get_spatial_layout",
                     "schema": "get_authoring_schema",
                     "read_draft": "get_project_draft",

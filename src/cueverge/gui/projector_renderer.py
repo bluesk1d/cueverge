@@ -13,6 +13,7 @@ from cueverge.gui.frame_compositor import (
     AudioLayerBuffer,
     ByteImage,
     FloatImage,
+    LayerMask,
     PreparedVisualLayer,
     SourceColorSpace,
     TimedVideoFrame,
@@ -271,6 +272,8 @@ def prepare_media_layers(
                     layer.get("playback", "hold"),
                 ),
                 source_duration_ms=source_duration_ms,
+                corner_pin=_corner_pin(layer.get("corner_pin")),
+                mask=_layer_mask(layer.get("mask")),
             )
         )
     return PreparedMedia(
@@ -278,6 +281,34 @@ def prepare_media_layers(
         audio_layers=tuple(audio_layers),
         source_checksums=source_checksums,
     )
+
+
+def _corner_pin(value: object) -> tuple[tuple[float, float], ...] | None:
+    if value is None:
+        return None
+    if not isinstance(value, list) or len(value) != 4:
+        raise ProjectorRenderError("corner pin requires four [x, y] corners")
+    return tuple((_number(point[0]), _number(point[1])) for point in _point_list(value))
+
+
+def _layer_mask(value: object) -> LayerMask | None:
+    if value is None:
+        return None
+    mask = _mapping(value)
+    points = mask.get("points")
+    if not isinstance(points, list) or len(points) < 3:
+        raise ProjectorRenderError("layer mask requires at least three points")
+    return LayerMask(
+        points=tuple((_number(point[0]), _number(point[1])) for point in _point_list(points)),
+        feather=_number(mask.get("feather", 0)),
+        invert=mask.get("invert", False) is True,
+    )
+
+
+def _point_list(values: list[object]) -> list[list[object]]:
+    if not all(isinstance(point, list) and len(point) == 2 for point in values):
+        raise ProjectorRenderError("layer geometry points must be [x, y] pairs")
+    return cast(list[list[object]], values)
 
 
 def _mapping(value: object) -> dict[str, object]:

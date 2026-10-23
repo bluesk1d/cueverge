@@ -183,12 +183,16 @@ test("photo-first setup hides metadata and description editing preserves legacy 
 
 test("photo upload asks for one description and sends encoded metadata explicitly", async ({ page }) => {
   const state = await setup(page);
-  await page.getByLabel("Photo description", { exact: true }).fill("Front \u{1f383}");
-  await page.getByLabel("Photo file", { exact: true }).setInputFiles({
+  await page.getByRole("button", { name: "Add photo", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Add photo" });
+  await dialog.getByLabel("Photo file", { exact: true }).setInputFiles({
     name: "front-\u00e9.png", mimeType: "image/png", buffer: Buffer.from("original synthetic image"),
   });
+  await expect(dialog.getByLabel("Photo description", { exact: true })).toHaveValue("front-\u00e9");
+  await dialog.getByLabel("Photo description", { exact: true }).fill("Front \u{1f383}");
   expect(state.uploads).toHaveLength(0);
-  await page.getByRole("button", { name: "Add installation photo", exact: true }).click();
+  await dialog.getByRole("button", { name: "Add installation photo", exact: true }).click();
+  await expect(dialog).toHaveCount(0);
   await expect.poll(() => state.uploads.length).toBe(1);
   expect(decodeURIComponent(state.uploads[0]["x-photo-description"])).toBe("Front \u{1f383}");
   expect(state.uploads[0]["x-photo-metadata-encoding"]).toBe("uri");

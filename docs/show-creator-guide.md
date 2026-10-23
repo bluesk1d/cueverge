@@ -288,6 +288,11 @@ Each transition currently supports:
 
 ### Available Frigate observations
 
+To arrange scenes into a running show, use **Shows > Open show > Show plan**:
+choose the starting scene, what each scene does when it ends, and which scenes
+are in the shuffle list. See
+[Show plan](operator-guide.md#show-plan-putting-scenes-together).
+
 For everyday authoring, use **Shows > Open show > Visitor responses**. The guided
 editor writes the existing audience/opportunity/program/scene models in place,
 preserving response IDs and unedited fields. Human names use only

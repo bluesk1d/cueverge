@@ -10,12 +10,17 @@ from cueverge.gui.contracts import (
     DeleteSceneRequest,
     DraftProject,
     InstallationGeometryRequest,
+    InstallationObjectDeleteRequest,
+    InstallationObjectDetails,
+    InstallationObjectEditRequest,
     InteractionEditRequest,
     InteractionPreviewRequest,
     OperateActionRequest,
     OutputMonitorRequest,
     PhotoDescriptionRequest,
     ReplaceInstallationPhotoRequest,
+    ShowPlanEditRequest,
+    StageReferenceRequest,
 )
 from cueverge.gui.spatial_effects import SpatialRipple
 
@@ -88,6 +93,15 @@ class Composition(MetadataSchema):
         max_length=100,
         description="Unique mapped LED semantic IDs sampled from a shared-stage composition.",
     )
+    stage_projector_resources: list[str] | None = Field(
+        default=None,
+        min_length=1,
+        max_length=32,
+        description=(
+            "Projector resources taking part in a stage composition; omit to use every "
+            "mapped projector."
+        ),
+    )
     render_settings: RenderSettings | None = None
     lighting_settings: LightingSettings | None = None
 
@@ -120,6 +134,17 @@ class AudioMix(MetadataSchema):
     mix_order: int = Field(ge=0)
 
 
+class LayerMask(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    points: list[tuple[float, float]] = Field(
+        min_length=3,
+        max_length=128,
+        description="Polygon in the composition's logical coordinates (stage units for stage).",
+    )
+    feather: float = Field(default=0, ge=0, description="Inward soft edge in logical units.")
+    invert: bool = False
+
+
 class MediaLayer(MetadataSchema):
     layer_schema_version: Literal[1]
     id: str = Field(min_length=1)
@@ -144,6 +169,20 @@ class MediaLayer(MetadataSchema):
     keyframes: list[TransformKeyframe] = Field(
         description="Visual layers need keyframes; audio layers use [] and audio settings."
     )
+    corner_pin: list[tuple[float, float]] | None = Field(
+        default=None,
+        min_length=4,
+        max_length=4,
+        description=(
+            "Optional convex TL, TR, BR, BL corners in logical coordinates. When set, the "
+            "cropped source is perspective-mapped onto these corners and keyframe position, "
+            "scale, rotation and anchor are ignored; opacity and crop still animate."
+        ),
+    )
+    mask: LayerMask | None = Field(
+        default=None,
+        description="Optional static polygon mask limiting where a visual layer appears.",
+    )
 
 
 class TimelineTrack(MetadataSchema):
@@ -164,6 +203,27 @@ class SpatialMetadata(MetadataSchema):
 def authoring_schema() -> dict[str, Any]:
     """Describe known spatial metadata while retaining other GUI-owned metadata."""
     schema = DraftProject.model_json_schema()
+    schema["x-installation-objects"] = {
+        "read_tool": "get_installation_objects",
+        "edit_tool": "edit_installation_object",
+        "read_scope": "read",
+        "write_scope": "direct_edit",
+        "edit_schema": InstallationObjectEditRequest.model_json_schema(),
+        "delete_schema": InstallationObjectDeleteRequest.model_json_schema(),
+        "actions": ["create", "update", "delete"],
+        "editable_kinds": ["fixture", "path"],
+        "segment_partition_editing": False,
+        "requires_current_base_revision": True,
+        "definition_owner": "show_working_draft",
+        "geometry_owner": "installation",
+        "metadata_key": "installation_object_details",
+        "details_schema": InstallationObjectDetails.model_json_schema(),
+        "geometry_links": "semantic IDs; optional; never create or delete geometry",
+        "placement": "explicit links plus mapped member segments on the same output",
+        "blocks_referenced_deletion": True,
+        "ui": "Installation > Objects; choose the show explicitly",
+        "changes_live_playback": False,
+    }
     schema["x-scene-authoring"] = {
         "options_tool": "get_scene_authoring_options",
         "create_tool": "create_scene",
@@ -239,6 +299,13 @@ def authoring_schema() -> dict[str, Any]:
         "photo_authority": "name is the persisted description; viewpoint identity is preserved",
         "device_writes": "administrator GUI only; no added MCP device-control grant",
         "geometry_editing": False,
+        "stage_reference": {
+            "read_tool": "get_stage_map",
+            "update_tool": "update_stage_reference",
+            "update_scope": "installation_edit",
+            "request_schema": StageReferenceRequest.model_json_schema(),
+            "stage_coordinates": "layout x * 1000 * units_per_canvas, y * 600 * units_per_canvas",
+        },
     }
     schema["x-guided-interactions"] = {
         "read_tool": "get_interactions",
@@ -252,6 +319,23 @@ def authoring_schema() -> dict[str, Any]:
         "names_metadata": (
             "editor_metadata.interaction_names maps response IDs to human-readable names."
         ),
+        "preserves_source_models": True,
+    }
+    schema["x-show-plan"] = {
+        "read_tool": "get_show_plan",
+        "edit_tool": "update_show_plan",
+        "edit_scope": "direct_edit",
+        "edit_schema": ShowPlanEditRequest.model_json_schema(),
+        "schema_usage": "Extract each nested schema as its own JSON Schema document.",
+        "endings": {
+            "repeat": "loop",
+            "play_next": "transition_to",
+            "shuffle": "select_next",
+            "freeze": "hold",
+            "stop": "stop",
+        },
+        "shuffle_list": "program default pool; existing cooldowns/conditions are preserved",
+        "starting_scene_without_program": "creates a one-scene default pool named main",
         "preserves_source_models": True,
     }
     schema["x-installation-input-configuration"] = {

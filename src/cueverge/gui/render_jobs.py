@@ -17,10 +17,14 @@ from cueverge.gui.projector_overlap import (
     ProjectorOverlapService,
     StoredProjectorOverlap,
 )
-from cueverge.gui.projector_renderer import render_projector_composition
+from cueverge.gui.projector_renderer import ProjectorRenderError, render_projector_composition
 from cueverge.gui.repository import GuiRepository
 from cueverge.gui.stage_coverage import StageCoverage, StageCoverageService
-from cueverge.gui.stage_renderer import render_stage_composition, selected_stage_lighting_surfaces
+from cueverge.gui.stage_renderer import (
+    render_stage_composition,
+    selected_stage_lighting_surfaces,
+    selected_stage_projectors,
+)
 from cueverge.gui.sync_rehearsal import SyncAdmission, SyncRehearsalService
 
 MAX_RENDER_RESERVATION_BYTES = 10 * 1024 * 1024 * 1024
@@ -357,6 +361,7 @@ class RenderJobService:
                     raise RenderJobError("stage mapping changed after queuing; retry the bake")
                 mapper, coverage, overlaps, admission = self._stage_inputs(
                     revision.draft.editor_metadata,
+                    composition,
                 )
                 manifest = render_stage_composition(
                     project_id=job.project_id,
@@ -535,7 +540,7 @@ class RenderJobService:
                 ),
             }
         if space_kind == "stage":
-            mapper, coverage, overlaps, admission = self._stage_inputs(editor_metadata)
+            mapper, coverage, overlaps, admission = self._stage_inputs(editor_metadata, composition)
             selected_stage_lighting_surfaces(composition, mapper)
             if not admission.allowed:
                 raise RenderJobError(f"{admission.code}: {admission.message}")
@@ -592,6 +597,7 @@ class RenderJobService:
     def _stage_inputs(
         self,
         editor_metadata: Mapping[str, object],
+        composition: dict[str, object] | None = None,
     ) -> tuple[
         dict[str, object],
         StageCoverage,
@@ -611,11 +617,15 @@ class RenderJobService:
         mapper = self.mapper_export.export(installation_id)
         coverage = self.stage_coverage.analyze(installation_id)
         overlaps = self.projector_overlap.list(installation_id)
-        resources = tuple(
-            sorted(
-                _string(_mapping(item).get("resource")) for item in _list(mapper.get("projectors"))
+        try:
+            participating = (
+                selected_stage_projectors(composition, mapper)
+                if composition is not None
+                else tuple(_mapping(item) for item in _list(mapper.get("projectors")))
             )
-        )
+        except ProjectorRenderError as error:
+            raise RenderJobError(str(error)) from error
+        resources = tuple(sorted(_string(item.get("resource")) for item in participating))
         if len(resources) == 1:
             admission = SyncAdmission(
                 True,

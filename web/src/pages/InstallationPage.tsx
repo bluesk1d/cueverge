@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { connectionStatus } from "../status";
 import { InputSourcePanel } from "./InputSourcePanel";
+import { InstallationObjects } from "./InstallationObjects";
 import type { CSSProperties } from "react";
 import { OutputTraversalPreview } from "../components/OutputTraversalPreview";
 import { GeometryCanvas } from "../components/GeometryCanvas";
 import { InstallationPhotoCard } from "../components/InstallationPhotoCard";
 import { DetailsDialog } from "../components/DetailsDialog";
+import { StageMapPanel } from "../components/StageMapPanel";
 import { mapperDiagnostics } from "../components/mapper-diagnostics";
 import { geometryForBackground, photoPixelPoints } from "../components/pixel-traversal";
 import {
@@ -35,6 +37,7 @@ import {
   getProjectorOverlaps,
   getGeometrySuggestions,
   getStageCoverage,
+  getStageMap,
   installationPhotoUrl,
   InstallationPhoto,
   InstallationGeometry,
@@ -44,8 +47,10 @@ import {
   ProjectorOverlap,
   GeometrySuggestion,
   StageCoverage,
+  StageMap,
   MaintenancePreview,
   InstallationStatus,
+  ObjectLayoutSelection,
   MediaPlaybackCapability,
   PairingToken,
   removeResourceAssignment,
@@ -98,6 +103,7 @@ export function InstallationPage({
   onRefresh,
   onDirtyChange,
   initialSection = "photos",
+  initialProjectId = "",
 }: {
   installation: InstallationStatus | null;
   topology: Topology | null;
@@ -108,14 +114,18 @@ export function InstallationPage({
   session?: Session;
   onRefresh?: () => Promise<void> | void;
   onDirtyChange?: (dirty: boolean) => void;
-  initialSection?: "photos" | "devices" | "inputs";
+  initialSection?: "photos" | "objects" | "devices" | "inputs";
+  initialProjectId?: string;
 }) {
   const [section, setSection] = useState(initialSection);
   const [inputDirty, setInputDirty] = useState(false);
   const [layoutDirty, setLayoutDirty] = useState(false);
+  const [objectDirty, setObjectDirty] = useState(false);
+  const [objectProjectId, setObjectProjectId] = useState(initialProjectId);
+  const [layoutSelection, setLayoutSelection] = useState<ObjectLayoutSelection | null>(null);
   useEffect(() => {
-    onDirtyChange?.(inputDirty || layoutDirty);
-  }, [inputDirty, layoutDirty, onDirtyChange]);
+    onDirtyChange?.(inputDirty || layoutDirty || objectDirty);
+  }, [inputDirty, layoutDirty, objectDirty, onDirtyChange]);
   useEffect(() => () => onDirtyChange?.(false), [onDirtyChange]);
   const controller = topology?.nodes.find((node) => node.kind === "controller");
   const agents =
@@ -147,12 +157,15 @@ export function InstallationPage({
         }
       />
       <div className="setup-tabs" role="group" aria-label="Installation workspace">
-        {(["photos", "devices", "inputs"] as const).map((value) => <button key={value} aria-pressed={section === value} onClick={() => {
+        {(["photos", "objects", "devices", "inputs"] as const).map((value) => <button key={value} aria-pressed={section === value} onClick={() => {
           if (value === section) return;
-          if ((inputDirty || layoutDirty) && !window.confirm("Discard unsaved installation changes and change section?")) return;
-          setInputDirty(false); setLayoutDirty(false); setSection(value);
-        }}>{value === "photos" ? "Photos & Layout" : value === "devices" ? "Devices" : "Inputs & connections"}</button>)}
+          if ((inputDirty || layoutDirty || objectDirty) && !window.confirm("Discard unsaved installation changes and change section?")) return;
+          setInputDirty(false); setLayoutDirty(false); setObjectDirty(false); setSection(value);
+        }}>{value === "photos" ? "Photos & Layout" : value === "objects" ? "Objects" : value === "devices" ? "Devices" : "Inputs & connections"}</button>)}
       </div>
+      {section === "objects" && <InstallationObjects session={session} projectId={objectProjectId}
+        onProjectChange={setObjectProjectId} onDirtyChange={setObjectDirty}
+        onLayout={(selection) => { setLayoutSelection(selection); setSection("photos"); }} />}
       {section === "inputs" && <InputSourcePanel session={session} onDirtyChange={setInputDirty} />}
       {section === "devices" && <>
       <details className="setup-disclosure"><summary>Connection overview</summary>
@@ -261,6 +274,7 @@ export function InstallationPage({
       </>}
       {section === "photos" && installation && (
         <InstallationPhotos
+          selection={layoutSelection}
           installationId={installation.installation_id}
           projectorResources={installation.resources
             .filter((resource) => resource.kind === "media_agent")
@@ -284,6 +298,7 @@ export function InstallationPage({
 }
 
 function InstallationPhotos({
+  selection,
   installationId,
   projectorResources,
   pixelResources,
@@ -291,6 +306,7 @@ function InstallationPhotos({
   canPreview,
   onDirtyChange,
 }: {
+  selection: ObjectLayoutSelection | null;
   installationId: string;
   projectorResources: string[];
   pixelResources: InstallationStatus["resources"];
@@ -304,6 +320,9 @@ function InstallationPhotos({
   const [overlaps, setOverlaps] = useState<ProjectorOverlap[]>([]);
   const [suggestions, setSuggestions] = useState<GeometrySuggestion[]>([]);
   const [stageCoverage, setStageCoverage] = useState<StageCoverage | null>(null);
+  const [stageMap, setStageMap] = useState<StageMap | null>(null);
+  const [stageMapFailed, setStageMapFailed] = useState(false);
+  const [addingPhoto, setAddingPhoto] = useState(false);
   const [name, setName] = useState("");
   const [layoutPhotoId, setLayoutPhotoId] = useState<string | null>(null);
   const [layoutOpen, setLayoutOpen] = useState(false);
@@ -323,15 +342,25 @@ function InstallationPhotos({
   const [error, setError] = useState<string | null>(null);
   const [photoLoadFailed, setPhotoLoadFailed] = useState(false);
   const [photosLoaded, setPhotosLoaded] = useState(false);
+  const openedSelection = useRef<ObjectLayoutSelection | null>(null);
+  useEffect(() => {
+    if (!selection || !photosLoaded || openedSelection.current === selection) return;
+    openedSelection.current = selection;
+    const shape = geometry.find((item) => selection.geometryIds.includes(item.id));
+    setLayoutPhotoId(shape?.photo_id ?? "");
+    setLayoutVisited(true); setLayoutOpen(true);
+    setLayoutRequest((value) => value + 1);
+  }, [selection, geometry, photosLoaded]);
 
   async function load() {
-      const [loadedPhotos, loadedGeometry, loadedImages, loadedOverlaps, loadedSuggestions, loadedCoverage] = await Promise.allSettled([
+      const [loadedPhotos, loadedGeometry, loadedImages, loadedOverlaps, loadedSuggestions, loadedCoverage, loadedStageMap] = await Promise.allSettled([
         getInstallationPhotos(installationId),
         getInstallationGeometry(installationId),
         getImageAssetLibrary(),
         getProjectorOverlaps(installationId),
         getGeometrySuggestions(installationId),
         getStageCoverage(installationId),
+        getStageMap(installationId),
       ]);
       const failures: string[] = [];
       if (loadedPhotos.status === "fulfilled") { setPhotos(loadedPhotos.value); setPhotosLoaded(true); setPhotoLoadFailed(false); }
@@ -346,6 +375,8 @@ function InstallationPhotos({
       else failures.push("Layout suggestions are unavailable.");
       if (loadedCoverage.status === "fulfilled") setStageCoverage(loadedCoverage.value);
       else failures.push("Stage coverage details are unavailable.");
+      if (loadedStageMap.status === "fulfilled" && loadedStageMap.value && "counts" in loadedStageMap.value) { setStageMap(loadedStageMap.value); setStageMapFailed(false); }
+      else setStageMapFailed(true);
       setError(failures.join(" ") || null);
   }
 
@@ -365,6 +396,7 @@ function InstallationPhotos({
       setName("");
       setPhotoFile(null);
       if (photoFileInput.current) photoFileInput.current.value = "";
+      setAddingPhoto(false);
       await load();
     } catch {
       setError("Installation photo upload failed.");
@@ -377,48 +409,57 @@ function InstallationPhotos({
     <div className="installation-design-stack">
       <Panel
         title="Installation Photos"
-        description="Choose a photo of your display, then open Layout to arrange lights and decorations."
+        description="Pick the photo you want to arrange lights and decorations on. Photos are optional backgrounds."
       >
-        <button type="button" disabled={busy} onClick={() => void load()}>Refresh photos</button>
-        <button type="button" className="primary-button" onClick={() => {
-          if (layoutChanged && !window.confirm("Discard unsaved layout changes and open the installation canvas?")) return;
-          setLayoutPhotoId(""); setLayoutVisited(true); setLayoutOpen(true);
-          setLayoutRequest((value) => value + 1);
-        }}>Open layout without a photo</button>
+        <div className="setup-actions installation-photos__actions">
+          {canEdit && <button type="button" className="primary-button" onClick={() => setAddingPhoto(true)}>Add photo</button>}
+          <button type="button" onClick={() => {
+            if (layoutChanged && !window.confirm("Discard unsaved layout changes and open the installation canvas?")) return;
+            setLayoutPhotoId(""); setLayoutVisited(true); setLayoutOpen(true);
+            setLayoutRequest((value) => value + 1);
+          }}>Open layout without a photo</button>
+        </div>
         {layoutChanged && <p role="status">Save or cancel layout edits before changing an existing photo.</p>}
-        {canEdit && (
-          <form className="photo-upload" onSubmit={(event) => { event.preventDefault(); if (photoFile) void upload(photoFile); }}>
-            <label>Photo description
-            <input
-              aria-label="Photo description"
-              disabled={busy}
-              required maxLength={200}
-              placeholder="What does this photo show or help you arrange?"
-              value={name}
-              onChange={(event) => setName(event.target.value)}
-            />
-            </label>
-            <label className="file-button">
-              Choose photo
+        {canEdit && addingPhoto && (
+          <DetailsDialog title="Add photo" closeDisabled={busy} onClose={() => {
+            setAddingPhoto(false); setPhotoFile(null); setName("");
+          }}>
+            <form className="photo-upload" onSubmit={(event) => { event.preventDefault(); if (photoFile) void upload(photoFile); }}>
+              <label className="file-button">
+                Choose photo
+                <input
+                  ref={photoFileInput}
+                  aria-label="Photo file"
+                  accept="image/jpeg,image/png,image/webp"
+                  disabled={busy}
+                  type="file"
+                  onChange={(event) => {
+                    const file = event.target.files?.[0] ?? null;
+                    setPhotoFile(file);
+                    if (file && !name.trim()) setName(file.name.replace(/\.[^.]+$/, ""));
+                  }}
+                />
+              </label>
+              {photoFile && <small>{photoFile.name}</small>}
+              <label>Photo description
               <input
-                ref={photoFileInput}
-                aria-label="Photo file"
-                accept="image/jpeg,image/png,image/webp"
+                aria-label="Photo description"
                 disabled={busy}
-                type="file"
-                onChange={(event) => {
-                  const file = event.target.files?.[0];
-                  setPhotoFile(file ?? null);
-                }}
+                required maxLength={200}
+                placeholder="For example: House front from the sidewalk"
+                value={name}
+                onChange={(event) => setName(event.target.value)}
               />
-            </label>
-            <button type="submit" className="primary-button" disabled={busy || !photoFile || !name.trim()}>{busy ? "Adding…" : "Add installation photo"}</button>
-            {photoFile && <small>{photoFile.name}</small>}
-          </form>
+              </label>
+              <small>A photo taken from where visitors stand works best as the stage view for shared effects.</small>
+              <button type="submit" className="primary-button" disabled={busy || !photoFile || !name.trim()}>{busy ? "Adding…" : "Add installation photo"}</button>
+            </form>
+            {error && <p role="alert">{error}</p>}
+          </DetailsDialog>
         )}
-        {error && <><p role="alert">{error}</p><button onClick={() => void load()}>Retry installation data</button></>}
+        {error && !addingPhoto && <><p role="alert">{error}</p><button onClick={() => void load()}>Retry installation data</button></>}
         {photos.length ? (
-          <div className="installation-photos">
+          <div className="installation-photos installation-photos--strip">
             {photos.map((photo) => (
               <InstallationPhotoCard
                 key={photo.id}
@@ -426,6 +467,8 @@ function InstallationPhotos({
                 canEdit={canEdit && !layoutChanged}
                 onRefresh={load}
                 mappedCount={geometry.filter((item) => item.photo_id === photo.id).length}
+                isStageView={stageMap?.reference?.photo_id === photo.id}
+                selected={layoutOpen && layoutPhotoId === photo.id}
                 onLayout={() => {
                   if (layoutChanged && photo.id !== layoutPhotoId && !window.confirm("Discard unsaved layout changes and open another photo?")) return;
                   setLayoutPhotoId(photo.id); setLayoutVisited(true); setLayoutOpen(true); setLayoutRequest((value) => value + 1);
@@ -440,6 +483,16 @@ function InstallationPhotos({
           />
         )}
       </Panel>
+      {photosLoaded && photos.length > 0 && (
+        <StageMapPanel
+          installationId={installationId}
+          photos={photos}
+          stageMap={stageMap}
+          loadError={stageMapFailed}
+          canEdit={canEdit && !layoutChanged}
+          onChanged={load}
+        />
+      )}
       {photosLoaded && (
         <details ref={layout} className="installation-layout" open={layoutOpen}
           onToggle={(event) => {
@@ -453,6 +506,7 @@ function InstallationPhotos({
           description="Select a decoration or choose Add. Installation geometry and wiring are independent of optional photo backgrounds."
         >
           <GeometryMapper
+            selection={selection}
             installationId={installationId}
             projectorResources={projectorResources}
             pixelResources={pixelResources}
@@ -465,6 +519,7 @@ function InstallationPhotos({
             overlaps={overlaps}
             suggestions={suggestions}
             stageCoverage={stageCoverage}
+            stageMap={stageMap}
             canEdit={canEdit}
             canPreview={canPreview}
             onRefresh={load}
@@ -496,6 +551,7 @@ type SimulationPreviewMode =
   | "full_installation";
 
 function GeometryMapper({
+  selection,
   installationId,
   projectorResources,
   pixelResources,
@@ -505,6 +561,7 @@ function GeometryMapper({
   overlaps,
   suggestions,
   stageCoverage,
+  stageMap,
   canEdit,
   canPreview,
   onRefresh,
@@ -512,6 +569,7 @@ function GeometryMapper({
   openRequest,
   onDirtyChange,
 }: {
+  selection: ObjectLayoutSelection | null;
   installationId: string;
   projectorResources: string[];
   pixelResources: InstallationStatus["resources"];
@@ -521,6 +579,7 @@ function GeometryMapper({
   overlaps: ProjectorOverlap[];
   suggestions: GeometrySuggestion[];
   stageCoverage: StageCoverage | null;
+  stageMap: StageMap | null;
   canEdit: boolean;
   canPreview: boolean;
   onRefresh: () => Promise<void>;
@@ -566,6 +625,7 @@ function GeometryMapper({
   const [stagePoints, setStagePoints] = useState("");
   const [traversalPreview, setTraversalPreview] = useState(false);
   const [simulationOverlay, setSimulationOverlay] = useState(false);
+  const [coverageOverlay, setCoverageOverlay] = useState(false);
   const [simulationPreviewMode, setSimulationPreviewMode] =
     useState<SimulationPreviewMode>("full_installation");
   const [simulationTarget, setSimulationTarget] = useState("");
@@ -701,8 +761,11 @@ function GeometryMapper({
         candidate.id === secondaryPhotoId && candidate.id !== photo?.id,
     ) ??
     photos.find((candidate) => candidate.id !== photo?.id);
+  const highlightedSemantics = new Set(geometry.filter((item) =>
+    selection?.geometryIds.includes(item.id)).map((item) => `${item.kind}:${item.semantic_id}`));
+  const highlighted = (item: InstallationGeometry) => highlightedSemantics.has(`${item.kind}:${item.semantic_id}`);
   const visible = geometryForBackground(geometry, photo?.id ?? null)
-    .filter((item) => !item.hidden)
+    .filter((item) => !item.hidden || highlighted(item))
     .sort((left, right) => left.z_index - right.z_index);
   const semanticTargets = [...new Set(visible.map((item) => item.semantic_id))];
   const simulationGeometry = filterSimulationGeometry(
@@ -1210,6 +1273,17 @@ function GeometryMapper({
     }
   }
 
+  const stageReference = stageMap?.reference ?? null;
+  const coverageAvailable = Boolean(
+    photo &&
+      stageReference?.applied_at &&
+      stageReference.photo_id === photo.id &&
+      stageCoverage?.regions.some((region) => region.resources.length > 0),
+  );
+  const showCoverage = coverageOverlay && coverageAvailable && stageReference !== null;
+  const stageToCanvas = ([x, y]: [number, number]) =>
+    `${x / (stageReference?.units_per_canvas ?? 1)},${y / (stageReference?.units_per_canvas ?? 1)}`;
+
   return (
     <section className="geometry-mapper">
       <div className="geometry-mapper__tools">
@@ -1237,7 +1311,17 @@ function GeometryMapper({
           ))}
           </select>
         </label>
+        {coverageAvailable && (
+          <button
+            type="button"
+            aria-pressed={coverageOverlay}
+            onClick={() => setCoverageOverlay((current) => !current)}
+          >
+            {coverageOverlay ? "Hide projector coverage" : "Show projector coverage"}
+          </button>
+        )}
         <button
+          type="button"
           aria-pressed={simulationOverlay}
           onClick={() => setSimulationOverlay((current) => !current)}
         >
@@ -2535,122 +2619,6 @@ function GeometryMapper({
             </div>
           </>
         )}
-      {stageCoverage && stageCoverage.regions.length > 0 && (
-        <details className="setup-disclosure"><summary>Shared projector stage coverage (advanced)</summary>
-        <section className="stage-coverage">
-          <strong>Shared stage coverage</strong>
-          <small>
-            {(["covered", "overlap", "occluded", "uncovered"] as const)
-              .map(
-                (kind) =>
-                  `${kind}: ${
-                    stageCoverage.regions.filter((region) => region.kind === kind)
-                      .length
-                  }`,
-              )
-              .join(" · ")}
-          </small>
-          <div
-            aria-label="Projector stage contributions"
-            className="stage-contribution-legend"
-          >
-            {[
-              ...new Set(
-                stageCoverage.regions.flatMap((region) => region.resources),
-              ),
-            ].map((resource) => (
-              <span key={resource}>
-                {resource}:{" "}
-                {
-                  stageCoverage.regions.filter((region) =>
-                    region.resources.includes(resource),
-                  ).length
-                }{" "}
-                region(s)
-              </span>
-            ))}
-          </div>
-          <div aria-label="Stage coverage warnings">
-            {stageCoverage.regions
-              .filter((region) =>
-                ["overlap", "occluded", "uncovered"].includes(region.kind),
-              )
-              .map((region, index) => (
-                <small
-                  className="asset-diagnostic--warning"
-                  key={`${region.kind}:${index}`}
-                >
-                  {region.kind === "overlap"
-                    ? `Overlap contribution: ${region.resources.join(", ")}`
-                    : region.kind === "occluded"
-                      ? `Occluded stage region: ${region.resources.join(", ") || "no visible output"}`
-                      : "Uncovered stage region has no projector contribution"}
-                </small>
-              ))}
-          </div>
-          <svg
-            aria-label="Shared stage coverage preview"
-            viewBox="0 0 600 300"
-            role="img"
-          >
-            {stageCoverage.regions.map((region, index) => {
-              const width =
-                stageCoverage.maximum_x - stageCoverage.minimum_x || 1;
-              const height =
-                stageCoverage.maximum_y - stageCoverage.minimum_y || 1;
-              return (
-                <polygon
-                  key={`${region.kind}:${index}`}
-                  className={`stage-region stage-region--${region.kind}`}
-                  data-resources={region.resources.join(",")}
-                  points={region.points
-                    .map(
-                      ([x, y]) =>
-                        `${((x - stageCoverage.minimum_x) / width) * 600},${
-                          ((y - stageCoverage.minimum_y) / height) * 300
-                        }`,
-                    )
-                    .join(" ")}
-                >
-                  <title>
-                    {region.kind}: {region.resources.join(", ") || "none"}
-                  </title>
-                </polygon>
-              );
-            })}
-            {geometry
-              .filter(
-                (item) =>
-                  item.kind === "path" &&
-                  item.stage_points !== null &&
-                  item.stage_points.length >= 2,
-              )
-              .map((item) => {
-                const width =
-                  stageCoverage.maximum_x - stageCoverage.minimum_x || 1;
-                const height =
-                  stageCoverage.maximum_y - stageCoverage.minimum_y || 1;
-                return (
-                  <polyline
-                    className="stage-simulation-motion-path"
-                    key={item.id}
-                    points={item.stage_points!
-                      .map(
-                        ([x, y]) =>
-                          `${((x - stageCoverage.minimum_x) / width) * 600},${
-                            ((y - stageCoverage.minimum_y) / height) * 300
-                          }`,
-                      )
-                      .join(" ")}
-                  >
-                    <title>Stage motion path: {item.name}</title>
-                  </polyline>
-                );
-              })}
-          </svg>
-        </section>
-        </details>
-      )}
       {traversalPreview && kind === "pixel_segment" &&
         !allocationLoading && !allocationCheckError && selectedPixelOutput?.pixel_count != null &&
         selectedPixelOutput.pixel_count > 0 && (
@@ -2692,6 +2660,14 @@ function GeometryMapper({
                 </small>
               ))}
           </div>
+        )}
+        {showCoverage && (
+          <ul className="stage-coverage-legend" aria-label="Projector coverage key">
+            <li><span className="stage-coverage-swatch stage-region--covered" />One projector</li>
+            <li><span className="stage-coverage-swatch stage-region--overlap" />Projectors overlap (blend the seam)</li>
+            <li><span className="stage-coverage-swatch stage-region--occluded" />Blocked by a mask</li>
+            <li><span className="stage-coverage-swatch stage-region--uncovered" />Between projectors, no coverage</li>
+          </ul>
         )}
         <GeometryCanvas
           key={photo?.id ?? "installation-canvas"}
@@ -2746,6 +2722,19 @@ function GeometryMapper({
             href={installationPhotoUrl(photo.id, photo.revision)}
             preserveAspectRatio="xMidYMid meet"
           />}
+          {showCoverage && stageCoverage && (
+            <g className="stage-coverage-overlay" aria-label="Projector coverage">
+              {stageCoverage.regions.map((region, index) => (
+                <polygon
+                  key={`${region.kind}:${index}`}
+                  className={`stage-region stage-region--${region.kind}`}
+                  points={region.points.map(stageToCanvas).join(" ")}
+                >
+                  <title>{coverageLabel(region.kind, region.resources)}</title>
+                </polygon>
+              ))}
+            </g>
+          )}
           {simulationOverlay && photo && (
             <ProjectorSimulationOverlays
               photo={photo}
@@ -2754,7 +2743,8 @@ function GeometryMapper({
             />
           )}
           {(simulationOverlay ? simulationGeometry : visible).map((item) => (
-            <g key={item.id} data-layout-object={item.id} data-selected={editing?.id === item.id ? "true" : undefined}>
+            <g key={item.id} data-layout-object={item.id} data-selected={editing?.id === item.id ? "true" : undefined}
+              data-object-highlight={highlighted(item) ? "true" : undefined}>
             <GeometryShape
               geometry={item}
               simulation={simulationOverlay}
@@ -2925,9 +2915,12 @@ function GeometryMapper({
           ))}
         </ul>
       )}
+      {selection && (highlightedSemantics.size
+        ? <p role="status">Showing layout geometry for {selection.name}. Highlighted member segments do not require a separate fixture marker.</p>
+        : <p role="alert">Layout geometry for {selection.name} is no longer available. Return to Objects and refresh its placement links.</p>)}
       <ul className="geometry-list">
         {visible.map((item) => (
-          <li key={item.id}>
+          <li key={item.id} data-object-highlight={highlighted(item) ? "true" : undefined}>
             <span>
               <strong>{item.name}</strong>
               <small>
@@ -2948,7 +2941,7 @@ function GeometryMapper({
                     await onRefresh();
                   }}
                 >
-                  Remove
+                  Remove placement
                 </button>
               </>
             )}
@@ -3059,6 +3052,13 @@ function ProjectorWarpPreviews({
   );
 }
 
+
+function coverageLabel(kind: StageCoverage["regions"][number]["kind"], resources: string[]): string {
+  if (kind === "overlap") return `Overlap: ${resources.join(" and ")}`;
+  if (kind === "occluded") return `Blocked for ${resources.join(", ") || "all projectors"}`;
+  if (kind === "uncovered") return "No projector covers this area";
+  return `Covered by ${resources.join(", ")}`;
+}
 
 function GeometryShape({
   geometry,

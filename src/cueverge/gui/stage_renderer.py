@@ -20,6 +20,7 @@ from cueverge.gui.frame_compositor import (
     planar_projector_mesh,
     polygon_mask,
     render_stage_to_projector,
+    scale_layer_geometry,
     working_to_srgb8,
 )
 from cueverge.gui.projector_overlap import StoredProjectorOverlap
@@ -89,13 +90,17 @@ def prepare_stage_composition(
         assets=assets,
     )
     stage_layers = tuple(
-        replace(
-            layer,
-            keyframes=_scale_stage_keyframes(
-                layer.keyframes,
-                render_width / logical_width,
-                render_height / logical_height,
+        scale_layer_geometry(
+            replace(
+                layer,
+                keyframes=_scale_stage_keyframes(
+                    layer.keyframes,
+                    render_width / logical_width,
+                    render_height / logical_height,
+                ),
             ),
+            render_width / logical_width,
+            render_height / logical_height,
         )
         for layer in prepared.visual_layers
     )
@@ -137,7 +142,7 @@ def prepare_stage_composition(
         logical_width,
         logical_height,
     )
-    projectors = [_mapping(item) for item in _list(mapper_export.get("projectors"))]
+    projectors = list(selected_stage_projectors(composition, mapper_export))
     if not projectors or (len(projectors) < 2 and not lighting_members):
         raise ProjectorRenderError(
             "stage render requires two projectors or a projector with selected LED surfaces"
@@ -294,6 +299,28 @@ def selected_stage_lighting_surfaces(
     return tuple(surfaces[str(semantic_id)] for semantic_id in selected)
 
 
+def selected_stage_projectors(
+    composition: dict[str, object],
+    mapper_export: dict[str, object],
+) -> tuple[dict[str, object], ...]:
+    """Projectors taking part in a stage effect; absent selection means all mapped."""
+    projectors = tuple(_mapping(item) for item in _list(mapper_export.get("projectors")))
+    selected = composition.get("stage_projector_resources")
+    if selected is None:
+        return projectors
+    if (
+        not isinstance(selected, list)
+        or not selected
+        or not all(isinstance(item, str) and item for item in selected)
+        or len(selected) != len(set(selected))
+    ):
+        raise ProjectorRenderError("stage projector selection must contain unique resources")
+    by_resource = {_string(projector.get("resource")): projector for projector in projectors}
+    if set(selected).difference(by_resource):
+        raise ProjectorRenderError("selected stage projector is not mapped")
+    return tuple(by_resource[str(resource)] for resource in selected)
+
+
 def _sample_stage_surface(
     frame: np.ndarray,
     surface: dict[str, object],
@@ -400,13 +427,17 @@ def preview_stage_lighting_samples(
         assets=assets,
     )
     stage_layers = tuple(
-        replace(
-            layer,
-            keyframes=_scale_stage_keyframes(
-                layer.keyframes,
-                render_width / logical_width,
-                render_height / logical_height,
+        scale_layer_geometry(
+            replace(
+                layer,
+                keyframes=_scale_stage_keyframes(
+                    layer.keyframes,
+                    render_width / logical_width,
+                    render_height / logical_height,
+                ),
             ),
+            render_width / logical_width,
+            render_height / logical_height,
         )
         for layer in prepared.visual_layers
     )

@@ -63,39 +63,40 @@ test("overlap calibration is tunable and non-destructive", async ({ page }) => {
     if (url.pathname.endsWith("/stage-coverage")) {
       return route.fulfill({ json: coverage() });
     }
+    if (url.pathname.endsWith(`/${installationId}/stage-reference`)) {
+      return route.fulfill({ json: stageMap() });
+    }
     return route.fulfill({ status: 404, json: { detail: "fixture route missing" } });
   });
 
   await page.goto("/demo.html");
   await page.getByRole("button", { name: "Installation", exact: true }).click();
   await openLayout(page);
-  await page.getByText("Shared projector stage coverage (advanced)", { exact: true }).click();
   const mapper = page
     .getByRole("heading", { name: "Visual Mapper" })
     .locator("xpath=ancestor::section");
+  const stageMapStatus = page.getByRole("status", { name: "Stage map status" });
+  await expect(stageMapStatus).toContainText("Stage view: Two-window elevation");
+  await expect(stageMapStatus).toContainText("10 × 6 ft");
+  await expect(page.getByText(/projector\.left and projector\.right overlap 12%/)).toBeVisible();
 
-  await expect(mapper.getByRole("img", { name: "Shared stage coverage preview" })).toBeVisible();
-  await expect(mapper.getByText(/covered: 1 · overlap: 1 · occluded: 1 · uncovered: 1/)).toBeVisible();
-  await expect(mapper.getByLabel("Projector stage contributions")).toContainText(
-    "projector.left: 3 region(s)",
+  const coverageToggle = mapper.getByRole("button", { name: "Show projector coverage" });
+  await coverageToggle.click();
+  await expect(mapper.getByRole("button", { name: "Hide projector coverage" })).toHaveAttribute(
+    "aria-pressed",
+    "true",
   );
-  await expect(mapper.getByLabel("Projector stage contributions")).toContainText(
-    "projector.right: 1 region(s)",
+  const key = mapper.getByRole("list", { name: "Projector coverage key" });
+  await expect(key).toContainText("One projector");
+  await expect(key).toContainText("Projectors overlap (blend the seam)");
+  await expect(key).toContainText("Blocked by a mask");
+  await expect(key).toContainText("Between projectors, no coverage");
+  const regions = mapper.locator(".stage-coverage-overlay polygon");
+  await expect(regions).toHaveCount(4);
+  await expect(mapper.locator(".stage-coverage-overlay .stage-region--overlap")).toHaveAttribute(
+    "points",
+    "300,100 400,100 400,225 300,225",
   );
-  await expect(mapper.getByLabel("Stage coverage warnings")).toContainText(
-    "Overlap contribution: projector.left, projector.right",
-  );
-  await expect(mapper.getByLabel("Stage coverage warnings")).toContainText(
-    "Occluded stage region: projector.left",
-  );
-  await expect(mapper.getByLabel("Stage coverage warnings")).toContainText(
-    "Uncovered stage region has no projector contribution",
-  );
-  await expect(
-    mapper
-      .getByRole("img", { name: "Shared stage coverage preview" })
-      .locator(".stage-simulation-motion-path"),
-  ).toHaveCount(1);
   await mapper.getByRole("button", { name: "Edit" }).first().click();
   await mapper.getByText("Multi-projector overlap calibration", { exact: true }).click();
   await mapper.getByLabel("Paired projector surface").selectOption(secondId);
@@ -138,6 +139,30 @@ function photo() {
     revision: 1,
     created_at: "2026-10-14T12:00:00Z",
     updated_at: "2026-10-14T12:00:00Z",
+  };
+}
+
+function stageMap() {
+  return {
+    installation_id: installationId,
+    reference: {
+      installation_id: installationId,
+      photo_id: "overlap-photo",
+      unit_label: "ft",
+      units_per_canvas: 0.01,
+      stage_width: 10,
+      stage_height: 6,
+      scale_points: null,
+      scale_distance: null,
+      revision: 1,
+      applied_at: "2026-10-23T12:00:00Z",
+      created_at: "2026-10-23T12:00:00Z",
+      updated_at: "2026-10-23T12:00:00Z",
+    },
+    counts: { placed: 3, needs_update: 0, manual: 0, unplaced: 0 },
+    needs_update: false,
+    items: [],
+    projector_overlaps: [{ resources: ["projector.left", "projector.right"], fraction: 0.12 }],
   };
 }
 

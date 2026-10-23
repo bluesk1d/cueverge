@@ -6,6 +6,16 @@ from typing import Literal, cast
 
 from cueverge.gui.projector_mapping import _homography
 from cueverge.gui.repository import GuiRepository
+from cueverge.gui.stage_geometry import (
+    apply_homography,
+    area,
+    bounds,
+    intersect_convex,
+    is_convex,
+    oriented,
+    subtract_convex,
+)
+from cueverge.gui.stage_reference import projector_footprint, stored_stage_homography
 
 RegionKind = Literal["covered", "overlap", "occluded", "uncovered"]
 
@@ -47,6 +57,20 @@ class StageCoverageService:
             ).fetchall()
             if not rows:
                 return StageCoverage(installation_id, 0, 0, 1, 1, ())
+            if any(stored_stage_homography(row) is not None for row in rows):
+                polygon_coverage = _polygon_coverage(installation_id, rows)
+                if polygon_coverage is not None:
+                    return StageCoverage(
+                        installation_id=polygon_coverage.installation_id,
+                        minimum_x=polygon_coverage.minimum_x,
+                        minimum_y=polygon_coverage.minimum_y,
+                        maximum_x=polygon_coverage.maximum_x,
+                        maximum_y=polygon_coverage.maximum_y,
+                        regions=(
+                            *polygon_coverage.regions,
+                            *self._occluded_regions(connection, rows),
+                        ),
+                    )
             xs = sorted(
                 {
                     value
@@ -169,6 +193,66 @@ class StageCoverageService:
         return connection
 
 
+def _polygon_coverage(
+    installation_id: str,
+    rows: list[sqlite3.Row],
+) -> StageCoverage | None:
+    """Exact convex-polygon coverage for perspective-derived projector footprints."""
+    footprints = [
+        (str(row["resource"]), str(row["geometry_id"]), oriented(projector_footprint(row)))
+        for row in rows
+    ]
+    if not all(is_convex(polygon) for _, _, polygon in footprints):
+        return None
+    minimum_x, minimum_y, maximum_x, maximum_y = bounds(
+        [point for _, _, polygon in footprints for point in polygon]
+    )
+    regions: list[StageRegion] = []
+    for index, (resource, source_id, polygon) in enumerate(footprints):
+        pieces: tuple[tuple[tuple[float, float], ...], ...] = (polygon,)
+        for other_index, (_, _, other) in enumerate(footprints):
+            if other_index == index:
+                continue
+            pieces = tuple(
+                remainder for piece in pieces for remainder in subtract_convex(piece, other)
+            )
+        regions.extend(
+            StageRegion("covered", piece, (resource,), (source_id,))
+            for piece in pieces
+            if area(piece) > 1e-9
+        )
+    for index, (resource, source_id, polygon) in enumerate(footprints):
+        for other_resource, other_source, other in footprints[index + 1 :]:
+            shared = intersect_convex(polygon, other)
+            if shared and area(shared) > 1e-9:
+                regions.append(
+                    StageRegion(
+                        "overlap",
+                        shared,
+                        (resource, other_resource),
+                        (source_id, other_source),
+                    )
+                )
+    uncovered: tuple[tuple[tuple[float, float], ...], ...] = (
+        _rectangle(minimum_x, minimum_y, maximum_x, maximum_y),
+    )
+    for _, _, polygon in footprints:
+        uncovered = tuple(
+            remainder for piece in uncovered for remainder in subtract_convex(piece, polygon)
+        )
+    regions.extend(
+        StageRegion("uncovered", piece, (), ()) for piece in uncovered if area(piece) > 1e-9
+    )
+    return StageCoverage(
+        installation_id=installation_id,
+        minimum_x=minimum_x,
+        minimum_y=minimum_y,
+        maximum_x=maximum_x,
+        maximum_y=maximum_y,
+        regions=tuple(regions),
+    )
+
+
 def _rectangle(
     left: float, top: float, right: float, bottom: float
 ) -> tuple[tuple[float, float], ...]:
@@ -202,6 +286,13 @@ def _photo_to_stage(
     denominator = inverse[6] * x + inverse[7] * y + inverse[8]
     native_x = (inverse[0] * x + inverse[1] * y + inverse[2]) / denominator
     native_y = (inverse[3] * x + inverse[4] * y + inverse[5]) / denominator
+    derived = stored_stage_homography(mapping)
+    if derived is not None:
+        return apply_homography(
+            derived,
+            native_x / int(mapping["native_width"]),
+            native_y / int(mapping["native_height"]),
+        )
     return (
         float(mapping["stage_x"])
         + native_x / int(mapping["native_width"]) * float(mapping["stage_width"]),

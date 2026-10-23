@@ -13,6 +13,7 @@ planning a live opening.
 
 - [Orientation and safety](#orientation-and-safety)
 - [Creating an installation](#creating-an-installation)
+- [Managing fixtures and installation objects](#managing-fixtures-and-installation-objects)
 - [Connecting camera events](#connecting-camera-events)
 - [Creating and organizing a show](#creating-and-organizing-a-show)
 - [Authoring scenes and timelines](#authoring-scenes-and-timelines)
@@ -22,6 +23,44 @@ planning a live opening.
 - [Running a show](#running-a-show)
 - [Current boundaries](#current-boundaries)
 
+
+## Managing fixtures and installation objects
+
+Open **Installation > Objects**, then explicitly choose the show whose working
+draft you want to inspect. From an open show, **Manage installation objects**
+opens the same inventory with that show selected. It never silently chooses the
+currently playing show.
+
+The inventory includes fixtures, segments and ordered paths created through the
+UI, REST API or MCP, including **Not placed** objects. Search by name, stable ID,
+type or output. Inspect an object to see membership, pixel traversal and effect/
+authoring reference paths. Viewers can inspect; project designers, publishers and
+administrators can edit unarchived shows.
+
+Use **Create fixture or path** to group existing segments on one saved LED output.
+In **Object properties**, add/remove members, move them up/down, reverse their
+traversal and give the object a friendly name. Fixture precedence is added to cue
+precedence for overlapping effects. IDs stay stable during editing. Segments are
+read-only here: this editor does not repartition wiring or import runtime bindings.
+
+**Show in Layout** highlights an object's mapped member segments and explicitly
+linked geometry. A separate marker is optional. To place an unplaced fixture,
+use **Place in Layout**, select existing geometry under **Link existing layout
+geometry**, then **Save object**. If geometry does not exist yet, draw it in
+**Photos & Layout** first, then link it from Objects. No photo is required.
+An unmapped fixture remains a valid effect target.
+
+Definitions, friendly names and optional semantic geometry links belong to the
+**show's working draft**. Geometry, wiring and calibration belong to the
+**installation**. Saving a definition creates a revision; it does not publish,
+apply, or change live playback. A stale revision is rejected; refresh and
+reconcile before retrying. Archived shows remain inspectable but cannot be edited.
+
+Clear a geometry checkbox to unlink it. **Remove placement** in Layout removes
+geometry only, never the logical definition or its effects. Missing links are
+reported so they can be cleared or replaced. **Delete definition** is separate:
+effect/authoring references block deletion until removed, and deleting an unused
+definition never deletes installation geometry.
 
 ## Orientation and safety
 
@@ -55,7 +94,7 @@ was connected. Empty, disconnected, and blocked states are intentional.*
   playback, equipment connections, useful destinations, and compact activity.
   Open **Setup checklist** or **System details** for optional setup facts.
 - **Installation:** camera inputs/connections, topology, photos, mapper, device management, assignments,
-  and connection diagnostics.
+  logical object inventory, and connection diagnostics.
 - **Shows:** a compact library; **Open show** leads directly to scenes, lighting
   effects and a safe preview. Assets, show options, sharing, and advanced
   authoring/history remain available when needed.
@@ -165,10 +204,11 @@ hide or a health check to waive.
 
 ### 3. Optionally add or replace reference photos
 
-1. Open **Installation > Photos & Layout**.
-2. Enter one **Photo description**, such as "Wide front view for roofline placement".
-3. **Choose photo**, then **Add installation photo** to upload a JPEG, PNG, or WebP that
-   you own or have permission to use.
+1. Open **Installation > Photos & Layout** and choose **Add photo**.
+2. **Choose photo** to select a JPEG, PNG, or WebP that you own or have
+   permission to use. The description defaults to the file name; replace it
+   with something useful, such as "Wide front view for roofline placement".
+3. Choose **Add installation photo**.
 4. Open **Photo details** to edit its description. Orientation, crop and scale
    are optional under **Image and calibration details**; choose **Save photo**
    after adjustments. Existing view IDs/legacy labels and mapping metadata are
@@ -176,11 +216,12 @@ hide or a health check to waive.
 5. Add useful alternate angles or close-ups, within the 12-photo budget.
 
 Use non-sensitive photos where practical. Photos describe viewpoints, not
-separate physical outputs. Photos are optional: **Open layout without a photo**
-opens an editable installation canvas immediately. **Open Layout** on a card
-uses that image as a reference background for the same installation geometry.
-Use **Refresh photos** after external/MCP changes; revision conflicts never
-silently overwrite another edit.
+separate physical outputs. Photos are compact cards: the open photo is
+outlined, and the stage view (see below) carries a **Stage view** badge.
+Photos are optional: **Open layout without a photo** opens an editable
+installation canvas immediately. **Open Layout** on a card uses that image as a
+reference background for the same installation geometry. Reload the page after
+external/MCP changes; revision conflicts never silently overwrite another edit.
 
 To update an image, choose **Replace photo** on its card (also available in
 **Photo details**). Choose a JPEG, PNG or WebP, acknowledge the alignment review,
@@ -316,10 +357,45 @@ behavior remains controlled by the downstream device. Transmission errors are
 reported, but successful UDP sending is not proof that the LEDs visibly responded.
 Testing does not publish, alter mappings, or reload the show.
 
-For shared-stage content across projectors, define stage coverage and overlap
-calibration consistently. Review seams, masks, crop, brightness/color matching,
-and mapped/native previews. Correct mapper diagnostics before rendering or
-publication; do not use distorted content as a substitute for calibration.
+#### Choose the stage view
+
+Effects that travel across several devices, such as a flag rippling over
+projectors and LEDs, are drawn on one **shared stage**. The **Stage map** panel
+(below the photos) builds that stage from one photo:
+
+1. Pick the **Stage view**: a photo of the whole display taken from where
+   visitors watch. Everything drawn on that photo is placed on the stage
+   automatically.
+2. Enter the **Width of the whole photo view** and its **Unit**. An estimate is
+   fine; it sets the real-world size of stage effects.
+3. Choose **Use as stage** (later **Save stage settings**).
+
+The summary reports the stage size and how many objects are placed. When you
+move or add objects on the stage view, it shows how many changed; choose
+**Update stage map** so shows use the new placement. Shows keep the previous
+placement until you do. Objects not drawn on the stage view are listed under
+**Not drawn on the stage view**; draw them on that photo to include them in
+shared effects, or keep a manually entered stage position.
+
+Projector pairs that overlap are reported in plain language, for example
+"projector.left and projector.right overlap 18%". Two projectors that cover the
+same area usually means their corners were not drawn on the stage view. If the
+stacking is intentional, set blending in the projector's overlap settings.
+
+Updating the stage map writes ordinary stage data: geometry stage points, LED
+stage transforms, and a perspective stage mapping for planar projectors. Photo
+calibration, wiring, and native projector pixels are not changed. Removing the
+stage photo keeps this placement. Entering a projector's stage
+placement/size by hand, or changing its orientation or mirroring, replaces the
+derived perspective mapping with the manual rectangle until you update the
+stage map again.
+
+On the stage view, **Show projector coverage** draws each projector's area on
+the photo with a key: one projector, projectors overlapping (blend the seam),
+blocked by a mask, and gaps between projectors. Review seams, masks, crop,
+brightness/color matching, and mapped/native previews. Correct mapper
+diagnostics before rendering or publication; do not use distorted content as a
+substitute for calibration.
 
 ### 5. Establish timing and acceptance
 
@@ -392,8 +468,9 @@ for management selection, TLS, backup/restore and protected-storage requirements
 1. Open **Shows** with authoring permission.
 2. Choose **Open show** on an existing show, or expand **New show**, enter
    **Show name**, and choose **Create show**.
-3. A new show opens into its inherited scenes. Select a scene to inspect its
-   content. Creation and saving do not change live playback.
+3. An existing show opens on its **Show plan**. A new show opens into its
+   inherited scenes so you can start editing right away. Creation and saving
+   do not change live playback.
 
 The button copies the controller's current runtime catalog; it does not
 create an empty show or use the unprovisioned record you just created in
@@ -642,14 +719,33 @@ For schema details and creative planning, see the
 
 ### Render and inspect compositions
 
-#### Installation-wide baked overlays
+#### Shared-stage effects across projectors and LEDs
 
 Use a **Shared stage** composition to author one image, video, or GIF across
-projectors and LEDs. Place the media once in stage coordinates, then select
-the mapped LED surfaces under **Installation-wide overlay**. Unselected
-surfaces keep their existing lighting behavior. LED stage coordinates must
-fall within the composition; out-of-bounds samples fail the bake rather than
-silently sampling the edge.
+projectors and LEDs, such as a flag rippling over the whole house. Shared-stage
+effects belong to the show; the installation's **Stage map** only defines where
+each output sits. New shared-stage compositions default to the installation
+stage size and a render resolution that covers it.
+
+1. Under **Outputs in this effect**, choose which projectors and LED outputs
+   take part. All mapped projectors are included by default; at least one is
+   required. Unselected LED outputs keep their existing lighting behavior.
+2. If the composition size differs from the installation stage, choose
+   **Match installation stage**. LED stage coordinates must fall within the
+   composition; out-of-bounds samples fail the bake rather than silently
+   sampling the edge.
+3. The stage preview shows the stage-view photo in true proportions, the
+   rendered frame at the playhead (**Show rendered frame**), projector
+   coverage, LED pixels, and the composition boundary.
+4. Select the media layer. Under **Shape on stage**, choose **Stretch to four
+   corners** or **Fit to selected outputs**, then drag the four corner handles
+   on the preview to place the media over separate devices. Corner-pinned
+   layers ignore position, scale, rotation, and anchor keyframes; opacity and
+   crop still animate. Keep the corners in top-left, top-right, bottom-right,
+   bottom-left order without crossing.
+5. Optionally choose a **Shape mask**: **Ellipse**, **Rectangle**, or
+   **Outline of selected outputs**, with a **Soft edge** in stage units and
+   **Show outside the mask instead** to invert it.
 
 Save the timeline and choose **Bake installation overlay**. One job creates
 the projector videos and RGB sequences from the same stage frames, at the
@@ -727,6 +823,37 @@ latency, or multi-output synchronization. Qualify the actual baked media and
 physical playback separately.
 
 ## Authoring autonomous behavior
+
+### Show plan: putting scenes together
+
+A show is built from scenes, much like a video edit is built from clips. Open a
+show and choose **Show plan** (the first tab, next to **Scenes**, **Visitor
+responses** and **Preview**) to see how they fit together:
+
+- **Main show** plays when you press Start and whenever no visitor response is
+  playing. **Starts with** picks its first scene. Each scene block shows its
+  length and a **When it ends** choice:
+  - **Repeat this scene**: plays it again forever.
+  - **Play a specific scene next**: choose the **Next scene**; the plan follows
+    the chain and shows where it goes back to.
+  - **Let the show pick next**: plays a waiting visitor response if there is
+    one, otherwise picks a scene from the shuffle list.
+  - **Stay on the last moment** or **Stop the show**.
+- **Shuffle list** is the set of scenes the show picks from at random. Use
+  **How often** to make a scene more likely, **Remove**, or **Add to shuffle
+  list**. Cooldowns, conditions and on/off rules set in advanced authoring are
+  kept and labeled.
+- **Visitor responses** shows each "When visitors arrive → scene → afterward"
+  lane. **Edit visitor responses** opens the guided editor.
+- **Scenes not in the show yet** lists scenes nothing ever plays (failure
+  backup scenes count as used).
+
+Choose any scene block (**Open scene**) to edit that scene's lights and media.
+The Scenes tab then shows a **Show plan › scene name** breadcrumb; choose
+**Show plan** to return. Each plan change saves immediately as a new draft
+revision and is not live until you apply saved changes. Warnings explain
+problems such as no starting scene, or visitor responses that can never play
+because no main-show scene lets the show pick next.
 
 ### Visitor responses and the shared Preview workspace
 

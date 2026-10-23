@@ -1,7 +1,8 @@
+import math
 import re
 from datetime import date
 from enum import StrEnum
-from typing import Literal
+from typing import Literal, cast
 
 from pydantic import (
     BaseModel,
@@ -23,6 +24,7 @@ from cueverge.core.models import (
     ResourceBinding,
     SceneDefinitionV1,
     SceneDefinitionV2,
+    SegmentReference,
     ShowProgramDefinition,
 )
 from cueverge.gui.spatial_effects import SpatialRipple
@@ -120,6 +122,17 @@ class DraftProject(GuiModel):
             {scene.id: scene.duration_ms for scene in self.scenes},
         )
         _validate_autonomous_show(self)
+        if "installation_object_details" in self.editor_metadata:
+            details = self.editor_metadata["installation_object_details"]
+            if not isinstance(details, list):
+                raise ValueError("Installation object details must be a list.")
+            identities: set[tuple[str, str, str]] = set()
+            for raw in details:
+                detail = InstallationObjectDetails.model_validate(raw)
+                identity = (detail.resource, detail.kind, detail.id)
+                if identity in identities:
+                    raise ValueError("Installation object details must have unique identities.")
+                identities.add(identity)
         return self
 
 
@@ -194,6 +207,18 @@ def _validate_composition_graph(
             raise ValueError("stage lighting surfaces must be up to 100 unique semantic IDs")
         if stage_surfaces and value.get("space_kind") != "stage":
             raise ValueError("only stage compositions can select stage lighting surfaces")
+        stage_projectors = value.get("stage_projector_resources")
+        if stage_projectors is not None:
+            if (
+                not isinstance(stage_projectors, list)
+                or not stage_projectors
+                or not all(isinstance(item, str) and item for item in stage_projectors)
+                or len(stage_projectors) != len(set(stage_projectors))
+                or len(stage_projectors) > 32
+            ):
+                raise ValueError("stage projectors must be 1 to 32 unique resource names")
+            if value.get("space_kind") != "stage":
+                raise ValueError("only stage compositions can select stage projectors")
         if not isinstance(value.get("target_id"), str) or not value["target_id"]:
             raise ValueError("composition editing space requires a target ID")
         for dimension in ("width", "height"):
@@ -739,6 +764,7 @@ def _validate_transform_layers(
                 or scaling_behavior not in {"fit", "fill", "stretch", "native"}
             ):
                 raise ValueError("visual layer conformance is invalid")
+            _validate_layer_geometry(value, kind)
             keyframes = value.get("keyframes")
             if not isinstance(keyframes, list) or (kind != "audio" and not keyframes):
                 raise ValueError("visual transform layer requires at least one keyframe")
@@ -871,6 +897,68 @@ def _validate_render_settings(value: JsonValue | None) -> None:
         or keyframe_interval > 600
     ):
         raise ValueError("composition output profile numeric settings are invalid")
+
+
+def _validate_layer_geometry(layer: dict[str, JsonValue], kind: object) -> None:
+    corner_pin = layer.get("corner_pin")
+    mask = layer.get("mask")
+    if kind == "audio" and (corner_pin is not None or mask is not None):
+        raise ValueError("audio layers cannot define corner pins or masks")
+    if corner_pin is not None:
+        points = _layer_points(corner_pin, "corner pin", 4, 4)
+        twice_area = sum(
+            x0 * y1 - x1 * y0
+            for (x0, y0), (x1, y1) in zip(points, (*points[1:], points[0]), strict=True)
+        )
+        crosses = [
+            (x1 - x0) * (y2 - y1) - (y1 - y0) * (x2 - x1)
+            for (x0, y0), (x1, y1), (x2, y2) in zip(
+                points, (*points[1:], points[0]), (*points[2:], *points[:2]), strict=True
+            )
+        ]
+        if abs(twice_area) < 1e-9 or not (
+            all(value > 0 for value in crosses) or all(value < 0 for value in crosses)
+        ):
+            raise ValueError("corner pin must be a convex quadrilateral in TL, TR, BR, BL order")
+    if mask is not None:
+        if not isinstance(mask, dict) or set(mask).difference({"points", "feather", "invert"}):
+            raise ValueError("layer mask supports points, feather and invert")
+        _layer_points(mask.get("points"), "layer mask", 3, 128)
+        feather = mask.get("feather", 0)
+        if (
+            not isinstance(feather, (int, float))
+            or isinstance(feather, bool)
+            or not math.isfinite(feather)
+            or feather < 0
+        ):
+            raise ValueError("layer mask feather must be a nonnegative number")
+        if not isinstance(mask.get("invert", False), bool):
+            raise ValueError("layer mask invert must be a boolean")
+
+
+def _layer_points(
+    value: JsonValue | None,
+    label: str,
+    minimum: int,
+    maximum: int,
+) -> list[tuple[float, float]]:
+    if not isinstance(value, list) or not minimum <= len(value) <= maximum:
+        raise ValueError(f"{label} requires {minimum} to {maximum} [x, y] points")
+    points: list[tuple[float, float]] = []
+    for point in value:
+        if (
+            not isinstance(point, list)
+            or len(point) != 2
+            or not all(
+                isinstance(item, (int, float))
+                and not isinstance(item, bool)
+                and math.isfinite(item)
+                for item in point
+            )
+        ):
+            raise ValueError(f"{label} points must be finite [x, y] pairs")
+        points.append((float(cast(float, point[0])), float(cast(float, point[1]))))
+    return points
 
 
 def _validate_transform_keyframe(keyframe: dict[str, JsonValue]) -> None:
@@ -1578,6 +1666,40 @@ class InteractionEditRequest(GuiModel):
         return self
 
 
+class ShuffleEntryRequest(GuiModel):
+    scene_id: str = Field(min_length=1)
+    weight: int = Field(default=1, ge=1, le=1000)
+
+
+class ShowPlanEditRequest(GuiModel):
+    """Focused show-plan edit; writes only program start, one scene ending or the shuffle list."""
+
+    source_revision: int = Field(ge=1)
+    operation: Literal["starting_scene", "scene_ending", "shuffle_list"]
+    scene_id: str | None = Field(default=None, min_length=1)
+    ending: Literal["repeat", "play_next", "shuffle", "freeze", "stop"] | None = None
+    next_scene_id: str | None = Field(default=None, min_length=1)
+    shuffle: tuple[ShuffleEntryRequest, ...] | None = Field(default=None, max_length=1000)
+
+    @model_validator(mode="after")
+    def validate_operation(self) -> "ShowPlanEditRequest":
+        if self.operation in ("starting_scene", "scene_ending") and self.scene_id is None:
+            raise ValueError("Choose a scene")
+        if self.operation == "scene_ending" and self.ending is None:
+            raise ValueError("Choose what happens when the scene ends")
+        if self.ending == "play_next" and self.next_scene_id is None:
+            raise ValueError("Choose which scene plays next")
+        if self.next_scene_id is not None and self.ending != "play_next":
+            raise ValueError("next_scene_id is only used with the play_next ending")
+        if self.operation == "shuffle_list":
+            if not self.shuffle:
+                raise ValueError("Keep at least one scene in the shuffle list")
+            ids = [entry.scene_id for entry in self.shuffle]
+            if len(ids) != len(set(ids)):
+                raise ValueError("Each scene can appear in the shuffle list only once")
+        return self
+
+
 class InteractionPreviewRequest(GuiModel):
     source_revision: int = Field(ge=1)
     proposed_draft: DraftProject | None = None
@@ -1946,6 +2068,13 @@ class ProjectorMappingResponse(ProjectorMappingRequest):
     revision: int = Field(ge=1)
     created_at: str
     updated_at: str
+    stage_homography: tuple[float, ...] | None = Field(
+        default=None,
+        description=(
+            "Derived normalized-native (u, v) to stage homography from the stage "
+            "reference view; null when the stage extent is set manually."
+        ),
+    )
 
 
 class ProjectorPhotoViewResponse(GuiModel):
@@ -2157,6 +2286,76 @@ class StageCoverageResponse(GuiModel):
     regions: tuple[StageRegionResponse, ...]
 
 
+StageUnitLabel = Literal["ft", "m", "in", "cm", "units"]
+
+
+class StageReferenceRequest(GuiModel):
+    """Choose the photo view that defines shared-stage coordinates and its scale."""
+
+    photo_id: str = Field(min_length=1, description="Installation photo used as the stage.")
+    unit_label: StageUnitLabel = Field(default="units", description="Display unit only.")
+    stage_width: float | None = Field(
+        default=None,
+        gt=0,
+        le=100000,
+        description="Real width of the whole layout view; omit when measuring a distance.",
+    )
+    scale_points: tuple[GeometryPoint, GeometryPoint] | None = Field(
+        default=None,
+        description="Two normalized layout points spanning a known real distance.",
+    )
+    scale_distance: float | None = Field(default=None, gt=0, le=100000)
+
+    @model_validator(mode="after")
+    def validate_scale(self) -> "StageReferenceRequest":
+        measured = self.scale_points is not None or self.scale_distance is not None
+        if measured and (self.scale_points is None or self.scale_distance is None):
+            raise ValueError("a measured scale needs two points and a distance")
+        if measured and self.stage_width is not None:
+            raise ValueError("choose a view width or a measured distance, not both")
+        return self
+
+
+class StageReferenceResponse(GuiModel):
+    installation_id: str
+    photo_id: str | None
+    unit_label: StageUnitLabel
+    units_per_canvas: float
+    stage_width: float
+    stage_height: float
+    scale_points: tuple[tuple[float, float], tuple[float, float]] | None
+    scale_distance: float | None
+    revision: int = Field(ge=1)
+    applied_at: str | None
+    created_at: str
+    updated_at: str
+
+
+class StageMapItemResponse(GuiModel):
+    semantic_id: str
+    name: str
+    kind: str
+    status: Literal["placed", "needs_update", "manual", "unplaced"]
+    reference_geometry_id: str | None
+    resource: str | None
+    stage_points: tuple[tuple[float, float], ...] | None
+    message: str | None
+
+
+class StageProjectorOverlapResponse(GuiModel):
+    resources: tuple[str, str]
+    fraction: float = Field(ge=0, le=1)
+
+
+class StageMapResponse(GuiModel):
+    installation_id: str
+    reference: StageReferenceResponse | None
+    counts: dict[str, int]
+    needs_update: bool
+    items: tuple[StageMapItemResponse, ...]
+    projector_overlaps: tuple[StageProjectorOverlapResponse, ...]
+
+
 class InstallationMapperExportResponse(GuiModel):
     schema_version: Literal[1] = 1
     installation_id: str
@@ -2166,6 +2365,7 @@ class InstallationMapperExportResponse(GuiModel):
     fixtures: tuple[dict[str, JsonValue], ...]
     paths: tuple[dict[str, JsonValue], ...]
     zones: tuple[dict[str, JsonValue], ...]
+    stage: dict[str, JsonValue] | None = None
 
 
 class MapperDiagnosticResponse(GuiModel):
@@ -2257,6 +2457,79 @@ class SceneAuthoringOptions(GuiModel):
     installation_id: str | None
     resources: tuple[ResourceBinding, ...]
     importable_resources: tuple[str, ...]
+
+
+class InstallationObjectDetails(GuiModel):
+    resource: str = Field(min_length=1)
+    kind: Literal["segment", "fixture", "path"]
+    id: str = Field(min_length=1)
+    name: str = Field(min_length=1, max_length=200)
+    geometry_semantic_ids: tuple[str, ...] = ()
+
+
+class InstallationObjectEditRequest(GuiModel):
+    resource: str = Field(min_length=1)
+    kind: Literal["fixture", "path"]
+    id: str = Field(min_length=1, max_length=200)
+    name: str = Field(min_length=1, max_length=200)
+    segments: tuple[SegmentReference, ...] = Field(min_length=1)
+    precedence: int = Field(default=0, ge=0, le=1000)
+    geometry_semantic_ids: tuple[str, ...] = ()
+
+    @model_validator(mode="after")
+    def validate_object(self) -> "InstallationObjectEditRequest":
+        if not self.id.strip() or not self.name.strip():
+            raise ValueError("Object ID and name must not be blank.")
+        if self.kind == "path" and self.precedence:
+            raise ValueError("Ordered paths do not define fixture precedence.")
+        if len(set(self.geometry_semantic_ids)) != len(self.geometry_semantic_ids):
+            raise ValueError("Layout links must be unique.")
+        return self
+
+
+class InstallationObjectDeleteRequest(GuiModel):
+    resource: str = Field(min_length=1)
+    kind: Literal["fixture", "path"]
+    id: str = Field(min_length=1)
+
+
+class InstallationObjectTraversal(GuiModel):
+    segment: str
+    first_pixel: int
+    last_pixel: int
+    pixel_count: int
+    reverse: bool
+
+
+class InstallationObjectRecord(InstallationObjectDetails):
+    segments: tuple[SegmentReference, ...]
+    precedence: int
+    pixel_count: int
+    traversal: tuple[InstallationObjectTraversal, ...]
+    references: tuple[str, ...]
+    geometry_ids: tuple[str, ...]
+    missing_geometry_semantic_ids: tuple[str, ...]
+
+
+class InstallationObjectGeometry(GuiModel):
+    semantic_id: str
+    name: str
+    kind: str
+    resource: str | None
+    geometry_ids: tuple[str, ...]
+
+
+class InstallationObjectInventory(GuiModel):
+    project_id: str
+    project_name: str
+    revision: int
+    archived: bool
+    installation_id: str | None
+    layout_available: bool
+    resources: tuple[ResourceBinding, ...]
+    objects: tuple[InstallationObjectRecord, ...]
+    geometry: tuple[InstallationObjectGeometry, ...]
+    editable_kinds: tuple[Literal["fixture", "path"], ...] = ("fixture", "path")
 
 
 class SceneLightingPreviewRequest(GuiModel):

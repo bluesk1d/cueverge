@@ -464,7 +464,7 @@ def test_mixed_bake_cache_tracks_layers_and_mapping_and_preserves_last_valid_set
     monkeypatch.setattr(
         service,
         "_stage_inputs",
-        lambda _: (
+        lambda *_: (
             copy.deepcopy(mapper),
             _coverage(),
             (),
@@ -510,7 +510,7 @@ def test_mixed_bake_cache_tracks_layers_and_mapping_and_preserves_last_valid_set
     calls = 0
 
     def changing_stage_inputs(
-        _: object,
+        *_: object,
     ) -> tuple[dict[str, object], StageCoverage, tuple[StoredProjectorOverlap, ...], SyncAdmission]:
         nonlocal calls
         calls += 1

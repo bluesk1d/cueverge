@@ -1,5 +1,6 @@
 from bisect import bisect_right
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from functools import lru_cache
 from itertools import pairwise
 from math import cos, radians, sin
 from typing import Literal, cast
@@ -105,6 +106,40 @@ class PreparedVisualLayer:
     keyframes: tuple[dict[str, object], ...]
     playback: Literal["hold", "loop", "once"] = "hold"
     source_duration_ms: int | None = None
+    corner_pin: tuple[tuple[float, float], ...] | None = None
+    mask: "LayerMask | None" = None
+
+
+@dataclass(frozen=True)
+class LayerMask:
+    points: tuple[tuple[float, float], ...]
+    feather: float = 0.0
+    invert: bool = False
+
+
+def scale_layer_geometry(
+    layer: PreparedVisualLayer,
+    scale_x: float,
+    scale_y: float,
+) -> PreparedVisualLayer:
+    """Scale logical-space corner pins and masks into output raster pixels."""
+    return replace(
+        layer,
+        corner_pin=(
+            tuple((x * scale_x, y * scale_y) for x, y in layer.corner_pin)
+            if layer.corner_pin is not None
+            else None
+        ),
+        mask=(
+            LayerMask(
+                points=tuple((x * scale_x, y * scale_y) for x, y in layer.mask.points),
+                feather=layer.mask.feather * (abs(scale_x) + abs(scale_y)) / 2,
+                invert=layer.mask.invert,
+            )
+            if layer.mask is not None
+            else None
+        ),
+    )
 
 
 def decode_animated_image(
@@ -384,6 +419,105 @@ def render_transformed_layer(
     return output
 
 
+def quad_homography(
+    source: tuple[tuple[float, float], ...],
+    destination: tuple[tuple[float, float], ...],
+) -> NDArray[np.float64]:
+    if len(source) != 4 or len(destination) != 4:
+        raise ValueError("corner pin requires four corners")
+    rows: list[list[float]] = []
+    values: list[float] = []
+    for (x, y), (u, v) in zip(source, destination, strict=True):
+        rows.append([x, y, 1, 0, 0, 0, -u * x, -u * y])
+        rows.append([0, 0, 0, x, y, 1, -v * x, -v * y])
+        values.extend((u, v))
+    try:
+        solution = np.linalg.solve(np.asarray(rows), np.asarray(values))
+    except np.linalg.LinAlgError as error:
+        raise ValueError("corner pin corners do not define a valid plane") from error
+    return np.append(solution, 1.0).reshape(3, 3)
+
+
+def render_corner_pinned_layer(
+    source: FloatImage,
+    *,
+    output_width: int,
+    output_height: int,
+    corners: tuple[tuple[float, float], ...],
+    crop: tuple[float, float, float, float],
+    opacity: float,
+) -> FloatImage:
+    """Map the cropped source rectangle onto four output corners (TL, TR, BR, BL)."""
+    if source.ndim != 3 or source.shape[2] != 4:
+        raise ValueError("visual source must be HxWx4 RGBA")
+    left, top, right, bottom = crop
+    if any(value < 0 or value > 1 for value in crop) or left + right >= 1 or top + bottom >= 1:
+        raise ValueError("visual crop is invalid")
+    height, width = source.shape[0], source.shape[1]
+    minimum_x, maximum_x = left * width, (1 - right) * width
+    minimum_y, maximum_y = top * height, (1 - bottom) * height
+    rectangle = (
+        (minimum_x, minimum_y),
+        (maximum_x, minimum_y),
+        (maximum_x, maximum_y),
+        (minimum_x, maximum_y),
+    )
+    # Maps output pixels back to source pixels.
+    inverse = quad_homography(tuple(corners), rectangle)
+    grid_x, grid_y = np.meshgrid(
+        np.arange(output_width, dtype=np.float64) + 0.5,
+        np.arange(output_height, dtype=np.float64) + 0.5,
+    )
+    denominator = inverse[2, 0] * grid_x + inverse[2, 1] * grid_y + inverse[2, 2]
+    safe = np.where(np.abs(denominator) < 1e-12, 1e-12, denominator)
+    source_x = (inverse[0, 0] * grid_x + inverse[0, 1] * grid_y + inverse[0, 2]) / safe
+    source_y = (inverse[1, 0] * grid_x + inverse[1, 1] * grid_y + inverse[1, 2]) / safe
+    inside = (
+        (denominator > 0)
+        & (source_x >= minimum_x)
+        & (source_x < maximum_x)
+        & (source_y >= minimum_y)
+        & (source_y < maximum_y)
+    )
+    output = np.zeros((output_height, output_width, 4), dtype=np.float32)
+    if np.any(inside):
+        u = (source_x[inside] / max(width - 1, 1)).astype(np.float32)
+        v = (source_y[inside] / max(height - 1, 1)).astype(np.float32)
+        sampled = _bilinear_sample(source, u, v)
+        sampled *= np.float32(np.clip(opacity, 0, 1))
+        output[inside] = sampled
+    return output
+
+
+@lru_cache(maxsize=16)
+def layer_mask_alpha(
+    points: tuple[tuple[float, float], ...],
+    feather: float,
+    invert: bool,
+    output_width: int,
+    output_height: int,
+) -> NDArray[np.float32]:
+    """Static per-layer coverage; feather fades inward from the polygon edge."""
+    if len(points) < 3 or feather < 0:
+        raise ValueError("layer mask requires three points and nonnegative feather")
+    raw_x, raw_y = np.meshgrid(
+        np.arange(output_width, dtype=np.float32) + np.float32(0.5),
+        np.arange(output_height, dtype=np.float32) + np.float32(0.5),
+    )
+    inside = _points_in_polygon(raw_x, raw_y, points)
+    if feather > 0:
+        distance = _distance_to_polygons(raw_x, raw_y, (points,))
+        alpha = np.where(inside, np.clip(distance / np.float32(feather), 0, 1), 0).astype(
+            np.float32
+        )
+    else:
+        alpha = inside.astype(np.float32)
+    if invert:
+        alpha = np.float32(1) - alpha
+    alpha.setflags(write=False)
+    return alpha
+
+
 def compose_visual_frame(
     layers: tuple[PreparedVisualLayer, ...],
     *,
@@ -430,13 +564,36 @@ def compose_visual_frame(
             layer.fade_in_ms,
             layer.fade_out_ms,
         )
-        foreground = render_transformed_layer(
-            source,
-            output_width=output_width,
-            output_height=output_height,
-            transform=evaluate_transform(layer.keyframes, local_time),
-            fade_opacity=fade,
+        transform = evaluate_transform(layer.keyframes, local_time)
+        foreground = (
+            render_corner_pinned_layer(
+                source,
+                output_width=output_width,
+                output_height=output_height,
+                corners=layer.corner_pin,
+                crop=transform.crop,
+                opacity=transform.opacity * fade,
+            )
+            if layer.corner_pin is not None
+            else render_transformed_layer(
+                source,
+                output_width=output_width,
+                output_height=output_height,
+                transform=transform,
+                fade_opacity=fade,
+            )
         )
+        if layer.mask is not None:
+            foreground = (
+                foreground
+                * layer_mask_alpha(
+                    layer.mask.points,
+                    layer.mask.feather,
+                    layer.mask.invert,
+                    output_width,
+                    output_height,
+                )[..., None]
+            )
         working = composite_over(working, foreground)
     return working, working_to_srgb8(working)
 

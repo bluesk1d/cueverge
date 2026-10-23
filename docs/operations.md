@@ -217,8 +217,10 @@ file selection. Invalid UTF-8/description metadata is rejected.
 Authenticated `PATCH /api/gui/v1/installation-photos/{id}/description` requires
 the existing installation-author, origin/CSRF and `If-Match` revision checks,
 and changes only the description/name. Full legacy photo PUT remains available
-for explicit advanced metadata edits. Re-read after conflicts; the gallery has
-**Refresh photos** rather than silently overwriting concurrent work.
+for explicit advanced metadata edits. Re-read after conflicts (reload the
+Installation page) rather than silently overwriting concurrent work. In the GUI,
+**Add photo** opens a dialog: choose the file first; its name prefills the
+description.
 
 Example metadata-only request (with an authenticated session, allowed origin
 and its CSRF token):
@@ -305,7 +307,8 @@ device-enrollment or access-management grant is added.
 
 Layout defaults to Select; Add explicitly enables drawing, and canvas/list
 selection reveals contextual properties. Optional strand labels, associations,
-stage coordinates, calibration and multi-projector coverage are disclosures.
+stage coordinates and calibration are disclosures. Multi-projector coverage is
+an optional **Show projector coverage** overlay on the stage view's canvas.
 Output/index conflicts remain visible, including nested ranges on one output.
 Linked views are counted once and different outputs are never compared as one
 index space. Photo bounds, coverage gaps and draw precedence are nonblocking
@@ -313,6 +316,63 @@ observations, not proof of physical wiring faults in a three-dimensional display
 Canvas traversal remains distinct from authored scene Preview or armed physical
 tests. If geometry saves but its secondary mapping fails, the retained object ID
 is used on retry, avoiding duplicate creations.
+
+### Stage reference view and shared-stage placement
+
+The installation's shared stage is defined by one **stage view** photo. Stage
+coordinates are the stage view's normalized layout coordinates scaled by
+`units_per_canvas`: `stage_x = x × 1000 × units_per_canvas` and
+`stage_y = y × 600 × units_per_canvas`, so a 40-unit-wide view is 40 × 24 stage
+units. `unit_label` (`ft`, `m`, `in`, `cm`, or `units`) is for display only.
+
+REST (installation author, origin/CSRF, revisioned):
+
+- `GET /api/gui/v1/installations/{id}/stage-reference` returns the reference,
+  counts and per-object `status` (`placed`, `needs_update`, `manual`,
+  `unplaced`) plus pairwise `projector_overlaps` fractions. The ETag is the
+  reference revision.
+- `PUT …/stage-reference` with `StageReferenceRequest`: `photo_id`,
+  `unit_label`, and either `stage_width` (width of the whole view) or
+  `scale_points` (two normalized points) with `scale_distance`. Omit
+  `If-Match` only when no reference exists.
+- `POST …/stage-reference/apply` with `If-Match: "REVISION"` derives and
+  writes placement for every object drawn on the stage view: geometry
+  `stage_points` (for all linked instances), lighting-surface `stage_matrix`
+  (an exact similarity for two points, least-squares affine otherwise), and,
+  for planar projector mappings, a `stage_homography` from normalized native
+  `(u, v)` to stage units with a bounding `stage_x/y/width/height`. Subdivided
+  projector meshes receive stage coordinates only when their vertex count
+  matches the layout points. Revisions advance and one audit event is recorded.
+
+Derived values are stored state, not a live link: removing the stage photo
+keeps them, and changing photo calibration does not move them until the next
+apply. A manual projector stage extent, orientation or mirroring change clears
+that projector's `stage_homography`. With a homography, the mapper export emits
+an 8×8 perspective mesh, `stage-coverage` returns exact polygon regions, and the
+export's `stage` object gives `width`, `height`, `unit` and the reference photo.
+Range checks then use the stage view rather than the projector bounding box, so
+LEDs outside projector coverage remain valid.
+
+MCP:
+
+- `get_stage_map` (`read`, runtime installation binding) returns the same
+  status document.
+- `update_stage_reference(request, source_revision, apply=true)` requires the
+  explicit `installation_edit` scope and an installation author role. It sets
+  the reference and, by default, applies placement. It never changes photo
+  calibration, wiring, native projector pixels, or hardware output. Re-read
+  with `get_stage_map` after a revision conflict.
+- Discover both under `get_capabilities.installation_setup.stage_reference`
+  (with `StageReferenceRequest` JSON schema) and `features.stage_reference`.
+  `get_spatial_layout` includes the `stage` frame and reports stage units.
+
+```json
+{
+  "request": {"photo_id": "PHOTO_ID", "unit_label": "ft", "stage_width": 48},
+  "source_revision": 2,
+  "apply": true
+}
+```
 
 ### Guided visitor authoring and isolated Preview
 
@@ -367,6 +427,37 @@ steps reuse the same normalized ingestion and clock advancement and return
 `actual.visitor_checkpoints`. Their `actual.clock_ms` remains elapsed test time.
 Legacy direct `observe` scenarios remain supported and explicitly bypass camera
 normalization. Visit examples do not prove real source label filters/reception.
+
+### Show plan authoring
+
+**Show plan** reads `GET /api/gui/v1/projects/{id}/show-plan` with project read
+access. It is a plain-language projection of existing runtime definitions: program
+`initial_scene_id`, each scene's `completion`, and the program default pool
+(the "shuffle list"), plus visitor-response lanes from the interactions projection
+and scenes not reachable from the program, encounter, opportunities, completion
+targets or failure fallbacks. No new runtime package fields are introduced.
+
+`PUT` on the same path takes `ShowPlanEditRequest` with project designer/publisher/
+administrator authorization, origin/CSRF checks and a current `source_revision`
+(otherwise `409 revision_conflict`; validation failures return
+`422 show_plan_invalid`). Operations write only:
+
+| Operation | Writes |
+| --- | --- |
+| `starting_scene` | `program.initial_scene_id`; without a program, creates one with a single-scene default pool `main` |
+| `scene_ending` | One scene's `completion`: `repeat`=`loop`, `play_next`=`transition_to` (`next_scene_id`), `shuffle`=`select_next` (requires a program), `freeze`=`hold`, `stop`=`stop` |
+| `shuffle_list` | The default pool's ordered entries and weights; retained entries keep cooldown, conditions and availability |
+
+The following MCP tools use the same projection and edit service:
+
+| Tool | Scope | Behavior |
+| --- | --- | --- |
+| `get_show_plan` | `read` | Same JSON as the REST read, including `source_revision` |
+| `update_show_plan` | `direct_edit` | Current-revision focused save; no publish, apply or hardware command |
+
+`get_capabilities.show_plan` and `get_authoring_schema`'s `x-show-plan` expose the
+edit schema and ending-to-completion mapping. Use `preview_interaction_workflow`
+to rehearse the resulting order without live output.
 
 ### Camera input management
 
@@ -513,7 +604,8 @@ See [controller-timed scenes](scene-schema.md#controller-timed-scenes) and
 the [LED-only example](../shows/led-only-demo).
 
 `get_authoring_schema` describes composition settings (including
-`stage_lighting_surfaces`), output presets, image/video/GIF media layers,
+`stage_lighting_surfaces` and `stage_projector_resources`), output presets,
+image/video/GIF media layers (including optional `corner_pin` and `mask`),
 playback policy, keyframes, and timeline tracks under `editor_metadata`.
 Draft/proposal saves still enforce resource references, unique IDs, intervals,
 and other cross-field rules. Preserve unrelated GUI metadata when editing a
@@ -534,6 +626,70 @@ the scene from editor-only range results.
 The accepted [UP-01 architecture decisions](decisions/0016-lossless-hobbyist-authoring-and-runtime-handover.md)
 record the accepted preservation, explicit Apply, unified Preview and monitoring
 contracts. Discover current tool schemas and grants before attempting a workflow.
+
+### Logical installation objects
+
+Author-facing API/MCP changes must ship an equivalent discoverable UI workflow,
+with shared validation, authorization and revision boundaries. API/MCP-created
+objects must remain visible and editable in the UI even without geometry.
+Document intentionally headless/operator-only exceptions. Verify both interfaces
+before declaring a feature complete; see the
+[project contribution requirements](../.github/copilot-instructions.md).
+
+The UI equivalent for logical fixture/path authoring is **Installation > Objects**
+(or **Manage installation objects** from an open show).
+Discover `get_capabilities.features.installation_objects` and
+`get_authoring_schema.x-installation-objects`.
+
+- `get_installation_objects()` requires `read` and returns the token-bound show's
+  revision, saved LED resources, logical segments/fixtures/paths, traversal ranges,
+  reference paths, explicit geometry links and mapped member geometry IDs.
+  Unplaced objects are included. Layout geometry is available only for the bound
+  runtime installation.
+- `edit_installation_object(action, base_revision, request)` requires `direct_edit`.
+  Actions are `create`, `update`, and `delete`. Fixtures and paths are editable;
+  segments are read-only so contiguous output partitions cannot be accidentally
+  changed. IDs cannot be renamed by update. The same service backs authenticated
+  REST `GET /api/gui/v1/projects/{project_id}/installation-objects` and
+  `POST /api/gui/v1/projects/{project_id}/installation-objects/{action}`. REST
+  mutations require CSRF/Origin authorization and the current `If-Match` revision.
+- Names and optional `geometry_semantic_ids` are saved in show-owned
+  `editor_metadata.installation_object_details`; member definitions remain in
+  installation resource bindings. Layout links reference existing fixture/path
+  geometry or pixel segments on the same output. Mapped member segments are also
+  discovered by output and exact pixel range. Geometry is not created or mutated
+  by these tools; MCP geometry editing remains disabled.
+- Deleting referenced objects is rejected, as are unknown/repeated members,
+  invalid precedence, missing/foreign layout links, archived shows and stale
+  revisions. Unlinking/deleting definitions never deletes geometry. No operation
+  publishes, applies, or sends hardware commands.
+
+Example (use the revision and segment IDs returned by discovery):
+
+```json
+{
+  "name": "edit_installation_object",
+  "arguments": {
+    "action": "create",
+    "base_revision": 12,
+    "request": {
+      "resource": "roofline",
+      "kind": "fixture",
+      "id": "porch-outline",
+      "name": "Porch outline",
+      "segments": [
+        {"segment": "right-eave", "reverse": false},
+        {"segment": "left-eave", "reverse": true}
+      ],
+      "precedence": 100,
+      "geometry_semantic_ids": []
+    }
+  }
+}
+```
+
+Read back with `get_installation_objects`, inspect it in Objects, and verify
+effect targeting using `preview_scene_lighting` before publishing.
 
 ### Creating scenes and adding outputs
 
@@ -685,9 +841,15 @@ For installation-wide image/video/GIF overlays:
 
 1. Read the layout, draft, schema, and `list_asset_metadata`. Asset metadata
    includes available source dimensions and duration, but not storage paths.
-2. Author media layers in a shared-stage composition, select mapped LED semantic
-   IDs in `stage_lighting_surfaces`, bind timeline tracks, and attach the
-   composition to a scene. `get_timeline_range` accepts scene **or composition**
+2. Author media layers in a shared-stage composition sized to the layout's
+   `stage.width`/`stage.height`, select mapped LED semantic IDs in
+   `stage_lighting_surfaces`, optionally restrict projectors with
+   `stage_projector_resources` (omit for all), bind timeline tracks, and attach
+   the composition to a scene. To place media across separate devices, set the
+   layer's `corner_pin` to four convex stage points (TL, TR, BR, BL); position,
+   scale, rotation and anchor keyframes are then ignored while opacity and crop
+   still animate. A layer `mask` (`points`, `feather` in stage units, `invert`)
+   limits where it appears. Corner pins and masks are static per layer. `get_timeline_range` accepts scene **or composition**
    IDs and returns overlapping media/lighting layers as well as cues and markers.
 3. Use the proposal/approval/merge workflow, or explicitly granted `direct_edit`.
 4. Call `preview_composition(composition_id, timestamp_ms)`. For a stage this

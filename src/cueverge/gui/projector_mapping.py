@@ -54,6 +54,7 @@ class StoredProjectorMapping:
     revision: int
     created_at: str
     updated_at: str
+    stage_homography: tuple[float, ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -194,9 +195,28 @@ class ProjectorMappingService:
                         "projector masks must reference mask geometry in the installation"
                     )
             row = connection.execute(
-                "SELECT revision, created_at FROM projector_surface_mappings WHERE geometry_id = ?",
+                """
+                SELECT revision, created_at, stage_x, stage_y, stage_width, stage_height,
+                       orientation_degrees, mirror_x, mirror_y, stage_homography_json
+                FROM projector_surface_mappings WHERE geometry_id = ?
+                """,
                 (geometry_id,),
             ).fetchone()
+            retained_stage_homography: str | None = None
+            if row is not None and row["stage_homography_json"] is not None:
+                # A manual stage extent or orientation change overrides derived placement.
+                unchanged = (
+                    float(row["stage_x"]) == stage_x
+                    and float(row["stage_y"]) == stage_y
+                    and float(row["stage_width"]) == stage_width
+                    and float(row["stage_height"]) == stage_height
+                    and int(row["orientation_degrees"]) == orientation_degrees
+                    and bool(row["mirror_x"]) == mirror_x
+                    and bool(row["mirror_y"]) == mirror_y
+                    and surface_model == "planar"
+                )
+                if unchanged:
+                    retained_stage_homography = str(row["stage_homography_json"])
             if row is None:
                 if expected_revision is not None:
                     raise ProjectorMappingConflictError(0)
@@ -270,7 +290,7 @@ class ProjectorMappingService:
                         orientation_degrees = ?, mirror_x = ?, mirror_y = ?,
                         mask_semantic_ids_json = ?, calibration_source = ?,
                         calibration_revision = ?, mesh_vertices_json = ?,
-                        mesh_triangles_json = ?,
+                        mesh_triangles_json = ?, stage_homography_json = ?,
                         revision = ?, updated_at = ?
                     WHERE geometry_id = ?
                     """,
@@ -301,6 +321,7 @@ class ProjectorMappingService:
                         calibration_revision,
                         json.dumps(mesh_vertices, separators=(",", ":")),
                         json.dumps(mesh_triangles, separators=(",", ":")),
+                        retained_stage_homography,
                         revision,
                         occurred_at,
                         geometry_id,
@@ -382,6 +403,11 @@ class ProjectorMappingService:
             revision=revision,
             created_at=created_at,
             updated_at=occurred_at,
+            stage_homography=(
+                tuple(json.loads(retained_stage_homography))
+                if retained_stage_homography is not None
+                else None
+            ),
         )
 
     def _photo_views(
@@ -540,6 +566,11 @@ def _stored_mapping(
         revision=int(row["revision"]),
         created_at=str(row["created_at"]),
         updated_at=str(row["updated_at"]),
+        stage_homography=(
+            tuple(float(value) for value in json.loads(str(row["stage_homography_json"])))
+            if row["stage_homography_json"] is not None
+            else None
+        ),
     )
 
 

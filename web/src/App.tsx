@@ -81,6 +81,7 @@ import { InstallationPage } from "./pages/InstallationPage";
 import { useLiveStatus } from "./useLiveStatus";
 import { SnapshotFreshness, STATUS_TIMEOUT_MS } from "./status";
 
+const ShowPlan = lazy(() => import("./pages/ShowPlan").then((module) => ({ default: module.ShowPlan })));
 const VisitorInteractions = lazy(() => import("./pages/VisitorInteractions").then((module) => ({ default: module.VisitorInteractions })));
 const ShowPreviewWorkspace = lazy(() => import("./pages/ShowPreviewWorkspace").then((module) => ({ default: module.ShowPreviewWorkspace })));
 const ShowLogicDesigner = lazy(() =>
@@ -152,9 +153,10 @@ function AuthenticatedApp({
   onSignedOut: () => void;
 }) {
   const [workspace, setWorkspace] = useState<Workspace>("overview");
-  const [installationEntry, setInstallationEntry] = useState<"photos" | "devices" | "inputs">("photos");
+  const [installationEntry, setInstallationEntry] = useState<"photos" | "objects" | "devices" | "inputs">("photos");
+  const [installationProjectId, setInstallationProjectId] = useState("");
   const [authoringDirty, setAuthoringDirty] = useState(false);
-  const navigate = (next: Workspace, setupSection: "photos" | "devices" | "inputs" = "photos") => {
+  const navigate = (next: Workspace, setupSection: "photos" | "objects" | "devices" | "inputs" = "photos") => {
     if (next === workspace) return;
     if (!authoringDirty ||
       window.confirm("Discard unsaved changes and leave this page?")) {
@@ -297,6 +299,7 @@ function AuthenticatedApp({
       {workspace === "installation" && (
         <InstallationPage
           initialSection={installationEntry}
+          initialProjectId={installationProjectId}
           session={session}
           installation={installation}
           topology={topology}
@@ -308,7 +311,11 @@ function AuthenticatedApp({
           onDirtyChange={setAuthoringDirty}
         />
       )}
-      {workspace === "shows" && <ShowsPage session={session} runtime={runtime} runtimeFresh={runtimeFreshness === "fresh"} onDirtyChange={setAuthoringDirty} onInputs={() => navigate("installation", "inputs")} />}
+      {workspace === "shows" && <ShowsPage session={session} runtime={runtime} runtimeFresh={runtimeFreshness === "fresh"} onDirtyChange={setAuthoringDirty} onInputs={() => navigate("installation", "inputs")}
+        onObjects={(projectId) => {
+          if (authoringDirty && !window.confirm("Discard unsaved changes and open installation objects?")) return;
+          setInstallationProjectId(projectId); setInstallationEntry("objects"); setWorkspace("installation");
+        }} />}
       {workspace === "operate" && (
         <OperatePage
           session={session}
@@ -396,6 +403,7 @@ export function ShowsPage({
   initialProjects,
   onDirtyChange,
   onInputs,
+  onObjects,
   runtime,
   runtimeFresh,
 }: {
@@ -403,6 +411,7 @@ export function ShowsPage({
   initialProjects?: ProjectSummary[];
   onDirtyChange?: (dirty: boolean) => void;
   onInputs?: () => void;
+  onObjects?: (projectId: string) => void;
   runtime?: RuntimeStatus | null;
   runtimeFresh?: boolean;
 }) {
@@ -414,6 +423,7 @@ export function ShowsPage({
   const [search, setSearch] = useState("");
   const [busy, setBusy] = useState(false);
   const [openProjectId, setOpenProjectId] = useState<string | null>(null);
+  const [openedNewProject, setOpenedNewProject] = useState(false);
   const canAuthor = ["designer", "publisher", "administrator"].includes(session.role);
 
   const loadProjects = useCallback(async () => {
@@ -462,9 +472,11 @@ export function ShowsPage({
   if (openProject) {
     return <>{error && <ErrorState title="Show action failed" description="The action or its refresh could not be completed. Check saved state before retrying." />}<ProjectCard
       key={openProject.id} project={openProject} session={session} busy={busy} run={run}
-      onClose={() => { setOpenProjectId(null); void loadProjects(); }}
+      onClose={() => { setOpenProjectId(null); setOpenedNewProject(false); void loadProjects(); }}
+      initialView={openedNewProject ? "scenes" : "plan"}
       onDirtyChange={onDirtyChange}
       onInputs={onInputs}
+      onObjects={onObjects}
       runtime={runtime}
       runtimeFresh={runtimeFresh}
     /></>;
@@ -496,6 +508,7 @@ export function ShowsPage({
                 void run(async () => {
                   const created = await createProjectFromActive(name);
                   setName("");
+                  setOpenedNewProject(true);
                   setOpenProjectId(created.project.id);
                 })
               }
@@ -594,18 +607,22 @@ function ProjectCard({
   busy,
   run,
   onClose,
+  initialView = "plan",
   onDirtyChange,
   onInputs,
+  onObjects,
   runtime,
   runtimeFresh,
 }: {
   project: ProjectSummary;
+  initialView?: "plan" | "scenes";
   session: Session;
   busy: boolean;
   run: (action: () => Promise<void>) => Promise<void>;
   onClose: () => void;
   onDirtyChange?: (dirty: boolean) => void;
   onInputs?: () => void;
+  onObjects?: (projectId: string) => void;
   runtime?: RuntimeStatus | null;
   runtimeFresh?: boolean;
 }) {
@@ -619,7 +636,7 @@ function ProjectCard({
   const [sceneId, setSceneId] = useState("");
   const [sceneDirty, setSceneDirty] = useState(false);
   const [interactionDirty, setInteractionDirty] = useState(false);
-  const [showView, setShowView] = useState<"scenes" | "interactions" | "preview">("scenes");
+  const [showView, setShowView] = useState<"plan" | "scenes" | "interactions" | "preview">(initialView);
   const [previewStartsWithVisitors, setPreviewStartsWithVisitors] = useState(false);
   const interactionDirtyRef = useRef(false);
   const sceneDirtyRef = useRef(false);
@@ -747,17 +764,23 @@ function ProjectCard({
         if ((!sceneDirty && !interactionDirty) || window.confirm("Discard unsaved edits and return to the show library?")) onClose();
       }}>Back to shows</button>
       <h1>{project.name}</h1>
+      {onObjects && <button onClick={() => onObjects(project.id)}>Manage installation objects</button>}
       {assetError && <p role="alert">{assetError}</p>}
       {permissionError && <p role="alert">{permissionError}</p>}
       <div className="show-workspace-tabs" role="group" aria-label="Show workspace">
-        {(["scenes", "interactions", "preview"] as const).map((view) => <button key={view} aria-pressed={showView === view} onClick={() => {
+        {(["plan", "scenes", "interactions", "preview"] as const).map((view) => <button key={view} aria-pressed={showView === view} onClick={() => {
           if (showView === view) return;
           if ((sceneDirty || interactionDirty) && !window.confirm("Discard unsaved edits and change workspace?")) return;
           updateSceneDirty(false); updateInteractionDirty(false);
           if (view === "preview") setPreviewStartsWithVisitors(false);
           setShowView(view);
-        }}>{view === "scenes" ? "Scenes" : view === "interactions" ? "Visitor responses" : "Preview"}</button>)}
+        }}>{view === "plan" ? "Show plan" : view === "scenes" ? "Scenes" : view === "interactions" ? "Visitor responses" : "Preview"}</button>)}
       </div>
+      {draft && showView === "plan" && <Suspense fallback={<p>Loading show plan…</p>}>
+        <ShowPlan draft={draft} canEdit={canEditScene && !project.archived_at} onUpdated={setDraft}
+          onOpenScene={(id) => { setSceneId(id); setShowView("scenes"); }}
+          onVisitorResponses={() => setShowView("interactions")} />
+      </Suspense>}
       {draft && showView === "interactions" && <Suspense fallback={<p>Loading visitor responses…</p>}>
         <VisitorInteractions draft={draft} canEdit={canEditScene && !project.archived_at}
           canPreview={["designer", "operator", "publisher", "administrator"].includes(projectRole)}
@@ -771,6 +794,15 @@ function ProjectCard({
       {draft && showView === "preview" && <Suspense fallback={<p>Loading preview workspace…</p>}>
         <ShowPreviewWorkspace draft={draft} startWithVisitors={previewStartsWithVisitors} canTestVisitors={["designer", "operator", "publisher", "administrator"].includes(projectRole)} />
       </Suspense>}
+      {draft && showView === "scenes" && <nav className="show-breadcrumb" aria-label="Breadcrumb">
+        <button onClick={() => {
+          if (sceneDirty && !window.confirm("Discard unsaved scene edits and return to the show plan?")) return;
+          updateSceneDirty(false);
+          setShowView("plan");
+        }}>Show plan</button>
+        <span aria-hidden="true">›</span>
+        <span aria-current="page">{draft.draft.scenes.find((scene) => scene.id === sceneId)?.name ?? "Scene"}</span>
+      </nav>}
       {draft && showView === "scenes" && <Suspense fallback={<p>Loading scene workspace…</p>}>
         <SceneWorkspace
           draft={draft} sceneId={sceneId} canEdit={canEditScene && !project.archived_at}

@@ -166,10 +166,13 @@ export function SceneWorkspace({
   const resource = text(output?.resource);
   const binding = objects(record(document.installation).resources)
     .find((candidate) => candidate.resource === resource);
+  const objectNames = Object.fromEntries(objects(document.editor_metadata.installation_object_details)
+    .filter((item) => item.resource === resource).map((item) => [`${text(item.kind)}:${text(item.id)}`, text(item.name)]));
+  const targetName = (kind: string, id: string) => objectNames[`${kind}:${id}`] ?? targetNames[`${kind}:${id}`] ?? id.replaceAll("-", " ");
   const targets = (["segments", "fixtures", "paths"] as const).flatMap((kind) =>
     objects(binding?.[kind]).map((target) => ({
       key: `${kind === "segments" ? "segment" : kind === "fixtures" ? "fixture" : "path"}:${text(target.id)}`,
-      label: `${targetNames[`${kind === "segments" ? "segment" : kind === "fixtures" ? "fixture" : "path"}:${text(target.id)}`] ?? text(target.id).replaceAll("-", " ")} · ${kind.slice(0, -1)}`,
+      label: `${targetName(kind === "segments" ? "segment" : kind === "fixtures" ? "fixture" : "path", text(target.id))} · ${kind.slice(0, -1)}`,
     })),
   );
   useEffect(() => {
@@ -341,7 +344,7 @@ export function SceneWorkspace({
                   setEffectId(text(value.id)); setPlaying(false);
                   setPosition(Number(value.start_ms));
                 }}>
-                <span>{text(value.id).replaceAll("-", " ")}<small>{targetNames[`${text(record(value.target).kind)}:${text(record(value.target).id)}`] ?? text(record(value.target).id, "Whole output")} · {text(value.primitive)}</small></span>
+                <span>{text(value.id).replaceAll("-", " ")}<small>{value.target ? targetName(text(record(value.target).kind), text(record(value.target).id)) : "Whole output"} · {text(value.primitive)}</small></span>
                 <span className="scene-effect-track">
                   <span style={{
                     left: `${Number(value.start_ms) / duration * 100}%`,

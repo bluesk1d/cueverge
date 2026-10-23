@@ -321,6 +321,7 @@ export interface ProjectorMapping {
   mesh_vertices: [number, number, number, number][];
   mesh_triangles: [number, number, number][];
   homography: number[] | null;
+  stage_homography?: number[] | null;
   diagnostic: string | null;
   fit_diagnostics: string[];
   photo_views: {
@@ -406,9 +407,98 @@ export interface StageCoverage {
   }[];
 }
 
+export interface StageFrame {
+  width: number;
+  height: number;
+  unit: StageUnit;
+  reference_photo_id: string | null;
+  reference_revision: number;
+  canvas_units_per_stage_unit: number;
+}
+
+export type StageUnit = "ft" | "m" | "in" | "cm" | "units";
+
+export interface StageReference {
+  installation_id: string;
+  photo_id: string | null;
+  unit_label: StageUnit;
+  units_per_canvas: number;
+  stage_width: number;
+  stage_height: number;
+  scale_points: [[number, number], [number, number]] | null;
+  scale_distance: number | null;
+  revision: number;
+  applied_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface StageMapItem {
+  semantic_id: string;
+  name: string;
+  kind: InstallationGeometryKind;
+  status: "placed" | "needs_update" | "manual" | "unplaced";
+  reference_geometry_id: string | null;
+  resource: string | null;
+  stage_points: [number, number][] | null;
+  message: string | null;
+}
+
+export interface StageMap {
+  installation_id: string;
+  reference: StageReference | null;
+  counts: Record<StageMapItem["status"], number>;
+  needs_update: boolean;
+  items: StageMapItem[];
+  projector_overlaps: { resources: [string, string]; fraction: number }[];
+}
+
+export interface StageReferenceRequest {
+  photo_id: string;
+  unit_label: StageUnit;
+  stage_width?: number;
+  scale_points?: [{ x: number; y: number }, { x: number; y: number }];
+  scale_distance?: number;
+}
+
+export async function getStageMap(installationId: string): Promise<StageMap> {
+  return request<StageMap>(
+    `/api/gui/v1/installations/${encodeURIComponent(installationId)}/stage-reference`,
+  );
+}
+
+export async function saveStageReference(
+  installationId: string,
+  values: StageReferenceRequest,
+  revision?: number,
+): Promise<StageMap> {
+  return request<StageMap>(
+    `/api/gui/v1/installations/${encodeURIComponent(installationId)}/stage-reference`,
+    {
+      method: "PUT",
+      headers:
+        revision === undefined
+          ? mutationHeaders()
+          : { ...mutationHeaders(), "If-Match": `"${revision}"` },
+      body: JSON.stringify(values),
+    },
+  );
+}
+
+export async function applyStageMap(
+  installationId: string,
+  revision: number,
+): Promise<StageMap> {
+  return request<StageMap>(
+    `/api/gui/v1/installations/${encodeURIComponent(installationId)}/stage-reference/apply`,
+    { method: "POST", headers: { ...mutationHeaders(), "If-Match": `"${revision}"` } },
+  );
+}
+
 export interface InstallationMapperExport {
   schema_version: 1;
   installation_id: string;
+  stage?: StageFrame | null;
   resources: InstallationResource[];
   projectors: Record<string, unknown>[];
   lighting_surfaces: {
@@ -585,6 +675,50 @@ export interface SceneAuthoringOptions {
   installation_id: string | null;
   resources: InstallationResource[];
   importable_resources: string[];
+}
+
+export interface ObjectSegmentReference {
+  segment: string;
+  reverse: boolean;
+}
+
+export interface InstallationObjectEdit {
+  resource: string;
+  kind: "fixture" | "path";
+  id: string;
+  name: string;
+  segments: ObjectSegmentReference[];
+  precedence: number;
+  geometry_semantic_ids: string[];
+}
+
+export interface InstallationObjectRecord extends Omit<InstallationObjectEdit, "kind"> {
+  kind: "segment" | "fixture" | "path";
+  pixel_count: number;
+  traversal: { segment: string; first_pixel: number; last_pixel: number; pixel_count: number; reverse: boolean }[];
+  references: string[];
+  geometry_ids: string[];
+  missing_geometry_semantic_ids: string[];
+}
+
+export interface InstallationObjectInventory {
+  project_id: string;
+  project_name: string;
+  revision: number;
+  archived: boolean;
+  installation_id: string | null;
+  layout_available: boolean;
+  resources: (InstallationResource & {
+    segments: { id: string; start: number; end: number }[];
+  })[];
+  objects: InstallationObjectRecord[];
+  geometry: { semantic_id: string; name: string; kind: string; resource: string | null; geometry_ids: string[] }[];
+  editable_kinds: ("fixture" | "path")[];
+}
+
+export interface ObjectLayoutSelection {
+  name: string;
+  geometryIds: string[];
 }
 
 export interface SceneOutputCreate {
@@ -970,6 +1104,39 @@ export function updateInteraction(projectId: string, edit: InteractionEdit): Pro
     method: "PUT", headers: mutationHeaders(), body: JSON.stringify(edit),
   }, true);
 }
+export type SceneEnding = "repeat" | "play_next" | "shuffle" | "freeze" | "stop";
+export interface ShowPlanScene {
+  id: string; name: string; duration_ms: number;
+  ending: { kind: SceneEnding; next_scene_id: string | null; label: string };
+}
+export interface ShowPlanShuffleEntry extends ShowPlanScene {
+  weight: number; chance_percent: number; available: boolean; has_extra_rules: boolean;
+}
+export interface ShowPlan {
+  source_revision: number;
+  starting_scene_id: string | null;
+  main_show: {
+    scenes: ShowPlanScene[];
+    end: { kind: SceneEnding | "back_to" | "missing" | "none"; scene_id: string | null };
+  };
+  shuffle_list: { pool_id: string | null; scenes: ShowPlanShuffleEntry[] };
+  visitor_responses: { key: string; kind: "response" | "transition"; name: string; when: string; scene_id: string | null; scene_name: string | null; afterward: string }[];
+  unused_scenes: ShowPlanScene[];
+  ending_choices: { kind: SceneEnding; label: string }[];
+  warnings: string[];
+}
+export type ShowPlanEdit =
+  | { source_revision: number; operation: "starting_scene"; scene_id: string }
+  | { source_revision: number; operation: "scene_ending"; scene_id: string; ending: SceneEnding; next_scene_id?: string }
+  | { source_revision: number; operation: "shuffle_list"; shuffle: { scene_id: string; weight: number }[] };
+export function getShowPlan(projectId: string, signal?: AbortSignal): Promise<ShowPlan> {
+  return request(`/api/gui/v1/projects/${encodeURIComponent(projectId)}/show-plan`, { signal });
+}
+export function updateShowPlan(projectId: string, edit: ShowPlanEdit): Promise<ProjectDraftRecord> {
+  return request(`/api/gui/v1/projects/${encodeURIComponent(projectId)}/show-plan`, {
+    method: "PUT", headers: mutationHeaders(), body: JSON.stringify(edit),
+  }, true);
+}
 export function previewInteractions(projectId: string, input: InteractionPreviewInput, signal?: AbortSignal): Promise<InteractionPreview> {
   return request(`/api/gui/v1/projects/${encodeURIComponent(projectId)}/interaction-preview`, {
     method: "POST", headers: mutationHeaders(), body: JSON.stringify(input), signal,
@@ -1095,6 +1262,7 @@ export interface StageLightingPreview {
       color: number[];
     }[];
   }[];
+  canvas_png_base64?: string;
   hardware_command_sent: false;
 }
 
@@ -1871,11 +2039,12 @@ export async function getStageLightingPreview(
   projectId: string,
   compositionId: string,
   timestampMs: number,
+  includeCanvas = false,
 ): Promise<StageLightingPreview> {
   return request<StageLightingPreview>(
     `/api/gui/v1/projects/${encodeURIComponent(projectId)}/compositions/` +
       `${encodeURIComponent(compositionId)}/stage-lighting-preview` +
-      `?timestamp_ms=${timestampMs}`,
+      `?timestamp_ms=${timestampMs}${includeCanvas ? "&include_canvas=true" : ""}`,
   );
 }
 
@@ -1885,6 +2054,7 @@ export async function saveProjectorMapping(
     ProjectorMapping,
     | "geometry_id"
     | "homography"
+    | "stage_homography"
     | "diagnostic"
     | "fit_diagnostics"
     | "photo_views"
@@ -2096,6 +2266,21 @@ export async function updateProjectDraft(
 
 export function getSceneAuthoringOptions(projectId: string): Promise<SceneAuthoringOptions> {
   return request(`/api/gui/v1/projects/${encodeURIComponent(projectId)}/scene-authoring-options`);
+}
+
+export function getInstallationObjects(projectId: string): Promise<InstallationObjectInventory> {
+  return request(`/api/gui/v1/projects/${encodeURIComponent(projectId)}/installation-objects`, undefined, true);
+}
+
+export function editInstallationObject(
+  projectId: string, revision: number, action: "create" | "update" | "delete",
+  body: InstallationObjectEdit | Pick<InstallationObjectEdit, "resource" | "kind" | "id">,
+): Promise<ProjectDraftRecord> {
+  return request(`/api/gui/v1/projects/${encodeURIComponent(projectId)}/installation-objects/${action}`, {
+    method: "POST",
+    headers: { ...mutationHeaders(), "If-Match": `"${revision}"` },
+    body: JSON.stringify(body),
+  }, true);
 }
 
 export function createScene(

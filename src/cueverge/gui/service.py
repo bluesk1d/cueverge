@@ -49,6 +49,7 @@ from cueverge.gui.render_jobs import RenderJobService
 from cueverge.gui.repository import GuiRepository
 from cueverge.gui.simulation_scenarios import SimulationScenarioService
 from cueverge.gui.stage_coverage import StageCoverageService
+from cueverge.gui.stage_reference import StageReferenceService
 from cueverge.gui.sync_rehearsal import SyncRehearsalService
 from cueverge.gui.timing_calibration import TimingCalibrationService
 from cueverge.gui.wled_status import WledStatusObserver
@@ -139,6 +140,7 @@ class GuiServices:
     geometry_suggestions: GeometrySuggestionService
     output_arming: OutputArmService
     stage_coverage: StageCoverageService
+    stage_reference: StageReferenceService
     mapper_export: MapperExportService
     mcp_authoring: McpAuthoringService
     mcp_store: McpAuthoringStore
@@ -429,6 +431,7 @@ class GuiServices:
             geometry_suggestions=GeometrySuggestionService(repository),
             output_arming=OutputArmService(repository),
             stage_coverage=stage_coverage,
+            stage_reference=StageReferenceService(repository),
             mapper_export=mapper_export,
             mcp_authoring=McpAuthoringService(
                 mcp_store,

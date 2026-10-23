@@ -399,7 +399,18 @@ project-bound. See [MCP operations](operations.md#mcp-assisted-authoring).
 
 Stage compositions may opt into mapped LED surfaces with the
 `stage_lighting_surfaces` array of semantic IDs. The default is empty, preserving
-projector-only rendering. The stage compositor evaluates each frame once;
+projector-only rendering. An optional `stage_projector_resources` list (1–32
+unique mapped resources) restricts which projectors render the stage; omitting
+it keeps every mapped projector, and synchronization admission covers only the
+selected projectors.
+
+Visual media layers may define a static `corner_pin` (four convex points in
+logical composition coordinates, TL/TR/BR/BL) and a static `mask` polygon
+(3–128 points, nonnegative inward `feather`, optional `invert`). The compositor
+perspective-maps the cropped source onto a corner pin instead of evaluating
+position/scale/rotation/anchor, still applying keyframed opacity and crop, then
+multiplies by the cached mask coverage. Stage, projector-native and
+lighting-surface renderers scale both into raster pixels with the keyframes. The stage compositor evaluates each frame once;
 projector outputs apply their native warps/masks/blending, while selected LED
 surfaces sample the unwarped stage frame using calibrated stage positions.
 Sampling is nearest-neighbor on the stage raster, followed by surface brightness;
@@ -543,7 +554,11 @@ managed source-artwork reference changes.
 
 Shared-stage coverage analysis partitions the bounding stage extent at every
 projector edge and classifies cells as singly covered, overlapping, or
-uncovered. Explicit projector masks are inverse-projected from their calibrated
+uncovered. When any projector has a derived `stage_homography` from the
+installation stage reference, coverage instead clips the exact convex
+perspective footprints: exclusive pieces, pairwise overlaps, and uncovered
+pieces of the bounding box, with mask occlusion mapped through the same
+homography. See [stage reference view](operations.md#stage-reference-view-and-shared-stage-placement). Explicit projector masks are inverse-projected from their calibrated
 photo view through the saved homography into stage-space occlusion polygons.
 The API retains contributing resources/source IDs, and the mapper renders
 covered, overlap, occluded, and uncovered regions in one stage-space SVG

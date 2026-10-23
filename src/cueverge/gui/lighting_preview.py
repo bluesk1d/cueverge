@@ -9,6 +9,7 @@ from PIL import Image
 
 from cueverge.gui.asset_upload import AssetUploadService
 from cueverge.gui.contracts import DraftProject
+from cueverge.gui.frame_compositor import scale_layer_geometry
 from cueverge.gui.lighting_renderer import (
     LightingPixel,
     SamplingMode,
@@ -61,13 +62,17 @@ def evaluate_lighting_preview(
         assets=assets,
     )
     raster_layers = tuple(
-        replace(
-            layer,
-            keyframes=_scale_keyframes(
-                layer.keyframes,
-                canvas_width / local_width,
-                canvas_height / local_height,
+        scale_layer_geometry(
+            replace(
+                layer,
+                keyframes=_scale_keyframes(
+                    layer.keyframes,
+                    canvas_width / local_width,
+                    canvas_height / local_height,
+                ),
             ),
+            canvas_width / local_width,
+            canvas_height / local_height,
         )
         for layer in prepared.visual_layers
     )

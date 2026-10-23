@@ -5,6 +5,8 @@ from itertools import pairwise
 
 from cueverge.gui.lighting_surface import LightingSurfaceService
 from cueverge.gui.repository import GuiRepository
+from cueverge.gui.stage_geometry import homography_mesh, stage_size
+from cueverge.gui.stage_reference import stored_stage_homography
 
 
 class MapperExportError(RuntimeError):
@@ -59,8 +61,7 @@ class MapperExportService:
                     "calibration_source": str(row["calibration_source"]),
                     "calibration_revision": int(row["calibration_revision"]),
                     "surface_model": str(row["surface_model"]),
-                    "mesh_vertices": json.loads(str(row["mesh_vertices_json"])),
-                    "mesh_triangles": json.loads(str(row["mesh_triangles_json"])),
+                    **_projector_mesh(row),
                     "brightness_limit": float(row["brightness_limit"]),
                     "media_start_delay_ms": int(row["media_start_delay_ms"]),
                     "media_release_delay_ms": int(row["media_release_delay_ms"]),
@@ -129,9 +130,11 @@ class MapperExportService:
                     }
                 )
             fixtures, paths, zones = self._stage_geometry(connection, installation_id)
+            stage = _stage_frame(connection, installation_id)
         return {
             "schema_version": 1,
             "installation_id": installation_id,
+            "stage": stage,
             "projectors": projectors,
             "lighting_surfaces": surfaces,
             "fixtures": fixtures,
@@ -257,17 +260,22 @@ class MapperExportService:
                             object_ids=(str(left["id"]), str(right["id"])),
                         )
                     )
-            bounds = connection.execute(
-                """
-                SELECT MIN(m.stage_x), MIN(m.stage_y),
-                       MAX(m.stage_x + m.stage_width),
-                       MAX(m.stage_y + m.stage_height)
-                FROM projector_surface_mappings AS m
-                JOIN installation_geometry AS g ON g.id = m.geometry_id
-                WHERE g.installation_id = ?
-                """,
-                (installation_id,),
-            ).fetchone()
+            stage = _stage_frame(connection, installation_id)
+            bounds = (
+                (0.0, 0.0, *_stage_dimensions(stage))
+                if stage is not None
+                else connection.execute(
+                    """
+                    SELECT MIN(m.stage_x), MIN(m.stage_y),
+                           MAX(m.stage_x + m.stage_width),
+                           MAX(m.stage_y + m.stage_height)
+                    FROM projector_surface_mappings AS m
+                    JOIN installation_geometry AS g ON g.id = m.geometry_id
+                    WHERE g.installation_id = ?
+                    """,
+                    (installation_id,),
+                ).fetchone()
+            )
             if bounds is not None and bounds[0] is not None:
                 for row in connection.execute(
                     """
@@ -288,7 +296,11 @@ class MapperExportService:
                         diagnostics.append(
                             MapperDiagnostic(
                                 code="stage_geometry_out_of_range",
-                                message=f"{row['name']} extends outside calibrated stage coverage.",
+                                message=(
+                                    f"{row['name']} extends outside the stage reference view."
+                                    if stage is not None
+                                    else f"{row['name']} extends outside calibrated stage coverage."
+                                ),
                                 object_ids=(str(row["id"]),),
                             )
                         )
@@ -356,3 +368,46 @@ class MapperExportService:
         connection = sqlite3.connect(self.repository.database_path, timeout=10)
         connection.row_factory = sqlite3.Row
         return connection
+
+
+def _projector_mesh(row: sqlite3.Row) -> dict[str, object]:
+    derived = stored_stage_homography(row)
+    if derived is not None and str(row["surface_model"]) == "planar":
+        vertices, triangles = homography_mesh(derived)
+        return {
+            "mesh_vertices": [list(vertex) for vertex in vertices],
+            "mesh_triangles": [list(triangle) for triangle in triangles],
+            "stage_homography": list(derived),
+        }
+    return {
+        "mesh_vertices": json.loads(str(row["mesh_vertices_json"])),
+        "mesh_triangles": json.loads(str(row["mesh_triangles_json"])),
+        "stage_homography": None,
+    }
+
+
+def _stage_frame(connection: sqlite3.Connection, installation_id: str) -> dict[str, object] | None:
+    row = connection.execute(
+        """
+        SELECT photo_id, units_per_canvas, unit_label, revision, applied_at
+        FROM installation_stage_references WHERE installation_id = ?
+        """,
+        (installation_id,),
+    ).fetchone()
+    if row is None or row["applied_at"] is None:
+        return None
+    width, height = stage_size(float(row["units_per_canvas"]))
+    return {
+        "width": width,
+        "height": height,
+        "unit": str(row["unit_label"]),
+        "reference_photo_id": str(row["photo_id"]) if row["photo_id"] is not None else None,
+        "reference_revision": int(row["revision"]),
+        "canvas_units_per_stage_unit": 1 / float(row["units_per_canvas"]),
+    }
+
+
+def _stage_dimensions(stage: dict[str, object]) -> tuple[float, float]:
+    width, height = stage["width"], stage["height"]
+    assert isinstance(width, float) and isinstance(height, float)
+    return width, height
