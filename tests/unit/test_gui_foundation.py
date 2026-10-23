@@ -37,6 +37,7 @@ from cueverge.gui.mcp_authoring import McpAuthoringError, McpScope
 from cueverge.gui.passwords import hash_password
 from cueverge.gui.publication import PublicationDiagnostic, PublicationError
 from cueverge.gui.repository import StoredDevice
+from cueverge.gui.scene_authoring import delete_scene
 from cueverge.gui.service import GuiServices
 from cueverge.lighting.ddp import DdpUdpSink
 from cueverge.lighting.evaluation import evaluate_lighting_output
@@ -548,6 +549,215 @@ def test_mcp_privileged_scope_issuance_matches_current_project_permissions(
             else:
                 assert created.status_code == 403
                 assert created.json()["detail"]["code"] == "mcp_scope_not_permitted"
+
+
+@pytest.mark.parametrize("via_mcp", [False, True])
+def test_scene_deletion_is_revisioned_authorized_and_preserves_shared_content(
+    tmp_path: Path, via_mcp: bool,
+) -> None:
+    runtime, services, _ = _mcp_fixture(tmp_path)
+    keys = (
+        "scene_organization", "scene_preset_usage", "scene_compositions", "composition_instances",
+        "timeline_views", "timeline_tracks", "timeline_markers", "timeline_cues",
+        "timeline_transform_layers", "timeline_property_keyframes", "lighting_author_layers",
+    )
+    metadata = {key: {"ambient": [], "unwanted": []} for key in keys}
+    metadata.update({
+        "installation_id": "keep-installation",
+        "asset_bindings": {"keep-asset": 1},
+        "scene_presets": {"keep-preset": {"name": "Reusable"}},
+        "custom_note": "Keep unrelated metadata",
+        "compositions": {"shared": {
+            "id": "shared", "name": "Reusable composition", "duration_ms": 4000,
+            "space_kind": "stage", "target_id": "stage", "width": 1000, "height": 600,
+        }},
+        "timeline_sync_schedule": [{"scene_id": "unwanted"}, {"scene_id": "ambient"}],
+    })
+    document = _draft(editor_metadata=metadata)
+    document["scenes"].append({**copy.deepcopy(document["scenes"][0]), "id": "unwanted"})
+    document["editor_metadata"]["scene_compositions"]["unwanted"] = ["shared"]
+    original = DraftProject.model_validate(document)
+    project = services.repository.create_project(
+        name="Delete scene fixture", draft=original, actor="admin", role=Role.ADMINISTRATOR,
+        occurred_at=datetime.now(UTC).isoformat(),
+    )
+    project_id = project.project.id
+    direct = _mcp_token(services, project_id, (McpScope.READ, McpScope.DIRECT_EDIT))
+    read = _mcp_token(services, project_id, (McpScope.READ, McpScope.DRAFT_EDIT))
+    path = f"/api/gui/v1/projects/{project_id}/scenes/unwanted"
+    with TestClient(
+        create_app(runtime, gui_services=services), base_url="http://localhost"
+    ) as client:
+        assert client.delete(path).status_code == 401
+        _login(client)
+        assert client.delete(path).status_code == 403
+        assert client.delete(path, headers=_mutation_headers(client)).status_code == 428
+        assert _mcp_tool(
+            client, read, "delete_scene", scene_id="unwanted", base_revision=1
+        )["isError"] is True
+        schema = _mcp_tool(client, read, "get_authoring_schema")["structuredContent"]
+        assert schema["x-scene-deletion"]["scope"] == "direct_edit"
+        capabilities = _mcp_tool(client, read, "get_capabilities")["structuredContent"]
+        assert capabilities["features"]["scene_deletion"] is True
+        assert capabilities["tools"]["delete_scene"] == "delete_scene"
+        missing = client.delete(
+            path.replace("unwanted", "missing"),
+            headers=_mutation_headers(client, if_match='"1"'),
+        )
+        assert missing.status_code == 422
+        if via_mcp:
+            result = _mcp_tool(client, direct, "delete_scene", scene_id="unwanted", base_revision=1)
+            assert result["isError"] is False
+            assert result["structuredContent"]["revision"] == 2
+            assert result["structuredContent"]["hardware_commands_sent"] is False
+        else:
+            response = client.delete(path, headers=_mutation_headers(client, if_match='"1"'))
+            assert response.status_code == 200, response.text
+            assert response.headers["etag"] == '"2"'
+        stored = services.repository.get_revision(project_id)
+        assert [scene.id for scene in stored.draft.scenes] == ["ambient"]
+        expected_metadata = copy.deepcopy(original.editor_metadata)
+        for key in keys:
+            expected_metadata[key].pop("unwanted")
+        expected_metadata["timeline_sync_schedule"] = [{"scene_id": "ambient"}]
+        assert stored.draft.editor_metadata == expected_metadata
+        assert stored.draft.scenes == original.scenes[:1]
+        assert services.repository.get_revision(project_id, 1).draft == original
+        assert client.delete(
+            path, headers=_mutation_headers(client, if_match='"1"')
+        ).status_code == 409
+        assert _mcp_tool(
+            client, direct, "delete_scene", scene_id="unwanted", base_revision=1
+        )["isError"] is True
+        last = client.delete(
+            path.replace("unwanted", "ambient"),
+            headers=_mutation_headers(client, if_match='"2"'),
+        )
+        assert last.status_code == 422
+        assert "last scene" in last.json()["detail"]["message"]
+        assert _mcp_tool(
+            client, direct, "delete_scene", scene_id="ambient", base_revision=2
+        )["isError"] is True
+        assert services.repository.get_revision(project_id).revision == 2
+        assert services.publication.list(project_id) == ()
+        assert runtime.active_scene is None
+        services.repository.archive_project(
+            project_id=project_id, expected_revision=stored.project.metadata_revision,
+            actor="admin", role=Role.ADMINISTRATOR, occurred_at=datetime.now(UTC).isoformat(),
+        )
+        archived = client.delete(
+            path.replace("unwanted", "ambient"),
+            headers=_mutation_headers(client, if_match='"2"'),
+        )
+        assert archived.status_code == 422
+        assert "Archived" in archived.json()["detail"]["message"]
+        assert _mcp_tool(
+            client, direct, "delete_scene", scene_id="ambient", base_revision=2
+        )["isError"] is True
+        assert services.repository.get_revision(project_id).revision == 2
+
+
+@pytest.mark.parametrize("reference", [
+    "fallback", "completion", "program-start", "program-pool",
+    "visitor-response", "encounter-ambient", "encounter-transition",
+])
+def test_scene_deletion_blocks_incoming_references_through_http_and_mcp(
+    tmp_path: Path, reference: str,
+) -> None:
+    runtime, services, _ = _mcp_fixture(tmp_path)
+    document = _draft()
+    document["scenes"].append({**copy.deepcopy(document["scenes"][0]), "id": "unwanted"})
+    if reference == "fallback":
+        document["scenes"][0]["failure_scene_id"] = "unwanted"
+    elif reference == "completion":
+        document["scenes"][0]["completion"] = {
+            "policy": "transition_to", "target_scene_id": "unwanted",
+        }
+    elif reference.startswith("program"):
+        document["program"] = {
+            "schema_version": 1,
+            "initial_scene_id": "unwanted" if reference == "program-start" else "ambient",
+            "default_pool_id": "default",
+            "pools": [{"id": "default", "category": "ambient", "scenes": [{
+                "scene_id": "unwanted" if reference == "program-pool" else "ambient",
+            }]}],
+        }
+    elif reference == "visitor-response":
+        document["opportunities"] = {"schema_version": 1, "opportunities": [{
+            "id": "welcome", "scene_id": "unwanted",
+            "trigger_event": "audience.arrived", "ttl_ms": 10000,
+        }]}
+    else:
+        document["encounter"] = {
+            "schema_version": 1, "initial_state": "ambient", "cooldown_state": "cooldown",
+            "ambient_scene_id": "unwanted" if reference == "encounter-ambient" else "ambient",
+            "encounter_timeout_ms": 30000, "cooldown_ms": 5000, "debounce_ms": 500,
+            "event_ttl_ms": 3000, "transitions": [{
+                "event_type": "audience.arrived", "from_states": ["ambient"],
+                "to_state": "engaged", "scene_id": "unwanted",
+            }],
+        }
+    project = services.repository.create_project(
+        name="Referenced scene", draft=DraftProject.model_validate(document),
+        actor="admin", role=Role.ADMINISTRATOR, occurred_at=datetime.now(UTC).isoformat(),
+    )
+    project_id = project.project.id
+    token = _mcp_token(services, project_id, (McpScope.READ, McpScope.DIRECT_EDIT))
+    with TestClient(
+        create_app(runtime, gui_services=services), base_url="http://localhost"
+    ) as client:
+        _login(client)
+        rejected = client.delete(
+            f"/api/gui/v1/projects/{project_id}/scenes/unwanted",
+            headers=_mutation_headers(client, if_match='"1"'),
+        )
+        assert rejected.status_code == 422
+        assert "Update these references first" in rejected.json()["detail"]["message"]
+        assert _mcp_tool(
+            client, token, "delete_scene", scene_id="unwanted", base_revision=1
+        )["isError"] is True
+        assert services.repository.get_revision(project_id).revision == 1
+        assert services.publication.list(project_id) == ()
+        assert runtime.active_scene is None
+
+
+def test_scene_deletion_requires_project_author_permission(tmp_path: Path) -> None:
+    runtime = ControllerRuntime()
+    services = _services(tmp_path, runtime, role=Role.VIEWER)
+    document = _draft()
+    document["scenes"].append({**copy.deepcopy(document["scenes"][0]), "id": "unwanted"})
+    project = services.repository.create_project(
+        name="Viewer cannot delete", draft=DraftProject.model_validate(document),
+        actor="admin", role=Role.ADMINISTRATOR, occurred_at=datetime.now(UTC).isoformat(),
+    )
+    project_id = project.project.id
+    services.collaboration.put_membership(
+        project_id, "admin", Role.VIEWER, False, datetime.now(UTC).isoformat(),
+    )
+    with TestClient(create_app(runtime, gui_services=services)) as client:
+        _login(client)
+        response = client.delete(
+            f"/api/gui/v1/projects/{project_id}/scenes/unwanted",
+            headers=_mutation_headers(client, if_match='"1"'),
+        )
+        assert response.status_code == 403
+        assert services.repository.get_revision(project_id).revision == 1
+
+
+def test_scene_deletion_preserves_composition_editing_space_with_same_id() -> None:
+    document = _draft(editor_metadata={
+        "compositions": {"unwanted": {
+            "id": "unwanted", "name": "Shared space", "duration_ms": 4000,
+            "space_kind": "stage", "target_id": "stage", "width": 1000, "height": 600,
+        }},
+        "timeline_markers": {"unwanted": []},
+        "scene_compositions": {"unwanted": ["unwanted"]},
+    })
+    document["scenes"].append({**copy.deepcopy(document["scenes"][0]), "id": "unwanted"})
+    result = delete_scene(DraftProject.model_validate(document), "unwanted")
+    assert result.editor_metadata["timeline_markers"] == {"unwanted": []}
+    assert result.editor_metadata["scene_compositions"] == {}
+    assert "unwanted" in result.editor_metadata["compositions"]
 
 
 def test_mcp_direct_edit_is_immediate_revisioned_and_schema_validated(tmp_path: Path) -> None:
@@ -3699,6 +3909,15 @@ def test_scene_lighting_preview_matches_runtime_for_saved_unsaved_and_paged_cand
         mcp = _mcp_tool(client, token, "preview_scene_lighting", **body)
         assert mcp["isError"] is False
         assert mcp["structuredContent"] == result
+        for timestamp_ms in (179999, 249):
+            loop_body = {**body, "timestamp_ms": timestamp_ms}
+            http_frame = client.post(path, json=loop_body, headers=_mutation_headers(client))
+            assert http_frame.status_code == 200, http_frame.text
+            mcp_frame = _mcp_tool(client, token, "preview_scene_lighting", **loop_body)
+            assert mcp_frame["isError"] is False
+            assert mcp_frame["structuredContent"] == http_frame.json()
+            assert http_frame.json()["timestamp_ms"] == timestamp_ms
+            assert http_frame.json()["hardware_commands_sent"] is False
         legacy = client.post(
             path,
             json={**body, "scene_id": "legacy-sweep", "timestamp_ms": 1000},
@@ -3737,6 +3956,7 @@ def test_scene_lighting_preview_matches_runtime_for_saved_unsaved_and_paged_cand
         )
         for invalid in (
             {"timestamp_ms": 180000},
+            {"timestamp_ms": 249.375},
             {"pixel_limit": 4097},
             {"pixel_offset": 12},
             {"resource": "not-in-scene"},
@@ -3745,6 +3965,10 @@ def test_scene_lighting_preview_matches_runtime_for_saved_unsaved_and_paged_cand
                 path, json={**body, **invalid}, headers=_mutation_headers(client)
             )
             assert rejected.status_code == 422
+            if "timestamp_ms" in invalid:
+                assert _mcp_tool(
+                    client, token, "preview_scene_lighting", **{**body, **invalid}
+                )["isError"] is True
         huge = copy.deepcopy(document)
         huge["installation"]["resources"][1]["pixel_count"] = 65537
         huge["installation"]["resources"][1]["segments"][1]["end"] = 65537

@@ -497,6 +497,15 @@ The result reports source revision, scene time, `unsaved`, output/resource
 identity, calibrated `output_position_ms`, sampled RGB colors, next offset,
 limitations, and `hardware_commands_sent: false`.
 
+The browser photo visualization is a separate display treatment: Installation's
+1000 x 600 letterboxed coordinate space, linear-to-sRGB visibility, screen blend,
+glow and transparent off LEDs. API/MCP sampled RGB, simulation evaluation,
+brightness limits and device output are **not** changed by this treatment.
+Clients should not bake display compensation into authored brightness or apply
+it again to device commands. Raw RGB remains available in the browser's
+collapsed LED output diagnostics. No new MCP grant/schema or output transform
+is needed for this presentation-only fix.
+
 Compilation/validation occurs in cleaned-up temporary storage. No controller
 instance, media client, broker, hardware adapter, render job or live transport
 is opened. Preview cannot publish or activate. Invalid candidates/dependencies
@@ -767,6 +776,34 @@ inject the definition directory. Set `CUEVERGE_CLAMAV_REQUIRED=true` only after
 definitions are available; container preflight then fails closed if `clamscan`
 or its definitions are missing. Without that setting, scanner absence remains
 visible in asset processing as documented above.
+
+## Deleting unwanted scenes
+
+`delete_scene(scene_id, base_revision)` requires a project-bound `direct_edit`
+token and the current saved revision. For example:
+
+```json
+{"scene_id": "unwanted-example", "base_revision": 7}
+```
+
+Use `get_project_draft` first to identify exact IDs; never select scenes for
+deletion just because their names look synthetic. The tool refuses the last
+scene and incoming fallback/completion, program, visitor-response, and encounter
+references. Update those references explicitly before retrying. Stale revisions
+fail without overwriting newer edits. Archived shows cannot be edited.
+
+Success returns `scene_id`, `base_revision`, the new `revision`,
+`requires_human_approval: false`, and `hardware_commands_sent: false`. This is
+not a simulation or publication: it saves a working revision only. Scene-owned
+timeline/mapping metadata is removed; reusable compositions, presets, media
+assets and historical revisions are retained. `get_authoring_schema` describes
+the request under `x-scene-deletion`; capability discovery advertises
+`scene_deletion` and the `delete_scene` tool.
+
+The browser uses `DELETE /api/gui/v1/projects/{project_id}/scenes/{scene_id}`
+with its normal author session, CSRF protection and `If-Match` revision header.
+It returns the updated draft and ETag, or explicit validation/conflict errors.
+Publication and apply remain separate, authorized operations.
 
 ## Accelerated simulation
 

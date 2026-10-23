@@ -2205,6 +2205,11 @@ class RuntimeStatusResponse(GuiModel):
         return value
 
 
+class DeleteSceneRequest(GuiModel):
+    scene_id: str = Field(min_length=1)
+    base_revision: int = Field(ge=1)
+
+
 class SceneLightingPreviewRequest(GuiModel):
     source_revision: int = Field(ge=1)
     scene_id: str = Field(min_length=1)

@@ -31,6 +31,7 @@ from cueverge.gui.authoring_schema import authoring_schema
 from cueverge.gui.compiler import CompilationError
 from cueverge.gui.contracts import (
     ConfigureInputSourceRequest,
+    DeleteSceneRequest,
     DraftProject,
     InteractionEditRequest,
     InteractionPreviewRequest,
@@ -70,6 +71,7 @@ from cueverge.gui.projector_renderer import ProjectorRenderError, preview_projec
 from cueverge.gui.publication import ApprovalState, PublicationError, PublishedPackage
 from cueverge.gui.render_jobs import RenderJobError, StoredRenderJob
 from cueverge.gui.repository import ProjectNotFoundError
+from cueverge.gui.scene_authoring import delete_scene as delete_draft_scene
 from cueverge.gui.scene_preview import ScenePreviewError, preview_project_scene
 from cueverge.gui.service import GuiServices
 from cueverge.gui.spatial_authoring import (
@@ -566,6 +568,44 @@ def create_mcp_app(services: GuiServices) -> Starlette:
         }
 
     @server.tool()
+    def delete_scene(scene_id: str, base_revision: int) -> dict[str, JsonValue]:
+        """Delete one saved scene using direct_edit and the current base_revision.
+
+        Refuses the last scene or incoming fallback, completion, program, visitor
+        response or encounter references; update those references first. Removes
+        scene-owned editor metadata, retaining reusable compositions, presets,
+        media assets and revision history. Does not publish or change live output.
+        """
+        token = _authorize(services, McpScope.DIRECT_EDIT)
+        try:
+            request = DeleteSceneRequest(scene_id=scene_id, base_revision=base_revision)
+            stored = services.repository.get_revision(token.project_id, request.base_revision)
+            if stored.project.archived_at is not None:
+                raise ValueError("Archived shows cannot be edited.")
+            candidate = delete_draft_scene(stored.draft, request.scene_id)
+            updated = services.mcp_authoring.update_project_draft(
+                project_id=token.project_id,
+                base_revision=request.base_revision,
+                proposed_document=candidate.model_dump(mode="json"),
+                username=token.username,
+                role=_token_role(services, token),
+            )
+        except (ProjectNotFoundError, ValueError, McpAuthoringError) as error:
+            raise ToolError(str(error)) from error
+        _audit(
+            services, token, "mcp.scene.delete", scene_id, "success",
+            details={"base_revision": base_revision, "created_revision": updated.revision},
+        )
+        return {
+            "project_id": token.project_id,
+            "scene_id": scene_id,
+            "base_revision": base_revision,
+            "revision": updated.revision,
+            "hardware_commands_sent": False,
+            "requires_human_approval": False,
+        }
+
+    @server.tool()
     def update_project_draft(
         base_revision: int,
         draft: dict[str, JsonValue],
@@ -721,7 +761,7 @@ def create_mcp_app(services: GuiServices) -> Starlette:
 
     @server.tool()
     def get_capabilities() -> dict[str, JsonValue]:
-        """Discover scene timing, LED-only/spatial authoring, preview/bake tools and grants."""
+        """Discover scene timing, authoring/deletion, preview/bake tools and grants."""
         token = _authorize(services, McpScope.READ)
         revision = services.repository.get_revision(token.project_id)
         return cast(
@@ -825,6 +865,7 @@ def create_mcp_app(services: GuiServices) -> Starlette:
                     "controller_timed_scenes": True,
                     "led_only_scenes": True,
                     "scene_lighting_preview": True,
+                    "scene_deletion": True,
                     "geometry_editing": False,
                     "live_media_rendering": False,
                 },
@@ -850,6 +891,7 @@ def create_mcp_app(services: GuiServices) -> Starlette:
                     "read_draft": "get_project_draft",
                     "propose": "propose_project_revision",
                     "direct_edit": "update_project_draft",
+                    "delete_scene": "delete_scene",
                     "preview": "preview_composition",
                     "scene_lighting_preview": "preview_scene_lighting",
                     "bake": "create_render_job",

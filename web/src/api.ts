@@ -2057,6 +2057,19 @@ export async function updateProjectDraft(
   );
 }
 
+export async function deleteScene(
+  projectId: string, revision: number, sceneId: string,
+): Promise<ProjectDraftRecord> {
+  return request<ProjectDraftRecord>(
+    `/api/gui/v1/projects/${encodeURIComponent(projectId)}/scenes/${encodeURIComponent(sceneId)}`,
+    {
+      method: "DELETE",
+      headers: { ...mutationHeaders(), "If-Match": `"${revision}"` },
+    },
+    true,
+  );
+}
+
 export async function createProjectFromActive(name: string): Promise<ProjectDraftRecord> {
   return request<ProjectDraftRecord>("/api/gui/v1/projects/from-active", {
     method: "POST",

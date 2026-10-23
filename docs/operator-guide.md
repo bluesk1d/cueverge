@@ -506,12 +506,32 @@ markers, or protected intervals.
 
 **Play scene preview** and the seconds scrubber request frames from the same
 lighting evaluator used by the controller. Frames include declared output timing
-offsets. A matching saved photo displays evaluated LED locations; the output
+offsets. Looping scenes wrap to the start using whole-millisecond preview
+positions; other completion policies stop the preview at the last millisecond.
+A matching saved photo displays evaluated LED locations; the output
 strip remains available when mapping is absent or incomplete. Different
 allocations withhold the overlay rather than paint incorrect locations.
+Photo previews use the same 1000 x 600 canvas and centered, aspect-preserving
+photo fit as Installation, including letterboxing for wide or portrait photos.
+The nighttime visualization applies a display-only linear-to-sRGB brightness
+curve, a small glow and screen blending. Off LEDs are transparent rather than
+black dots. This improves low-level visibility without increasing saved effect
+brightness or device output. Collapsed **LED output details** retains the
+unmodified sampled RGB values. Scene, visitor Preview and Operate's intended
+output monitor share this photo presentation; it is not photometric calibration.
 This is a candidate scene preview, not a live monitor, automatic visitor/show
 simulation, or proof of physical output. Media reference proxies are explicitly
 independent of the LED preview clock and venue playback.
+
+To remove an unwanted scene, select it in **Scenes** and choose **Delete scene**.
+Save or cancel any unsaved scene edits first, then confirm the scene's name in
+the confirmation message. The last scene cannot be deleted. If another scene's
+fallback/completion transition, automatic program, visitor response, or encounter
+uses it, deletion is refused with a list of references to update first.
+Deletion saves a new working revision and selects a remaining scene. It removes
+the deleted scene's editor data, not reusable compositions, presets, media assets,
+or historical revisions. It does not change the loaded show: publish/apply the
+new revision separately to update live playback.
 
 Only supported fields are changed. Scene-native v1/v2 legacy effects remain in
 their original form; legacy pulse targets/times/color are editable. The renderer's

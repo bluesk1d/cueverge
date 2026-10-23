@@ -770,6 +770,23 @@ being flattened or silently reset; see the operations/service guides.
 
 ### Per-package completion record
 
+#### Post-pass correction: photo alignment and nighttime LED visibility
+
+- Reproduced a 46.5-pixel alignment error: the scene preview stretched a square
+  SVG over the photo's natural aspect while Installation stored points in a
+  letterboxed 1000 x 600 canvas. Scene, visitor Preview and live intended output
+  now draw photo and pixels inside the same Installation-compatible SVG space.
+- Added display-only linear-to-sRGB LED visibility, screen blending and glow;
+  zero-output LEDs contribute no black discs. An explicit nighttime-visualization
+  label distinguishes presentation from actual output. Saved brightness,
+  evaluated RGB, MCP results and hardware commands are unchanged.
+- Regression coverage checks subpixel alignment for 4:3, wide and portrait
+  photos at desktop/phone sizes; transparent off pixels; visible 1% output;
+  exact unmodified raw RGB; and shared scene/visitor/monitor behavior.
+  Before the fix, alignment and opaque-off-pixel tests failed. Afterward,
+  45 frontend units, 26 focused browser tests and the production build passed.
+  Five focused MCP/renderer regressions also passed with raw output unchanged.
+
 For each package, append or link: delivered changes; decisions made; tests and
 exact outcomes; browser workflow/viewport evidence; MCP tools/workflows exercised
 or a reason no MCP change applies; related guide/schema/example updates; remaining

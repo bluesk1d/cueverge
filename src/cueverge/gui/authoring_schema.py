@@ -5,6 +5,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from cueverge.gui.apply import ApplyRequest
 from cueverge.gui.contracts import (
     ConfigureInputSourceRequest,
+    DeleteSceneRequest,
     DraftProject,
     InteractionEditRequest,
     InteractionPreviewRequest,
@@ -159,6 +160,16 @@ class SpatialMetadata(MetadataSchema):
 def authoring_schema() -> dict[str, Any]:
     """Describe known spatial metadata while retaining other GUI-owned metadata."""
     schema = DraftProject.model_json_schema()
+    schema["x-scene-deletion"] = {
+        "tool": "delete_scene",
+        "schema": DeleteSceneRequest.model_json_schema(),
+        "scope": "direct_edit",
+        "blocks_last_scene": True,
+        "blocks_incoming_references": True,
+        "removes_scene_owned_metadata": True,
+        "retains_reusable_compositions_presets_and_assets": True,
+        "publishes_or_changes_live_output": False,
+    }
     schema["x-runtime-workflows"] = {
         "apply": {
             "tool": "apply_saved_show",

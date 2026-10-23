@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import {
-  AssetRecord, getInstallationGeometry, getInstallationPhotos,
+  ApiError, AssetRecord, getInstallationGeometry, getInstallationPhotos,
   getLightingSurface, InstallationGeometry, InstallationPhoto, installationPhotoUrl,
   previewSceneLighting, ProjectDraftRecord, SceneLightingPreview, LightingFrameView,
 } from "../api";
 import { photoPixelPoints } from "../components/pixel-traversal";
+import { nightPreviewColor } from "../components/led-preview";
 import { AssetPreview, hasAssetArtifact } from "../components/AssetPreview";
 import { ErrorState } from "../components/ui";
 
@@ -47,7 +48,7 @@ function time(value: number): string {
 
 export function SceneWorkspace({
   draft, sceneId, canEdit, assets, onSelectScene, onSave, onDirtyChange,
-  onOpenAdvanced,
+  onOpenAdvanced, onDelete,
 }: {
   draft: ProjectDraftRecord;
   sceneId: string;
@@ -57,6 +58,7 @@ export function SceneWorkspace({
   onSave: (document: Document) => Promise<void>;
   onDirtyChange: (dirty: boolean) => void;
   onOpenAdvanced: () => void;
+  onDelete: (id: string) => Promise<void>;
 }) {
   const [document, setDocument] = useState<Document>(() => structuredClone(draft.draft));
   const [base, setBase] = useState({ revision: draft.revision, sceneId, document: draft.draft });
@@ -176,7 +178,7 @@ export function SceneWorkspace({
       setPosition((current) => {
         const next = current + delta;
         if (next >= duration) {
-          if (scene?.completion?.policy === "loop") return next % duration;
+          if (scene?.completion?.policy === "loop") return Math.floor(next % duration);
           setPlaying(false);
           return duration - 1;
         }
@@ -225,6 +227,23 @@ export function SceneWorkspace({
     if (!dirty || window.confirm("Discard unsaved scene edits and open another scene?")) onSelectScene(id);
   }
 
+  async function removeScene(scene: Scene) {
+    if (!window.confirm(`Delete scene "${scene.name}" from the saved show? Its scene-specific editor data will be removed. This does not change live playback.`)) return;
+    setSaving(true);
+    setError(null);
+    setPlaying(false);
+    try {
+      await onDelete(sceneId);
+    } catch (failure) {
+      const message = failure instanceof ApiError && failure.status === 409
+        ? "The show changed since you opened it. Reload the saved show before deleting a scene."
+        : failure instanceof Error ? failure.message : "Scene deletion failed";
+      setError(`${message} Nothing was made live.`);
+    } finally {
+      setSaving(false);
+    }
+  }
+
   const media = Array.isArray(scene.media) ? scene.media : [scene.media];
   const advancedContributions = [
     "timeline_cues", "timeline_transform_layers", "scene_compositions", "composition_instances",
@@ -263,6 +282,10 @@ export function SceneWorkspace({
             <button type="button" disabled={!dirty || saving} onClick={() => {
               setDocument(structuredClone(draft.draft)); setPlaying(false); setError(null);
             }}>Cancel scene edits</button>
+            <button type="button" disabled={dirty || saving || document.scenes.length <= 1}
+              onClick={() => void removeScene(scene)}>Delete scene</button>
+            {dirty && <small>Save or cancel edits before deleting a scene.</small>}
+            {document.scenes.length <= 1 && <small>Keep at least one scene in the show.</small>}
           </div>}
         </div>
       </header>
@@ -578,12 +601,22 @@ export function ScenePreview({ projectId, revision, document, dirty, sceneId, re
     </select></label>}
     {photoFailed && <ErrorState title="Photo unavailable" description="The photo could not be loaded; evaluated colors remain available below." />}
     {photo && !photoFailed && <div className="scene-photo">
-      <img src={installationPhotoUrl(photo.id)} alt={photo.name} onError={() => setPhotoFailed(true)} />
-      <svg viewBox="0 0 1000 1000" preserveAspectRatio="none" role="img" aria-label="Evaluated LED colors on installation photo">
-        {mapped.map((pixel, index) => <circle key={index} cx={pixel.x * 1000} cy={pixel.y * 1000} r="3"
-          fill={`rgb(${output!.colors[pixel.outputIndex - output!.pixel_offset].join(",")})`} />)}
+      <svg viewBox="0 0 1000 600" role="img" aria-label={intent ? "Last sent LED colors on installation photo" : "Evaluated LED colors on installation photo"}>
+        <title>{photo.name}</title>
+        <image href={installationPhotoUrl(photo.id)} width="1000" height="600"
+          preserveAspectRatio="xMidYMid meet" onError={() => setPhotoFailed(true)} />
+        <g className="scene-led-overlay">
+          {mapped.map((pixel, index) => {
+            const raw = output!.colors[pixel.outputIndex - output!.pixel_offset];
+            const display = nightPreviewColor(raw);
+            return display === null ? null : <circle className="scene-led" key={index}
+              cx={pixel.x * 1000} cy={pixel.y * 600} r="3"
+              fill={display} style={{ color: display }} aria-hidden="true" />;
+          })}
+        </g>
       </svg>
     </div>}
+    {photo && !photoFailed && mapped.length > 0 && <small>Nighttime visualization · enhanced LED glow; output brightness is unchanged.</small>}
     {mapError && <p role="status">{mapError}</p>}
     {allocationMismatch && <p role="status">The saved photo uses a different LED allocation. The overlay is withheld; evaluated output colors remain available below.</p>}
     {error && <ErrorState title="Scene preview unavailable" description={error} />}

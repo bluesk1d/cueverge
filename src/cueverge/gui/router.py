@@ -268,6 +268,7 @@ from cueverge.gui.repository import (
     StoredResourceAssignment,
     StoredRevision,
 )
+from cueverge.gui.scene_authoring import delete_scene as delete_draft_scene
 from cueverge.gui.scene_preview import (
     ScenePreviewBusyError,
     ScenePreviewError,
@@ -1308,6 +1309,43 @@ def create_gui_router(services: GuiServices) -> APIRouter:
             True,
             _now_iso(),
         )
+        response.headers["ETag"] = _etag(revision.revision)
+        return _project_draft(revision)
+
+    @router.delete(
+        "/projects/{project_id}/scenes/{scene_id}",
+        response_model=ProjectDraftResponse,
+    )
+    def delete_scene(
+        project_id: str,
+        scene_id: str,
+        response: Response,
+        identity: Annotated[AuthenticatedSession, project_designer],
+        if_match: Annotated[str | None, Header(alias="If-Match")] = None,
+    ) -> ProjectDraftResponse | JSONResponse:
+        expected_revision = _parse_if_match(if_match)
+        try:
+            current = services.repository.get_revision(project_id, expected_revision)
+            if current.project.archived_at is not None:
+                raise ValueError("Archived shows cannot be edited.")
+            draft = delete_draft_scene(current.draft, scene_id)
+            revision = services.repository.update_draft(
+                project_id=project_id,
+                expected_revision=expected_revision,
+                draft=draft,
+                actor=identity.username,
+                role=identity.role,
+                occurred_at=_now_iso(),
+            )
+        except ProjectNotFoundError as error:
+            raise HTTPException(status_code=404, detail={"code": "project_not_found"}) from error
+        except ValueError as error:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "scene_deletion_invalid", "message": str(error)},
+            ) from error
+        except RevisionConflictError as error:
+            return _revision_conflict_response(error)
         response.headers["ETag"] = _etag(revision.revision)
         return _project_draft(revision)
 

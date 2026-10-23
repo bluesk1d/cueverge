@@ -24,6 +24,7 @@ import {
   createOutputArm,
   createScenePreset,
   deleteInstallation,
+  deleteScene,
   duplicateProject,
   exportProject,
   getActivity,
@@ -780,6 +781,11 @@ function ProjectCard({
             setTimelineOpenRequest((value) => value + 1);
           }}
           onSave={async (document) => setDraft(await updateProjectDraft(project.id, draft.revision, document))}
+          onDelete={async (id) => {
+            const updated = await deleteScene(project.id, draft.revision, id);
+            setSceneId(updated.draft.scenes[0].id);
+            setDraft(updated);
+          }}
         />
       </Suspense>}
       <details className="show-options"><summary>Show options</summary>

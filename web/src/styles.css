@@ -1722,18 +1722,20 @@ p {
   margin: auto;
 }
 
-.scene-photo > img {
+.scene-photo > svg {
+  display: block;
   width: 100%;
   height: auto;
-  display: block;
+  isolation: isolate;
+  pointer-events: none;
 }
 
-.scene-photo > svg {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  pointer-events: none;
+.scene-led-overlay {
+  mix-blend-mode: screen;
+}
+
+.scene-led {
+  filter: drop-shadow(0 0 3px currentColor);
 }
 
 .scene-preview-controls,
