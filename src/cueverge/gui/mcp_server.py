@@ -593,7 +593,11 @@ def create_mcp_app(services: GuiServices) -> Starlette:
         except (ProjectNotFoundError, ValueError, McpAuthoringError) as error:
             raise ToolError(str(error)) from error
         _audit(
-            services, token, "mcp.scene.delete", scene_id, "success",
+            services,
+            token,
+            "mcp.scene.delete",
+            scene_id,
+            "success",
             details={"base_revision": base_revision, "created_revision": updated.revision},
         )
         return {

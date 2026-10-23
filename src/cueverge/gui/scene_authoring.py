@@ -47,9 +47,17 @@ def delete_scene(draft: DraftProject, scene_id: str) -> DraftProject:
     metadata = document["editor_metadata"]
     compositions = metadata.get("compositions", {})
     for key in (
-        "scene_organization", "scene_preset_usage", "scene_compositions", "composition_instances",
-        "timeline_views", "timeline_tracks", "timeline_markers", "timeline_cues",
-        "timeline_transform_layers", "timeline_property_keyframes", "lighting_author_layers",
+        "scene_organization",
+        "scene_preset_usage",
+        "scene_compositions",
+        "composition_instances",
+        "timeline_views",
+        "timeline_tracks",
+        "timeline_markers",
+        "timeline_cues",
+        "timeline_transform_layers",
+        "timeline_property_keyframes",
+        "lighting_author_layers",
     ):
         values = metadata.get(key)
         if values is None:
@@ -58,7 +66,8 @@ def delete_scene(draft: DraftProject, scene_id: str) -> DraftProject:
             raise SceneDeletionError(f"Scene metadata {key} must be an object.")
         if (
             (key.startswith("timeline_") or key == "lighting_author_layers")
-            and isinstance(compositions, dict) and scene_id in compositions
+            and isinstance(compositions, dict)
+            and scene_id in compositions
         ):
             continue
         values.pop(scene_id, None)
@@ -67,7 +76,8 @@ def delete_scene(draft: DraftProject, scene_id: str) -> DraftProject:
         if not isinstance(schedule, list):
             raise SceneDeletionError("Scene metadata timeline_sync_schedule must be a list.")
         metadata["timeline_sync_schedule"] = [
-            entry for entry in schedule
+            entry
+            for entry in schedule
             if not isinstance(entry, dict) or entry.get("scene_id") != scene_id
         ]
     return DraftProject.model_validate(document)
