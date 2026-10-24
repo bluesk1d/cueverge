@@ -239,9 +239,10 @@ deduplication, atomic promotion, and explicit failure state. Original
 filenames are metadata only and cannot influence storage paths. Finalized
 uploads are processed outside the request and pending processing resumes after
 controller restart. ClamAV records clean, quarantined, and scanner-failure
-outcomes when deployed; scanner absence remains explicit. ffprobe extracts
+outcomes when deployed; scanner absence remains explicit. A PyAV media worker
+(`python -m cueverge.gui.media_tools`, run as a timed child process) extracts
 duration, dimensions, frame rate, codecs, channels, sample rate, and container
-metadata, while ffmpeg measures integrated loudness for audio-bearing assets.
+metadata, and measures EBU R128 integrated loudness for audio-bearing assets.
 The same asynchronous processing pass writes versioned, content-addressed
 thumbnails, low-resolution review proxies, and audio waveforms under a
 separate derived-artifact root. Originals remain immutable. Generated files
@@ -490,7 +491,8 @@ mask geometry in the installation. One native/stage mapping enumerates every
 semantic-linked photo instance with its own points and derived homography;
 adding or recalibrating a viewpoint does not duplicate or rewrite the native
 canvas, crop, masks, orientation, or shared-stage extent.
-The SVG mapper exposes projector resource, native resolution, stage extent,
+The SVG mapper exposes projector resource, native resolution, stage placement
+mode and stage extent (read-only while placement follows the drawn surface),
 native crop, four-corner creation, and the resulting homography diagnostics.
 Corner handles are labeled in native-canvas order and support pointer dragging,
 undo, trapezoidal perspective, and mirrored corner order while remaining
@@ -1061,8 +1063,8 @@ alpha are conformed into the same working representation before composition.
 The indexed-mesh rasterizer evaluates barycentric UV coordinates and bilinear
 samples source pixels into stage/output bounds. Unit references verify alpha
 equivalence, source-over composition, sRGB conversion, still/video decode
-agreement, and byte-identical repeated mesh rasterization. ffmpeg remains the
-separate final encoder/muxer.
+agreement, and byte-identical repeated mesh rasterization. PyAV's bundled
+FFmpeg libraries remain the separate final encoder/muxer.
 
 Render verification policy revision 1 uses conservative lossy-output
 tolerances selected for preview/bake comparison: mean RGB error at most 1/255,
@@ -1085,7 +1087,8 @@ Exactly one designated clock-source projector MP4 owns the AAC stereo mix;
 other members are video-only, preventing duplicate audio.
 
 The render manifest records source checksums, composition/calibration identity,
-the actual `ffmpeg -version` identity, H.264/AAC settings, member stream
+the actual encoder identity (bundled FFmpeg and PyAV versions, for example
+`ffmpeg version 8.0.1 (PyAV 16.1.0)`), H.264/AAC settings, member stream
 metadata, file sizes, member SHA-256 checksums, and a canonical manifest
 digest. Final MP4 frames are composited onto the configured opaque background;
 the float32 premultiplied working frame remains available as an alpha-bearing
@@ -1144,7 +1147,7 @@ matrix. The UI presents each projector member. Reference acceptance decodes a
 baked stage MP4 member and compares it to its controller preview under the
 same policy, preventing preview-only omission or pipeline reordering.
 
-Reproducibility acceptance repeats ffmpeg encoding with identical frame/audio
+Reproducibility acceptance repeats PyAV encoding with identical frame/audio
 inputs and requires identical member SHA-256 checksums. Render cache identity
 covers source digests, source project revision (and therefore timeline/profile
 settings), and mapper/calibration environment. Missing, wrong-project, wrong

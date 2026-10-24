@@ -83,6 +83,7 @@ import { SnapshotFreshness, STATUS_TIMEOUT_MS } from "./status";
 
 const ShowPlan = lazy(() => import("./pages/ShowPlan").then((module) => ({ default: module.ShowPlan })));
 const VisitorInteractions = lazy(() => import("./pages/VisitorInteractions").then((module) => ({ default: module.VisitorInteractions })));
+const SimulationScenarioPanel = lazy(() => import("./components/SimulationScenarioPanel").then((module) => ({ default: module.SimulationScenarioPanel })));
 const ShowPreviewWorkspace = lazy(() => import("./pages/ShowPreviewWorkspace").then((module) => ({ default: module.ShowPreviewWorkspace })));
 const ShowLogicDesigner = lazy(() =>
   import("./pages/ShowLogicDesigner").then((module) => ({
@@ -632,7 +633,7 @@ function ProjectCard({
   const [assetSearch, setAssetSearch] = useState("");
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [assetError, setAssetError] = useState<string | null>(null);
-  const [timelineLoaded, setTimelineLoaded] = useState(false);
+  const [timelineWorkspace, setTimelineWorkspace] = useState(false);
   const [sceneId, setSceneId] = useState("");
   const [sceneDirty, setSceneDirty] = useState(false);
   const [interactionDirty, setInteractionDirty] = useState(false);
@@ -653,7 +654,6 @@ function ProjectCard({
   useEffect(() => () => onDirtyChange?.(false), [onDirtyChange]);
   const [sharingOpen, setSharingOpen] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
-  const [timelineOpenRequest, setTimelineOpenRequest] = useState(0);
   const [logicOpenRequest, setLogicOpenRequest] = useState(0);
   const [projectRole, setProjectRole] = useState<Role>(
     session.role === "administrator" ? "administrator" : "viewer",
@@ -758,6 +758,32 @@ function ProjectCard({
       ].some((value) => value?.toLocaleLowerCase().includes(search));
     }) ?? null;
 
+  if (draft && timelineWorkspace) {
+    return (
+      <article className="project-card project-card--timeline" aria-label={`Timeline editor for ${project.name}`}>
+        <nav className="timeline-workspace-nav" aria-label="Timeline editor navigation">
+          <button className="show-back" onClick={() => setTimelineWorkspace(false)}>
+            Back to scene
+          </button>
+          <span>{project.name}</span>
+        </nav>
+        <Suspense fallback={<p>Loading timeline editor…</p>}>
+          <TimelineEditor
+            assets={assets ?? []}
+            canEdit={canAuthor && !project.archived_at}
+            draft={draft}
+            projectId={project.id}
+            selectedSceneId={sceneId}
+            onSceneChange={setSceneId}
+            onSave={async (document) => {
+              setDraft(await updateProjectDraft(project.id, draft.revision, document));
+            }}
+          />
+        </Suspense>
+      </article>
+    );
+  }
+
   return (
     <article className="project-card" aria-label={`Show ${project.name}`}>
       <button className="show-back" onClick={() => {
@@ -793,6 +819,8 @@ function ProjectCard({
       </Suspense>}
       {draft && showView === "preview" && <Suspense fallback={<p>Loading preview workspace…</p>}>
         <ShowPreviewWorkspace draft={draft} startWithVisitors={previewStartsWithVisitors} canTestVisitors={["designer", "operator", "publisher", "administrator"].includes(projectRole)} />
+        <SimulationScenarioPanel draft={draft} projectId={project.id} sceneId={sceneId}
+          canEdit={canAuthor && !project.archived_at} />
       </Suspense>}
       {draft && showView === "scenes" && <nav className="show-breadcrumb" aria-label="Breadcrumb">
         <button onClick={() => {
@@ -809,11 +837,7 @@ function ProjectCard({
           canAdd={!interactionDirty}
           onCreated={(updated, id) => { setSceneId(id); setDraft(updated); }}
           assets={assets ?? []} onSelectScene={setSceneId} onDirtyChange={updateSceneDirty}
-          onOpenAdvanced={() => {
-            setAdvancedOpen(true);
-            setTimelineLoaded(true);
-            setTimelineOpenRequest((value) => value + 1);
-          }}
+          onOpenTimeline={() => setTimelineWorkspace(true)}
           onSave={async (document) => setDraft(await updateProjectDraft(project.id, draft.revision, document))}
           onDelete={async (id) => {
             const updated = await deleteScene(project.id, draft.revision, id);
@@ -1055,38 +1079,13 @@ function ProjectCard({
               }}
             />
           </Suspense>
-          {timelineLoaded ? (
-            <Suspense fallback={<p>Loading timeline editor…</p>}>
-              <TimelineEditor
-                assets={assets ?? []}
-                canEdit={canAuthor && !project.archived_at && !sceneDirty}
-                draft={draft}
-                initiallyOpen
-                projectId={project.id}
-                selectedSceneId={sceneId}
-                onSceneChange={(id) => {
-                  if (!sceneDirty || window.confirm("Discard unsaved scene edits and change scene?")) setSceneId(id);
-                }}
-                openRequest={timelineOpenRequest}
-                onSave={async (document) => {
-                  setDraft(
-                    await updateProjectDraft(project.id, draft.revision, document),
-                  );
-                }}
-              />
-            </Suspense>
-          ) : (
-            <details
-              className="timeline-editor"
-              onToggle={(event) => {
-                if (event.currentTarget.open) {
-                  setTimelineLoaded(true);
-                }
-              }}
-            >
-              <summary>Timeline editor</summary>
-            </details>
-          )}
+          <div className="show-advanced-timeline">
+            <strong>Timeline editor</strong>
+            <p>Layered media, lighting cues, compositions and whole-display overlays open in a full-screen editor.</p>
+            <button disabled={sceneDirty} onClick={() => setTimelineWorkspace(true)}>
+              Open timeline editor
+            </button>
+          </div>
           <Suspense fallback={<p>Loading publication workspace…</p>}>
             <PublicationWorkspace
               canPublish={canPublish && !project.archived_at}

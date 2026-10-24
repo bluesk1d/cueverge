@@ -448,16 +448,16 @@ test("project permissions still protect editing when collaboration is closed", a
   expect(state.collaborationReads).toBe(0);
 });
 
-test("scene selection is shared with the advanced timeline without silent edit loss", async ({ page }) => {
+test("scene selection is shared with the timeline editor without silent edit loss", async ({ page }) => {
   const state = await sceneRoutes(page);
   await page.goto("/");
   await page.getByRole("button", { name: "Shows", exact: true }).click();
   await openShowScenes(page);
   await page.getByRole("button", { name: /^Original synthetic legacy sweep/ }).click();
-  await page.getByText("Advanced authoring and history", { exact: true }).click();
-  await page.getByText("Timeline editor", { exact: true }).click();
+  await page.getByRole("button", { name: "Edit timeline", exact: true }).click();
   await expect(page.getByRole("combobox", { name: "Scene", exact: true })).toHaveValue("legacy-sweep");
   await page.getByRole("combobox", { name: "Scene", exact: true }).selectOption("baseline-timeline");
+  await page.getByRole("button", { name: "Back to scene", exact: true }).click();
   await expect(page.getByRole("spinbutton", { name: "Effect brightness (%)", exact: true })).toBeVisible();
   await page.getByRole("spinbutton", { name: "Effect brightness (%)", exact: true }).fill("45");
   page.once("dialog", (dialog) => dialog.dismiss());

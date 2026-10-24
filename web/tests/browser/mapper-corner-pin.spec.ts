@@ -13,6 +13,7 @@ const points = [
 const homography = [0.00037, -0.00006, 0.15, -0.00006, 0.00051, 0.2, 0.00001, 0.00002, 1];
 
 let selectedAssetId: string | null = "asset-still-a";
+let savedPlacement: string | null = null;
 
 test("compound-angle mapping reuses one homography for multiple assets", async ({ page }) => {
   await page.route("**/api/gui/v1/**", async (route) => {
@@ -40,6 +41,7 @@ test("compound-angle mapping reuses one homography for multiple assets", async (
       request.method() === "PUT"
     ) {
       selectedAssetId = request.postDataJSON().content_asset_id;
+      savedPlacement = request.postDataJSON().stage_placement;
       return route.fulfill({ json: mapping() });
     }
     if (url.pathname.endsWith(`/${geometryId}/projector-simulation-overlay`)) {
@@ -108,6 +110,10 @@ test("compound-angle mapping reuses one homography for multiple assets", async (
     "/api/gui/v1/assets/asset-still-a/artifacts/review",
   );
   await expect(mapper.getByText(/Homography:/)).toContainText("0.00037");
+  await expect(mapper.getByLabel("Stage placement")).toHaveValue("surface");
+  await expect(mapper.getByLabel("Stage X")).toHaveAttribute("readonly", "");
+  await expect(mapper.getByLabel("Crop X")).not.toHaveAttribute("readonly", "");
+  await expect(mapper.getByText(/Placed from the drawn surface at the default/)).toBeVisible();
   await expect(
     mapper.getByText(/Installation warp · unverified estimate · revision 1/),
   ).toBeVisible();
@@ -125,6 +131,7 @@ test("compound-angle mapping reuses one homography for multiple assets", async (
   await mapper.getByRole("button", { name: "Update geometry" }).click();
 
   await expect.poll(() => selectedAssetId).toBe("asset-still-b");
+  expect(savedPlacement).toBe("surface");
   expect(surface().points).toEqual(points);
   expect(mapping().homography).toEqual(homography);
   await mapper.getByRole("button", { name: "Edit" }).click();
@@ -188,10 +195,14 @@ function mapping() {
     resource: "projector.demo",
     native_width: 1920,
     native_height: 1080,
-    stage_x: 0,
-    stage_y: 0,
-    stage_width: 4,
-    stage_height: 2.25,
+    stage_placement: "surface",
+    stage_placement_basis: "default_scale",
+    stage_placement_message:
+      "Placed from the drawn surface at the default stage scale. Choose a stage view in Stage map to set real-world size.",
+    stage_x: 1.5,
+    stage_y: 0.48,
+    stage_width: 8.4,
+    stage_height: 4.56,
     crop_x: 0,
     crop_y: 0,
     crop_width: 1,

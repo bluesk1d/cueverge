@@ -512,7 +512,6 @@ def render_stage_composition(
     overlaps: tuple[StoredProjectorOverlap, ...],
     sync_admission: SyncAdmission,
     output_directory: Path,
-    ffmpeg: str = "ffmpeg",
 ) -> dict[str, object]:
     prepared = prepare_stage_composition(
         project_id=project_id,
@@ -541,7 +540,6 @@ def render_stage_composition(
         calibration_revisions=prepared.calibration_revisions,
         media_end_behavior=prepared.media_end_behavior,
         lighting_members=prepared.lighting_members,
-        ffmpeg=ffmpeg,
     )
 
 

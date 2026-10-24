@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import type { PointerEvent as ReactPointerEvent } from "react";
 
 import {
   assetArtifactUrl,
@@ -13,7 +14,6 @@ import {
   getLightingPreview,
   getPreviewEvaluation,
   getRenderJobs,
-  getSimulationScenarios,
   getStageLightingPreview,
   getStageCoverage,
   InstallationMapperExport,
@@ -26,11 +26,6 @@ import {
   ProjectDraftRecord,
   RenderJob,
   renderArtifactPreviewFrameUrl,
-  runSimulationScenario,
-  saveSimulationScenario,
-  SimulationRun,
-  SimulationScenario,
-  SimulationStep,
   evaluateSyncAdmission,
   recordSyncRehearsal,
   SyncAdmission,
@@ -39,6 +34,30 @@ import {
 } from "../api";
 import { VirtualizedList } from "../components/VirtualizedList";
 import { SurfaceMediaOverlay } from "../components/SurfaceMediaOverlay";
+import { DetailsDialog } from "../components/DetailsDialog";
+import { formatTimecode, stackLayerRows, trimKeyframes } from "./timelineUtils";
+
+const TIMELINE_SOURCE_MIME = "application/x-cueverge-timeline-source";
+
+
+const TIMELINE_LAYER_ROW_HEIGHT = 22;
+
+
+function clampNumber(value: number, minimum: number, maximum: number): number {
+  return Math.min(maximum, Math.max(minimum, value));
+}
+
+type TimelineToolTab = "layers" | "cues" | "tracks" | "compositions" | "render" | "ranges";
+
+const TIMELINE_TOOL_TABS: [TimelineToolTab, string][] = [
+  ["layers", "Media layers"],
+  ["cues", "Markers & cues"],
+  ["tracks", "Tracks"],
+  ["compositions", "Compositions"],
+  ["render", "Render & bake"],
+  ["ranges", "Loop & ranges"],
+];
+
 
 type TrackKind =
   | "media_output"
@@ -335,23 +354,20 @@ export function TimelineEditor({
   canEdit,
   projectId,
   onSave,
-  initiallyOpen = false,
   selectedSceneId,
   onSceneChange,
-  openRequest = 0,
 }: {
   draft: ProjectDraftRecord;
   assets: AssetRecord[];
   canEdit: boolean;
   projectId: string;
   onSave: (draft: ProjectDraftRecord["draft"]) => Promise<void>;
-  initiallyOpen?: boolean;
   selectedSceneId?: string;
   onSceneChange?: (id: string) => void;
-  openRequest?: number;
 }) {
-  const [editorOpen, setEditorOpen] = useState(initiallyOpen);
-  useEffect(() => { if (openRequest > 0) setEditorOpen(true); }, [openRequest]);
+  const [toolTab, setToolTab] = useState<TimelineToolTab>("layers");
+  const [sceneSettingsOpen, setSceneSettingsOpen] = useState(false);
+  const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const [sceneId, setSceneId] = useState(draft.draft.scenes[0]?.id ?? "");
   const scene =
     draft.draft.scenes.find((candidate) => candidate.id === (selectedSceneId ?? sceneId)) ??
@@ -431,6 +447,45 @@ export function TimelineEditor({
     transformLayerMap(draft.draft.editor_metadata.timeline_transform_layers),
   );
   const [selectedTransformLayerId, setSelectedTransformLayerId] = useState("");
+  const [inspectorTarget, setInspectorTarget] = useState<"layer" | "track">("layer");
+  const canvasRef = useRef<HTMLDivElement>(null);
+  const [markerDrag, setMarkerDrag] = useState<{
+    from: number;
+    to: number;
+    startX: number;
+    moved: boolean;
+  } | null>(null);
+  const suppressMarkerClickRef = useRef(false);
+  const gestureRef = useRef({ active: false, recorded: false });
+  const stashedTracksRef = useRef<Record<string, TimelineTrack[]>>({});
+  const previousSpaceRef = useRef<string | null>(null);
+  const [viewerMode, setViewerMode] = useState<"house" | "layout">("house");
+  const playheadDragRef = useRef(false);
+  const [layerDrag, setLayerDrag] = useState<{
+    id: string;
+    mode: "move" | "start" | "end";
+    startX: number;
+    moved: boolean;
+    start: number;
+    duration: number;
+  } | null>(null);
+  const [keyframeDrag, setKeyframeDrag] = useState<{
+    layerId: string;
+    keyframeId: string;
+    startX: number;
+    moved: boolean;
+    time: number;
+  } | null>(null);
+  const suppressLayerClickRef = useRef(false);
+  const [binSearch, setBinSearch] = useState("");
+  const [binMessage, setBinMessage] = useState<string | null>(null);
+  const [dropTargetId, setDropTargetId] = useState<string | null>(null);
+  const [presetDialogOpen, setPresetDialogOpen] = useState(false);
+  const [preset, setPreset] = useState<"stage" | "projector_native" | "lighting_surface">("stage");
+  const [presetTarget, setPresetTarget] = useState("");
+  const [presetName, setPresetName] = useState("");
+  const [presetDuration, setPresetDuration] = useState(0);
+  const [presetAddToScene, setPresetAddToScene] = useState(true);
   const [selectedTransformKeyframeId, setSelectedTransformKeyframeId] =
     useState("");
   const [newTransformName, setNewTransformName] = useState("");
@@ -465,22 +520,6 @@ export function TimelineEditor({
   const [renderPreviewMode, setRenderPreviewMode] = useState<
     "source" | "baked" | "side_by_side" | "difference"
   >("source");
-  const [simulationScenarios, setSimulationScenarios] = useState<
-    SimulationScenario[]
-  >([]);
-  const [simulationScenarioName, setSimulationScenarioName] =
-    useState("Rehearsal scenario");
-  const [simulationSteps, setSimulationSteps] = useState<SimulationStep[]>([]);
-  const [simulationExpected, setSimulationExpected] = useState("{}");
-  const [simulationAdvanceMs, setSimulationAdvanceMs] = useState(1000);
-  const [simulationEventType, setSimulationEventType] =
-    useState("synthetic.observation");
-  const [simulationEventAttributes, setSimulationEventAttributes] =
-    useState("{}");
-  const [simulationOutputResource, setSimulationOutputResource] = useState("");
-  const [simulationSceneId, setSimulationSceneId] = useState(scene?.id ?? "");
-  const [simulationRun, setSimulationRun] = useState<SimulationRun | null>(null);
-  const [simulationError, setSimulationError] = useState<string | null>(null);
   const [syncAdmission, setSyncAdmission] = useState<SyncAdmission | null>(null);
   const [rehearsalStartError, setRehearsalStartError] = useState(0);
   const [rehearsalDrift, setRehearsalDrift] = useState(0);
@@ -622,46 +661,6 @@ export function TimelineEditor({
 
   useEffect(() => {
     let active = true;
-    getSimulationScenarios(projectId)
-      .then((scenarios) => {
-        if (active) {
-          setSimulationScenarios(scenarios);
-          setSimulationError(null);
-        }
-      })
-      .catch((error) => {
-        if (active) {
-          setSimulationError(
-            error instanceof Error
-              ? error.message
-              : "Simulation scenarios are unavailable.",
-          );
-        }
-      });
-    return () => {
-      active = false;
-    };
-  }, [projectId]);
-
-  useEffect(() => {
-    setSimulationSceneId(scene?.id ?? "");
-  }, [scene?.id]);
-
-  useEffect(() => {
-    setSimulationOutputResource((current) =>
-      current &&
-      mapperExport?.resources.some(
-        (resource) => resource.resource === current,
-      )
-        ? current
-        : mapperExport?.resources.find(
-              (resource) => resource.kind === "pixel_output",
-            )?.resource ?? "",
-    );
-  }, [mapperExport]);
-
-  useEffect(() => {
-    let active = true;
     let timeout: ReturnType<typeof setTimeout> | undefined;
     const load = async () => {
       try {
@@ -754,7 +753,13 @@ export function TimelineEditor({
     setLoopEnd(numberValue(sceneView.loop_end_ms, scene?.duration_ms ?? 1000));
     setZoom(numberValue(sceneView.zoom_px_per_second, 80));
     setSnapMs(numberValue(sceneView.quantization_ms, 100));
-    setCustomTracks(trackArray(timelineTracks[editingSpaceId]));
+    if (previousSpaceRef.current !== null && previousSpaceRef.current !== editingSpaceId) {
+      stashedTracksRef.current[previousSpaceRef.current] = customTracks;
+    }
+    previousSpaceRef.current = editingSpaceId;
+    setCustomTracks(
+      stashedTracksRef.current[editingSpaceId] ?? trackArray(timelineTracks[editingSpaceId]),
+    );
     setSelectedTrackId("");
     setSelectedTransformLayerId("");
     setSelectedTransformKeyframeId("");
@@ -856,6 +861,15 @@ export function TimelineEditor({
     if (current && JSON.stringify(current) === serialized) {
       return;
     }
+    if (gestureRef.current.active && gestureRef.current.recorded) {
+      historyRef.current = [
+        ...historyRef.current.slice(0, historyIndexRef.current),
+        snapshot,
+      ];
+      historyIndexRef.current = historyRef.current.length - 1;
+      return;
+    }
+    if (gestureRef.current.active) gestureRef.current.recorded = true;
     historyRef.current = [
       ...historyRef.current.slice(0, historyIndexRef.current + 1),
       snapshot,
@@ -1169,6 +1183,7 @@ export function TimelineEditor({
         },
         timeline_tracks: {
           ...filterMetadataKeys(timelineTracks, validEditingSpaces),
+          ...filterMetadataKeys(stashedTracksRef.current, validEditingSpaces),
           [editingSpaceId]: customTracks,
         },
         compositions: updatedCompositions,
@@ -1255,47 +1270,648 @@ export function TimelineEditor({
     });
   }
 
+  function startPlayheadDrag(event: ReactPointerEvent<HTMLElement>) {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    playheadDragRef.current = true;
+    setIsPreviewPlaying(false);
+    setPlayhead(localOffset + timeAtClientX(event.clientX));
+  }
+
+  function movePlayheadDrag(event: ReactPointerEvent<HTMLElement>) {
+    if (playheadDragRef.current) setPlayhead(localOffset + timeAtClientX(event.clientX));
+  }
+
+  function endPlayheadDrag() {
+    playheadDragRef.current = false;
+  }
+
+  function timeAtClientX(clientX: number): number {
+    const bounds = canvasRef.current?.getBoundingClientRect();
+    if (!bounds || bounds.width <= 0) return localPlayhead;
+    const ratio = Math.min(1, Math.max(0, (clientX - bounds.left) / bounds.width));
+    return snappedLocal(ratio * duration);
+  }
+
+  function setLoopEdge(edge: "start" | "end", value: number) {
+    const snappedValue = snappedLocal(value);
+    if (edge === "start") {
+      setLoopStart(Math.min(Math.max(0, snappedValue), loopEnd - snapMs));
+    } else {
+      setLoopEnd(Math.max(Math.min(duration, snappedValue), loopStart + snapMs));
+    }
+  }
+
+  function createComposition(spec: {
+    name: string;
+    durationMs: number;
+    space: Composition["space_kind"];
+    target: string;
+    width: number;
+    height: number;
+    offsetMs: number;
+  }): string {
+    const id = crypto.randomUUID();
+    setCompositions((current) => ({
+      ...current,
+      [id]: {
+        id,
+        name: spec.name,
+        duration_ms: spec.durationMs,
+        space_kind: spec.space,
+        target_id: spec.target,
+        width: spec.width,
+        height: spec.height,
+        local_time_offset_ms: spec.offsetMs,
+        children: [],
+        safe_points_ms: [],
+        protected_intervals: [],
+        stage_lighting_surfaces: [],
+        render_settings: defaultRenderSettings(
+          spec.space === "projector_native"
+            ? [spec.width, spec.height]
+            : spec.space === "stage"
+              ? suggestedStageRenderResolution(mapperExport)
+              : [1920, 1080],
+        ),
+        lighting_settings: defaultLightingSettings(),
+      },
+    }));
+    stashedTracksRef.current[id] = [defaultCompositionTrack(spec.space, spec.target)];
+    setActiveCompositionId(id);
+    return id;
+  }
+
+  function defaultCompositionTrack(space: Composition["space_kind"], target: string): TimelineTrack {
+    const binding =
+      space === "lighting_surface"
+        ? mapperExport?.lighting_surfaces.find((surface) => surface.semantic_id === target)?.resource ?? target
+        : target;
+    return { id: crypto.randomUUID(), kind: "group", name: "Media", resource_binding: binding };
+  }
+
+  function addMediaLayer(spec: {
+    name: string;
+    kind: TransformLayer["kind"];
+    sourceId: string;
+    trackId: string;
+    startMs: number;
+    durationMs: number;
+  }) {
+    const asset = assets.find((item) => item.id === spec.sourceId);
+    const keyframe = defaultTransformKeyframe(0);
+    if (composition?.space_kind === "lighting_surface" && asset?.metadata) {
+      const sourceWidth = numberValue(asset.metadata.width, 0);
+      const sourceHeight = numberValue(asset.metadata.height, 0);
+      if (sourceWidth > 0 && sourceHeight > 0) {
+        const scale = Math.min(composition.width / sourceWidth, composition.height / sourceHeight);
+        keyframe.position = [composition.width / 2, composition.height / 2];
+        keyframe.scale = [scale, scale];
+      }
+    }
+    if (composition && composition.space_kind !== "lighting_surface" && spec.kind !== "audio") {
+      const sourceComposition = compositions[spec.sourceId];
+      const width = sourceComposition
+        ? sourceComposition.render_settings.render_width
+        : numberValue(asset?.metadata?.width, 0);
+      const height = sourceComposition
+        ? sourceComposition.render_settings.render_height
+        : numberValue(asset?.metadata?.height, 0);
+      const upp = layerUnitsPerSourcePixel(composition);
+      keyframe.position = [composition.width / 2, composition.height / 2];
+      if (width > 0 && height > 0) {
+        const scale = roundTo(
+          Math.min(composition.width / (width * upp), composition.height / (height * upp)),
+          4,
+        );
+        keyframe.scale = [scale, scale];
+      }
+    }
+    const layer: TransformLayer = {
+      layer_schema_version: 1,
+      id: crypto.randomUUID(),
+      name: spec.name,
+      kind: spec.kind,
+      source_id: spec.sourceId,
+      track_id: spec.trackId,
+      start_ms: spec.startMs,
+      duration_ms: spec.durationMs,
+      in_point_ms: 0,
+      out_point_ms: spec.durationMs,
+      playback: composition?.space_kind === "lighting_surface" && spec.kind === "video"
+        ? "loop" : "hold",
+      z_index: spaceTransformLayers.length,
+      fade_in_ms: 0,
+      fade_out_ms: 0,
+      audio:
+        spec.kind === "audio"
+          ? {
+              gain_db: 0,
+              mute: false,
+              solo: false,
+              mix_order: spaceTransformLayers.filter(
+                (candidate) => candidate.kind === "audio",
+              ).length,
+            }
+          : null,
+      alpha_interpretation: spec.kind === "audio" ? null : "straight",
+      source_color_space: spec.kind === "audio" ? null : "srgb",
+      scaling_behavior: spec.kind === "audio" ? null : "fit",
+      keyframes: spec.kind === "audio" ? [] : [keyframe],
+    };
+    setTransformLayers((current) => ({
+      ...current,
+      [editingSpaceId]: [...spaceTransformLayers, layer],
+    }));
+    setSelectedTransformLayerId(layer.id);
+    setInspectorTarget("layer");
+    setSelectedTransformKeyframeId(layer.keyframes[0]?.id ?? "");
+  }
+
+  function defaultDropTrackId(): string | undefined {
+    if (tracks.some((track) => track.id === selectedTrackId)) return selectedTrackId;
+    return (tracks.find((track) => track.kind === "media_output") ?? tracks[0])?.id;
+  }
+
+  function placeSource(sourceId: string, trackId: string | undefined, startMs: number) {
+    if (!canEdit) return;
+    let track = tracks.find((candidate) => candidate.id === trackId);
+    if (!track && composition && tracks.length === 0) {
+      track = defaultCompositionTrack(composition.space_kind, composition.target_id);
+      const created = track;
+      setCustomTracks((current) => [...current, created]);
+    }
+    if (!track) {
+      setBinMessage("Add a track on the Tracks tab before placing media.");
+      return;
+    }
+    const asset = assets.find((candidate) => candidate.id === sourceId);
+    const child = compositions[sourceId];
+    if (!asset && !child) return;
+    if (
+      child &&
+      activeCompositionId &&
+      (child.id === activeCompositionId ||
+        wouldCreateCycle(compositions, activeCompositionId, child.id))
+    ) {
+      setBinMessage(`${child.name} cannot be nested inside itself.`);
+      return;
+    }
+    const type = asset?.media_type ?? "";
+    const kind: TransformLayer["kind"] = child
+      ? "composition"
+      : type.startsWith("audio/")
+        ? "audio"
+        : type.startsWith("video/") || type === "image/gif"
+          ? "video"
+          : "image";
+    const start = clampNumber(snappedLocal(startMs), 0, Math.max(0, duration - 1));
+    const natural = child
+      ? child.duration_ms
+      : numberValue(asset?.metadata?.duration_ms, 0) || 5000;
+    const length = Math.round(Math.min(natural, duration - start));
+    if (length <= 0) {
+      setBinMessage("There is no room left on the timeline at that point.");
+      return;
+    }
+    const name = child ? child.name : asset!.name;
+    addMediaLayer({ name, kind, sourceId, trackId: track.id, startMs: start, durationMs: length });
+    setBinMessage(`Added ${name} to ${track.name} at ${formatTimecode(start)}.`);
+  }
+
+  function msPerPixel(): number {
+    const width = canvasRef.current?.getBoundingClientRect().width ?? 0;
+    return width > 0 ? duration / width : 0;
+  }
+
+  function beginGesture() {
+    gestureRef.current = { active: true, recorded: false };
+  }
+
+  function endGesture() {
+    gestureRef.current = { active: false, recorded: false };
+  }
+
+  function removeTransformLayer(layerId: string) {
+    setTransformLayers((current) => ({
+      ...current,
+      [editingSpaceId]: (current[editingSpaceId] ?? []).filter((layer) => layer.id !== layerId),
+    }));
+    setCompoundSelection((current) => current.filter((id) => id !== layerId));
+    if (selectedTransformLayerId === layerId) {
+      setSelectedTransformLayerId("");
+      setSelectedTransformKeyframeId("");
+    }
+  }
+
+  function dragLayerTo(clientX: number) {
+    if (!layerDrag) return;
+    const layer = spaceTransformLayers.find((candidate) => candidate.id === layerDrag.id);
+    if (!layer) return;
+    const moved = layerDrag.moved || Math.abs(clientX - layerDrag.startX) > 3;
+    if (!moved) return;
+    const delta = (clientX - layerDrag.startX) * msPerPixel();
+    const minimumLength = Math.max(1, snapMs);
+    let start = layer.start_ms;
+    let length = layer.duration_ms;
+    if (layerDrag.mode === "move") {
+      start = clampNumber(snappedLocal(layer.start_ms + delta), 0, duration - layer.duration_ms);
+    } else if (layerDrag.mode === "start") {
+      const end = layer.start_ms + layer.duration_ms;
+      start = clampNumber(
+        snappedLocal(layer.start_ms + delta),
+        Math.max(0, layer.start_ms - layer.in_point_ms),
+        end - minimumLength,
+      );
+      length = end - start;
+    } else {
+      length = clampNumber(
+        snappedLocal(layer.duration_ms + delta),
+        minimumLength,
+        duration - layer.start_ms,
+      );
+    }
+    setLayerDrag({ ...layerDrag, moved, start, duration: length });
+  }
+
+  function commitLayerDrag() {
+    const drag = layerDrag;
+    setLayerDrag(null);
+    if (!drag?.moved) return;
+    suppressLayerClickRef.current = true;
+    window.setTimeout(() => {
+      suppressLayerClickRef.current = false;
+    }, 0);
+    updateTransformLayer(drag.id, (layer) => {
+      if (drag.mode === "move") return { ...layer, start_ms: drag.start };
+      if (drag.mode === "end") {
+        return {
+          ...layer,
+          duration_ms: drag.duration,
+          out_point_ms: layer.in_point_ms + drag.duration,
+          keyframes: trimKeyframes(layer.keyframes, 0, drag.duration),
+        };
+      }
+      const shift = drag.start - layer.start_ms;
+      const inPoint = layer.in_point_ms + shift;
+      return {
+        ...layer,
+        start_ms: drag.start,
+        duration_ms: drag.duration,
+        in_point_ms: inPoint,
+        out_point_ms: inPoint + drag.duration,
+        keyframes: trimKeyframes(
+          layer.keyframes.map((keyframe) => ({ ...keyframe, time_ms: keyframe.time_ms - shift })),
+          0,
+          drag.duration,
+        ),
+      };
+    });
+  }
+
+  function dragKeyframeTo(clientX: number) {
+    if (!keyframeDrag) return;
+    const layer = spaceTransformLayers.find((candidate) => candidate.id === keyframeDrag.layerId);
+    const keyframe = layer?.keyframes.find((candidate) => candidate.id === keyframeDrag.keyframeId);
+    if (!layer || !keyframe) return;
+    const moved = keyframeDrag.moved || Math.abs(clientX - keyframeDrag.startX) > 3;
+    if (!moved) return;
+    const time = clampNumber(
+      snappedLocal(keyframe.time_ms + (clientX - keyframeDrag.startX) * msPerPixel()),
+      0,
+      layer.duration_ms,
+    );
+    setKeyframeDrag({ ...keyframeDrag, moved, time });
+  }
+
+  function commitKeyframeDrag() {
+    const drag = keyframeDrag;
+    setKeyframeDrag(null);
+    if (!drag?.moved) return;
+    suppressLayerClickRef.current = true;
+    window.setTimeout(() => {
+      suppressLayerClickRef.current = false;
+    }, 0);
+    const layer = spaceTransformLayers.find((candidate) => candidate.id === drag.layerId);
+    if (
+      layer?.keyframes.some(
+        (keyframe) => keyframe.id !== drag.keyframeId && keyframe.time_ms === drag.time,
+      )
+    ) {
+      return;
+    }
+    updateTransformKeyframe(drag.layerId, drag.keyframeId, (keyframe) => ({
+      ...keyframe,
+      time_ms: drag.time,
+    }));
+  }
+
+  function openPresetDialog() {
+    const firstProjector = (mapperExport?.projectors ?? [])
+      .map((value) => metadataRecord(value))
+      .find((projector) => typeof projector.resource === "string");
+    setPreset("stage");
+    setPresetTarget(String(firstProjector?.resource ?? ""));
+    setPresetName("");
+    setPresetDuration(scene?.duration_ms ?? 5000);
+    setPresetAddToScene(true);
+    setPresetDialogOpen(true);
+  }
+
+  function presetSpec() {
+    if (preset === "stage") {
+      const width = mapperExport?.stage ? roundStage(mapperExport.stage.width) : 10;
+      const height = mapperExport?.stage ? roundStage(mapperExport.stage.height) : 6;
+      return { target: "shared-stage", width, height, label: "Whole display overlay" };
+    }
+    if (preset === "projector_native") {
+      const projector = (mapperExport?.projectors ?? [])
+        .map((value) => metadataRecord(value))
+        .find((candidate) => candidate.resource === presetTarget);
+      return {
+        target: presetTarget,
+        width: numberValue(projector?.native_width, 1920),
+        height: numberValue(projector?.native_height, 1080),
+        label: presetTarget || "Projector",
+      };
+    }
+    const surface = mapperExport?.lighting_surfaces.find(
+      (candidate) => candidate.semantic_id === presetTarget,
+    );
+    return {
+      target: presetTarget,
+      width: surface?.local_width ?? 1,
+      height: surface?.local_height ?? 1,
+      label: surface?.resource ?? (presetTarget || "LED surface"),
+    };
+  }
+
+  function createFromPreset() {
+    const spec = presetSpec();
+    const name = presetName.trim() || spec.label;
+    const id = createComposition({
+      name,
+      durationMs: presetDuration,
+      space: preset,
+      target: spec.target,
+      width: spec.width,
+      height: spec.height,
+      offsetMs: 0,
+    });
+    if (presetAddToScene && scene) {
+      setSceneCompositions((current) => ({
+        ...current,
+        [scene.id]: [...new Set([...(current[scene.id] ?? []), id])],
+      }));
+      setCompositionInstances((current) => ({
+        ...current,
+        [scene.id]: [
+          ...(current[scene.id] ?? []),
+          {
+            id: crypto.randomUUID(),
+            composition_id: id,
+            start_offset_ms: 0,
+            time_scale: 1,
+            parameter_overrides: {},
+            placement: { x: 0, y: 0 },
+          },
+        ],
+      }));
+    }
+    setToolTab("layers");
+    setPresetDialogOpen(false);
+  }
+
+  function addSafePointAtPlayhead() {
+    setSafePoints((current) =>
+      [...new Set([...current, snappedLocal(localPlayhead)])].sort(
+        (left, right) => left - right,
+      ),
+    );
+  }
+
+  const shortcutHandlers = useRef({
+    save: () => {},
+    undo: () => {},
+    redo: () => {},
+    togglePlay: () => {},
+    addMarker: () => {},
+    deleteSelection: () => {},
+  });
+  shortcutHandlers.current = {
+    save: () => {
+      if (canEdit && timelineDiagnostics.length === 0) void save();
+    },
+    undo: () => {
+      if (canEdit && historyIndexRef.current > 0) restoreHistory(historyIndexRef.current - 1);
+    },
+    redo: () => {
+      if (canEdit && historyIndexRef.current < historyRef.current.length - 1) {
+        restoreHistory(historyIndexRef.current + 1);
+      }
+    },
+    togglePlay: () => setIsPreviewPlaying((current) => !current),
+    addMarker: () => {
+      if (canEdit) addSafePointAtPlayhead();
+    },
+    deleteSelection: () => {
+      if (canEdit && inspectorTarget === "layer" && selectedTransformLayer) {
+        removeTransformLayer(selectedTransformLayer.id);
+      }
+    },
+  };
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      const target = event.target as HTMLElement | null;
+      const typing =
+        target !== null &&
+        (target.isContentEditable ||
+          ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName));
+      const modifier = event.ctrlKey || event.metaKey;
+      const key = event.key.toLowerCase();
+      if (modifier && key === "s") {
+        event.preventDefault();
+        shortcutHandlers.current.save();
+      } else if (typing || event.altKey) {
+        return;
+      } else if (modifier && key === "z") {
+        event.preventDefault();
+        if (event.shiftKey) shortcutHandlers.current.redo();
+        else shortcutHandlers.current.undo();
+      } else if (!modifier && event.key === " " && target?.tagName !== "BUTTON") {
+        event.preventDefault();
+        shortcutHandlers.current.togglePlay();
+      } else if (!modifier && key === "m") {
+        shortcutHandlers.current.addMarker();
+      } else if (!modifier && (event.key === "Delete" || event.key === "Backspace")) {
+        event.preventDefault();
+        shortcutHandlers.current.deleteSelection();
+      }
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
+
   if (!scene) {
     return null;
   }
 
-  return (
-    <details
-      className="timeline-editor"
-      open={editorOpen}
-      onToggle={(event) => setEditorOpen(event.currentTarget.open)}
-    >
-      <summary>Timeline editor</summary>
-      {editorOpen && (
-        <>
-      <div className="timeline-toolbar">
-        <label>
-          Scene
-          <select
-            value={scene.id}
-            onChange={(event) => {
-              setSceneId(event.target.value);
-              onSceneChange?.(event.target.value);
-              setActiveCompositionId("");
+  const content = (
+    <>
+      <header className="timeline-header">
+        <div className="timeline-header__context">
+          <label>
+            Scene
+            <select
+              value={scene.id}
+              onChange={(event) => {
+                setSceneId(event.target.value);
+                onSceneChange?.(event.target.value);
+                setActiveCompositionId("");
+              }}
+            >
+              {draft.draft.scenes.map((candidate) => (
+                <option key={candidate.id} value={candidate.id}>
+                  {candidate.name}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+        <div className="timeline-header__actions">
+          <button
+            type="button"
+            className={`timeline-status-chip${
+              timelineDiagnostics.length ? " timeline-status-chip--invalid" : ""
+            }`}
+            aria-label={
+              timelineDiagnostics.length
+                ? `${timelineDiagnostics.length} timeline issue${timelineDiagnostics.length === 1 ? "" : "s"}; show diagnostics`
+                : "Timeline valid; show diagnostics"
+            }
+            onClick={() => setDiagnosticsOpen(true)}
+          >
+            {timelineDiagnostics.length
+              ? `${timelineDiagnostics.length} issue${timelineDiagnostics.length === 1 ? "" : "s"}`
+              : "Valid"}
+          </button>
+          {!composition && (
+            <button type="button" onClick={() => setSceneSettingsOpen(true)}>
+              Scene settings
+            </button>
+          )}
+          {canEdit && (
+            <>
+              <button
+                aria-label="Undo timeline edit"
+                title="Undo (Ctrl+Z)"
+                disabled={historyVersion < 0 || historyIndexRef.current <= 0}
+                onClick={() => restoreHistory(historyIndexRef.current - 1)}
+              >
+                Undo
+              </button>
+              <button
+                aria-label="Redo timeline edit"
+                title="Redo (Ctrl+Shift+Z)"
+                disabled={
+                  historyIndexRef.current < 0 ||
+                  historyIndexRef.current >= historyRef.current.length - 1
+                }
+                onClick={() => restoreHistory(historyIndexRef.current + 1)}
+              >
+                Redo
+              </button>
+              <button
+                className="timeline-primary-action"
+                title="Save (Ctrl+S)"
+                disabled={timelineDiagnostics.length > 0}
+                onClick={() => void save()}
+              >
+                Save timeline
+              </button>
+            </>
+          )}
+        </div>
+      </header>
+      <div className="timeline-transport" role="toolbar" aria-label="Playback and view">
+        <div className="timeline-transport__group">
+          <button
+            aria-label="Stop editorial preview"
+            title="Stop and return to loop start"
+            onClick={() => {
+              setIsPreviewPlaying(false);
+              setPlayhead(localOffset + loopStart);
             }}
           >
-            {draft.draft.scenes.map((candidate) => (
-              <option key={candidate.id} value={candidate.id}>
-                {candidate.name}
-              </option>
-            ))}
-          </select>
+            ■
+          </button>
+          <button
+            aria-label="Previous preview frame"
+            title="Previous frame"
+            onClick={() => {
+              setIsPreviewPlaying(false);
+              setPlayhead(
+                localOffset + Math.max(0, localPlayhead - frameDurationMs),
+              );
+            }}
+          >
+            ◀|
+          </button>
+          <button
+            className="timeline-transport__play"
+            aria-label={isPreviewPlaying ? "Pause editorial preview" : "Play editorial preview"}
+            title="Play / pause (Space)"
+            onClick={() => setIsPreviewPlaying((current) => !current)}
+          >
+            {isPreviewPlaying ? "Pause" : "Play"}
+          </button>
+          <button
+            aria-label="Next preview frame"
+            title="Next frame"
+            onClick={() => {
+              setIsPreviewPlaying(false);
+              setPlayhead(
+                localOffset +
+                  Math.min(duration, localPlayhead + frameDurationMs),
+              );
+            }}
+          >
+            |▶
+          </button>
+        </div>
+        <output className="timeline-timecode" aria-label="Playhead time">
+          <strong>{formatTimecode(localPlayhead)}</strong>
+          <small>
+            / {formatTimecode(duration)}
+            {composition ? ` · scene ${formatTimecode(playhead)}` : ""}
+          </small>
+        </output>
+        <label>
+          Go to (ms)
+          <input
+            aria-label="Scrub position"
+            max={localOffset + duration}
+            min={localOffset}
+            step={snapMs}
+            type="number"
+            value={playhead}
+            onChange={(event) => setPlayhead(snapped(Number(event.target.value)))}
+          />
         </label>
         <label>
-          Editing space
+          Speed
           <select
-            value={activeCompositionId}
-            onChange={(event) => setActiveCompositionId(event.target.value)}
+            aria-label="Preview speed"
+            value={previewPlaybackRate}
+            onChange={(event) =>
+              setPreviewPlaybackRate(Number(event.target.value))
+            }
           >
-            <option value="">Scene root · {scene.name}</option>
-            {Object.values(compositions).map((candidate) => (
-              <option key={candidate.id} value={candidate.id}>
-                Composition · {candidate.name}
+            {[0.25, 0.5, 1, 2, 4].map((rate) => (
+              <option key={rate} value={rate}>
+                {rate}×
               </option>
             ))}
           </select>
@@ -1321,543 +1937,911 @@ export function TimelineEditor({
             ))}
           </select>
         </label>
-        <button
-          aria-label={isPreviewPlaying ? "Pause editorial preview" : "Play editorial preview"}
-          onClick={() => setIsPreviewPlaying((current) => !current)}
-        >
-          {isPreviewPlaying ? "Pause preview" : "Play preview"}
-        </button>
-        <button
-          aria-label="Stop editorial preview"
-          onClick={() => {
-            setIsPreviewPlaying(false);
-            setPlayhead(localOffset + loopStart);
-          }}
-        >
-          Stop preview
-        </button>
-        <button
-          aria-label="Previous preview frame"
-          onClick={() => {
-            setIsPreviewPlaying(false);
-            setPlayhead(
-              localOffset + Math.max(0, localPlayhead - frameDurationMs),
-            );
-          }}
-        >
-          Previous frame
-        </button>
-        <button
-          aria-label="Next preview frame"
-          onClick={() => {
-            setIsPreviewPlaying(false);
-            setPlayhead(
-              localOffset +
-                Math.min(duration, localPlayhead + frameDurationMs),
-            );
-          }}
-        >
-          Next frame
-        </button>
-        <label>
-          Preview speed
-          <select
-            aria-label="Preview speed"
-            value={previewPlaybackRate}
-            onChange={(event) =>
-              setPreviewPlaybackRate(Number(event.target.value))
-            }
-          >
-            {[0.25, 0.5, 1, 2, 4].map((rate) => (
-              <option key={rate} value={rate}>
-                {rate}×
-              </option>
-            ))}
-          </select>
-        </label>
-        <span>
-          Global {playhead} ms
-          {composition ? ` · Local ${localPlayhead} ms` : ""}
-        </span>
-        <label>
-          Scrub position
-          <input
-            aria-label="Scrub position"
-            max={localOffset + duration}
-            min={localOffset}
-            step={snapMs}
-            type="number"
-            value={playhead}
-            onChange={(event) => setPlayhead(snapped(Number(event.target.value)))}
-          />
-        </label>
         {canEdit && (
-          <>
-            <button
-              disabled={historyVersion < 0 || historyIndexRef.current <= 0}
-              onClick={() => restoreHistory(historyIndexRef.current - 1)}
-            >
-              Undo timeline edit
-            </button>
-            <button
-              disabled={
-                historyIndexRef.current < 0 ||
-                historyIndexRef.current >= historyRef.current.length - 1
-              }
-              onClick={() => restoreHistory(historyIndexRef.current + 1)}
-            >
-              Redo timeline edit
-            </button>
-            <button
-              onClick={() =>
-                setSafePoints((current) =>
-                  [...new Set([...current, snappedLocal(localPlayhead)])].sort(
-                    (left, right) => left - right,
-                  ),
-                )
-              }
-            >
-              Add marker
-            </button>
-            <button
-              disabled={timelineDiagnostics.length > 0}
-              onClick={() => void save()}
-            >
-              Save timeline
-            </button>
-          </>
+          <button
+            title="Add a marker at the playhead (M)"
+            onClick={addSafePointAtPlayhead}
+          >
+            Add marker
+          </button>
         )}
       </div>
-      <EditorialAudioPreview
-        isPlaying={isPreviewPlaying}
-        playheadMs={localPlayhead}
-        sources={editorialAudioSources}
-      />
-      <output className="timeline-evaluated-state" aria-label="Timeline evaluated state">
-        {JSON.stringify(evaluatedTimelineState)}
-      </output>
-      <section
-        className="timeline-preview-diagnostics"
-        aria-label="Backend preview diagnostics"
-      >
-        <strong>Backend deterministic scene evaluation</strong>
-        {previewEvaluation ? (
-          <>
-            <span>
-              {previewEvaluation.frame_rate.numerator}/
-              {previewEvaluation.frame_rate.denominator} fps · frame{" "}
-              {previewEvaluation.frame_index} · controller time{" "}
-              {previewEvaluation.frame_timestamp_ms.toFixed(3)} ms
-            </span>
-            <span>
-              Timing quantization error{" "}
-              {previewEvaluation.timing_error_ms.toFixed(3)} ms · source revision{" "}
-              {previewEvaluation.source_revision}
-            </span>
-            <span>
-              Resources: {previewEvaluation.resources.join(", ") || "none"}
-            </span>
-            <span>
-              {previewEvaluation.degraded_resources.length
-                ? `Degraded resources: ${previewEvaluation.degraded_resources
-                    .map(
-                      (resource) =>
-                        `${resource.source_id} (${resource.reason})`,
-                    )
-                    .join(", ")}`
-                : "Degraded resources: none"}
-            </span>
-            <small>
-              Deterministic backend evaluation only; hardware commands sent: no.
-            </small>
-          </>
-        ) : (
-          <small role={previewEvaluationError ? "alert" : undefined}>
-            {previewEvaluationError ?? "Evaluating controller scene time…"}
-          </small>
+      <div className="timeline-composition-tabs" role="tablist" aria-label="Open compositions">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={!activeCompositionId}
+          onClick={() => setActiveCompositionId("")}
+        >
+          Whole scene
+        </button>
+        {Object.values(compositions).map((candidate) => (
+          <button
+            key={candidate.id}
+            type="button"
+            role="tab"
+            aria-label={candidate.name}
+            aria-selected={activeCompositionId === candidate.id}
+            data-composition-id={candidate.id}
+            title={`${candidate.name} · ${humanizeSpace(candidate.space_kind)}`}
+            onClick={() => setActiveCompositionId(candidate.id)}
+          >
+            {candidate.name}
+            <small>{humanizeSpace(candidate.space_kind)}</small>
+          </button>
+        ))}
+        {canEdit && (
+          <button
+            type="button"
+            className="timeline-composition-tabs__new"
+            onClick={openPresetDialog}
+          >
+            + New composition
+          </button>
         )}
-      </section>
-      <section
-        className="timeline-simulation-scenarios"
-        aria-label="Repeatable simulation scenarios"
-      >
-        <strong>Repeatable no-hardware simulation scenarios</strong>
-        <small>
-          Runs the compiled controller with fake media clients, in-memory lighting
-          sinks, synthetic observations, and accelerated time. Hardware adapters
-          and enrolled clients are never opened.
-        </small>
-        <label>
-          Scenario name
+      </div>
+      <div className="timeline-stage-row">
+        <section className="timeline-bin" aria-label="Media bin">
+          <h3 className="timeline-inspector__title">Media</h3>
           <input
-            aria-label="Simulation scenario name"
-            value={simulationScenarioName}
-            onChange={(event) => setSimulationScenarioName(event.target.value)}
+            aria-label="Search media"
+            placeholder="Search"
+            type="search"
+            value={binSearch}
+            onChange={(event) => setBinSearch(event.target.value)}
           />
-        </label>
-        <label>
-          Accelerated advance milliseconds
-          <input
-            aria-label="Simulation advance milliseconds"
-            min="0"
-            type="number"
-            value={simulationAdvanceMs}
-            onChange={(event) => setSimulationAdvanceMs(Number(event.target.value))}
-          />
-        </label>
-        <button
-          onClick={() =>
-            setSimulationSteps((current) => [
-              ...current,
-              { kind: "advance", delta_ms: simulationAdvanceMs },
-            ])
-          }
-        >
-          Add accelerated advance
-        </button>
-        <label>
-          Synthetic event type
-          <input
-            aria-label="Synthetic event type"
-            value={simulationEventType}
-            onChange={(event) => setSimulationEventType(event.target.value)}
-          />
-        </label>
-        <label>
-          Synthetic event attributes
-          <textarea
-            aria-label="Synthetic event attributes"
-            value={simulationEventAttributes}
-            onChange={(event) =>
-              setSimulationEventAttributes(event.target.value)
-            }
-          />
-        </label>
-        <button
-          onClick={() => {
-            try {
-              const parsed = JSON.parse(simulationEventAttributes);
-              if (
-                typeof parsed !== "object" ||
-                parsed === null ||
-                Array.isArray(parsed)
-              ) {
-                throw new Error("Synthetic event attributes must be an object.");
-              }
-              setSimulationSteps((current) => [
-                ...current,
-                {
-                  kind: "observe",
-                  event_type: simulationEventType,
-                  attributes: parsed as Record<
-                    string,
-                    string | number | boolean
-                  >,
-                },
-              ]);
-              setSimulationError(null);
-            } catch (error) {
-              setSimulationError(
-                error instanceof Error
-                  ? error.message
-                  : "Synthetic event attributes are invalid.",
-              );
-            }
-          }}
-        >
-          Add synthetic observation
-        </button>
-        <label>
-          Operator scene override
-          <select
-            aria-label="Simulation operator scene"
-            value={simulationSceneId}
-            onChange={(event) => setSimulationSceneId(event.target.value)}
-          >
-            {draft.draft.scenes.map((candidate) => (
-              <option key={candidate.id} value={candidate.id}>
-                {candidate.name}
-              </option>
-            ))}
-          </select>
-        </label>
-        <button
-          disabled={!simulationSceneId}
-          onClick={() =>
-            setSimulationSteps((current) => [
-              ...current,
-              { kind: "operator_start", scene_id: simulationSceneId },
-            ])
-          }
-        >
-          Add operator override
-        </button>
-        <button
-          onClick={() =>
-            setSimulationSteps((current) => [
-              ...current,
-              { kind: "disconnect" },
-            ])
-          }
-        >
-          Add client disconnect
-        </button>
-        <button
-          onClick={() =>
-            setSimulationSteps((current) => [
-              ...current,
-              { kind: "reconnect" },
-            ])
-          }
-        >
-          Add client reconnect
-        </button>
-        <label>
-          Simulated lighting output
-          <select
-            aria-label="Simulated lighting output"
-            value={simulationOutputResource}
-            onChange={(event) =>
-              setSimulationOutputResource(event.target.value)
-            }
-          >
-            <option value="">Select output</option>
-            {(mapperExport?.resources ?? [])
-              .filter((resource) => resource.kind === "pixel_output")
-              .map((resource) => (
-                <option key={resource.resource} value={resource.resource}>
-                  {resource.resource}
-                </option>
+          <ul className="timeline-bin__list">
+            {[
+              ...assets
+                .filter((asset) => asset.status === "ready")
+                .map((asset) => ({
+                  id: asset.id,
+                  name: asset.name,
+                  kind: assetKindLabel(asset),
+                  thumbnail: hasAssetArtifact(asset, "thumbnail")
+                    ? assetArtifactUrl(asset.id, "thumbnail")
+                    : null,
+                })),
+              ...Object.values(compositions)
+                .filter((candidate) => candidate.id !== activeCompositionId)
+                .map((candidate) => ({
+                  id: candidate.id,
+                  name: candidate.name,
+                  kind: "composition",
+                  thumbnail: null,
+                })),
+            ]
+              .filter((item) =>
+                item.name.toLocaleLowerCase().includes(binSearch.trim().toLocaleLowerCase()),
+              )
+              .map((item) => (
+                <li
+                  key={item.id}
+                  className="timeline-bin__item"
+                  draggable={canEdit}
+                  title={canEdit ? "Drag onto a track or the viewer" : undefined}
+                  onDragStart={(event) => {
+                    event.dataTransfer.setData(TIMELINE_SOURCE_MIME, item.id);
+                    event.dataTransfer.setData("text/plain", item.name);
+                    event.dataTransfer.effectAllowed = "copy";
+                  }}
+                >
+                  {item.thumbnail ? (
+                    <img alt="" src={item.thumbnail} />
+                  ) : (
+                    <span className="timeline-bin__icon" aria-hidden="true">
+                      {item.kind.slice(0, 3)}
+                    </span>
+                  )}
+                  <span className="timeline-bin__text" title={item.name}>
+                    <strong>{item.name}</strong>
+                    <small>{item.kind}</small>
+                  </span>
+                  {canEdit && (
+                    <button
+                      type="button"
+                      aria-label={`Add ${item.name} at playhead`}
+                      title="Add at the playhead on the selected track"
+                      onClick={() => placeSource(item.id, defaultDropTrackId(), localPlayhead)}
+                    >
+                      +
+                    </button>
+                  )}
+                </li>
               ))}
-          </select>
-        </label>
-        <button
-          disabled={!simulationOutputResource}
-          onClick={() =>
-            setSimulationSteps((current) => [
-              ...current,
-              {
-                kind: "output_failure",
-                resource: simulationOutputResource,
-                failed: true,
-              },
-            ])
-          }
-        >
-          Add output failure
-        </button>
-        <button
-          disabled={!simulationOutputResource}
-          onClick={() =>
-            setSimulationSteps((current) => [
-              ...current,
-              {
-                kind: "output_failure",
-                resource: simulationOutputResource,
-                failed: false,
-              },
-            ])
-          }
-        >
-          Add output recovery
-        </button>
-        <ol aria-label="Simulation scenario steps">
-          {simulationSteps.map((step, index) => (
-            <li key={`${index}:${step.kind}`}>
-              <code>{JSON.stringify(step)}</code>
-              <button
-                aria-label={`Remove simulation step ${index + 1}`}
-                onClick={() =>
-                  setSimulationSteps((current) =>
-                    current.filter((_, candidate) => candidate !== index),
-                  )
-                }
-              >
-                Remove
-              </button>
-            </li>
-          ))}
-        </ol>
-        <label>
-          Expected deterministic outcome
-          <textarea
-            aria-label="Simulation expected outcome"
-            value={simulationExpected}
-            onChange={(event) => setSimulationExpected(event.target.value)}
-          />
-        </label>
-        <button
-          disabled={
-            !canEdit ||
-            !simulationScenarioName.trim() ||
-            simulationSteps.length === 0
-          }
-          onClick={async () => {
-            try {
-              const expected = JSON.parse(simulationExpected);
-              if (
-                typeof expected !== "object" ||
-                expected === null ||
-                Array.isArray(expected)
-              ) {
-                throw new Error("Expected outcome must be a JSON object.");
-              }
-              const saved = await saveSimulationScenario(projectId, {
-                name: simulationScenarioName,
-                steps: simulationSteps,
-                expected: expected as Record<string, unknown>,
-              });
-              setSimulationScenarios((current) => [
-                saved,
-                ...current.filter((candidate) => candidate.id !== saved.id),
-              ]);
-              setSimulationError(null);
-            } catch (error) {
-              setSimulationError(
-                error instanceof Error
-                  ? error.message
-                  : "Simulation scenario could not be saved.",
-              );
-            }
+          </ul>
+          {!assets.some((asset) => asset.status === "ready") && (
+            <small>No ready media yet. Upload assets on the show page.</small>
+          )}
+          {binMessage && <small role="status">{binMessage}</small>}
+        </section>
+        <section
+          className={`timeline-viewer${dropTargetId === "viewer" ? " timeline-drop-target" : ""}`}
+          aria-label="Viewer"
+          onDragOver={(event) => {
+            if (!canEdit || !event.dataTransfer.types.includes(TIMELINE_SOURCE_MIME)) return;
+            event.preventDefault();
+            event.dataTransfer.dropEffect = "copy";
+            setDropTargetId("viewer");
+          }}
+          onDragLeave={() => setDropTargetId(null)}
+          onDrop={(event) => {
+            const sourceId = event.dataTransfer.getData(TIMELINE_SOURCE_MIME);
+            setDropTargetId(null);
+            if (!sourceId) return;
+            event.preventDefault();
+            placeSource(sourceId, defaultDropTrackId(), localPlayhead);
           }}
         >
-          Save simulation scenario
-        </button>
-        <div className="timeline-simulation-saved">
-          {simulationScenarios.map((scenario) => (
-            <div key={scenario.id}>
-              <span>
-                <strong>{scenario.name}</strong> · revision{" "}
-                {scenario.source_revision} · {scenario.steps.length} steps
-              </span>
-              <small>
-                {scenario.source_revision === draft.revision
-                  ? "Matches current draft"
-                  : `Reproducible against stored revision ${scenario.source_revision}; current draft is ${draft.revision}`}
-              </small>
+        <nav className="composition-breadcrumbs" aria-label="Composition breadcrumbs">
+          <button onClick={() => setActiveCompositionId("")}>Scene · {scene.name}</button>
+          {breadcrumbs.map((compositionId) => (
+            <span key={compositionId}>
+              <span aria-hidden="true">›</span>
+              <button onClick={() => setActiveCompositionId(compositionId)}>
+                {compositions[compositionId]?.name ?? compositionId}
+              </button>
+            </span>
+          ))}
+        </nav>
+        {composition?.space_kind === "stage" &&
+          viewerMode === "house" &&
+          stageCoverage &&
+          mapperExport &&
+          installationId && (
+          <StageCompositionPreview
+            composition={composition}
+            compositions={compositions}
+            coverage={stageCoverage}
+            installationId={installationId}
+            mapperExport={mapperExport}
+            projectId={projectId}
+            selectedKeyframe={selectedTransformKeyframe}
+            selectedLayer={selectedTransformLayer}
+            canEdit={canEdit}
+            snapMode={spatialSnapMode}
+            onSnapModeChange={setSpatialSnapMode}
+            timestampMs={Math.min(localPlayhead, composition.duration_ms - 1)}
+            onMoveKeyframe={(position) => {
+              if (selectedTransformLayer && selectedTransformKeyframe) {
+                updateTransformKeyframe(
+                  selectedTransformLayer.id,
+                  selectedTransformKeyframe.id,
+                  (keyframe) => ({ ...keyframe, position }),
+                );
+              }
+            }}
+            onCornerPinChange={(points) => {
+              if (selectedTransformLayer && canEdit) {
+                updateTransformLayer(selectedTransformLayer.id, (layer) => ({
+                  ...layer,
+                  corner_pin: points,
+                }));
+              }
+            }}
+          />
+        )}
+        {composition?.space_kind === "lighting_surface" && viewerMode === "house" && mapperExport && (
+          <LightingSurfaceCompositionPreview
+            composition={composition}
+            installationId={installationId}
+            mapperExport={mapperExport}
+            projectId={projectId}
+            timestampMs={Math.min(localPlayhead, composition.duration_ms - 1)}
+            onMoveMedia={canEdit && selectedTransformLayer && selectedTransformKeyframe
+              ? (position) => updateTransformKeyframe(
+                  selectedTransformLayer.id, selectedTransformKeyframe.id,
+                  (keyframe) => ({ ...keyframe, position }),
+                )
+              : undefined}
+          />
+        )}
+          {composition?.space_kind === "stage" && (
+            <StageOutputSelector
+              composition={composition}
+              mapperExport={mapperExport}
+              canEdit={canEdit}
+              onChange={(update) =>
+                setCompositions((current) => ({
+                  ...current,
+                  [composition.id]: update(current[composition.id]),
+                }))
+              }
+            />
+          )}
+          {!composition && (
+            <SceneProgramMonitor
+              assets={assets}
+              isPlaying={isPreviewPlaying}
+              layers={spaceTransformLayers}
+              playheadMs={localPlayhead}
+            />
+          )}
+          {composition && composition.space_kind !== "projector_native" && (
+            <div className="timeline-viewer__modes" role="group" aria-label="Viewer mode">
               <button
-                disabled={!canEdit}
-                onClick={async () => {
-                  try {
-                    setSimulationRun(
-                      await runSimulationScenario(projectId, scenario.id),
-                    );
-                    setSimulationError(null);
-                  } catch (error) {
-                    setSimulationError(
-                      error instanceof Error
-                        ? error.message
-                        : "Simulation scenario failed to run.",
-                    );
-                  }
-                }}
+                type="button"
+                aria-pressed={viewerMode === "house"}
+                onClick={() => setViewerMode("house")}
               >
-                Run saved scenario
+                House view
+              </button>
+              <button
+                type="button"
+                aria-pressed={viewerMode === "layout"}
+                onClick={() => setViewerMode("layout")}
+              >
+                Layout
               </button>
             </div>
-          ))}
-        </div>
-        {simulationRun && (
-          <output aria-label="Simulation scenario result">
-            <strong>
-              {simulationRun.passed ? "Expected outcome matched" : "Outcome mismatch"}
-            </strong>
-            <span>
-              Hardware adapters opened: no · hardware commands sent: no
-            </span>
-            <code>{JSON.stringify(simulationRun.actual)}</code>
-            {simulationRun.mismatches.length > 0 && (
-              <code>{JSON.stringify(simulationRun.mismatches)}</code>
+          )}
+          {composition &&
+            (composition.space_kind === "projector_native" || viewerMode === "layout") && (
+              <CompositionLayoutCanvas
+                assets={assets}
+                canEdit={canEdit}
+                composition={composition}
+                compositions={compositions}
+                layers={spaceTransformLayers}
+                playheadMs={localPlayhead}
+                selectedKeyframeId={selectedTransformKeyframeId}
+                selectedLayerId={inspectorTarget === "layer" ? selectedTransformLayerId : ""}
+                onGestureStart={beginGesture}
+                onGestureEnd={endGesture}
+                onSelectLayer={(layerId) => {
+                  if (layerId !== selectedTransformLayerId) {
+                    const layer = spaceTransformLayers.find((candidate) => candidate.id === layerId);
+                    setSelectedTransformLayerId(layerId);
+                    setSelectedTransformKeyframeId(
+                      layer ? keyframeAtTime(layer, localPlayhead - layer.start_ms)?.id ?? "" : "",
+                    );
+                  }
+                  setInspectorTarget("layer");
+                }}
+                onChangeKeyframe={(layerId, keyframeId, patch) =>
+                  updateTransformKeyframe(layerId, keyframeId, (keyframe) => ({ ...keyframe, ...patch }))
+                }
+              />
             )}
-          </output>
-        )}
-        {simulationError && <small role="alert">{simulationError}</small>}
-      </section>
-      <section
-        className={`timeline-diagnostics${
-          timelineDiagnostics.length ? " timeline-diagnostics--invalid" : ""
-        }`}
-        aria-label="Timeline validation"
-      >
-        <strong>
-          {timelineDiagnostics.length
-            ? `${timelineDiagnostics.length} timeline validation issue${timelineDiagnostics.length === 1 ? "" : "s"}`
-            : "Timeline valid"}
-        </strong>
-        {timelineDiagnostics.length ? (
-          <ul>
-            {timelineDiagnostics.map((diagnostic) => (
-              <li key={`${diagnostic.code}:${diagnostic.object_id}`}>
-                <code>{diagnostic.code}</code> · {diagnostic.message}
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <small>Scene and editor timing can be saved deterministically.</small>
-        )}
-      </section>
-      <nav className="composition-breadcrumbs" aria-label="Composition breadcrumbs">
-        <button onClick={() => setActiveCompositionId("")}>Scene · {scene.name}</button>
-        {breadcrumbs.map((compositionId) => (
-          <span key={compositionId}>
-            <span aria-hidden="true">›</span>
-            <button onClick={() => setActiveCompositionId(compositionId)}>
-              {compositions[compositionId]?.name ?? compositionId}
-            </button>
-          </span>
-        ))}
-      </nav>
-      {composition?.space_kind === "stage" &&
-        stageCoverage &&
-        mapperExport &&
-        installationId && (
-        <StageCompositionPreview
-          composition={composition}
-          compositions={compositions}
-          coverage={stageCoverage}
-          installationId={installationId}
-          mapperExport={mapperExport}
-          projectId={projectId}
-          selectedKeyframe={selectedTransformKeyframe}
-          selectedLayer={selectedTransformLayer}
-          canEdit={canEdit}
-          snapMode={spatialSnapMode}
-          onSnapModeChange={setSpatialSnapMode}
-          timestampMs={Math.min(localPlayhead, composition.duration_ms - 1)}
-          onMoveKeyframe={(position) => {
-            if (selectedTransformLayer && selectedTransformKeyframe) {
-              updateTransformKeyframe(
-                selectedTransformLayer.id,
-                selectedTransformKeyframe.id,
-                (keyframe) => ({ ...keyframe, position }),
-              );
-            }
-          }}
-          onCornerPinChange={(points) => {
-            if (selectedTransformLayer && canEdit) {
-              updateTransformLayer(selectedTransformLayer.id, (layer) => ({
-                ...layer,
-                corner_pin: points,
-              }));
-            }
-          }}
-        />
-      )}
-      {composition?.space_kind === "lighting_surface" && mapperExport && (
-        <LightingSurfaceCompositionPreview
-          composition={composition}
-          installationId={installationId}
-          mapperExport={mapperExport}
-          projectId={projectId}
-          timestampMs={Math.min(localPlayhead, composition.duration_ms - 1)}
-          onMoveMedia={canEdit && selectedTransformLayer && selectedTransformKeyframe
-            ? (position) => updateTransformKeyframe(
-                selectedTransformLayer.id, selectedTransformKeyframe.id,
-                (keyframe) => ({ ...keyframe, position }),
-              )
-            : undefined}
-        />
-      )}
+          {composition?.space_kind === "projector_native" && (
+            <p className="timeline-viewer__hint">
+              Rendered projector frames are on the Render &amp; bake tab.
+            </p>
+          )}
+        </section>
+        <aside className="timeline-inspector" aria-label="Inspector">
+          <h3 className="timeline-inspector__title">Inspector</h3>
+          {inspectorTarget === "layer" && selectedTransformLayer ? (
+            <>
+            <div className="timeline-inspector__actions">
+              <strong>{selectedTransformLayer.name}</strong>
+              {canEdit && (
+                <button
+                  type="button"
+                  className="danger-button"
+                  aria-label={`Delete media layer ${selectedTransformLayer.name}`}
+                  title="Delete layer (Delete key)"
+                  onClick={() => removeTransformLayer(selectedTransformLayer.id)}
+                >
+                  Delete layer
+                </button>
+              )}
+            </div>
+            {selectedTransformLayer && (
+              <div className="timeline-transform-properties">
+                {timelineDiagnostics
+                  .filter(
+                    (diagnostic) =>
+                      diagnostic.object_id === selectedTransformLayer.id ||
+                      diagnostic.object_id === selectedTransformKeyframeId,
+                  )
+                  .map((diagnostic) => (
+                    <small
+                      className="timeline-property-error timeline-transform-error"
+                      key={`${diagnostic.code}:${diagnostic.object_id}`}
+                    >
+                      {diagnostic.message}
+                    </small>
+                  ))}
+                <label>
+                  Layer name
+                  <input
+                    aria-label="Media layer name"
+                    disabled={!canEdit}
+                    value={selectedTransformLayer.name}
+                    onChange={(event) =>
+                      updateTransformLayer(selectedTransformLayer.id, (layer) => ({
+                        ...layer,
+                        name: event.target.value,
+                      }))
+                    }
+                  />
+                </label>
+                <label>
+                  Layer start
+                  <input
+                    aria-label="Media layer start"
+                    disabled={!canEdit}
+                    max={duration - selectedTransformLayer.duration_ms}
+                    min="0"
+                    step={snapMs}
+                    type="number"
+                    value={selectedTransformLayer.start_ms}
+                    onChange={(event) =>
+                      updateTransformLayer(selectedTransformLayer.id, (layer) => ({
+                        ...layer,
+                        start_ms: snappedLocal(Number(event.target.value)),
+                      }))
+                    }
+                  />
+                </label>
+                {selectedTransformLayer.kind !== "audio" && (
+                  <label>
+                    Media playback
+                    <select
+                      aria-label="Media playback"
+                      disabled={!canEdit}
+                      value={selectedTransformLayer.playback ?? "hold"}
+                      onChange={(event) => updateTransformLayer(selectedTransformLayer.id, (layer) => ({
+                        ...layer, playback: event.target.value as TransformLayer["playback"],
+                      }))}
+                    >
+                      <option value="hold">Hold last frame</option>
+                      <option value="loop">Loop source</option>
+                      <option value="once">Play once, then transparent</option>
+                    </select>
+                  </label>
+                )}
+                {selectedTransformLayer.kind !== "audio" &&
+                  composition?.space_kind === "stage" && (
+                    <StageLayerShape
+                      layer={selectedTransformLayer}
+                      composition={composition}
+                      mapperExport={mapperExport}
+                      canEdit={canEdit}
+                      onChange={(update) => updateTransformLayer(selectedTransformLayer.id, update)}
+                    />
+                  )}
+                <label>
+                  Layer duration
+                  <input
+                    aria-label="Media layer duration"
+                    disabled={!canEdit}
+                    max={duration - selectedTransformLayer.start_ms}
+                    min="1"
+                    step={snapMs}
+                    type="number"
+                    value={selectedTransformLayer.duration_ms}
+                    onChange={(event) =>
+                      updateTransformLayer(selectedTransformLayer.id, (layer) => {
+                        const nextDuration = Math.max(
+                          1,
+                          Math.min(
+                            duration - layer.start_ms,
+                            Number(event.target.value),
+                          ),
+                        );
+                        return {
+                          ...layer,
+                          duration_ms: nextDuration,
+                          out_point_ms: layer.in_point_ms + nextDuration,
+                          keyframes: layer.keyframes.map((keyframe) => ({
+                            ...keyframe,
+                            time_ms: Math.min(keyframe.time_ms, nextDuration),
+                          })),
+                        };
+                      })
+                    }
+                  />
+                </label>
+                <label>
+                  Source in
+                  <input
+                    aria-label="Layer source in"
+                    disabled={!canEdit}
+                    min="0"
+                    type="number"
+                    value={selectedTransformLayer.in_point_ms}
+                    onChange={(event) =>
+                      updateTransformLayer(selectedTransformLayer.id, (layer) => {
+                        const inPoint = Math.max(0, Number(event.target.value));
+                        return {
+                          ...layer,
+                          in_point_ms: inPoint,
+                          out_point_ms: inPoint + layer.duration_ms,
+                        };
+                      })
+                    }
+                  />
+                </label>
+                <label>
+                  Source out
+                  <input
+                    aria-label="Layer source out"
+                    disabled={!canEdit}
+                    min={selectedTransformLayer.in_point_ms + 1}
+                    type="number"
+                    value={selectedTransformLayer.out_point_ms}
+                    onChange={(event) =>
+                      updateTransformLayer(selectedTransformLayer.id, (layer) => {
+                        const nextDuration = Math.max(
+                          1,
+                          Number(event.target.value) - layer.in_point_ms,
+                        );
+                        const boundedDuration = Math.min(
+                          nextDuration,
+                          duration - layer.start_ms,
+                        );
+                        return {
+                          ...layer,
+                          out_point_ms: layer.in_point_ms + boundedDuration,
+                          duration_ms: boundedDuration,
+                        };
+                      })
+                    }
+                  />
+                </label>
+                <label>
+                  Visual order
+                  <input
+                    aria-label="Layer visual order"
+                    disabled={!canEdit}
+                    type="number"
+                    value={selectedTransformLayer.z_index}
+                    onChange={(event) =>
+                      updateTransformLayer(selectedTransformLayer.id, (layer) => ({
+                        ...layer,
+                        z_index: Number(event.target.value),
+                      }))
+                    }
+                  />
+                </label>
+                <label>
+                  Fade in
+                  <input
+                    aria-label="Layer fade in"
+                    disabled={!canEdit}
+                    min="0"
+                    type="number"
+                    value={selectedTransformLayer.fade_in_ms}
+                    onChange={(event) =>
+                      updateTransformLayer(selectedTransformLayer.id, (layer) => ({
+                        ...layer,
+                        fade_in_ms: Number(event.target.value),
+                      }))
+                    }
+                  />
+                </label>
+                <label>
+                  Fade out
+                  <input
+                    aria-label="Layer fade out"
+                    disabled={!canEdit}
+                    min="0"
+                    type="number"
+                    value={selectedTransformLayer.fade_out_ms}
+                    onChange={(event) =>
+                      updateTransformLayer(selectedTransformLayer.id, (layer) => ({
+                        ...layer,
+                        fade_out_ms: Number(event.target.value),
+                      }))
+                    }
+                  />
+                </label>
+                {selectedTransformLayer.audio && (
+                  <>
+                    <label>
+                      Audio gain
+                      <input
+                        aria-label="Audio gain"
+                        disabled={!canEdit}
+                        max="24"
+                        min="-96"
+                        step="0.1"
+                        type="number"
+                        value={selectedTransformLayer.audio.gain_db}
+                        onChange={(event) =>
+                          updateTransformLayer(selectedTransformLayer.id, (layer) => ({
+                            ...layer,
+                            audio: layer.audio
+                              ? {
+                                  ...layer.audio,
+                                  gain_db: Number(event.target.value),
+                                }
+                              : null,
+                          }))
+                        }
+                      />
+                    </label>
+                    <label>
+                      Audio mix order
+                      <input
+                        aria-label="Audio mix order"
+                        disabled={!canEdit}
+                        min="0"
+                        type="number"
+                        value={selectedTransformLayer.audio.mix_order}
+                        onChange={(event) =>
+                          updateTransformLayer(selectedTransformLayer.id, (layer) => ({
+                            ...layer,
+                            audio: layer.audio
+                              ? {
+                                  ...layer.audio,
+                                  mix_order: Number(event.target.value),
+                                }
+                              : null,
+                          }))
+                        }
+                      />
+                    </label>
+                    {(["mute", "solo"] as const).map((field) => (
+                      <label key={field}>
+                        <input
+                          aria-label={`Audio ${field}`}
+                          checked={selectedTransformLayer.audio![field]}
+                          disabled={!canEdit}
+                          type="checkbox"
+                          onChange={(event) =>
+                            updateTransformLayer(
+                              selectedTransformLayer.id,
+                              (layer) => ({
+                                ...layer,
+                                audio: layer.audio
+                                  ? {
+                                      ...layer.audio,
+                                      [field]: event.target.checked,
+                                    }
+                                  : null,
+                              }),
+                            )
+                          }
+                        />
+                        {field}
+                      </label>
+                    ))}
+                  </>
+                )}
+                {selectedTransformLayer.kind !== "audio" && (
+                  <>
+                    <label>
+                      Source alpha
+                      <select
+                        aria-label="Source alpha interpretation"
+                        disabled={!canEdit}
+                        value={selectedTransformLayer.alpha_interpretation ?? "straight"}
+                        onChange={(event) =>
+                          updateTransformLayer(selectedTransformLayer.id, (layer) => ({
+                            ...layer,
+                            alpha_interpretation: event.target
+                              .value as NonNullable<TransformLayer["alpha_interpretation"]>,
+                          }))
+                        }
+                      >
+                        <option value="opaque">Opaque</option>
+                        <option value="straight">Straight alpha</option>
+                        <option value="premultiplied">Premultiplied alpha</option>
+                      </select>
+                    </label>
+                    <label>
+                      Source color space
+                      <select
+                        aria-label="Source color space"
+                        disabled={!canEdit}
+                        value={selectedTransformLayer.source_color_space ?? "srgb"}
+                        onChange={(event) =>
+                          updateTransformLayer(selectedTransformLayer.id, (layer) => ({
+                            ...layer,
+                            source_color_space: event.target
+                              .value as NonNullable<TransformLayer["source_color_space"]>,
+                          }))
+                        }
+                      >
+                        <option value="srgb">sRGB</option>
+                        <option value="bt709">BT.709</option>
+                        <option value="linear_srgb">Linear sRGB</option>
+                      </select>
+                    </label>
+                    <label>
+                      Scaling behavior
+                      <select
+                        aria-label="Source scaling behavior"
+                        disabled={!canEdit}
+                        value={selectedTransformLayer.scaling_behavior ?? "fit"}
+                        onChange={(event) =>
+                          updateTransformLayer(selectedTransformLayer.id, (layer) => ({
+                            ...layer,
+                            scaling_behavior: event.target
+                              .value as NonNullable<TransformLayer["scaling_behavior"]>,
+                          }))
+                        }
+                      >
+                        <option value="fit">Fit</option>
+                        <option value="fill">Fill</option>
+                        <option value="stretch">Stretch</option>
+                        <option value="native">Native size</option>
+                      </select>
+                    </label>
+                  </>
+                )}
+                <label>
+                  Keyframe
+                  <select
+                    aria-label="Transform keyframe"
+                    value={selectedTransformKeyframeId}
+                    onChange={(event) =>
+                      setSelectedTransformKeyframeId(event.target.value)
+                    }
+                  >
+                    {selectedTransformLayer.keyframes.map((keyframe) => (
+                      <option key={keyframe.id} value={keyframe.id}>
+                        {keyframe.time_ms} ms
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                {canEdit && selectedTransformLayer.kind !== "audio" && (
+                  <button
+                    disabled={selectedTransformLayer.keyframes.some(
+                      (keyframe) =>
+                        keyframe.time_ms ===
+                        Math.max(
+                          0,
+                          Math.min(
+                            selectedTransformLayer.duration_ms,
+                            localPlayhead - selectedTransformLayer.start_ms,
+                          ),
+                        ),
+                    )}
+                    onClick={() => {
+                      const keyframe = defaultTransformKeyframe(
+                        Math.max(
+                          0,
+                          Math.min(
+                            selectedTransformLayer.duration_ms,
+                            localPlayhead - selectedTransformLayer.start_ms,
+                          ),
+                        ),
+                      );
+                      updateTransformLayer(selectedTransformLayer.id, (layer) => ({
+                        ...layer,
+                        keyframes: [...layer.keyframes, keyframe].sort(
+                          (left, right) => left.time_ms - right.time_ms,
+                        ),
+                      }));
+                      setSelectedTransformKeyframeId(keyframe.id);
+                    }}
+                  >
+                    Add keyframe at playhead
+                  </button>
+                )}
+                {selectedTransformKeyframe && (
+                  <div className="timeline-keyframe-properties">
+                    <label>
+                      Keyframe time
+                      <input
+                        aria-label="Transform keyframe time"
+                        disabled={!canEdit}
+                        max={selectedTransformLayer.duration_ms}
+                        min="0"
+                        step={snapMs}
+                        type="number"
+                        value={selectedTransformKeyframe.time_ms}
+                        onChange={(event) =>
+                          updateTransformKeyframe(
+                            selectedTransformLayer.id,
+                            selectedTransformKeyframe.id,
+                            (keyframe) => ({
+                              ...keyframe,
+                              time_ms: Math.max(
+                                0,
+                                Math.min(
+                                  selectedTransformLayer.duration_ms,
+                                  Number(event.target.value),
+                                ),
+                              ),
+                            }),
+                          )
+                        }
+                      />
+                    </label>
+                    <label>
+                      Snap time to marker
+                      <select
+                        aria-label="Snap transform keyframe to marker"
+                        disabled={!canEdit}
+                        value=""
+                        onChange={(event) => {
+                          const marker = markers.find(
+                            (candidate) => candidate.id === event.target.value,
+                          );
+                          if (marker) {
+                            updateTransformKeyframe(
+                              selectedTransformLayer.id,
+                              selectedTransformKeyframe.id,
+                              (keyframe) => ({
+                                ...keyframe,
+                                time_ms: Math.max(
+                                  0,
+                                  Math.min(
+                                    selectedTransformLayer.duration_ms,
+                                    marker.time_ms - selectedTransformLayer.start_ms,
+                                  ),
+                                ),
+                              }),
+                            );
+                          }
+                        }}
+                      >
+                        <option value="">Named marker…</option>
+                        {markers
+                          .filter(
+                            (marker) =>
+                              marker.time_ms >= selectedTransformLayer.start_ms &&
+                              marker.time_ms <=
+                                selectedTransformLayer.start_ms +
+                                  selectedTransformLayer.duration_ms,
+                          )
+                          .map((marker) => (
+                            <option key={marker.id} value={marker.id}>
+                              {marker.name} · {marker.time_ms} ms
+                            </option>
+                          ))}
+                      </select>
+                    </label>
+                    <TransformFields
+                      disabled={!canEdit}
+                      keyframe={selectedTransformKeyframe}
+                      positionUnit={
+                        composition?.space_kind === "projector_native"
+                          ? "px"
+                          : composition?.space_kind === "stage"
+                            ? mapperExport?.stage?.unit ?? "u"
+                            : composition
+                              ? "u"
+                              : "px"
+                      }
+                      sourceSize={layerSourceSize(selectedTransformLayer, assets, composition, compositions)}
+                      unitsPerSourcePixel={layerUnitsPerSourcePixel(composition)}
+                      onGestureStart={beginGesture}
+                      onGestureEnd={endGesture}
+                      onChange={(patch) =>
+                        updateTransformKeyframe(
+                          selectedTransformLayer.id,
+                          selectedTransformKeyframe.id,
+                          (keyframe) => ({ ...keyframe, ...patch }),
+                        )
+                      }
+                    />
+                    <label>
+                      Interpolation
+                      <select
+                        aria-label="Transform interpolation"
+                        disabled={!canEdit}
+                        value={selectedTransformKeyframe.interpolation.kind}
+                        onChange={(event) =>
+                          updateTransformKeyframe(
+                            selectedTransformLayer.id,
+                            selectedTransformKeyframe.id,
+                            (keyframe) => ({
+                              ...keyframe,
+                              interpolation: interpolationFor(
+                                event.target.value as TransformKeyframe["interpolation"]["kind"],
+                              ),
+                            }),
+                          )
+                        }
+                      >
+                        <option value="hold">Hold</option>
+                        <option value="linear">Linear</option>
+                        <option value="ease_in">Ease in</option>
+                        <option value="ease_out">Ease out</option>
+                        <option value="bezier">Temporal + spatial Bezier</option>
+                      </select>
+                    </label>
+                    {selectedTransformKeyframe.interpolation.kind === "bezier" && (
+                      <>
+                        <NumberVectorEditor
+                          disabled={!canEdit}
+                          label="Temporal Bezier"
+                          value={
+                            selectedTransformKeyframe.interpolation
+                              .temporal_bezier ?? [0.25, 0.1, 0.25, 1]
+                          }
+                          onChange={(value) =>
+                            updateTransformKeyframe(
+                              selectedTransformLayer.id,
+                              selectedTransformKeyframe.id,
+                              (keyframe) => ({
+                                ...keyframe,
+                                interpolation: {
+                                  ...keyframe.interpolation,
+                                  temporal_bezier: value as [
+                                    number,
+                                    number,
+                                    number,
+                                    number,
+                                  ],
+                                },
+                              }),
+                            )
+                          }
+                        />
+                        {(["spatial_in", "spatial_out"] as const).map((field) => (
+                          <NumberVectorEditor
+                            disabled={!canEdit}
+                            key={field}
+                            label={field === "spatial_in" ? "Spatial in" : "Spatial out"}
+                            value={
+                              selectedTransformKeyframe.interpolation[field] ?? [0, 0]
+                            }
+                            onChange={(value) =>
+                              updateTransformKeyframe(
+                                selectedTransformLayer.id,
+                                selectedTransformKeyframe.id,
+                                (keyframe) => ({
+                                  ...keyframe,
+                                  interpolation: {
+                                    ...keyframe.interpolation,
+                                    [field]: value as [number, number],
+                                  },
+                                }),
+                              )
+                            }
+                          />
+                        ))}
+                      </>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+            </>
+          ) : (
+            <div className="timeline-track-properties">
+              {selectedTrack ? (
+                <>
+                  <small>Stable ID: {selectedTrack.id}</small>
+                  <small>Kind: {humanizeTrackKind(selectedTrack.kind)}</small>
+                  <label>
+                    Name
+                    <input
+                      disabled={selectedTrack.built_in || !canEdit}
+                      value={selectedTrack.name}
+                      onChange={(event) =>
+                        setCustomTracks((current) =>
+                          current.map((track) =>
+                            track.id === selectedTrack.id
+                              ? { ...track, name: event.target.value }
+                              : track,
+                          ),
+                        )
+                      }
+                    />
+                  </label>
+                  <label>
+                    Resource binding
+                    <input
+                      disabled={selectedTrack.built_in || !canEdit}
+                      value={selectedTrack.resource_binding}
+                      onChange={(event) =>
+                        setCustomTracks((current) =>
+                          current.map((track) =>
+                            track.id === selectedTrack.id
+                              ? { ...track, resource_binding: event.target.value }
+                              : track,
+                          ),
+                        )
+                      }
+                    />
+                  </label>
+                </>
+              ) : (
+                <small>Select a media layer or track on the timeline to see its properties here.</small>
+              )}
+            </div>
+          )}
+        </aside>
+      </div>
       <div
         className="timeline-scroll"
         aria-label="Timeline canvas"
@@ -1870,6 +2854,7 @@ export function TimelineEditor({
         }}
       >
         <div
+          ref={canvasRef}
           className="timeline-canvas"
           style={{ width }}
           onClick={(event) => {
@@ -1882,7 +2867,21 @@ export function TimelineEditor({
             );
           }}
         >
-          <div className="timeline-ruler">
+          <div
+            className="timeline-ruler"
+            title="Drag to scrub"
+            onPointerDown={(event) => {
+              event.currentTarget.setPointerCapture(event.pointerId);
+              setIsPreviewPlaying(false);
+              setPlayhead(localOffset + timeAtClientX(event.clientX));
+            }}
+            onPointerMove={(event) => {
+              if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+                setPlayhead(localOffset + timeAtClientX(event.clientX));
+              }
+            }}
+            onClick={(event) => event.stopPropagation()}
+          >
             {Array.from({ length: Math.ceil(duration / 1000) + 1 }, (_, second) => (
               <span key={second} style={{ left: `${(second * 1000 * 100) / duration}%` }}>
                 {second}s
@@ -1896,6 +2895,42 @@ export function TimelineEditor({
               width: `${((loopEnd - loopStart) * 100) / duration}%`,
             }}
           />
+          {canEdit &&
+            ([
+              ["start", loopStart, "Loop start handle"],
+              ["end", loopEnd, "Loop end handle"],
+            ] as const).map(([edge, value, label]) => (
+              <span
+                key={edge}
+                role="slider"
+                tabIndex={0}
+                aria-label={label}
+                aria-valuemin={edge === "start" ? 0 : loopStart + snapMs}
+                aria-valuemax={edge === "start" ? loopEnd - snapMs : duration}
+                aria-valuenow={value}
+                aria-valuetext={formatTimecode(value)}
+                className={`timeline-loop-handle timeline-loop-handle--${edge}`}
+                style={{ left: `${(value * 100) / duration}%` }}
+                title={`${label}: drag or use arrow keys`}
+                onClick={(event) => event.stopPropagation()}
+                onPointerDown={(event) => {
+                  event.stopPropagation();
+                  event.currentTarget.setPointerCapture(event.pointerId);
+                }}
+                onPointerMove={(event) => {
+                  if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+                    setLoopEdge(edge, timeAtClientX(event.clientX));
+                  }
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    setLoopEdge(edge, value + (event.key === "ArrowLeft" ? -snapMs : snapMs));
+                  }
+                }}
+              />
+            ))}
           {tracks.map((track) => {
             const asset = timelineTrackAsset(scene, track, assets);
             const showThumbnail =
@@ -1907,18 +2942,40 @@ export function TimelineEditor({
                 track.kind === "audio_reference") &&
               asset &&
               hasAssetArtifact(asset, "waveform");
+            const layerRow = stackLayerRows(
+              spaceTransformLayers.filter((layer) => layer.track_id === track.id),
+            );
+            const rowCount = Math.max(1, ...[...layerRow.values()].map((row) => row + 1));
             return (
               <div
+              style={{ height: `${68 + (rowCount - 1) * TIMELINE_LAYER_ROW_HEIGHT}px` }}
               className={`timeline-track${
                 track.id === selectedTrackId ? " timeline-track--selected" : ""
-              }`}
+              }${dropTargetId === track.id ? " timeline-drop-target" : ""}`}
               key={track.id}
+              aria-label={`Track ${track.name}`}
+              onDragOver={(event) => {
+                if (!canEdit || !event.dataTransfer.types.includes(TIMELINE_SOURCE_MIME)) return;
+                event.preventDefault();
+                event.dataTransfer.dropEffect = "copy";
+                setDropTargetId(track.id);
+              }}
+              onDragLeave={() => setDropTargetId(null)}
+              onDrop={(event) => {
+                const sourceId = event.dataTransfer.getData(TIMELINE_SOURCE_MIME);
+                setDropTargetId(null);
+                if (!sourceId) return;
+                event.preventDefault();
+                event.stopPropagation();
+                placeSource(sourceId, track.id, timeAtClientX(event.clientX));
+              }}
               >
                 <button
                   className="timeline-track__label"
                   onClick={(event) => {
                     event.stopPropagation();
                     setSelectedTrackId(track.id);
+                    setInspectorTarget("track");
                   }}
                 >
                   {humanizeTrackKind(track.kind)} · {track.name}
@@ -1943,7 +3000,7 @@ export function TimelineEditor({
                         src={assetArtifactUrl(asset.id, "waveform")}
                       />
                     )}
-                    {!showThumbnail && !showWaveform && (
+                    {!showThumbnail && !showWaveform && layerRow.size === 0 && (
                       <small>
                         {asset
                           ? "Timing derivative unavailable"
@@ -1961,8 +3018,12 @@ export function TimelineEditor({
                   )
                   .map((layer) => (
                     <button
-                      aria-label={`Transform layer ${layer.name}`}
+                      aria-label={`Media layer ${layer.name}`}
                       className={`timeline-transform-layer${
+                        inspectorTarget === "layer" && layer.id === selectedTransformLayerId
+                          ? " timeline-transform-layer--selected"
+                          : ""
+                      }${
                         timelineDiagnostics.some(
                           (diagnostic) => diagnostic.object_id === layer.id,
                         )
@@ -1971,23 +3032,92 @@ export function TimelineEditor({
                       }`}
                       key={layer.id}
                       style={{
-                        left: `${(layer.start_ms * 100) / duration}%`,
-                        width: `${(layer.duration_ms * 100) / duration}%`,
+                        left: `${((layerDrag?.id === layer.id ? layerDrag.start : layer.start_ms) * 100) / duration}%`,
+                        width: `${((layerDrag?.id === layer.id ? layerDrag.duration : layer.duration_ms) * 100) / duration}%`,
+                        top: `${43 + (layerRow.get(layer.id) ?? 0) * TIMELINE_LAYER_ROW_HEIGHT}px`,
+                      }}
+                      title={canEdit ? `${layer.name}: drag to move, drag either edge to trim, Delete to remove` : layer.name}
+                      onPointerDown={(event) => {
+                        if (!canEdit || event.button !== 0) return;
+                        const bounds = event.currentTarget.getBoundingClientRect();
+                        const offset = event.clientX - bounds.left;
+                        const edge = Math.min(8, bounds.width / 4);
+                        event.currentTarget.setPointerCapture(event.pointerId);
+                        setLayerDrag({
+                          id: layer.id,
+                          mode: offset <= edge ? "start" : offset >= bounds.width - edge ? "end" : "move",
+                          startX: event.clientX,
+                          moved: false,
+                          start: layer.start_ms,
+                          duration: layer.duration_ms,
+                        });
+                      }}
+                      onPointerMove={(event) => {
+                        if (layerDrag?.id === layer.id) dragLayerTo(event.clientX);
+                      }}
+                      onPointerUp={() => {
+                        if (layerDrag?.id === layer.id) commitLayerDrag();
                       }}
                       onClick={(event) => {
                         event.stopPropagation();
+                        if (suppressLayerClickRef.current) return;
                         setSelectedTransformLayerId(layer.id);
+                        setInspectorTarget("layer");
                         setSelectedTransformKeyframeId(
                           layer.keyframes[0]?.id ?? "",
                         );
                       }}
                     >
+                      <span className="timeline-transform-layer__name" aria-hidden="true">
+                        {layer.name}
+                      </span>
+                      {canEdit && (
+                        <>
+                          <span className="timeline-transform-layer__trim timeline-transform-layer__trim--start" aria-hidden="true" />
+                          <span className="timeline-transform-layer__trim timeline-transform-layer__trim--end" aria-hidden="true" />
+                        </>
+                      )}
                       {layer.keyframes.map((keyframe) => (
                         <span
-                          className="timeline-transform-keyframe"
+                          className={`timeline-transform-keyframe${
+                            keyframe.id === selectedTransformKeyframeId &&
+                            layer.id === selectedTransformLayerId
+                              ? " timeline-transform-keyframe--selected"
+                              : ""
+                          }`}
+                          data-keyframe-id={keyframe.id}
                           key={keyframe.id}
                           style={{
-                            left: `${(keyframe.time_ms * 100) / layer.duration_ms}%`,
+                            left: `${(((keyframeDrag?.keyframeId === keyframe.id ? keyframeDrag.time : keyframe.time_ms)) * 100) / Math.max(1, layerDrag?.id === layer.id ? layerDrag.duration : layer.duration_ms)}%`,
+                          }}
+                          title={canEdit ? "Keyframe: drag to retime" : "Keyframe"}
+                          onPointerDown={(event) => {
+                            event.stopPropagation();
+                            if (!canEdit || event.button !== 0) return;
+                            event.currentTarget.setPointerCapture(event.pointerId);
+                            setKeyframeDrag({
+                              layerId: layer.id,
+                              keyframeId: keyframe.id,
+                              startX: event.clientX,
+                              moved: false,
+                              time: keyframe.time_ms,
+                            });
+                          }}
+                          onPointerMove={(event) => {
+                            if (keyframeDrag?.keyframeId === keyframe.id) dragKeyframeTo(event.clientX);
+                          }}
+                          onPointerUp={(event) => {
+                            event.stopPropagation();
+                            if (keyframeDrag?.keyframeId === keyframe.id) commitKeyframeDrag();
+                          }}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            if (suppressLayerClickRef.current) return;
+                            setSelectedTransformLayerId(layer.id);
+                            setSelectedTransformKeyframeId(keyframe.id);
+                            setInspectorTarget("layer");
+                            setIsPreviewPlaying(false);
+                            setPlayhead(localOffset + layer.start_ms + keyframe.time_ms);
                           }}
                         />
                       ))}
@@ -2029,6 +3159,7 @@ export function TimelineEditor({
                       onClick={(event) => {
                         event.stopPropagation();
                         setSelectedTrackId(track.id);
+                        setInspectorTarget("track");
                       }}
                     />
                   );
@@ -2052,12 +3183,49 @@ export function TimelineEditor({
           {safePoints.map((point) => (
             <button
               aria-label={`Marker at ${point} milliseconds`}
-              className="timeline-marker"
+              className={`timeline-marker${markerDrag?.from === point ? " timeline-marker--dragging" : ""}`}
               key={point}
-              style={{ left: `${(point * 100) / duration}%` }}
-              title="Click to remove marker"
+              style={{
+                left: `${((markerDrag?.from === point ? markerDrag.to : point) * 100) / duration}%`,
+              }}
+              title={canEdit ? "Drag to move · click to remove" : undefined}
+              onPointerDown={(event) => {
+                if (!canEdit) return;
+                event.stopPropagation();
+                event.currentTarget.setPointerCapture(event.pointerId);
+                setMarkerDrag({ from: point, to: point, startX: event.clientX, moved: false });
+              }}
+              onPointerMove={(event) => {
+                if (markerDrag?.from !== point) return;
+                const moved = markerDrag.moved || Math.abs(event.clientX - markerDrag.startX) > 3;
+                setMarkerDrag({
+                  ...markerDrag,
+                  moved,
+                  to: moved ? timeAtClientX(event.clientX) : point,
+                });
+              }}
+              onPointerUp={() => {
+                if (markerDrag?.from !== point) return;
+                if (markerDrag.moved) {
+                  suppressMarkerClickRef.current = true;
+                  window.setTimeout(() => {
+                    suppressMarkerClickRef.current = false;
+                  }, 0);
+                  const target = markerDrag.to;
+                  setSafePoints((current) =>
+                    [...new Set([...current.filter((value) => value !== point), target])].sort(
+                      (left, right) => left - right,
+                    ),
+                  );
+                }
+                setMarkerDrag(null);
+              }}
               onClick={(event) => {
                 event.stopPropagation();
+                if (suppressMarkerClickRef.current) {
+                  suppressMarkerClickRef.current = false;
+                  return;
+                }
                 if (canEdit) {
                   setSafePoints((current) => current.filter((value) => value !== point));
                 }
@@ -2067,1736 +3235,2435 @@ export function TimelineEditor({
           <span
             className="timeline-playhead"
             style={{ left: `${(localPlayhead * 100) / duration}%` }}
+            onPointerDown={startPlayheadDrag}
+            onPointerMove={movePlayheadDrag}
+            onPointerUp={endPlayheadDrag}
+            onPointerCancel={endPlayheadDrag}
+            onClick={(event) => event.stopPropagation()}
+          />
+          <span
+            role="slider"
+            tabIndex={0}
+            aria-label="Playhead"
+            aria-valuemin={0}
+            aria-valuemax={duration}
+            aria-valuenow={Math.round(localPlayhead)}
+            aria-valuetext={formatTimecode(localPlayhead)}
+            className="timeline-playhead-handle"
+            title="Drag to scrub (arrow keys step by the snap interval)"
+            style={{ left: `${(localPlayhead * 100) / duration}%` }}
+            onPointerDown={startPlayheadDrag}
+            onPointerMove={movePlayheadDrag}
+            onPointerUp={endPlayheadDrag}
+            onPointerCancel={endPlayheadDrag}
+            onClick={(event) => event.stopPropagation()}
+            onKeyDown={(event) => {
+              if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+                event.preventDefault();
+                event.stopPropagation();
+                movePlayhead((event.key === "ArrowLeft" ? -1 : 1) * snapMs);
+              } else if (event.key === "Home" || event.key === "End") {
+                event.preventDefault();
+                setPlayhead(localOffset + (event.key === "Home" ? 0 : duration));
+              }
+            }}
           />
         </div>
       </div>
-      {canEdit && (
-        <div className="timeline-region-controls">
-          <label>
-            Protected start
-            <input
-              max={duration}
-              min="0"
-              step={snapMs}
-              type="number"
-              value={regionStart}
-              onChange={(event) =>
-                setRegionStart(snappedLocal(Number(event.target.value)))
-              }
-            />
-          </label>
-          <label>
-            Protected end
-            <input
-              max={duration}
-              min="0"
-              step={snapMs}
-              type="number"
-              value={regionEnd}
-              onChange={(event) =>
-                setRegionEnd(snappedLocal(Number(event.target.value)))
-              }
-            />
-          </label>
-          <button
-            disabled={regionEnd <= regionStart}
-            onClick={() =>
-              setRegions((current) => [
-                ...current,
-                { start_ms: regionStart, end_ms: regionEnd },
-              ])
-            }
-          >
-            Add protected region
-          </button>
-          <label>
-            Loop start
-            <input
-              max={duration}
-              min="0"
-              step={snapMs}
-              type="number"
-              value={loopStart}
-              onChange={(event) =>
-                setLoopStart(snappedLocal(Number(event.target.value)))
-              }
-            />
-          </label>
-          <label>
-            Loop end
-            <input
-              max={duration}
-              min="0"
-              step={snapMs}
-              type="number"
-              value={loopEnd}
-              onChange={(event) =>
-                setLoopEnd(snappedLocal(Number(event.target.value)))
-              }
-            />
-          </label>
-        </div>
+      {editorialAudioSources.length > 0 && (
+        <EditorialAudioPreview
+          isPlaying={isPreviewPlaying}
+          playheadMs={localPlayhead}
+          sources={editorialAudioSources}
+        />
       )}
-      {!composition && (
-        <section className="timeline-scene-policy">
-          <strong>Scene scheduling and output policy</strong>
-          <label>
-            Scene priority
-            <input
-              aria-label="Scene priority"
-              disabled={!canEdit}
-              max="100"
-              min="0"
-              type="number"
-              value={scenePolicy.priority}
-              onChange={(event) =>
-                setScenePolicy((current) => ({
-                  ...current,
-                  priority: Number(event.target.value),
-                }))
-              }
-            />
-          </label>
-          <label>
-            Completion policy
-            <select
-              aria-label="Completion policy"
-              disabled={!canEdit}
-              value={scenePolicy.completion_policy}
-              onChange={(event) =>
-                setScenePolicy((current) => ({
-                  ...current,
-                  completion_policy: event.target
-                    .value as SceneOperationalPolicy["completion_policy"],
-                }))
-              }
-            >
-              <option value="loop">Loop</option>
-              <option value="select_next">Select next</option>
-              <option value="transition_to">Transition to scene</option>
-              <option value="hold">Hold</option>
-              <option value="stop">Stop</option>
-            </select>
-          </label>
-          {scenePolicy.completion_policy === "transition_to" && (
-            <label>
-              Completion target
-              <select
-                aria-label="Completion target"
-                disabled={!canEdit}
-                value={scenePolicy.completion_target}
-                onChange={(event) =>
-                  setScenePolicy((current) => ({
-                    ...current,
-                    completion_target: event.target.value,
-                  }))
-                }
-              >
-                <option value="">Select scene</option>
-                {draft.draft.scenes
-                  .filter((candidate) => candidate.id !== scene.id)
-                  .map((candidate) => (
-                    <option key={candidate.id} value={candidate.id}>
-                      {candidate.name}
-                    </option>
-                  ))}
-              </select>
-            </label>
-          )}
-          <label>
-            Request policy
-            <select
-              aria-label="Request policy"
-              disabled={!canEdit}
-              value={scenePolicy.request_policy}
-              onChange={(event) =>
-                setScenePolicy((current) => ({
-                  ...current,
-                  request_policy: event.target
-                    .value as SceneOperationalPolicy["request_policy"],
-                }))
-              }
-            >
-              <option value="priority">Priority</option>
-              <option value="immediate">Immediate</option>
-              <option value="at_safe_point">At safe point</option>
-              <option value="after_completion">After completion</option>
-              <option value="ignore">Ignore</option>
-            </select>
-          </label>
-          <label>
-            Request TTL
-            <input
-              aria-label="Request TTL"
-              disabled={!canEdit}
-              min="1"
-              type="number"
-              value={scenePolicy.request_ttl_ms}
-              onChange={(event) =>
-                setScenePolicy((current) => ({
-                  ...current,
-                  request_ttl_ms: Number(event.target.value),
-                }))
-              }
-            />
-          </label>
-          <label className="timeline-scene-policy__claims">
-            Resource claims
-            <input
-              aria-label="Resource claims"
-              disabled={!canEdit}
-              value={scenePolicy.resources}
-              onChange={(event) =>
-                setScenePolicy((current) => ({
-                  ...current,
-                  resources: event.target.value,
-                }))
-              }
-            />
-          </label>
-          {scene.schema_version === 2 && Array.isArray(scene.media) && (
-            <>
-              <label>
-                Clock authority
-                <select
-                  aria-label="Clock authority"
-                  disabled={!canEdit}
-                  value={scenePolicy.mode}
-                  onChange={(event) =>
-                    setScenePolicy((current) => ({
-                      ...current,
-                      mode: event.target.value as SceneOperationalPolicy["mode"],
-                      clock_source: event.target.value === "controller_timed"
-                        ? "controller"
-                        : Array.isArray(scene.media) ? scene.media[0]?.id ?? "" : "",
-                    }))
-                  }
-                >
-                  <option value="media_synchronized">Media playback</option>
-                  <option value="controller_timed">Controller</option>
-                </select>
-              </label>
-              <label>
-                Clock source
-                <select
-                  aria-label="Clock source"
-                  disabled={!canEdit || scenePolicy.mode === "controller_timed"}
-                  value={scenePolicy.clock_source}
-                  onChange={(event) =>
-                    setScenePolicy((current) => ({
-                      ...current,
-                      clock_source: event.target.value,
-                    }))
-                  }
-                >
-                  {scenePolicy.mode === "controller_timed" && (
-                    <option value="controller">Controller monotonic clock</option>
-                  )}
-                  {scene.media.map((output) => (
-                    <option key={output.id} value={output.id}>
-                      {output.id}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              {scene.media.map((output) => (
-                <div className="timeline-output-policy" key={output.id}>
-                  <strong>Media · {output.id}</strong>
-                  <label>
+      <div className="timeline-tool-tabs" role="tablist" aria-label="Timeline tools">
+        {TIMELINE_TOOL_TABS.map(([id, label]) => (
+          <button
+            key={id}
+            id={`timeline-tool-tab-${id}`}
+            type="button"
+            role="tab"
+            aria-selected={toolTab === id}
+            aria-controls="timeline-tool-panel"
+            onClick={() => setToolTab(id)}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+      <div
+        className="timeline-tool-panel"
+        id="timeline-tool-panel"
+        role="tabpanel"
+        aria-labelledby={`timeline-tool-tab-${toolTab}`}
+      >
+        {toolTab === "layers" && (
+          <>
+          <section className="timeline-transform-editor">
+            <strong>Media layers</strong>
+            <small className="timeline-coordinate-space">
+              Placed in{" "}
+              {composition
+                ? `${humanizeSpace(composition.space_kind)} · ${composition.target_id} · ${composition.width}×${composition.height}`
+                : `the whole scene · ${scene.name}`}
+              . Projector calibration stays in the installation and is not
+              keyframed here.
+            </small>
+            {composition?.space_kind === "lighting_surface" && (
+              <div className="timeline-render-conformance">
+                <strong>Lighting canvas evaluation</strong>
+                {(
+                  [
+                    ["Canvas width", "canvas_width", 1, 2048, 1],
+                    ["Canvas height", "canvas_height", 1, 2048, 1],
+                    ["Gamma", "gamma", 0.1, 5, 0.1],
+                    ["Brightness", "brightness", 0, 1, 0.01],
+                  ] as const
+                ).map(([label, field, minimum, maximum, step]) => (
+                  <label key={field}>
+                    {label}
                     <input
-                      aria-label={`Required media output ${output.id}`}
-                      checked={scenePolicy.media_required[output.id] ?? true}
+                      aria-label={`Lighting ${label.toLocaleLowerCase()}`}
                       disabled={!canEdit}
+                      max={maximum}
+                      min={minimum}
+                      step={step}
+                      type="number"
+                      value={composition.lighting_settings[field]}
+                      onChange={(event) =>
+                        setCompositions((current) => ({
+                          ...current,
+                          [composition.id]: {
+                            ...current[composition.id],
+                            lighting_settings: {
+                              ...current[composition.id].lighting_settings,
+                              [field]: Number(event.target.value),
+                            },
+                          },
+                        }))
+                      }
+                    />
+                  </label>
+                ))}
+                <label>
+                  Sampling mode
+                  <select
+                    aria-label="Lighting sampling mode"
+                    disabled={!canEdit}
+                    value={composition.lighting_settings.sampling}
+                    onChange={(event) =>
+                      setCompositions((current) => ({
+                        ...current,
+                        [composition.id]: {
+                          ...current[composition.id],
+                          lighting_settings: {
+                            ...current[composition.id].lighting_settings,
+                            sampling: event.target
+                              .value as Composition["lighting_settings"]["sampling"],
+                          },
+                        },
+                      }))
+                    }
+                  >
+                    <option value="nearest">Nearest</option>
+                    <option value="bilinear">Bilinear</option>
+                    <option value="area">Bounded footprint / area</option>
+                  </select>
+                </label>
+                <small>
+                  Logical raster resolution is independent of pixel count and
+                  physical output order.
+                </small>
+              </div>
+            )}
+            {composition?.space_kind === "lighting_surface" && (
+              <section className="timeline-lighting-authoring">
+                <strong>Spatial media overlays</strong>
+                <small>
+                  Add an image, video, or animated GIF below, then position it in surface-local
+                  coordinates. Save the revision before previewing or baking. Preview never sends output.
+                </small>
+                <button
+                  disabled={!canEdit || renderJobs.some(
+                    (job) => job.composition_id === composition.id &&
+                      (job.state === "queued" || job.state === "running"),
+                  )}
+                  onClick={async () => {
+                    try {
+                      const job = await createRenderJob(projectId, composition.id);
+                      setRenderJobs((current) => [job, ...current.filter((item) => item.id !== job.id)]);
+                      setRenderJobError(null);
+                    } catch (error) {
+                      setRenderJobError(error instanceof Error ? error.message : "Lighting bake failed.");
+                    }
+                  }}
+                >
+                  Bake LED animation
+                </button>
+                {renderJobs.filter((job) => job.composition_id === composition.id).slice(0, 3).map((job) => (
+                  <small key={job.id} role={job.state === "failed" ? "alert" : undefined}>
+                    LED bake · revision {job.source_revision} · {job.state}
+                    {job.error ? ` · ${job.error}` : ""}
+                  </small>
+                ))}
+                {renderJobError && <small role="alert">{renderJobError}</small>}
+                <strong>Lighting author layers</strong>
+                {spaceLightingLayers.map((layer) => (
+                  <button
+                    className={
+                      layer.id === selectedLightingLayerId
+                        ? "timeline-lighting-layer timeline-lighting-layer--selected"
+                        : "timeline-lighting-layer"
+                    }
+                    key={layer.id}
+                    onClick={() => setSelectedLightingLayerId(layer.id)}
+                  >
+                    {layer.mode} · {layer.name} · precedence {layer.precedence} ·{" "}
+                    {layer.blend_mode}
+                    {layer.persistent ? " · persistent look" : ""}
+                  </button>
+                ))}
+                {selectedLightingLayer && (
+                  <div className="timeline-lighting-layer-properties">
+                    <label>
+                      Layer name
+                      <input
+                        aria-label="Lighting layer name"
+                        value={selectedLightingLayer.name}
+                        onChange={(event) =>
+                          setLightingAuthorLayers((current) => ({
+                            ...current,
+                            [editingSpaceId]: spaceLightingLayers.map((layer) =>
+                              layer.id === selectedLightingLayer.id
+                                ? { ...layer, name: event.target.value }
+                                : layer,
+                            ),
+                          }))
+                        }
+                      />
+                    </label>
+                    {(
+                      [
+                        ["Start", "start_ms", 0, duration],
+                        ["Duration", "duration_ms", 1, duration],
+                        ["Precedence", "precedence", 0, 1000],
+                        ["Opacity", "opacity", 0, 1],
+                      ] as const
+                    ).map(([label, field, minimum, maximum]) => (
+                      <label key={field}>
+                        {label}
+                        <input
+                          aria-label={`Lighting layer ${label.toLocaleLowerCase()}`}
+                          max={maximum}
+                          min={minimum}
+                          step={field === "opacity" ? 0.01 : 1}
+                          type="number"
+                          disabled={
+                            selectedLightingLayer.persistent &&
+                            (field === "start_ms" || field === "duration_ms")
+                          }
+                          value={selectedLightingLayer[field]}
+                          onChange={(event) =>
+                            setLightingAuthorLayers((current) => ({
+                              ...current,
+                              [editingSpaceId]: spaceLightingLayers.map((layer) =>
+                                layer.id === selectedLightingLayer.id
+                                  ? {
+                                      ...layer,
+                                      [field]: Number(event.target.value),
+                                    }
+                                  : layer,
+                              ),
+                            }))
+                          }
+                        />
+                      </label>
+                    ))}
+                    <label>
+                      <input
+                        aria-label="Persistent lighting look"
+                        checked={selectedLightingLayer.persistent}
+                        type="checkbox"
+                        onChange={(event) =>
+                          setLightingAuthorLayers((current) => ({
+                            ...current,
+                            [editingSpaceId]: spaceLightingLayers.map((layer) =>
+                              layer.id === selectedLightingLayer.id
+                                ? {
+                                    ...layer,
+                                    persistent: event.target.checked,
+                                    start_ms: event.target.checked ? 0 : layer.start_ms,
+                                    duration_ms: event.target.checked
+                                      ? duration
+                                      : layer.duration_ms,
+                                  }
+                                : layer,
+                            ),
+                          }))
+                        }
+                      />
+                      Persistent look
+                    </label>
+                    <label>
+                      Blend
+                      <select
+                        aria-label="Lighting layer blend"
+                        value={selectedLightingLayer.blend_mode}
+                        onChange={(event) =>
+                          setLightingAuthorLayers((current) => ({
+                            ...current,
+                            [editingSpaceId]: spaceLightingLayers.map((layer) =>
+                              layer.id === selectedLightingLayer.id
+                                ? {
+                                    ...layer,
+                                    blend_mode: event.target
+                                      .value as LightingAuthorLayer["blend_mode"],
+                                  }
+                                : layer,
+                            ),
+                          }))
+                        }
+                      >
+                        <option value="replace">Replace</option>
+                        <option value="add">Add</option>
+                        <option value="max">Max</option>
+                        <option value="multiply">Multiply</option>
+                      </select>
+                    </label>
+                    {selectedLightingLayer.spatial && (
+                      <label>
+                        Spatial primitive
+                        <select
+                          aria-label="Spatial lighting primitive"
+                          value={selectedLightingLayer.spatial.primitive}
+                          onChange={(event) =>
+                            setLightingAuthorLayers((current) => ({
+                              ...current,
+                              [editingSpaceId]: spaceLightingLayers.map((layer) =>
+                                layer.id === selectedLightingLayer.id &&
+                                layer.spatial
+                                  ? {
+                                      ...layer,
+                                      spatial: {
+                                        ...(event.target.value === "ripple"
+                                          ? {
+                                              primitive: "ripple" as const,
+                                              coordinate_space: "surface_local" as const,
+                                              origin: [composition.width / 2, composition.height / 2] as [number, number],
+                                              speed: 1, ring_width: 0.5,
+                                              color: layer.spatial.color, repeat_ms: null,
+                                            }
+                                          : {
+                                              primitive: event.target.value as Exclude<NonNullable<LightingAuthorLayer["spatial"]>["primitive"], "ripple">,
+                                              color: layer.spatial.color, end_color: "#000000",
+                                              seed: 1, position: [0.5, 0.5] as [number, number],
+                                              size: [0.25, 0.25] as [number, number], radius: 0.5,
+                                            }),
+                                      },
+                                    }
+                                  : layer,
+                              ),
+                            }))
+                          }
+                        >
+                          <option value="solid">Solid</option>
+                          <option value="linear_gradient">Linear gradient</option>
+                          <option value="radial_gradient">Radial gradient</option>
+                          <option value="shape">Shape</option>
+                          <option value="procedural_noise">Procedural noise</option>
+                          <option value="ripple">2D expanding ripple</option>
+                        </select>
+                      </label>
+                    )}
+                    {selectedLightingLayer.spatial?.primitive === "ripple" && (
+                      <RippleEffectEditor
+                        disabled={!canEdit}
+                        effect={selectedLightingLayer.spatial}
+                        onChange={(spatial) => setLightingAuthorLayers((current) => ({
+                          ...current,
+                          [editingSpaceId]: spaceLightingLayers.map((layer) =>
+                            layer.id === selectedLightingLayer.id ? { ...layer, spatial } : layer,
+                          ),
+                        }))}
+                      />
+                    )}
+                    {selectedLightingLayer.path && (
+                      <label>
+                        Semantic path
+                        <select
+                          aria-label="Lighting semantic path"
+                          value={selectedLightingLayer.path.path_id}
+                          onChange={(event) =>
+                            setLightingAuthorLayers((current) => ({
+                              ...current,
+                              [editingSpaceId]: spaceLightingLayers.map((layer) =>
+                                layer.id === selectedLightingLayer.id && layer.path
+                                  ? {
+                                      ...layer,
+                                      path: {
+                                        ...layer.path,
+                                        path_id: event.target.value,
+                                      },
+                                    }
+                                  : layer,
+                              ),
+                            }))
+                          }
+                        >
+                          <option value="">Select path</option>
+                          {mapperExport?.paths.map((path) => (
+                            <option key={path.semantic_id} value={path.semantic_id}>
+                              {path.name}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    )}
+                    {selectedLightingLayer.fixture && (
+                      <label>
+                        Semantic fixture/group
+                        <input
+                          aria-label="Lighting fixture or group target"
+                          value={selectedLightingLayer.fixture.target_id}
+                          onChange={(event) =>
+                            setLightingAuthorLayers((current) => ({
+                              ...current,
+                              [editingSpaceId]: spaceLightingLayers.map((layer) =>
+                                layer.id === selectedLightingLayer.id &&
+                                layer.fixture
+                                  ? {
+                                      ...layer,
+                                      fixture: {
+                                        ...layer.fixture,
+                                        target_id: event.target.value,
+                                      },
+                                    }
+                                  : layer,
+                              ),
+                            }))
+                          }
+                        />
+                      </label>
+                    )}
+                  </div>
+                )}
+                <div className="timeline-lighting-layer-create">
+                  <input
+                    aria-label="New lighting layer name"
+                    placeholder="Lighting layer name"
+                    value={newLightingLayerName}
+                    onChange={(event) => setNewLightingLayerName(event.target.value)}
+                  />
+                  <select
+                    aria-label="New lighting author mode"
+                    value={newLightingLayerMode}
+                    onChange={(event) =>
+                      setNewLightingLayerMode(
+                        event.target.value as LightingAuthorLayer["mode"],
+                      )
+                    }
+                  >
+                    <option value="spatial">Spatial canvas</option>
+                    <option value="path">Ordered path</option>
+                    <option value="fixture">Fixture / group</option>
+                  </select>
+                  <button
+                    disabled={!newLightingLayerName.trim()}
+                    onClick={() => {
+                      const layer = defaultLightingAuthorLayer(
+                        newLightingLayerMode,
+                        newLightingLayerName.trim(),
+                        duration,
+                      );
+                      setLightingAuthorLayers((current) => ({
+                        ...current,
+                        [editingSpaceId]: [...spaceLightingLayers, layer],
+                      }));
+                      setSelectedLightingLayerId(layer.id);
+                      setNewLightingLayerName("");
+                    }}
+                  >
+                    Add lighting layer
+                  </button>
+                </div>
+              </section>
+            )}
+            <details className="timeline-keyframe-boundary">
+              <summary>What can be animated?</summary>
+              <small>
+                Keyframes: position, independent X/Y scale, rotation, anchor,
+                opacity, and crop/reveal bounds.
+              </small>
+              <small>
+                Fixed per cue: lighting effect, target, colors, brightness,
+                blend, precedence, seed, and effect parameters. Other property
+                animation is not previewed or saved.
+              </small>
+              <div>
+                <button
+                  disabled
+                  title="Unsupported schema gap: lighting property keyframes require runtime or GUI-05 baking support."
+                >
+                  Keyframe lighting properties
+                </button>
+                <button
+                  disabled
+                  title="Unsupported schema gap: nested composition time remapping is not deterministic in the runtime schema."
+                >
+                  Time-remap nested composition
+                </button>
+              </div>
+            </details>
+            {canEdit && (
+              <div className="timeline-transform-create">
+                <label>
+                  Layer name
+                  <input
+                    aria-label="New media layer name"
+                    placeholder="e.g. Flag ripple"
+                    value={newTransformName}
+                    onChange={(event) => setNewTransformName(event.target.value)}
+                  />
+                </label>
+                <label>
+                  Type
+                  <select
+                    aria-label="New media layer kind"
+                    value={newTransformKind}
+                    onChange={(event) => {
+                      setNewTransformKind(event.target.value as TransformLayer["kind"]);
+                      setNewTransformSource("");
+                    }}
+                  >
+                    <option value="image">Image</option>
+                    <option value="video">Video or GIF</option>
+                    <option value="audio">Audio</option>
+                    <option value="composition">Nested composition</option>
+                  </select>
+                </label>
+                <label>
+                  Source
+                  <select
+                    aria-label="New media layer source"
+                    value={newTransformSource}
+                    onChange={(event) => {
+                      setNewTransformSource(event.target.value);
+                      const asset = assets.find((item) => item.id === event.target.value);
+                      if (asset?.media_type === "image/gif" || asset?.media_type?.startsWith("video/")) {
+                        setNewTransformKind("video");
+                      } else if (asset?.media_type?.startsWith("image/")) {
+                        setNewTransformKind("image");
+                      } else if (asset?.media_type?.startsWith("audio/")) {
+                        setNewTransformKind("audio");
+                      }
+                    }}
+                  >
+                    <option value="">
+                      {newTransformKind === "composition" ? "Choose a composition" : "Choose media"}
+                    </option>
+                    {newTransformKind === "composition"
+                      ? Object.values(compositions)
+                          .filter((candidate) => candidate.id !== activeCompositionId)
+                          .map((candidate) => (
+                            <option key={candidate.id} value={candidate.id}>
+                              {candidate.name}
+                            </option>
+                          ))
+                      : assets
+                          .filter((asset) => asset.status === "ready")
+                          .sort(
+                            (left, right) =>
+                              Number(assetMatchesLayerKind(right, newTransformKind)) -
+                              Number(assetMatchesLayerKind(left, newTransformKind)),
+                          )
+                          .map((asset) => (
+                            <option key={asset.id} value={asset.id}>
+                              {asset.name} · {assetKindLabel(asset)}
+                            </option>
+                          ))}
+                  </select>
+                </label>
+                <label>
+                  Track
+                  <select
+                    aria-label="New media layer track"
+                    value={newTransformTrack}
+                    onChange={(event) => setNewTransformTrack(event.target.value)}
+                  >
+                    <option value="">Select track</option>
+                    {tracks.map((track) => (
+                      <option key={track.id} value={track.id}>
+                        {track.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  Duration (ms)
+                  <input
+                    aria-label="New media layer duration"
+                    min="1"
+                    step={snapMs}
+                    type="number"
+                    value={newTransformDuration}
+                    onChange={(event) =>
+                      setNewTransformDuration(Number(event.target.value))
+                    }
+                  />
+                </label>
+                <button
+                  disabled={
+                    !newTransformName.trim() ||
+                    !newTransformSource.trim() ||
+                    !newTransformTrack ||
+                    newTransformDuration <= 0 ||
+                    localPlayhead + newTransformDuration > duration
+                  }
+                  onClick={() => {
+                    addMediaLayer({
+                      name: newTransformName.trim(),
+                      kind: newTransformKind,
+                      sourceId: newTransformSource.trim(),
+                      trackId: newTransformTrack,
+                      startMs: localPlayhead,
+                      durationMs: newTransformDuration,
+                    });
+                    setNewTransformName("");
+                  }}
+                >
+                  Add media layer
+                </button>
+              </div>
+            )}
+          </section>
+          </>
+        )}
+        {toolTab === "cues" && (
+          <>
+          <section className="timeline-sync-controls">
+            <strong>Markers</strong>
+            <small>
+              Moving a marker moves every cue attached to it. Cues not attached to
+              a marker keep their own time.
+            </small>
+            {markers.length > 0 && (
+              <VirtualizedList
+                ariaLabel="Synchronization markers"
+                estimateSize={52}
+                items={markers}
+                keyFor={(marker) => marker.id}
+                renderItem={(marker) => {
+                  const linkedCount = cues.filter(
+                    (cue) => cue.marker_id === marker.id,
+                  ).length;
+                  const bounds = markerMoveBounds(marker.id, cues, duration);
+                  return (
+                <div className="timeline-sync-marker-row" key={marker.id}>
+                  <input
+                    aria-label={`Sync marker name ${marker.name}`}
+                    disabled={!canEdit}
+                    value={marker.name}
+                    onChange={(event) =>
+                      setSyncMarkers((current) => ({
+                        ...current,
+                        [editingSpaceId]: markers.map((candidate) =>
+                          candidate.id === marker.id
+                            ? { ...candidate, name: event.target.value }
+                            : candidate,
+                        ),
+                      }))
+                    }
+                  />
+                  <input
+                    aria-label={`Sync marker time ${marker.name}`}
+                    disabled={!canEdit}
+                    max={bounds.maximum}
+                    min={bounds.minimum}
+                    step={snapMs}
+                    type="number"
+                    value={marker.time_ms}
+                    onChange={(event) =>
+                      setSyncMarkers((current) => ({
+                        ...current,
+                        [editingSpaceId]: markers.map((candidate) =>
+                          candidate.id === marker.id
+                            ? {
+                                ...candidate,
+                                time_ms: Math.max(
+                                  bounds.minimum,
+                                  Math.min(
+                                    bounds.maximum,
+                                    snappedLocal(Number(event.target.value)),
+                                  ),
+                                ),
+                              }
+                            : candidate,
+                        ),
+                      }))
+                    }
+                  />
+                  <small>{linkedCount} linked cues</small>
+                  {canEdit && (
+                    <button
+                      disabled={linkedCount > 0}
+                      onClick={() =>
+                        setSyncMarkers((current) => ({
+                          ...current,
+                          [editingSpaceId]: markers.filter(
+                            (candidate) => candidate.id !== marker.id,
+                          ),
+                        }))
+                      }
+                    >
+                      Delete marker
+                    </button>
+                  )}
+                </div>
+                  );
+                }}
+              />
+            )}
+            {canEdit && (
+              <div className="timeline-sync-create">
+                <label>
+                  Marker name
+                  <input
+                    aria-label="New sync marker name"
+                    placeholder="Named synchronization marker"
+                    value={newMarkerName}
+                    onChange={(event) => setNewMarkerName(event.target.value)}
+                  />
+                </label>
+                <button
+                  disabled={
+                    !newMarkerName.trim() ||
+                    markers.some(
+                      (marker) =>
+                        marker.name.toLocaleLowerCase() ===
+                        newMarkerName.trim().toLocaleLowerCase(),
+                    )
+                  }
+                  onClick={() => {
+                    const marker: SyncMarker = {
+                      id: crypto.randomUUID(),
+                      name: newMarkerName.trim(),
+                      time_ms: snappedLocal(localPlayhead),
+                    };
+                    setSyncMarkers((current) => ({
+                      ...current,
+                      [editingSpaceId]: [...markers, marker],
+                    }));
+                    setNewCueMarkerId(marker.id);
+                    setNewMarkerName("");
+                  }}
+                >
+                  Add sync marker
+                </button>
+              </div>
+            )}
+            {cues.map((cue) => {
+              const effectiveTime = cueTime(cue, markers);
+              const sceneTimes = resolvedSchedule
+                .filter(
+                  (entry) =>
+                    entry.cue_id === cue.id && entry.scene_id === scene.id,
+                )
+                .map((entry) => entry.scene_time_ms);
+              return (
+                <div className="timeline-sync-cue-row" key={cue.id}>
+                  <label className="timeline-compound-checkbox">
+                    <input
+                      aria-label={`Select cue ${cue.name}`}
+                      checked={compoundSelection.includes(cue.id)}
                       type="checkbox"
                       onChange={(event) =>
-                        setScenePolicy((current) => ({
-                          ...current,
-                          media_required: {
-                            ...current.media_required,
-                            [output.id]: event.target.checked,
-                          },
-                        }))
+                        setCompoundSelection((current) =>
+                          event.target.checked
+                            ? [...new Set([...current, cue.id])]
+                            : current.filter((id) => id !== cue.id),
+                        )
                       }
                     />
-                    Required
+                    Select
                   </label>
-                  <label>
-                    Start calibration offset
-                    <input
-                      aria-label={`Media calibration offset ${output.id}`}
-                      disabled={!canEdit}
-                      max="5000"
-                      min="0"
-                      type="number"
-                      value={scenePolicy.media_offsets[output.id] ?? 0}
-                      onChange={(event) =>
-                        setScenePolicy((current) => ({
-                          ...current,
-                          media_offsets: {
-                            ...current.media_offsets,
-                            [output.id]: Number(event.target.value),
-                          },
-                        }))
-                      }
-                    />
-                  </label>
-                </div>
-              ))}
-              {Array.isArray(scene.lighting) &&
-                scene.lighting.map((output) => {
-                  const record = metadataRecord(output);
-                  const outputId = String(record.id ?? record.resource ?? "");
-                  return (
-                    <div className="timeline-output-policy" key={outputId}>
-                      <strong>Lighting · {outputId}</strong>
+                  <span>
+                    <strong>{cue.name}</strong>
+                    <small>
+                      {cue.kind} · local {effectiveTime} ms
+                      {cue.marker_id
+                        ? ` · ${markers.find((marker) => marker.id === cue.marker_id)?.name ?? cue.marker_id} ${cue.marker_offset_ms >= 0 ? "+" : ""}${cue.marker_offset_ms} ms`
+                        : " · detached"}
+                    </small>
+                    <small>
+                      Scene timestamps:{" "}
+                      {sceneTimes.length
+                        ? [...new Set(sceneTimes)].sort((left, right) => left - right).join(", ")
+                        : "not instantiated in this scene"}
+                      {sceneTimes.length ? " ms" : ""}
+                    </small>
+                    {timelineDiagnostics
+                      .filter((diagnostic) => diagnostic.object_id === cue.id)
+                      .map((diagnostic) => (
+                        <small className="timeline-property-error" key={diagnostic.code}>
+                          {diagnostic.message}
+                        </small>
+                      ))}
+                  </span>
+                  {cue.lighting && (
+                    <div className="timeline-lighting-properties">
                       <label>
+                        Start
                         <input
-                          aria-label={`Required lighting output ${outputId}`}
-                          checked={
-                            scenePolicy.lighting_required[outputId] ?? true
+                          aria-label={`Lighting cue start ${cue.name}`}
+                          disabled={!canEdit}
+                          max={duration - cue.lighting.duration_ms}
+                          min="0"
+                          step={snapMs}
+                          type="number"
+                          value={effectiveTime}
+                          onChange={(event) => {
+                            const start = snappedLocal(Number(event.target.value));
+                            setSyncCues((current) => ({
+                              ...current,
+                              [editingSpaceId]: cues.map((candidate) =>
+                                candidate.id === cue.id
+                                  ? candidate.marker_id
+                                    ? {
+                                        ...candidate,
+                                        marker_offset_ms:
+                                          start -
+                                          markerTime(candidate.marker_id, markers),
+                                      }
+                                    : { ...candidate, time_ms: start }
+                                  : candidate,
+                              ),
+                            }));
+                          }}
+                        />
+                      </label>
+                      <label>
+                        Duration
+                        <input
+                          aria-label={`Lighting cue duration ${cue.name}`}
+                          disabled={!canEdit}
+                          max={duration - effectiveTime}
+                          min="1"
+                          step={snapMs}
+                          type="number"
+                          value={cue.lighting.duration_ms}
+                          onChange={(event) =>
+                            updateLightingCue(cue.id, (lighting) => ({
+                              ...lighting,
+                              duration_ms: Math.max(
+                                1,
+                                Math.min(
+                                  duration - effectiveTime,
+                                  Number(event.target.value),
+                                ),
+                              ),
+                            }))
                           }
+                        />
+                      </label>
+                      <label>
+                        Primitive
+                        <select
+                          aria-label={`Lighting cue primitive ${cue.name}`}
+                          disabled={!canEdit}
+                          value={cue.lighting.primitive}
+                          onChange={(event) =>
+                            updateLightingCue(cue.id, (lighting) => ({
+                              ...lighting,
+                              primitive: event.target.value as LightingPrimitive,
+                              end_color:
+                                event.target.value === "color_transition"
+                                  ? (lighting.end_color ?? "#FFFFFF")
+                                  : lighting.end_color,
+                            }))
+                          }
+                        >
+                          {lightingPrimitives.map((primitive) => (
+                            <option key={primitive} value={primitive}>
+                              {primitive.replaceAll("_", " ")}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label>
+                        Target kind
+                        <select
+                          aria-label={`Lighting cue target kind ${cue.name}`}
+                          disabled={!canEdit}
+                          value={cue.lighting.target?.kind ?? ""}
+                          onChange={(event) =>
+                            updateLightingCue(cue.id, (lighting) => ({
+                              ...lighting,
+                              target: event.target.value
+                                ? {
+                                    kind: event.target.value as
+                                      | "segment"
+                                      | "fixture"
+                                      | "path",
+                                    id: lighting.target?.id ?? "",
+                                  }
+                                : null,
+                            }))
+                          }
+                        >
+                          <option value="">Whole output</option>
+                          <option value="segment">Segment</option>
+                          <option value="fixture">Fixture</option>
+                          <option value="path">Path</option>
+                        </select>
+                      </label>
+                      <label>
+                        Target ID
+                        <input
+                          aria-label={`Lighting cue target ID ${cue.name}`}
+                          disabled={!canEdit || !cue.lighting.target}
+                          value={cue.lighting.target?.id ?? ""}
+                          onChange={(event) =>
+                            updateLightingCue(cue.id, (lighting) => ({
+                              ...lighting,
+                              target: lighting.target
+                                ? { ...lighting.target, id: event.target.value }
+                                : null,
+                            }))
+                          }
+                        />
+                      </label>
+                      <label>
+                        Color
+                        <input
+                          aria-label={`Lighting cue color ${cue.name}`}
+                          disabled={!canEdit}
+                          type="color"
+                          value={cue.lighting.color}
+                          onChange={(event) =>
+                            updateLightingCue(cue.id, (lighting) => ({
+                              ...lighting,
+                              color: event.target.value.toUpperCase(),
+                            }))
+                          }
+                        />
+                      </label>
+                      <label>
+                        End color
+                        <input
+                          aria-label={`Lighting cue end color ${cue.name}`}
+                          disabled={!canEdit}
+                          type="color"
+                          value={cue.lighting.end_color ?? cue.lighting.color}
+                          onChange={(event) =>
+                            updateLightingCue(cue.id, (lighting) => ({
+                              ...lighting,
+                              end_color: event.target.value.toUpperCase(),
+                            }))
+                          }
+                        />
+                      </label>
+                      <label>
+                        Brightness
+                        <input
+                          aria-label={`Lighting cue brightness ${cue.name}`}
+                          disabled={!canEdit}
+                          max="1"
+                          min="0"
+                          step="0.01"
+                          type="number"
+                          value={cue.lighting.brightness}
+                          onChange={(event) =>
+                            updateLightingCue(cue.id, (lighting) => ({
+                              ...lighting,
+                              brightness: Number(event.target.value),
+                            }))
+                          }
+                        />
+                      </label>
+                      <label>
+                        End brightness
+                        <input
+                          aria-label={`Lighting cue end brightness ${cue.name}`}
+                          disabled={!canEdit}
+                          max="1"
+                          min="0"
+                          step="0.01"
+                          type="number"
+                          value={cue.lighting.end_brightness ?? cue.lighting.brightness}
+                          onChange={(event) =>
+                            updateLightingCue(cue.id, (lighting) => ({
+                              ...lighting,
+                              end_brightness: Number(event.target.value),
+                            }))
+                          }
+                        />
+                      </label>
+                      <label>
+                        Blend
+                        <select
+                          aria-label={`Lighting cue blend ${cue.name}`}
+                          disabled={!canEdit}
+                          value={cue.lighting.blend_mode}
+                          onChange={(event) =>
+                            updateLightingCue(cue.id, (lighting) => ({
+                              ...lighting,
+                              blend_mode: event.target
+                                .value as LightingCueProperties["blend_mode"],
+                            }))
+                          }
+                        >
+                          <option value="replace">Replace</option>
+                          <option value="add">Add</option>
+                          <option value="max">Max</option>
+                          <option value="multiply">Multiply</option>
+                        </select>
+                      </label>
+                      {(
+                        [
+                          ["Precedence", "precedence", 0, 1000, 1],
+                          ["Seed", "seed", -2147483648, 2147483647, 1],
+                          ["Fade in", "fade_in_ms", 0, cue.lighting.duration_ms, 1],
+                          ["Fade out", "fade_out_ms", 0, cue.lighting.duration_ms, 1],
+                          ["Period", "period_ms", 1, duration, 1],
+                          ["Width pixels", "width_pixels", 1, 1000000, 1],
+                          ["Density", "density", 0.01, 1, 0.01],
+                        ] as const
+                      ).map(([label, field, minimum, maximum, step]) => (
+                        <label key={field}>
+                          {label}
+                          <input
+                            aria-label={`Lighting cue ${label.toLocaleLowerCase()} ${cue.name}`}
+                            disabled={!canEdit}
+                            max={maximum}
+                            min={minimum}
+                            step={step}
+                            type="number"
+                            value={cue.lighting![field]}
+                            onChange={(event) =>
+                              updateLightingCue(cue.id, (lighting) => ({
+                                ...lighting,
+                                [field]: Number(event.target.value),
+                              }))
+                            }
+                          />
+                        </label>
+                      ))}
+                      <label className="timeline-lighting-checkbox">
+                        <input
+                          aria-label={`Lighting cue reverse ${cue.name}`}
+                          checked={cue.lighting.reverse}
                           disabled={!canEdit}
                           type="checkbox"
                           onChange={(event) =>
-                            setScenePolicy((current) => ({
-                              ...current,
-                              lighting_required: {
-                                ...current.lighting_required,
-                                [outputId]: event.target.checked,
-                              },
+                            updateLightingCue(cue.id, (lighting) => ({
+                              ...lighting,
+                              reverse: event.target.checked,
                             }))
                           }
                         />
-                        Required
-                      </label>
-                      <label>
-                        Timing calibration offset
-                        <input
-                          aria-label={`Lighting calibration offset ${outputId}`}
-                          disabled={!canEdit}
-                          max="5000"
-                          min="-5000"
-                          type="number"
-                          value={scenePolicy.lighting_offsets[outputId] ?? 0}
-                          onChange={(event) =>
-                            setScenePolicy((current) => ({
-                              ...current,
-                              lighting_offsets: {
-                                ...current.lighting_offsets,
-                                [outputId]: Number(event.target.value),
-                              },
-                            }))
-                          }
-                        />
+                        Reverse
                       </label>
                     </div>
-                  );
-                })}
-            </>
-          )}
-        </section>
-      )}
-      <section className="timeline-sync-controls">
-        <strong>Synchronization anchors</strong>
-        <small>
-          Named markers move linked cues atomically. Cue offsets remain explicit,
-          and detached cues keep their evaluated local time.
-        </small>
-        {markers.length > 0 && (
-          <VirtualizedList
-            ariaLabel="Synchronization markers"
-            estimateSize={52}
-            items={markers}
-            keyFor={(marker) => marker.id}
-            renderItem={(marker) => {
-              const linkedCount = cues.filter(
-                (cue) => cue.marker_id === marker.id,
-              ).length;
-              const bounds = markerMoveBounds(marker.id, cues, duration);
-              return (
-            <div className="timeline-sync-marker-row" key={marker.id}>
-              <input
-                aria-label={`Sync marker name ${marker.name}`}
-                disabled={!canEdit}
-                value={marker.name}
-                onChange={(event) =>
-                  setSyncMarkers((current) => ({
-                    ...current,
-                    [editingSpaceId]: markers.map((candidate) =>
-                      candidate.id === marker.id
-                        ? { ...candidate, name: event.target.value }
-                        : candidate,
-                    ),
-                  }))
-                }
-              />
-              <input
-                aria-label={`Sync marker time ${marker.name}`}
-                disabled={!canEdit}
-                max={bounds.maximum}
-                min={bounds.minimum}
-                step={snapMs}
-                type="number"
-                value={marker.time_ms}
-                onChange={(event) =>
-                  setSyncMarkers((current) => ({
-                    ...current,
-                    [editingSpaceId]: markers.map((candidate) =>
-                      candidate.id === marker.id
-                        ? {
-                            ...candidate,
-                            time_ms: Math.max(
-                              bounds.minimum,
-                              Math.min(
-                                bounds.maximum,
-                                snappedLocal(Number(event.target.value)),
-                              ),
-                            ),
-                          }
-                        : candidate,
-                    ),
-                  }))
-                }
-              />
-              <small>{linkedCount} linked cues</small>
-              {canEdit && (
-                <button
-                  disabled={linkedCount > 0}
-                  onClick={() =>
-                    setSyncMarkers((current) => ({
-                      ...current,
-                      [editingSpaceId]: markers.filter(
-                        (candidate) => candidate.id !== marker.id,
-                      ),
-                    }))
-                  }
-                >
-                  Delete marker
-                </button>
-              )}
-            </div>
-              );
-            }}
-          />
-        )}
-        {canEdit && (
-          <div className="timeline-sync-create">
-            <input
-              aria-label="New sync marker name"
-              placeholder="Named synchronization marker"
-              value={newMarkerName}
-              onChange={(event) => setNewMarkerName(event.target.value)}
-            />
-            <button
-              disabled={
-                !newMarkerName.trim() ||
-                markers.some(
-                  (marker) =>
-                    marker.name.toLocaleLowerCase() ===
-                    newMarkerName.trim().toLocaleLowerCase(),
-                )
-              }
-              onClick={() => {
-                const marker: SyncMarker = {
-                  id: crypto.randomUUID(),
-                  name: newMarkerName.trim(),
-                  time_ms: snappedLocal(localPlayhead),
-                };
-                setSyncMarkers((current) => ({
-                  ...current,
-                  [editingSpaceId]: [...markers, marker],
-                }));
-                setNewCueMarkerId(marker.id);
-                setNewMarkerName("");
-              }}
-            >
-              Add sync marker
-            </button>
-          </div>
-        )}
-        {cues.map((cue) => {
-          const effectiveTime = cueTime(cue, markers);
-          const sceneTimes = resolvedSchedule
-            .filter(
-              (entry) =>
-                entry.cue_id === cue.id && entry.scene_id === scene.id,
-            )
-            .map((entry) => entry.scene_time_ms);
-          return (
-            <div className="timeline-sync-cue-row" key={cue.id}>
-              <label className="timeline-compound-checkbox">
-                <input
-                  aria-label={`Select cue ${cue.name}`}
-                  checked={compoundSelection.includes(cue.id)}
-                  type="checkbox"
-                  onChange={(event) =>
-                    setCompoundSelection((current) =>
-                      event.target.checked
-                        ? [...new Set([...current, cue.id])]
-                        : current.filter((id) => id !== cue.id),
-                    )
-                  }
-                />
-                Select
-              </label>
-              <span>
-                <strong>{cue.name}</strong>
-                <small>
-                  {cue.kind} · local {effectiveTime} ms
-                  {cue.marker_id
-                    ? ` · ${markers.find((marker) => marker.id === cue.marker_id)?.name ?? cue.marker_id} ${cue.marker_offset_ms >= 0 ? "+" : ""}${cue.marker_offset_ms} ms`
-                    : " · detached"}
-                </small>
-                <small>
-                  Scene timestamps:{" "}
-                  {sceneTimes.length
-                    ? [...new Set(sceneTimes)].sort((left, right) => left - right).join(", ")
-                    : "not instantiated in this scene"}
-                  {sceneTimes.length ? " ms" : ""}
-                </small>
-                {timelineDiagnostics
-                  .filter((diagnostic) => diagnostic.object_id === cue.id)
-                  .map((diagnostic) => (
-                    <small className="timeline-property-error" key={diagnostic.code}>
-                      {diagnostic.message}
-                    </small>
-                  ))}
-              </span>
-              {cue.lighting && (
-                <div className="timeline-lighting-properties">
-                  <label>
-                    Start
-                    <input
-                      aria-label={`Lighting cue start ${cue.name}`}
-                      disabled={!canEdit}
-                      max={duration - cue.lighting.duration_ms}
-                      min="0"
-                      step={snapMs}
-                      type="number"
-                      value={effectiveTime}
-                      onChange={(event) => {
-                        const start = snappedLocal(Number(event.target.value));
+                  )}
+                  {canEdit && cue.marker_id && (
+                    <button
+                      onClick={() =>
                         setSyncCues((current) => ({
                           ...current,
                           [editingSpaceId]: cues.map((candidate) =>
                             candidate.id === cue.id
-                              ? candidate.marker_id
-                                ? {
-                                    ...candidate,
-                                    marker_offset_ms:
-                                      start -
-                                      markerTime(candidate.marker_id, markers),
-                                  }
-                                : { ...candidate, time_ms: start }
+                              ? {
+                                  ...candidate,
+                                  marker_id: null,
+                                  marker_offset_ms: 0,
+                                  time_ms: effectiveTime,
+                                }
                               : candidate,
                           ),
-                        }));
-                      }}
-                    />
-                  </label>
-                  <label>
-                    Duration
-                    <input
-                      aria-label={`Lighting cue duration ${cue.name}`}
-                      disabled={!canEdit}
-                      max={duration - effectiveTime}
-                      min="1"
-                      step={snapMs}
-                      type="number"
-                      value={cue.lighting.duration_ms}
-                      onChange={(event) =>
-                        updateLightingCue(cue.id, (lighting) => ({
-                          ...lighting,
-                          duration_ms: Math.max(
-                            1,
-                            Math.min(
-                              duration - effectiveTime,
-                              Number(event.target.value),
-                            ),
-                          ),
-                        }))
-                      }
-                    />
-                  </label>
-                  <label>
-                    Primitive
-                    <select
-                      aria-label={`Lighting cue primitive ${cue.name}`}
-                      disabled={!canEdit}
-                      value={cue.lighting.primitive}
-                      onChange={(event) =>
-                        updateLightingCue(cue.id, (lighting) => ({
-                          ...lighting,
-                          primitive: event.target.value as LightingPrimitive,
-                          end_color:
-                            event.target.value === "color_transition"
-                              ? (lighting.end_color ?? "#FFFFFF")
-                              : lighting.end_color,
                         }))
                       }
                     >
-                      {lightingPrimitives.map((primitive) => (
-                        <option key={primitive} value={primitive}>
-                          {primitive.replaceAll("_", " ")}
+                      Detach cue
+                    </button>
+                  )}
+                  {canEdit && (
+                    <button
+                      onClick={() =>
+                        setSyncCues((current) => ({
+                          ...current,
+                          [editingSpaceId]: cues.filter(
+                            (candidate) => candidate.id !== cue.id,
+                          ),
+                        }))
+                      }
+                    >
+                      Delete cue
+                    </button>
+                  )}
+                </div>
+              );
+            })}
+            {canEdit && (
+              <div className="timeline-sync-create timeline-sync-create--cue">
+                <label>
+                  Cue name
+                  <input
+                    aria-label="New synchronized cue name"
+                    placeholder="Cue name"
+                    value={newCueName}
+                    onChange={(event) => setNewCueName(event.target.value)}
+                  />
+                </label>
+                <label>
+                  Cue type
+                  <select
+                    aria-label="New synchronized cue kind"
+                    value={newCueKind}
+                    onChange={(event) =>
+                      setNewCueKind(event.target.value as SyncCueKind)
+                    }
+                  >
+                    <option value="visual">Visual</option>
+                    <option value="audio">Audio</option>
+                    <option value="lighting">Lighting</option>
+                    <option value="switch">Switch</option>
+                    <option value="physical_effect">Physical effect</option>
+                  </select>
+                </label>
+                <label>
+                  Track
+                  <select
+                    aria-label="New synchronized cue track"
+                    value={newCueTrackId}
+                    onChange={(event) => setNewCueTrackId(event.target.value)}
+                  >
+                    <option value="">Select track</option>
+                    {tracks.map((track) => (
+                      <option key={track.id} value={track.id}>
+                        {track.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  Attach to marker
+                  <select
+                    aria-label="New synchronized cue marker"
+                    value={newCueMarkerId}
+                    onChange={(event) => setNewCueMarkerId(event.target.value)}
+                  >
+                    <option value="">Detached at playhead</option>
+                    {selectableMarkers.map((marker) => (
+                      <option key={marker.id} value={marker.id}>
+                        {marker.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  Offset from marker (ms)
+                  <input
+                    aria-label="New synchronized cue marker offset"
+                    disabled={!newCueMarkerId}
+                    step={snapMs}
+                    type="number"
+                    value={newCueOffset}
+                    onChange={(event) => setNewCueOffset(Number(event.target.value))}
+                  />
+                </label>
+                {newCueKind === "lighting" && (
+                  <label>
+                    Duration (ms)
+                    <input
+                      aria-label="New lighting cue duration"
+                      min="1"
+                      step={snapMs}
+                      type="number"
+                      value={newCueDuration}
+                      onChange={(event) => setNewCueDuration(Number(event.target.value))}
+                    />
+                  </label>
+                )}
+                <button
+                  disabled={
+                    !newCueName.trim() ||
+                    !newCueTrackId ||
+                    (newCueKind === "lighting" &&
+                      (newCueDuration <= 0 ||
+                        (newCueMarkerId
+                          ? markerTime(newCueMarkerId, markers) + newCueOffset
+                          : localPlayhead) +
+                          newCueDuration >
+                          duration)) ||
+                    (newCueMarkerId
+                      ? markerTime(newCueMarkerId, markers) + newCueOffset < 0 ||
+                        markerTime(newCueMarkerId, markers) + newCueOffset > duration
+                      : false)
+                  }
+                  onClick={() => {
+                    const markerId = newCueMarkerId || null;
+                    setSyncCues((current) => ({
+                      ...current,
+                      [editingSpaceId]: [
+                        ...cues,
+                        {
+                          id: crypto.randomUUID(),
+                          name: newCueName.trim(),
+                          kind: newCueKind,
+                          track_id: newCueTrackId,
+                          time_ms: markerId ? null : snappedLocal(localPlayhead),
+                          marker_id: markerId,
+                          marker_offset_ms: markerId ? Math.round(newCueOffset) : 0,
+                          lighting:
+                            newCueKind === "lighting"
+                              ? defaultLightingCue(
+                                  newCueDuration,
+                                  tracks.find((track) => track.id === newCueTrackId),
+                                )
+                              : undefined,
+                        },
+                      ],
+                    }));
+                    setNewCueName("");
+                    setNewCueOffset(0);
+                  }}
+                >
+                  Add synchronized cue
+                </button>
+              </div>
+            )}
+            <div className="timeline-preset-controls">
+              <strong>Cue presets</strong>
+              <label>
+                Preset name
+                <input
+                  aria-label="New cue preset name"
+                  disabled={!canEdit}
+                  placeholder="Preset name"
+                  value={newPresetName}
+                  onChange={(event) => setNewPresetName(event.target.value)}
+                />
+              </label>
+              <button
+                disabled={
+                  !canEdit ||
+                  !newPresetName.trim() ||
+                  !cues.some(
+                    (cue) =>
+                      compoundSelection.includes(cue.id) && cue.lighting,
+                  )
+                }
+                onClick={() => {
+                  const source = cues.find(
+                    (cue) =>
+                      compoundSelection.includes(cue.id) && cue.lighting,
+                  );
+                  if (!source?.lighting) {
+                    return;
+                  }
+                  const preset: CuePreset = {
+                    id: crypto.randomUUID(),
+                    name: newPresetName.trim(),
+                    lighting: cloneLightingCue(source.lighting),
+                  };
+                  setCuePresets((current) => [...current, preset]);
+                  setSelectedPresetId(preset.id);
+                  setNewPresetName("");
+                }}
+              >
+                Save selected lighting cue as preset
+              </button>
+              <label>
+                Preset
+                <select
+                  aria-label="Cue preset"
+                  value={selectedPresetId}
+                  onChange={(event) => setSelectedPresetId(event.target.value)}
+                >
+                  <option value="">Select preset</option>
+                  {cuePresets.map((preset) => (
+                    <option key={preset.id} value={preset.id}>
+                      {preset.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <button
+                disabled={
+                  !canEdit ||
+                  !selectedPresetId ||
+                  !cues.some(
+                    (cue) =>
+                      compoundSelection.includes(cue.id) && cue.lighting,
+                  )
+                }
+                onClick={() => {
+                  const preset = cuePresets.find(
+                    (candidate) => candidate.id === selectedPresetId,
+                  );
+                  if (!preset) {
+                    return;
+                  }
+                  setSyncCues((current) => ({
+                    ...current,
+                    [editingSpaceId]: cues.map((cue) =>
+                      compoundSelection.includes(cue.id) && cue.lighting
+                        ? {
+                            ...cue,
+                            lighting: cloneLightingCue(preset.lighting),
+                          }
+                        : cue,
+                    ),
+                  }));
+                }}
+              >
+                Apply preset to selected cues
+              </button>
+              <small>
+                Applying a preset copies values into each cue. Runtime cues never
+                reference preset IDs.
+              </small>
+            </div>
+            <div className="timeline-compound-controls">
+              <strong>Edit selected items</strong>
+              {spaceTransformLayers.map((layer) => (
+                <label key={layer.id}>
+                  <input
+                    aria-label={`Select media layer ${layer.name}`}
+                    checked={compoundSelection.includes(layer.id)}
+                    type="checkbox"
+                    onChange={(event) =>
+                      setCompoundSelection((current) =>
+                        event.target.checked
+                          ? [...new Set([...current, layer.id])]
+                          : current.filter((id) => id !== layer.id),
+                      )
+                    }
+                  />
+                  Transform · {layer.name}
+                </label>
+              ))}
+              <label>
+                Shift by (ms)
+                <input
+                  aria-label="Compound shift milliseconds"
+                  step={snapMs}
+                  type="number"
+                  value={compoundShiftMs}
+                  onChange={(event) => setCompoundShiftMs(Number(event.target.value))}
+                />
+              </label>
+              <button
+                disabled={
+                  !canEdit ||
+                  !compoundSelection.length ||
+                  !canShiftCompoundSelection(
+                    cues,
+                    markers,
+                    spaceTransformLayers,
+                    compoundSelection,
+                    compoundShiftMs,
+                    duration,
+                  )
+                }
+                onClick={() => {
+                  setSyncCues((current) => ({
+                    ...current,
+                    [editingSpaceId]: cues.map((cue) =>
+                      compoundSelection.includes(cue.id)
+                        ? cue.marker_id
+                          ? {
+                              ...cue,
+                              marker_offset_ms:
+                                cue.marker_offset_ms + compoundShiftMs,
+                            }
+                          : {
+                              ...cue,
+                              time_ms: (cue.time_ms ?? 0) + compoundShiftMs,
+                            }
+                        : cue,
+                    ),
+                  }));
+                  setTransformLayers((current) => ({
+                    ...current,
+                    [editingSpaceId]: spaceTransformLayers.map((layer) =>
+                      compoundSelection.includes(layer.id)
+                        ? {
+                            ...layer,
+                            start_ms: layer.start_ms + compoundShiftMs,
+                          }
+                        : layer,
+                    ),
+                  }));
+                }}
+              >
+                Shift selected
+              </button>
+              <button
+                disabled={!canEdit || !compoundSelection.length}
+                onClick={() => {
+                  const duplicatedCues = cues
+                    .filter((cue) => compoundSelection.includes(cue.id))
+                    .map((cue) => ({
+                      ...cue,
+                      id: crypto.randomUUID(),
+                      name: `${cue.name} copy`,
+                      lighting: cue.lighting
+                        ? cloneLightingCue(cue.lighting)
+                        : undefined,
+                    }));
+                  const duplicatedLayers = spaceTransformLayers
+                    .filter((layer) => compoundSelection.includes(layer.id))
+                    .map((layer) => ({
+                      ...layer,
+                      id: crypto.randomUUID(),
+                      name: `${layer.name} copy`,
+                      keyframes: layer.keyframes.map((keyframe) => ({
+                        ...keyframe,
+                        id: crypto.randomUUID(),
+                      })),
+                    }));
+                  setSyncCues((current) => ({
+                    ...current,
+                    [editingSpaceId]: [...cues, ...duplicatedCues],
+                  }));
+                  setTransformLayers((current) => ({
+                    ...current,
+                    [editingSpaceId]: [
+                      ...spaceTransformLayers,
+                      ...duplicatedLayers,
+                    ],
+                  }));
+                  setCompoundSelection([]);
+                }}
+              >
+                Duplicate selected
+              </button>
+              <button
+                className="danger-button"
+                disabled={!canEdit || !compoundSelection.length}
+                onClick={() => {
+                  setSyncCues((current) => ({
+                    ...current,
+                    [editingSpaceId]: cues.filter(
+                      (cue) => !compoundSelection.includes(cue.id),
+                    ),
+                  }));
+                  setTransformLayers((current) => ({
+                    ...current,
+                    [editingSpaceId]: spaceTransformLayers.filter(
+                      (layer) => !compoundSelection.includes(layer.id),
+                    ),
+                  }));
+                  setCompoundSelection([]);
+                }}
+              >
+                Delete selected
+              </button>
+            </div>
+          </section>
+          </>
+        )}
+        {toolTab === "tracks" && (
+          <>
+          <div className="timeline-track-properties">
+            {canEdit && (
+              <div className="timeline-track-create">
+                <label>
+                  Track type
+                  <select
+                    aria-label="New track kind"
+                    value={newTrackKind}
+                    onChange={(event) => {
+                      setNewTrackKind(event.target.value as typeof newTrackKind);
+                      setNewTrackBinding("");
+                    }}
+                  >
+                    <option value="audio_reference">Audio reference</option>
+                    <option value="fixture">Fixture</option>
+                    <option value="group">Group</option>
+                    <option value="path">Path</option>
+                  </select>
+                </label>
+                <label>
+                  Track name
+                  <input
+                    aria-label="New track name"
+                    placeholder="e.g. Narration"
+                    value={newTrackName}
+                    onChange={(event) => setNewTrackName(event.target.value)}
+                  />
+                </label>
+                <label>
+                  {newTrackKind === "audio_reference" ? "Audio asset" : `Linked ${newTrackKind}`}
+                  <input
+                    aria-label="New track resource binding"
+                    list="timeline-track-bindings"
+                    placeholder="Start typing to pick"
+                    value={newTrackBinding}
+                    onChange={(event) => setNewTrackBinding(event.target.value)}
+                  />
+                </label>
+                <datalist id="timeline-track-bindings">
+                  {trackBindingSuggestions(newTrackKind, assets, mapperExport).map(
+                    ([value, label]) => (
+                      <option key={value} value={value}>
+                        {label}
+                      </option>
+                    ),
+                  )}
+                </datalist>
+                <button
+                  disabled={!newTrackName.trim() || !newTrackBinding.trim()}
+                  onClick={() => {
+                    const track: TimelineTrack = {
+                      id: crypto.randomUUID(),
+                      kind: newTrackKind,
+                      name: newTrackName,
+                      resource_binding: newTrackBinding,
+                    };
+                    setCustomTracks((current) => [...current, track]);
+                    setSelectedTrackId(track.id);
+                    setInspectorTarget("track");
+                    setNewTrackName("");
+                    setNewTrackBinding("");
+                  }}
+                >
+                  Add track
+                </button>
+              </div>
+            )}
+          </div>
+          </>
+        )}
+        {toolTab === "compositions" && (
+          <>
+          <div className="composition-hierarchy">
+            <strong>Compositions</strong>
+            {Object.values(compositions).length ? (
+              <ul>
+                {Object.values(compositions).map((candidate) => {
+                  const usage = compositionUsage(
+                    compositions,
+                    sceneCompositions,
+                    compositionInstances,
+                    candidate.id,
+                  );
+                  return (
+                    <li key={candidate.id}>
+                      <span>
+                        <strong>{candidate.name}</strong>
+                        <small>
+                          {candidate.duration_ms} ms · {humanizeSpace(
+                            candidate.space_kind,
+                          )} {candidate.width}×{candidate.height} · target{" "}
+                          {candidate.target_id} · local offset{" "}
+                          {candidate.local_time_offset_ms} ms · stable ID {candidate.id}
+                        </small>
+                        <small>
+                          {candidate.children.length
+                            ? `Children: ${candidate.children
+                                .map((id) => compositions[id]?.name ?? id)
+                                .join(", ")}`
+                            : "No child compositions"}
+                        </small>
+                        <small>
+                          {usage.length ? `Used by ${usage.join(", ")}` : "Unused"}
+                        </small>
+                      </span>
+                      <button onClick={() => setActiveCompositionId(candidate.id)}>
+                        Open timeline
+                      </button>
+                      {canEdit && usage.length === 0 && (
+                        <button
+                          className="danger-button"
+                          onClick={() => removeComposition(candidate.id)}
+                        >
+                          Delete unused
+                        </button>
+                      )}
+                      {canEdit && usage.length > 0 && (
+                        <div className="composition-replacement">
+                          <select
+                            aria-label={`Replacement for ${candidate.name}`}
+                            value={replacementByComposition[candidate.id] ?? ""}
+                            onChange={(event) =>
+                              setReplacementByComposition((current) => ({
+                                ...current,
+                                [candidate.id]: event.target.value,
+                              }))
+                            }
+                          >
+                            <option value="">Select replacement</option>
+                            {Object.values(compositions)
+                              .filter((item) => item.id !== candidate.id)
+                              .map((item) => (
+                                <option key={item.id} value={item.id}>
+                                  {item.name}
+                                </option>
+                              ))}
+                          </select>
+                          <button
+                            className="danger-button"
+                            disabled={
+                              !replacementByComposition[candidate.id] ||
+                              !canReplaceComposition(
+                                compositions,
+                                candidate.id,
+                                replacementByComposition[candidate.id],
+                              )
+                            }
+                            onClick={() =>
+                              removeComposition(
+                                candidate.id,
+                                replacementByComposition[candidate.id],
+                              )
+                            }
+                          >
+                            Replace and delete
+                          </button>
+                        </div>
+                      )}
+                    </li>
+                  );
+                })}
+              </ul>
+            ) : (
+              <small>No reusable compositions.</small>
+            )}
+            {(compositionInstances[scene.id] ?? []).map((instance) => (
+              <div className="composition-instance" key={instance.id}>
+                <strong>
+                  Instance · {compositions[instance.composition_id]?.name ?? instance.composition_id}
+                </strong>
+                <small>Stable instance ID: {instance.id}</small>
+                <small>
+                  Start {instance.start_offset_ms} ms · time scale {instance.time_scale}× ·
+                  placement ({instance.placement.x}, {instance.placement.y})
+                </small>
+                <small>
+                  Overrides: {JSON.stringify(instance.parameter_overrides)}
+                </small>
+              </div>
+            ))}
+            {canEdit && (
+              <div className="composition-create">
+                <strong className="composition-create__heading">New composition</strong>
+                <label>
+                  Name
+                  <input
+                    aria-label="New composition name"
+                    placeholder="Composition name"
+                    value={newCompositionName}
+                    onChange={(event) => setNewCompositionName(event.target.value)}
+                  />
+                </label>
+                <label>
+                  Covers
+                  <select
+                    aria-label="New composition space"
+                    value={newCompositionSpace}
+                    onChange={(event) => {
+                      const space = event.target.value as Composition["space_kind"];
+                      setNewCompositionSpace(space);
+                      if (space === "stage") {
+                        if (mapperExport?.stage) {
+                          setNewCompositionWidth(roundStage(mapperExport.stage.width));
+                          setNewCompositionHeight(roundStage(mapperExport.stage.height));
+                        }
+                        setNewCompositionTarget("shared-stage");
+                      } else if (newCompositionTarget === "shared-stage") {
+                        setNewCompositionTarget("");
+                      }
+                    }}
+                  >
+                    <option value="projector_native">One projector (native pixels)</option>
+                    <option value="lighting_surface">One LED surface</option>
+                    <option value="stage">Whole display overlay</option>
+                  </select>
+                </label>
+                <label>
+                  Output
+                  <input
+                    aria-label="New composition target"
+                    list="timeline-composition-targets"
+                    placeholder="Start typing to pick"
+                    value={newCompositionTarget}
+                    onChange={(event) => setNewCompositionTarget(event.target.value)}
+                  />
+                </label>
+                <datalist id="timeline-composition-targets">
+                  {compositionTargetSuggestions(newCompositionSpace, mapperExport).map(([value, label]) => (
+                    <option key={value} value={value}>{label}</option>
+                  ))}
+                </datalist>
+                <label>
+                  Width
+                  <input
+                    aria-label="New composition width"
+                    min="0.001"
+                    step="any"
+                    type="number"
+                    value={newCompositionWidth}
+                    onChange={(event) =>
+                      setNewCompositionWidth(Number(event.target.value))
+                    }
+                  />
+                </label>
+                <label>
+                  Height
+                  <input
+                    aria-label="New composition height"
+                    min="0.001"
+                    step="any"
+                    type="number"
+                    value={newCompositionHeight}
+                    onChange={(event) =>
+                      setNewCompositionHeight(Number(event.target.value))
+                    }
+                  />
+                </label>
+                <label>
+                  Duration (ms)
+                  <input
+                    aria-label="New composition duration"
+                    min="1"
+                    type="number"
+                    value={newCompositionDuration}
+                    onChange={(event) =>
+                      setNewCompositionDuration(Number(event.target.value))
+                    }
+                  />
+                </label>
+                <label>
+                  Local time offset (ms)
+                  <input
+                    aria-label="New composition local offset"
+                    min="0"
+                    type="number"
+                    value={newCompositionOffset}
+                    onChange={(event) =>
+                      setNewCompositionOffset(Number(event.target.value))
+                    }
+                  />
+                </label>
+                <button
+                  disabled={
+                    !newCompositionName.trim() ||
+                    !newCompositionTarget.trim() ||
+                    newCompositionDuration <= 0 ||
+                    newCompositionWidth <= 0 ||
+                    newCompositionHeight <= 0 ||
+                    newCompositionOffset < 0
+                  }
+                  onClick={() => {
+                    createComposition({
+                      name: newCompositionName,
+                      durationMs: newCompositionDuration,
+                      space: newCompositionSpace,
+                      target: newCompositionTarget,
+                      width: newCompositionWidth,
+                      height: newCompositionHeight,
+                      offsetMs: newCompositionOffset,
+                    });
+                    setNewCompositionName("");
+                    setNewCompositionTarget("");
+                  }}
+                >
+                  Create composition
+                </button>
+                <strong className="composition-create__heading">Use a composition</strong>
+                <label>
+                  Composition
+                  <select
+                    aria-label="Composition to use"
+                    value={childCompositionId}
+                    onChange={(event) => setChildCompositionId(event.target.value)}
+                  >
+                    <option value="">Select composition</option>
+                    {Object.values(compositions).map((candidate) => (
+                      <option key={candidate.id} value={candidate.id}>
+                        {candidate.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <button
+                  disabled={
+                    !activeCompositionId ||
+                    !childCompositionId ||
+                    activeCompositionId === childCompositionId ||
+                    wouldCreateCycle(
+                      compositions,
+                      activeCompositionId,
+                      childCompositionId,
+                    )
+                  }
+                  onClick={() =>
+                    setCompositions((current) => ({
+                      ...current,
+                      [activeCompositionId]: {
+                        ...current[activeCompositionId],
+                        children: [
+                          ...new Set([
+                            ...current[activeCompositionId].children,
+                            childCompositionId,
+                          ]),
+                        ],
+                      },
+                    }))
+                  }
+                >
+                  Nest in open composition
+                </button>
+                <label>
+                  Starts at (ms)
+                  <input
+                    aria-label="Instance start offset"
+                    min="0"
+                    type="number"
+                    value={instanceStartOffset}
+                    onChange={(event) =>
+                      setInstanceStartOffset(Number(event.target.value))
+                    }
+                  />
+                </label>
+                <label>
+                  Speed
+                  <input
+                    aria-label="Instance time scale"
+                    min="0.01"
+                    max="16"
+                    step="0.01"
+                    type="number"
+                    value={instanceTimeScale}
+                    onChange={(event) =>
+                      setInstanceTimeScale(Number(event.target.value))
+                    }
+                  />
+                </label>
+                <label>
+                  Stage X
+                  <input
+                    aria-label="Instance stage X"
+                    step="any"
+                    type="number"
+                    value={instanceX}
+                    onChange={(event) => setInstanceX(Number(event.target.value))}
+                  />
+                </label>
+                <label>
+                  Stage Y
+                  <input
+                    aria-label="Instance stage Y"
+                    step="any"
+                    type="number"
+                    value={instanceY}
+                    onChange={(event) => setInstanceY(Number(event.target.value))}
+                  />
+                </label>
+                <label>
+                  Parameter overrides (JSON)
+                  <textarea
+                    aria-label="Instance parameter overrides"
+                    rows={2}
+                    value={instanceOverrides}
+                    onChange={(event) => setInstanceOverrides(event.target.value)}
+                  />
+                </label>
+                <button
+                  disabled={
+                    !childCompositionId ||
+                    instanceStartOffset < 0 ||
+                    instanceTimeScale <= 0 ||
+                    instanceTimeScale > 16 ||
+                    parsedInstanceOverrides === null
+                  }
+                  onClick={() => {
+                    setSceneCompositions((current) => ({
+                      ...current,
+                      [scene.id]: [
+                        ...new Set([
+                          ...(current[scene.id] ?? []),
+                          childCompositionId,
+                        ]),
+                      ],
+                    }));
+                    setCompositionInstances((current) => ({
+                      ...current,
+                      [scene.id]: [
+                        ...(current[scene.id] ?? []),
+                        {
+                          id: crypto.randomUUID(),
+                          composition_id: childCompositionId,
+                          start_offset_ms: instanceStartOffset,
+                          time_scale: instanceTimeScale,
+                          parameter_overrides: parsedInstanceOverrides ?? {},
+                          placement: { x: instanceX, y: instanceY },
+                        },
+                      ],
+                    }));
+                  }}
+                >
+                  Add to scene
+                </button>
+              </div>
+            )}
+          </div>
+          </>
+        )}
+        {toolTab === "render" && (
+          <>
+            {composition && composition.space_kind !== "lighting_surface" && (
+              <div className="timeline-render-conformance">
+                <strong>Render conformance · pipeline revision 1</strong>
+                <label>
+                  Render width
+                  <input
+                    aria-label="Render width"
+                    disabled={!canEdit}
+                    min="1"
+                    type="number"
+                    value={composition.render_settings.render_width}
+                    onChange={(event) =>
+                      setCompositions((current) => ({
+                        ...current,
+                        [composition.id]: {
+                          ...current[composition.id],
+                          render_settings: {
+                            ...current[composition.id].render_settings,
+                            render_width: Number(event.target.value),
+                          },
+                        },
+                      }))
+                    }
+                  />
+                </label>
+                <label>
+                  Render height
+                  <input
+                    aria-label="Render height"
+                    disabled={!canEdit}
+                    min="1"
+                    type="number"
+                    value={composition.render_settings.render_height}
+                    onChange={(event) =>
+                      setCompositions((current) => ({
+                        ...current,
+                        [composition.id]: {
+                          ...current[composition.id],
+                          render_settings: {
+                            ...current[composition.id].render_settings,
+                            render_height: Number(event.target.value),
+                          },
+                        },
+                      }))
+                    }
+                  />
+                </label>
+                <label>
+                  Frame-rate numerator
+                  <input
+                    aria-label="Render frame-rate numerator"
+                    disabled={!canEdit}
+                    min="1"
+                    type="number"
+                    value={composition.render_settings.frame_rate_numerator}
+                    onChange={(event) =>
+                      setCompositions((current) => ({
+                        ...current,
+                        [composition.id]: {
+                          ...current[composition.id],
+                          render_settings: {
+                            ...current[composition.id].render_settings,
+                            frame_rate_numerator: Number(event.target.value),
+                          },
+                        },
+                      }))
+                    }
+                  />
+                </label>
+                <label>
+                  Frame-rate denominator
+                  <input
+                    aria-label="Render frame-rate denominator"
+                    disabled={!canEdit}
+                    min="1"
+                    type="number"
+                    value={composition.render_settings.frame_rate_denominator}
+                    onChange={(event) =>
+                      setCompositions((current) => ({
+                        ...current,
+                        [composition.id]: {
+                          ...current[composition.id],
+                          render_settings: {
+                            ...current[composition.id].render_settings,
+                            frame_rate_denominator: Number(event.target.value),
+                          },
+                        },
+                      }))
+                    }
+                  />
+                </label>
+                <label>
+                  Scaling filter
+                  <select
+                    aria-label="Render scaling filter"
+                    disabled={!canEdit}
+                    value={composition.render_settings.scaling_filter}
+                    onChange={(event) =>
+                      setCompositions((current) => ({
+                        ...current,
+                        [composition.id]: {
+                          ...current[composition.id],
+                          render_settings: {
+                            ...current[composition.id].render_settings,
+                            scaling_filter: event.target
+                              .value as Composition["render_settings"]["scaling_filter"],
+                          },
+                        },
+                      }))
+                    }
+                  >
+                    <option value="lanczos">Lanczos</option>
+                    <option value="bicubic">Bicubic</option>
+                  </select>
+                </label>
+                <label>
+                  Client output preset
+                  <select
+                    aria-label="Client output preset"
+                    disabled={!canEdit}
+                    value={composition.render_settings.output_profile.preset_id}
+                    onChange={(event) =>
+                      setCompositions((current) => ({
+                        ...current,
+                        [composition.id]: {
+                          ...current[composition.id],
+                          render_settings: {
+                            ...current[composition.id].render_settings,
+                            output_profile: outputProfile(
+                              event.target.value as
+                                | "low_power_h264"
+                                | "legacy_h264",
+                            ),
+                          },
+                        },
+                      }))
+                    }
+                  >
+                    <option value="low_power_h264">Low-power H.264 Main</option>
+                    <option value="legacy_h264">Legacy H.264 Baseline</option>
+                  </select>
+                </label>
+                <label>
+                  Final output background
+                  <input
+                    aria-label="Final output background"
+                    disabled={!canEdit}
+                    type="color"
+                    value={composition.render_settings.output_background_color}
+                    onChange={(event) =>
+                      setCompositions((current) => ({
+                        ...current,
+                        [composition.id]: {
+                          ...current[composition.id],
+                          render_settings: {
+                            ...current[composition.id].render_settings,
+                            output_background_color:
+                              event.target.value.toUpperCase(),
+                          },
+                        },
+                      }))
+                    }
+                  />
+                </label>
+                <label>
+                  Media end behavior
+                  <select
+                    aria-label="Media end behavior"
+                    disabled={!canEdit}
+                    value={composition.render_settings.media_end_behavior}
+                    onChange={(event) =>
+                      setCompositions((current) => ({
+                        ...current,
+                        [composition.id]: {
+                          ...current[composition.id],
+                          render_settings: {
+                            ...current[composition.id].render_settings,
+                            media_end_behavior: event.target
+                              .value as Composition["render_settings"]["media_end_behavior"],
+                          },
+                        },
+                      }))
+                    }
+                  >
+                    <option value="hold_last_frame">Hold last frame</option>
+                    <option value="stop">Stop</option>
+                    <option value="loop">Loop after gapless validation</option>
+                  </select>
+                </label>
+                <label>
+                  Maximum video bitrate
+                  <input
+                    aria-label="Maximum video bitrate"
+                    disabled={!canEdit}
+                    min="500"
+                    type="number"
+                    value={
+                      composition.render_settings.output_profile
+                        .max_video_bitrate_kbps
+                    }
+                    onChange={(event) =>
+                      setCompositions((current) => ({
+                        ...current,
+                        [composition.id]: {
+                          ...current[composition.id],
+                          render_settings: {
+                            ...current[composition.id].render_settings,
+                            output_profile: {
+                              ...current[composition.id].render_settings
+                                .output_profile,
+                              max_video_bitrate_kbps: Number(event.target.value),
+                            },
+                          },
+                        },
+                      }))
+                    }
+                  />
+                </label>
+                <label>
+                  Loudness target
+                  <input
+                    aria-label="Loudness target"
+                    disabled={!canEdit}
+                    max="-5"
+                    min="-40"
+                    step="0.1"
+                    type="number"
+                    value={
+                      composition.render_settings.output_profile
+                        .loudness_target_lufs
+                    }
+                    onChange={(event) =>
+                      setCompositions((current) => ({
+                        ...current,
+                        [composition.id]: {
+                          ...current[composition.id],
+                          render_settings: {
+                            ...current[composition.id].render_settings,
+                            output_profile: {
+                              ...current[composition.id].render_settings
+                                .output_profile,
+                              loudness_target_lufs: Number(event.target.value),
+                            },
+                          },
+                        },
+                      }))
+                    }
+                  />
+                </label>
+                <label>
+                  Keyframe interval
+                  <input
+                    aria-label="Keyframe interval"
+                    disabled={!canEdit}
+                    min="1"
+                    type="number"
+                    value={
+                      composition.render_settings.output_profile
+                        .keyframe_interval_frames
+                    }
+                    onChange={(event) =>
+                      setCompositions((current) => ({
+                        ...current,
+                        [composition.id]: {
+                          ...current[composition.id],
+                          render_settings: {
+                            ...current[composition.id].render_settings,
+                            output_profile: {
+                              ...current[composition.id].render_settings
+                                .output_profile,
+                              keyframe_interval_frames: Number(event.target.value),
+                            },
+                          },
+                        },
+                      }))
+                    }
+                  />
+                </label>
+                <small>
+                  Logical {composition.width}×{composition.height} · render{" "}
+                  {composition.render_settings.render_width}×
+                  {composition.render_settings.render_height} · linear sRGB working
+                  color · premultiplied working alpha. Preview and baking consume this
+                  same contract.
+                </small>
+                <small>
+                  Target: MP4 · H.264{" "}
+                  {composition.render_settings.output_profile.video_profile} level{" "}
+                  {composition.render_settings.output_profile.video_level} ·
+                  yuv420p · AAC 48 kHz stereo · B-frames{" "}
+                  {composition.render_settings.output_profile.b_frames} ·{" "}
+                  {
+                    composition.render_settings.output_profile
+                      .hardware_decoder_compatibility
+                  }
+                </small>
+                <ol className="timeline-render-pipeline" aria-label="Render pipeline order">
+                  <li>Decode and conform sources</li>
+                  <li>Logical transforms, masks, and alpha composition</li>
+                  <li>Physical-object mapping and occlusion</li>
+                  <li>Projector-native warp, crop, and orientation</li>
+                  <li>Overlap and edge blending</li>
+                  <li>Projector brightness, black level, and color correction</li>
+                  <li>Audio mix, encode, and mux</li>
+                </ol>
+                <div className="timeline-render-jobs">
+                  <strong>Controller render jobs</strong>
+                  {composition.space_kind === "stage" && (
+                    <div className="timeline-sync-rehearsal">
+                      <strong>Cross-projector rehearsal evidence</strong>
+                      <small>
+                        {syncAdmission?.message ??
+                          "Evaluate or record the current projector group."}
+                      </small>
+                      <label>
+                        Start error ms
+                        <input
+                          aria-label="Rehearsal start error"
+                          min="0"
+                          step="0.1"
+                          type="number"
+                          value={rehearsalStartError}
+                          onChange={(event) =>
+                            setRehearsalStartError(Number(event.target.value))
+                          }
+                        />
+                      </label>
+                      <label>
+                        Drift ms/min
+                        <input
+                          aria-label="Rehearsal drift"
+                          min="0"
+                          step="0.1"
+                          type="number"
+                          value={rehearsalDrift}
+                          onChange={(event) =>
+                            setRehearsalDrift(Number(event.target.value))
+                          }
+                        />
+                      </label>
+                      <label>
+                        Measurement duration seconds
+                        <input
+                          aria-label="Rehearsal duration"
+                          min="1"
+                          type="number"
+                          value={rehearsalDuration}
+                          onChange={(event) =>
+                            setRehearsalDuration(Number(event.target.value))
+                          }
+                        />
+                      </label>
+                      <label>
+                        Notes
+                        <input
+                          aria-label="Rehearsal notes"
+                          value={rehearsalNotes}
+                          onChange={(event) => setRehearsalNotes(event.target.value)}
+                        />
+                      </label>
+                      <button
+                        disabled={!canEdit || stageProjectorResources.length < 2}
+                        onClick={async () => {
+                          try {
+                            await recordSyncRehearsal({
+                              resources: stageProjectorResources,
+                              start_error_ms: rehearsalStartError,
+                              drift_ms_per_minute: rehearsalDrift,
+                              measurement_duration_seconds: rehearsalDuration,
+                              notes: rehearsalNotes || null,
+                              measured_at: new Date().toISOString(),
+                            });
+                            setSyncAdmission(
+                              await evaluateSyncAdmission(stageProjectorResources),
+                            );
+                          } catch (error) {
+                            setRenderJobError(
+                              error instanceof Error
+                                ? error.message
+                                : "Rehearsal evidence could not be recorded.",
+                            );
+                          }
+                        }}
+                      >
+                        Record measured rehearsal
+                      </button>
+                      <small>
+                        Evidence only; this action sends no projector command.
+                      </small>
+                    </div>
+                  )}
+                  <button
+                    disabled={
+                      !canEdit ||
+                      (composition.space_kind === "stage" &&
+                        syncAdmission?.allowed !== true) ||
+                      renderJobs.some(
+                        (job) =>
+                          job.composition_id === composition.id &&
+                          (job.state === "queued" || job.state === "running"),
+                      )
+                    }
+                    title={
+                      composition.space_kind === "stage"
+                        ? syncAdmission?.message ??
+                          "Stage render requires synchronization rehearsal evidence."
+                        : "Render the complete image/video/audio composition."
+                    }
+                    onClick={async () => {
+                      try {
+                        const job = await createRenderJob(projectId, composition.id);
+                        setRenderJobs((current) => [
+                          job,
+                          ...current.filter((candidate) => candidate.id !== job.id),
+                        ]);
+                        setRenderJobError(null);
+                      } catch (error) {
+                        setRenderJobError(
+                          error instanceof Error ? error.message : "Render could not start.",
+                        );
+                      }
+                    }}
+                  >
+                    {composition.stage_lighting_surfaces.length > 0
+                      ? "Bake installation overlay"
+                      : "Start controller render"}
+                  </button>
+                  {renderJobs
+                    .filter((job) => job.composition_id === composition.id)
+                    .map((job) => (
+                      <div className="timeline-render-job" key={job.id}>
+                        <span>
+                          <strong>{job.state}</strong> ·{" "}
+                          {Math.round(job.progress * 100)}% · reservation{" "}
+                          {(job.reserved_bytes / (1024 * 1024)).toFixed(1)} MiB
+                        </span>
+                        <small>Cache {job.cache_key.slice(0, 12)}</small>
+                        {job.artifact_id && (
+                          <small>Artifact set {job.artifact_id}</small>
+                        )}
+                        {job.state === "completed" && job.artifact_id && (
+                          <button
+                            disabled={deployedArtifactId === job.artifact_id}
+                            onClick={async () => {
+                              try {
+                                const deployment = await deployRenderArtifact(
+                                  job.artifact_id!,
+                                );
+                                setDeployedArtifactId(deployment.artifact_id);
+                                setRenderJobError(null);
+                              } catch (error) {
+                                setRenderJobError(
+                                  error instanceof Error
+                                    ? error.message
+                                    : "Artifact deployment failed.",
+                                );
+                              }
+                            }}
+                          >
+                            {deployedArtifactId === job.artifact_id
+                              ? "Activated on client group"
+                              : "Stage and activate client group"}
+                          </button>
+                        )}
+                        {job.error && <small role="alert">{job.error}</small>}
+                        {(job.state === "queued" || job.state === "running") && (
+                          <button
+                            disabled={job.cancel_requested}
+                            onClick={async () => {
+                              try {
+                                const updated = await cancelRenderJob(job.id);
+                                setRenderJobs((current) =>
+                                  current.map((candidate) =>
+                                    candidate.id === updated.id ? updated : candidate,
+                                  ),
+                                );
+                              } catch (error) {
+                                setRenderJobError(
+                                  error instanceof Error
+                                    ? error.message
+                                    : "Render cancellation failed.",
+                                );
+                              }
+                            }}
+                          >
+                            Cancel render
+                          </button>
+                        )}
+                      </div>
+                    ))}
+                  {renderJobError && <small role="alert">{renderJobError}</small>}
+                </div>
+                <div
+                  className="timeline-preview-inspection"
+                  aria-label="Controller preview inspection"
+                >
+                  <strong>Controller preview inspection</strong>
+                  <label>
+                    Checksummed bake
+                    <select
+                      aria-label="Checksummed bake"
+                      value={selectedArtifactId}
+                      onChange={(event) => setSelectedArtifactId(event.target.value)}
+                    >
+                      <option value="">No completed bake</option>
+                      {completedRenderJobs.map((job) => (
+                        <option key={job.artifact_id!} value={job.artifact_id!}>
+                          {job.artifact_id!.slice(0, 12)} · revision {job.source_revision}
                         </option>
                       ))}
                     </select>
                   </label>
                   <label>
-                    Target kind
+                    Inspection mode
                     <select
-                      aria-label={`Lighting cue target kind ${cue.name}`}
-                      disabled={!canEdit}
-                      value={cue.lighting.target?.kind ?? ""}
+                      aria-label="Preview inspection mode"
+                      disabled={!selectedArtifactId}
+                      value={renderPreviewMode}
                       onChange={(event) =>
-                        updateLightingCue(cue.id, (lighting) => ({
-                          ...lighting,
-                          target: event.target.value
-                            ? {
-                                kind: event.target.value as
-                                  | "segment"
-                                  | "fixture"
-                                  | "path",
-                                id: lighting.target?.id ?? "",
-                              }
-                            : null,
-                        }))
+                        setRenderPreviewMode(
+                          event.target.value as typeof renderPreviewMode,
+                        )
                       }
                     >
-                      <option value="">Whole output</option>
-                      <option value="segment">Segment</option>
-                      <option value="fixture">Fixture</option>
-                      <option value="path">Path</option>
+                      <option value="source">Editable source</option>
+                      <option value="baked">Selected bake</option>
+                      <option value="side_by_side">Before / after</option>
+                      <option value="difference">Frame difference</option>
                     </select>
                   </label>
-                  <label>
-                    Target ID
-                    <input
-                      aria-label={`Lighting cue target ID ${cue.name}`}
-                      disabled={!canEdit || !cue.lighting.target}
-                      value={cue.lighting.target?.id ?? ""}
-                      onChange={(event) =>
-                        updateLightingCue(cue.id, (lighting) => ({
-                          ...lighting,
-                          target: lighting.target
-                            ? { ...lighting.target, id: event.target.value }
-                            : null,
-                        }))
-                      }
-                    />
-                  </label>
-                  <label>
-                    Color
-                    <input
-                      aria-label={`Lighting cue color ${cue.name}`}
-                      disabled={!canEdit}
-                      type="color"
-                      value={cue.lighting.color}
-                      onChange={(event) =>
-                        updateLightingCue(cue.id, (lighting) => ({
-                          ...lighting,
-                          color: event.target.value.toUpperCase(),
-                        }))
-                      }
-                    />
-                  </label>
-                  <label>
-                    End color
-                    <input
-                      aria-label={`Lighting cue end color ${cue.name}`}
-                      disabled={!canEdit}
-                      type="color"
-                      value={cue.lighting.end_color ?? cue.lighting.color}
-                      onChange={(event) =>
-                        updateLightingCue(cue.id, (lighting) => ({
-                          ...lighting,
-                          end_color: event.target.value.toUpperCase(),
-                        }))
-                      }
-                    />
-                  </label>
-                  <label>
-                    Brightness
-                    <input
-                      aria-label={`Lighting cue brightness ${cue.name}`}
-                      disabled={!canEdit}
-                      max="1"
-                      min="0"
-                      step="0.01"
-                      type="number"
-                      value={cue.lighting.brightness}
-                      onChange={(event) =>
-                        updateLightingCue(cue.id, (lighting) => ({
-                          ...lighting,
-                          brightness: Number(event.target.value),
-                        }))
-                      }
-                    />
-                  </label>
-                  <label>
-                    End brightness
-                    <input
-                      aria-label={`Lighting cue end brightness ${cue.name}`}
-                      disabled={!canEdit}
-                      max="1"
-                      min="0"
-                      step="0.01"
-                      type="number"
-                      value={cue.lighting.end_brightness ?? cue.lighting.brightness}
-                      onChange={(event) =>
-                        updateLightingCue(cue.id, (lighting) => ({
-                          ...lighting,
-                          end_brightness: Number(event.target.value),
-                        }))
-                      }
-                    />
-                  </label>
-                  <label>
-                    Blend
-                    <select
-                      aria-label={`Lighting cue blend ${cue.name}`}
-                      disabled={!canEdit}
-                      value={cue.lighting.blend_mode}
-                      onChange={(event) =>
-                        updateLightingCue(cue.id, (lighting) => ({
-                          ...lighting,
-                          blend_mode: event.target
-                            .value as LightingCueProperties["blend_mode"],
-                        }))
-                      }
-                    >
-                      <option value="replace">Replace</option>
-                      <option value="add">Add</option>
-                      <option value="max">Max</option>
-                      <option value="multiply">Multiply</option>
-                    </select>
-                  </label>
-                  {(
-                    [
-                      ["Precedence", "precedence", 0, 1000, 1],
-                      ["Seed", "seed", -2147483648, 2147483647, 1],
-                      ["Fade in", "fade_in_ms", 0, cue.lighting.duration_ms, 1],
-                      ["Fade out", "fade_out_ms", 0, cue.lighting.duration_ms, 1],
-                      ["Period", "period_ms", 1, duration, 1],
-                      ["Width pixels", "width_pixels", 1, 1000000, 1],
-                      ["Density", "density", 0.01, 1, 0.01],
-                    ] as const
-                  ).map(([label, field, minimum, maximum, step]) => (
-                    <label key={field}>
-                      {label}
-                      <input
-                        aria-label={`Lighting cue ${label.toLocaleLowerCase()} ${cue.name}`}
-                        disabled={!canEdit}
-                        max={maximum}
-                        min={minimum}
-                        step={step}
-                        type="number"
-                        value={cue.lighting![field]}
-                        onChange={(event) =>
-                          updateLightingCue(cue.id, (lighting) => ({
-                            ...lighting,
-                            [field]: Number(event.target.value),
-                          }))
-                        }
-                      />
-                    </label>
-                  ))}
-                  <label className="timeline-lighting-checkbox">
-                    <input
-                      aria-label={`Lighting cue reverse ${cue.name}`}
-                      checked={cue.lighting.reverse}
-                      disabled={!canEdit}
-                      type="checkbox"
-                      onChange={(event) =>
-                        updateLightingCue(cue.id, (lighting) => ({
-                          ...lighting,
-                          reverse: event.target.checked,
-                        }))
-                      }
-                    />
-                    Reverse
-                  </label>
-                </div>
-              )}
-              {canEdit && cue.marker_id && (
-                <button
-                  onClick={() =>
-                    setSyncCues((current) => ({
-                      ...current,
-                      [editingSpaceId]: cues.map((candidate) =>
-                        candidate.id === cue.id
-                          ? {
-                              ...candidate,
-                              marker_id: null,
-                              marker_offset_ms: 0,
-                              time_ms: effectiveTime,
-                            }
-                          : candidate,
-                      ),
-                    }))
-                  }
-                >
-                  Detach cue
-                </button>
-              )}
-              {canEdit && (
-                <button
-                  onClick={() =>
-                    setSyncCues((current) => ({
-                      ...current,
-                      [editingSpaceId]: cues.filter(
-                        (candidate) => candidate.id !== cue.id,
-                      ),
-                    }))
-                  }
-                >
-                  Delete cue
-                </button>
-              )}
-            </div>
-          );
-        })}
-        {canEdit && (
-          <div className="timeline-sync-create timeline-sync-create--cue">
-            <input
-              aria-label="New synchronized cue name"
-              placeholder="Cue name"
-              value={newCueName}
-              onChange={(event) => setNewCueName(event.target.value)}
-            />
-            <select
-              aria-label="New synchronized cue kind"
-              value={newCueKind}
-              onChange={(event) =>
-                setNewCueKind(event.target.value as SyncCueKind)
-              }
-            >
-              <option value="visual">Visual</option>
-              <option value="audio">Audio</option>
-              <option value="lighting">Lighting</option>
-              <option value="switch">Switch</option>
-              <option value="physical_effect">Physical effect</option>
-            </select>
-            <select
-              aria-label="New synchronized cue track"
-              value={newCueTrackId}
-              onChange={(event) => setNewCueTrackId(event.target.value)}
-            >
-              <option value="">Select track</option>
-              {tracks.map((track) => (
-                <option key={track.id} value={track.id}>
-                  {track.name}
-                </option>
-              ))}
-            </select>
-            <select
-              aria-label="New synchronized cue marker"
-              value={newCueMarkerId}
-              onChange={(event) => setNewCueMarkerId(event.target.value)}
-            >
-              <option value="">Detached at playhead</option>
-              {selectableMarkers.map((marker) => (
-                <option key={marker.id} value={marker.id}>
-                  {marker.name}
-                </option>
-              ))}
-            </select>
-            <input
-              aria-label="New synchronized cue marker offset"
-              disabled={!newCueMarkerId}
-              step={snapMs}
-              type="number"
-              value={newCueOffset}
-              onChange={(event) => setNewCueOffset(Number(event.target.value))}
-            />
-            {newCueKind === "lighting" && (
-              <input
-                aria-label="New lighting cue duration"
-                min="1"
-                step={snapMs}
-                type="number"
-                value={newCueDuration}
-                onChange={(event) => setNewCueDuration(Number(event.target.value))}
-              />
-            )}
-            <button
-              disabled={
-                !newCueName.trim() ||
-                !newCueTrackId ||
-                (newCueKind === "lighting" &&
-                  (newCueDuration <= 0 ||
-                    (newCueMarkerId
-                      ? markerTime(newCueMarkerId, markers) + newCueOffset
-                      : localPlayhead) +
-                      newCueDuration >
-                      duration)) ||
-                (newCueMarkerId
-                  ? markerTime(newCueMarkerId, markers) + newCueOffset < 0 ||
-                    markerTime(newCueMarkerId, markers) + newCueOffset > duration
-                  : false)
-              }
-              onClick={() => {
-                const markerId = newCueMarkerId || null;
-                setSyncCues((current) => ({
-                  ...current,
-                  [editingSpaceId]: [
-                    ...cues,
-                    {
-                      id: crypto.randomUUID(),
-                      name: newCueName.trim(),
-                      kind: newCueKind,
-                      track_id: newCueTrackId,
-                      time_ms: markerId ? null : snappedLocal(localPlayhead),
-                      marker_id: markerId,
-                      marker_offset_ms: markerId ? Math.round(newCueOffset) : 0,
-                      lighting:
-                        newCueKind === "lighting"
-                          ? defaultLightingCue(
-                              newCueDuration,
-                              tracks.find((track) => track.id === newCueTrackId),
-                            )
-                          : undefined,
-                    },
-                  ],
-                }));
-                setNewCueName("");
-                setNewCueOffset(0);
-              }}
-            >
-              Add synchronized cue
-            </button>
-          </div>
-        )}
-        <div className="timeline-preset-controls">
-          <strong>Reusable lighting cue presets</strong>
-          <input
-            aria-label="New cue preset name"
-            disabled={!canEdit}
-            placeholder="Preset name"
-            value={newPresetName}
-            onChange={(event) => setNewPresetName(event.target.value)}
-          />
-          <button
-            disabled={
-              !canEdit ||
-              !newPresetName.trim() ||
-              !cues.some(
-                (cue) =>
-                  compoundSelection.includes(cue.id) && cue.lighting,
-              )
-            }
-            onClick={() => {
-              const source = cues.find(
-                (cue) =>
-                  compoundSelection.includes(cue.id) && cue.lighting,
-              );
-              if (!source?.lighting) {
-                return;
-              }
-              const preset: CuePreset = {
-                id: crypto.randomUUID(),
-                name: newPresetName.trim(),
-                lighting: cloneLightingCue(source.lighting),
-              };
-              setCuePresets((current) => [...current, preset]);
-              setSelectedPresetId(preset.id);
-              setNewPresetName("");
-            }}
-          >
-            Save selected lighting cue as preset
-          </button>
-          <select
-            aria-label="Cue preset"
-            value={selectedPresetId}
-            onChange={(event) => setSelectedPresetId(event.target.value)}
-          >
-            <option value="">Select preset</option>
-            {cuePresets.map((preset) => (
-              <option key={preset.id} value={preset.id}>
-                {preset.name}
-              </option>
-            ))}
-          </select>
-          <button
-            disabled={
-              !canEdit ||
-              !selectedPresetId ||
-              !cues.some(
-                (cue) =>
-                  compoundSelection.includes(cue.id) && cue.lighting,
-              )
-            }
-            onClick={() => {
-              const preset = cuePresets.find(
-                (candidate) => candidate.id === selectedPresetId,
-              );
-              if (!preset) {
-                return;
-              }
-              setSyncCues((current) => ({
-                ...current,
-                [editingSpaceId]: cues.map((cue) =>
-                  compoundSelection.includes(cue.id) && cue.lighting
-                    ? {
-                        ...cue,
-                        lighting: cloneLightingCue(preset.lighting),
-                      }
-                    : cue,
-                ),
-              }));
-            }}
-          >
-            Apply preset to selected cues
-          </button>
-          <small>
-            Applying a preset copies values into each cue. Runtime cues never
-            reference preset IDs.
-          </small>
-        </div>
-        <div className="timeline-compound-controls">
-          <strong>Compound selection</strong>
-          {spaceTransformLayers.map((layer) => (
-            <label key={layer.id}>
-              <input
-                aria-label={`Select transform layer ${layer.name}`}
-                checked={compoundSelection.includes(layer.id)}
-                type="checkbox"
-                onChange={(event) =>
-                  setCompoundSelection((current) =>
-                    event.target.checked
-                      ? [...new Set([...current, layer.id])]
-                      : current.filter((id) => id !== layer.id),
-                  )
-                }
-              />
-              Transform · {layer.name}
-            </label>
-          ))}
-          <input
-            aria-label="Compound shift milliseconds"
-            step={snapMs}
-            type="number"
-            value={compoundShiftMs}
-            onChange={(event) => setCompoundShiftMs(Number(event.target.value))}
-          />
-          <button
-            disabled={
-              !canEdit ||
-              !compoundSelection.length ||
-              !canShiftCompoundSelection(
-                cues,
-                markers,
-                spaceTransformLayers,
-                compoundSelection,
-                compoundShiftMs,
-                duration,
-              )
-            }
-            onClick={() => {
-              setSyncCues((current) => ({
-                ...current,
-                [editingSpaceId]: cues.map((cue) =>
-                  compoundSelection.includes(cue.id)
-                    ? cue.marker_id
-                      ? {
-                          ...cue,
-                          marker_offset_ms:
-                            cue.marker_offset_ms + compoundShiftMs,
-                        }
-                      : {
-                          ...cue,
-                          time_ms: (cue.time_ms ?? 0) + compoundShiftMs,
-                        }
-                    : cue,
-                ),
-              }));
-              setTransformLayers((current) => ({
-                ...current,
-                [editingSpaceId]: spaceTransformLayers.map((layer) =>
-                  compoundSelection.includes(layer.id)
-                    ? {
-                        ...layer,
-                        start_ms: layer.start_ms + compoundShiftMs,
-                      }
-                    : layer,
-                ),
-              }));
-            }}
-          >
-            Shift selected
-          </button>
-          <button
-            disabled={!canEdit || !compoundSelection.length}
-            onClick={() => {
-              const duplicatedCues = cues
-                .filter((cue) => compoundSelection.includes(cue.id))
-                .map((cue) => ({
-                  ...cue,
-                  id: crypto.randomUUID(),
-                  name: `${cue.name} copy`,
-                  lighting: cue.lighting
-                    ? cloneLightingCue(cue.lighting)
-                    : undefined,
-                }));
-              const duplicatedLayers = spaceTransformLayers
-                .filter((layer) => compoundSelection.includes(layer.id))
-                .map((layer) => ({
-                  ...layer,
-                  id: crypto.randomUUID(),
-                  name: `${layer.name} copy`,
-                  keyframes: layer.keyframes.map((keyframe) => ({
-                    ...keyframe,
-                    id: crypto.randomUUID(),
-                  })),
-                }));
-              setSyncCues((current) => ({
-                ...current,
-                [editingSpaceId]: [...cues, ...duplicatedCues],
-              }));
-              setTransformLayers((current) => ({
-                ...current,
-                [editingSpaceId]: [
-                  ...spaceTransformLayers,
-                  ...duplicatedLayers,
-                ],
-              }));
-              setCompoundSelection([]);
-            }}
-          >
-            Duplicate selected
-          </button>
-          <button
-            className="danger-button"
-            disabled={!canEdit || !compoundSelection.length}
-            onClick={() => {
-              setSyncCues((current) => ({
-                ...current,
-                [editingSpaceId]: cues.filter(
-                  (cue) => !compoundSelection.includes(cue.id),
-                ),
-              }));
-              setTransformLayers((current) => ({
-                ...current,
-                [editingSpaceId]: spaceTransformLayers.filter(
-                  (layer) => !compoundSelection.includes(layer.id),
-                ),
-              }));
-              setCompoundSelection([]);
-            }}
-          >
-            Delete selected
-          </button>
-        </div>
-      </section>
-      <section className="timeline-transform-editor">
-        <strong>Media and transform layers</strong>
-        <small>
-          Image, video, and nested-composition transforms are authored in the
-          active logical editing space.
-        </small>
-        <small className="timeline-coordinate-space">
-          Authored once in{" "}
-          {composition
-            ? `${humanizeSpace(composition.space_kind)} · target ${composition.target_id} · ${composition.width}×${composition.height}`
-            : `scene root · ${scene.id}`}
-          . Static projector calibration and cross-surface handoff remain
-          separate from animation keyframes.
-        </small>
-        {composition && composition.space_kind !== "lighting_surface" && (
-          <div className="timeline-render-conformance">
-            <strong>Render conformance · pipeline revision 1</strong>
-            <label>
-              Render width
-              <input
-                aria-label="Render width"
-                disabled={!canEdit}
-                min="1"
-                type="number"
-                value={composition.render_settings.render_width}
-                onChange={(event) =>
-                  setCompositions((current) => ({
-                    ...current,
-                    [composition.id]: {
-                      ...current[composition.id],
-                      render_settings: {
-                        ...current[composition.id].render_settings,
-                        render_width: Number(event.target.value),
-                      },
-                    },
-                  }))
-                }
-              />
-            </label>
-            <label>
-              Render height
-              <input
-                aria-label="Render height"
-                disabled={!canEdit}
-                min="1"
-                type="number"
-                value={composition.render_settings.render_height}
-                onChange={(event) =>
-                  setCompositions((current) => ({
-                    ...current,
-                    [composition.id]: {
-                      ...current[composition.id],
-                      render_settings: {
-                        ...current[composition.id].render_settings,
-                        render_height: Number(event.target.value),
-                      },
-                    },
-                  }))
-                }
-              />
-            </label>
-            <label>
-              Frame-rate numerator
-              <input
-                aria-label="Render frame-rate numerator"
-                disabled={!canEdit}
-                min="1"
-                type="number"
-                value={composition.render_settings.frame_rate_numerator}
-                onChange={(event) =>
-                  setCompositions((current) => ({
-                    ...current,
-                    [composition.id]: {
-                      ...current[composition.id],
-                      render_settings: {
-                        ...current[composition.id].render_settings,
-                        frame_rate_numerator: Number(event.target.value),
-                      },
-                    },
-                  }))
-                }
-              />
-            </label>
-            <label>
-              Frame-rate denominator
-              <input
-                aria-label="Render frame-rate denominator"
-                disabled={!canEdit}
-                min="1"
-                type="number"
-                value={composition.render_settings.frame_rate_denominator}
-                onChange={(event) =>
-                  setCompositions((current) => ({
-                    ...current,
-                    [composition.id]: {
-                      ...current[composition.id],
-                      render_settings: {
-                        ...current[composition.id].render_settings,
-                        frame_rate_denominator: Number(event.target.value),
-                      },
-                    },
-                  }))
-                }
-              />
-            </label>
-            <label>
-              Scaling filter
-              <select
-                aria-label="Render scaling filter"
-                disabled={!canEdit}
-                value={composition.render_settings.scaling_filter}
-                onChange={(event) =>
-                  setCompositions((current) => ({
-                    ...current,
-                    [composition.id]: {
-                      ...current[composition.id],
-                      render_settings: {
-                        ...current[composition.id].render_settings,
-                        scaling_filter: event.target
-                          .value as Composition["render_settings"]["scaling_filter"],
-                      },
-                    },
-                  }))
-                }
-              >
-                <option value="lanczos">Lanczos</option>
-                <option value="bicubic">Bicubic</option>
-              </select>
-            </label>
-            <label>
-              Client output preset
-              <select
-                aria-label="Client output preset"
-                disabled={!canEdit}
-                value={composition.render_settings.output_profile.preset_id}
-                onChange={(event) =>
-                  setCompositions((current) => ({
-                    ...current,
-                    [composition.id]: {
-                      ...current[composition.id],
-                      render_settings: {
-                        ...current[composition.id].render_settings,
-                        output_profile: outputProfile(
-                          event.target.value as
-                            | "low_power_h264"
-                            | "legacy_h264",
-                        ),
-                      },
-                    },
-                  }))
-                }
-              >
-                <option value="low_power_h264">Low-power H.264 Main</option>
-                <option value="legacy_h264">Legacy H.264 Baseline</option>
-              </select>
-            </label>
-            <label>
-              Final output background
-              <input
-                aria-label="Final output background"
-                disabled={!canEdit}
-                type="color"
-                value={composition.render_settings.output_background_color}
-                onChange={(event) =>
-                  setCompositions((current) => ({
-                    ...current,
-                    [composition.id]: {
-                      ...current[composition.id],
-                      render_settings: {
-                        ...current[composition.id].render_settings,
-                        output_background_color:
-                          event.target.value.toUpperCase(),
-                      },
-                    },
-                  }))
-                }
-              />
-            </label>
-            <label>
-              Media end behavior
-              <select
-                aria-label="Media end behavior"
-                disabled={!canEdit}
-                value={composition.render_settings.media_end_behavior}
-                onChange={(event) =>
-                  setCompositions((current) => ({
-                    ...current,
-                    [composition.id]: {
-                      ...current[composition.id],
-                      render_settings: {
-                        ...current[composition.id].render_settings,
-                        media_end_behavior: event.target
-                          .value as Composition["render_settings"]["media_end_behavior"],
-                      },
-                    },
-                  }))
-                }
-              >
-                <option value="hold_last_frame">Hold last frame</option>
-                <option value="stop">Stop</option>
-                <option value="loop">Loop after gapless validation</option>
-              </select>
-            </label>
-            <label>
-              Maximum video bitrate
-              <input
-                aria-label="Maximum video bitrate"
-                disabled={!canEdit}
-                min="500"
-                type="number"
-                value={
-                  composition.render_settings.output_profile
-                    .max_video_bitrate_kbps
-                }
-                onChange={(event) =>
-                  setCompositions((current) => ({
-                    ...current,
-                    [composition.id]: {
-                      ...current[composition.id],
-                      render_settings: {
-                        ...current[composition.id].render_settings,
-                        output_profile: {
-                          ...current[composition.id].render_settings
-                            .output_profile,
-                          max_video_bitrate_kbps: Number(event.target.value),
-                        },
-                      },
-                    },
-                  }))
-                }
-              />
-            </label>
-            <label>
-              Loudness target
-              <input
-                aria-label="Loudness target"
-                disabled={!canEdit}
-                max="-5"
-                min="-40"
-                step="0.1"
-                type="number"
-                value={
-                  composition.render_settings.output_profile
-                    .loudness_target_lufs
-                }
-                onChange={(event) =>
-                  setCompositions((current) => ({
-                    ...current,
-                    [composition.id]: {
-                      ...current[composition.id],
-                      render_settings: {
-                        ...current[composition.id].render_settings,
-                        output_profile: {
-                          ...current[composition.id].render_settings
-                            .output_profile,
-                          loudness_target_lufs: Number(event.target.value),
-                        },
-                      },
-                    },
-                  }))
-                }
-              />
-            </label>
-            <label>
-              Keyframe interval
-              <input
-                aria-label="Keyframe interval"
-                disabled={!canEdit}
-                min="1"
-                type="number"
-                value={
-                  composition.render_settings.output_profile
-                    .keyframe_interval_frames
-                }
-                onChange={(event) =>
-                  setCompositions((current) => ({
-                    ...current,
-                    [composition.id]: {
-                      ...current[composition.id],
-                      render_settings: {
-                        ...current[composition.id].render_settings,
-                        output_profile: {
-                          ...current[composition.id].render_settings
-                            .output_profile,
-                          keyframe_interval_frames: Number(event.target.value),
-                        },
-                      },
-                    },
-                  }))
-                }
-              />
-            </label>
-            <small>
-              Logical {composition.width}×{composition.height} · render{" "}
-              {composition.render_settings.render_width}×
-              {composition.render_settings.render_height} · linear sRGB working
-              color · premultiplied working alpha. Preview and baking consume this
-              same contract.
-            </small>
-            <small>
-              Target: MP4 · H.264{" "}
-              {composition.render_settings.output_profile.video_profile} level{" "}
-              {composition.render_settings.output_profile.video_level} ·
-              yuv420p · AAC 48 kHz stereo · B-frames{" "}
-              {composition.render_settings.output_profile.b_frames} ·{" "}
-              {
-                composition.render_settings.output_profile
-                  .hardware_decoder_compatibility
-              }
-            </small>
-            <ol className="timeline-render-pipeline" aria-label="Render pipeline order">
-              <li>Decode and conform sources</li>
-              <li>Logical transforms, masks, and alpha composition</li>
-              <li>Physical-object mapping and occlusion</li>
-              <li>Projector-native warp, crop, and orientation</li>
-              <li>Overlap and edge blending</li>
-              <li>Projector brightness, black level, and color correction</li>
-              <li>Audio mix, encode, and mux</li>
-            </ol>
-            <div className="timeline-render-jobs">
-              <strong>Controller render jobs</strong>
-              {composition.space_kind === "stage" && (
-                <StageOutputSelector
-                  composition={composition}
-                  mapperExport={mapperExport}
-                  canEdit={canEdit}
-                  onChange={(update) =>
-                    setCompositions((current) => ({
-                      ...current,
-                      [composition.id]: update(current[composition.id]),
-                    }))
-                  }
-                />
-              )}
-              {composition.space_kind === "stage" && (
-                <div className="timeline-sync-rehearsal">
-                  <strong>Cross-projector rehearsal evidence</strong>
                   <small>
-                    {syncAdmission?.message ??
-                      "Evaluate or record the current projector group."}
+                    {selectedArtifactJob
+                      ? selectedArtifactJob.source_revision === draft.revision
+                        ? `Checksummed bake ${selectedArtifactId} matches draft revision ${draft.revision}.`
+                        : `Stale bake warning: artifact revision ${selectedArtifactJob.source_revision} differs from draft revision ${draft.revision}.`
+                      : "Editable source preview; no checksummed bake is selected."}
                   </small>
-                  <label>
-                    Start error ms
-                    <input
-                      aria-label="Rehearsal start error"
-                      min="0"
-                      step="0.1"
-                      type="number"
-                      value={rehearsalStartError}
-                      onChange={(event) =>
-                        setRehearsalStartError(Number(event.target.value))
-                      }
-                    />
-                  </label>
-                  <label>
-                    Drift ms/min
-                    <input
-                      aria-label="Rehearsal drift"
-                      min="0"
-                      step="0.1"
-                      type="number"
-                      value={rehearsalDrift}
-                      onChange={(event) =>
-                        setRehearsalDrift(Number(event.target.value))
-                      }
-                    />
-                  </label>
-                  <label>
-                    Measurement duration seconds
-                    <input
-                      aria-label="Rehearsal duration"
-                      min="1"
-                      type="number"
-                      value={rehearsalDuration}
-                      onChange={(event) =>
-                        setRehearsalDuration(Number(event.target.value))
-                      }
-                    />
-                  </label>
-                  <label>
-                    Notes
-                    <input
-                      aria-label="Rehearsal notes"
-                      value={rehearsalNotes}
-                      onChange={(event) => setRehearsalNotes(event.target.value)}
-                    />
-                  </label>
-                  <button
-                    disabled={!canEdit || stageProjectorResources.length < 2}
-                    onClick={async () => {
-                      try {
-                        await recordSyncRehearsal({
-                          resources: stageProjectorResources,
-                          start_error_ms: rehearsalStartError,
-                          drift_ms_per_minute: rehearsalDrift,
-                          measurement_duration_seconds: rehearsalDuration,
-                          notes: rehearsalNotes || null,
-                          measured_at: new Date().toISOString(),
-                        });
-                        setSyncAdmission(
-                          await evaluateSyncAdmission(stageProjectorResources),
-                        );
-                      } catch (error) {
-                        setRenderJobError(
-                          error instanceof Error
-                            ? error.message
-                            : "Rehearsal evidence could not be recorded.",
-                        );
-                      }
-                    }}
-                  >
-                    Record measured rehearsal
-                  </button>
                   <small>
-                    Evidence only; this action sends no projector command.
+                    Source and bake use the same controller composition, alpha, warp,
+                    mask, and audio-mix pipeline semantics.
                   </small>
                 </div>
-              )}
-              <button
-                disabled={
-                  !canEdit ||
-                  (composition.space_kind === "stage" &&
-                    syncAdmission?.allowed !== true) ||
-                  renderJobs.some(
-                    (job) =>
-                      job.composition_id === composition.id &&
-                      (job.state === "queued" || job.state === "running"),
-                  )
-                }
-                title={
-                  composition.space_kind === "stage"
-                    ? syncAdmission?.message ??
-                      "Stage render requires synchronization rehearsal evidence."
-                    : "Render the complete image/video/audio composition."
-                }
-                onClick={async () => {
-                  try {
-                    const job = await createRenderJob(projectId, composition.id);
-                    setRenderJobs((current) => [
-                      job,
-                      ...current.filter((candidate) => candidate.id !== job.id),
-                    ]);
-                    setRenderJobError(null);
-                  } catch (error) {
-                    setRenderJobError(
-                      error instanceof Error ? error.message : "Render could not start.",
-                    );
-                  }
-                }}
-              >
-                {composition.stage_lighting_surfaces.length > 0
-                  ? "Bake installation overlay"
-                  : "Start controller render"}
-              </button>
-              {renderJobs
-                .filter((job) => job.composition_id === composition.id)
-                .map((job) => (
-                  <div className="timeline-render-job" key={job.id}>
-                    <span>
-                      <strong>{job.state}</strong> ·{" "}
-                      {Math.round(job.progress * 100)}% · reservation{" "}
-                      {(job.reserved_bytes / (1024 * 1024)).toFixed(1)} MiB
-                    </span>
-                    <small>Cache {job.cache_key.slice(0, 12)}</small>
-                    {job.artifact_id && (
-                      <small>Artifact set {job.artifact_id}</small>
-                    )}
-                    {job.state === "completed" && job.artifact_id && (
-                      <button
-                        disabled={deployedArtifactId === job.artifact_id}
-                        onClick={async () => {
-                          try {
-                            const deployment = await deployRenderArtifact(
-                              job.artifact_id!,
-                            );
-                            setDeployedArtifactId(deployment.artifact_id);
-                            setRenderJobError(null);
-                          } catch (error) {
-                            setRenderJobError(
-                              error instanceof Error
-                                ? error.message
-                                : "Artifact deployment failed.",
-                            );
-                          }
-                        }}
-                      >
-                        {deployedArtifactId === job.artifact_id
-                          ? "Activated on client group"
-                          : "Stage and activate client group"}
-                      </button>
-                    )}
-                    {job.error && <small role="alert">{job.error}</small>}
-                    {(job.state === "queued" || job.state === "running") && (
-                      <button
-                        disabled={job.cancel_requested}
-                        onClick={async () => {
-                          try {
-                            const updated = await cancelRenderJob(job.id);
-                            setRenderJobs((current) =>
-                              current.map((candidate) =>
-                                candidate.id === updated.id ? updated : candidate,
-                              ),
-                            );
-                          } catch (error) {
-                            setRenderJobError(
-                              error instanceof Error
-                                ? error.message
-                                : "Render cancellation failed.",
-                            );
-                          }
-                        }}
-                      >
-                        Cancel render
-                      </button>
-                    )}
-                  </div>
-                ))}
-              {renderJobError && <small role="alert">{renderJobError}</small>}
-            </div>
-            <div
-              className="timeline-preview-inspection"
-              aria-label="Controller preview inspection"
-            >
-              <strong>Controller preview inspection</strong>
-              <label>
-                Checksummed bake
-                <select
-                  aria-label="Checksummed bake"
-                  value={selectedArtifactId}
-                  onChange={(event) => setSelectedArtifactId(event.target.value)}
-                >
-                  <option value="">No completed bake</option>
-                  {completedRenderJobs.map((job) => (
-                    <option key={job.artifact_id!} value={job.artifact_id!}>
-                      {job.artifact_id!.slice(0, 12)} · revision {job.source_revision}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                Inspection mode
-                <select
-                  aria-label="Preview inspection mode"
-                  disabled={!selectedArtifactId}
-                  value={renderPreviewMode}
-                  onChange={(event) =>
-                    setRenderPreviewMode(
-                      event.target.value as typeof renderPreviewMode,
-                    )
-                  }
-                >
-                  <option value="source">Editable source</option>
-                  <option value="baked">Selected bake</option>
-                  <option value="side_by_side">Before / after</option>
-                  <option value="difference">Frame difference</option>
-                </select>
-              </label>
-              <small>
-                {selectedArtifactJob
-                  ? selectedArtifactJob.source_revision === draft.revision
-                    ? `Checksummed bake ${selectedArtifactId} matches draft revision ${draft.revision}.`
-                    : `Stale bake warning: artifact revision ${selectedArtifactJob.source_revision} differs from draft revision ${draft.revision}.`
-                  : "Editable source preview; no checksummed bake is selected."}
-              </small>
-              <small>
-                Source and bake use the same controller composition, alpha, warp,
-                mask, and audio-mix pipeline semantics.
-              </small>
-            </div>
-            {composition.space_kind === "projector_native" && (
-              <CompositionPreviewInspection
-                bakedUrl={
-                  selectedArtifactId
-                    ? renderArtifactPreviewFrameUrl(
-                        selectedArtifactId,
-                        composition.target_id,
-                        Math.min(
-                          composition.duration_ms - 1,
-                          Math.max(0, localPlayhead),
-                        ),
-                      )
-                    : null
-                }
-                label={`Controller render preview for ${composition.name}`}
-                mode={renderPreviewMode}
-                sourceUrl={compositionPreviewFrameUrl(
-                  projectId,
-                  composition.id,
-                  Math.min(
-                    composition.duration_ms - 1,
-                    Math.max(0, localPlayhead),
-                  ),
-                )}
-              />
-            )}
-            {composition.space_kind === "stage" &&
-              mapperExport?.projectors.map((projectorValue) => {
-                const projector = metadataRecord(projectorValue);
-                const resource =
-                  typeof projector.resource === "string"
-                    ? projector.resource
-                    : "";
-                return resource ? (
+                {composition.space_kind === "projector_native" && (
                   <CompositionPreviewInspection
                     bakedUrl={
                       selectedArtifactId
                         ? renderArtifactPreviewFrameUrl(
                             selectedArtifactId,
-                            resource,
+                            composition.target_id,
                             Math.min(
                               composition.duration_ms - 1,
                               Math.max(0, localPlayhead),
@@ -3804,8 +5671,7 @@ export function TimelineEditor({
                           )
                         : null
                     }
-                    key={resource}
-                    label={`Controller render preview for ${composition.name} · ${resource}`}
+                    label={`Controller render preview for ${composition.name}`}
                     mode={renderPreviewMode}
                     sourceUrl={compositionPreviewFrameUrl(
                       projectId,
@@ -3814,1630 +5680,1276 @@ export function TimelineEditor({
                         composition.duration_ms - 1,
                         Math.max(0, localPlayhead),
                       ),
-                      resource,
                     )}
                   />
-                ) : null;
-              })}
-          </div>
+                )}
+                {composition.space_kind === "stage" &&
+                  mapperExport?.projectors.map((projectorValue) => {
+                    const projector = metadataRecord(projectorValue);
+                    const resource =
+                      typeof projector.resource === "string"
+                        ? projector.resource
+                        : "";
+                    return resource ? (
+                      <CompositionPreviewInspection
+                        bakedUrl={
+                          selectedArtifactId
+                            ? renderArtifactPreviewFrameUrl(
+                                selectedArtifactId,
+                                resource,
+                                Math.min(
+                                  composition.duration_ms - 1,
+                                  Math.max(0, localPlayhead),
+                                ),
+                              )
+                            : null
+                        }
+                        key={resource}
+                        label={`Controller render preview for ${composition.name} · ${resource}`}
+                        mode={renderPreviewMode}
+                        sourceUrl={compositionPreviewFrameUrl(
+                          projectId,
+                          composition.id,
+                          Math.min(
+                            composition.duration_ms - 1,
+                            Math.max(0, localPlayhead),
+                          ),
+                          resource,
+                        )}
+                      />
+                    ) : null;
+                  })}
+              </div>
+            )}
+            {(!composition || composition.space_kind === "lighting_surface") && (
+              <p className="timeline-viewer__hint">
+                {composition
+                  ? "LED surface compositions bake with Bake LED animation on the Media layers tab."
+                  : "Open a projector or whole display overlay composition to render or bake it."}
+              </p>
+            )}
+          </>
         )}
-        {composition?.space_kind === "lighting_surface" && (
-          <div className="timeline-render-conformance">
-            <strong>Lighting canvas evaluation</strong>
-            {(
-              [
-                ["Canvas width", "canvas_width", 1, 2048, 1],
-                ["Canvas height", "canvas_height", 1, 2048, 1],
-                ["Gamma", "gamma", 0.1, 5, 0.1],
-                ["Brightness", "brightness", 0, 1, 0.01],
-              ] as const
-            ).map(([label, field, minimum, maximum, step]) => (
-              <label key={field}>
-                {label}
+        {toolTab === "ranges" && (
+          <>
+          {canEdit && (
+            <div className="timeline-region-controls">
+              <label>
+                Protected start
                 <input
-                  aria-label={`Lighting ${label.toLocaleLowerCase()}`}
-                  disabled={!canEdit}
-                  max={maximum}
-                  min={minimum}
-                  step={step}
+                  max={duration}
+                  min="0"
+                  step={snapMs}
                   type="number"
-                  value={composition.lighting_settings[field]}
+                  value={regionStart}
                   onChange={(event) =>
-                    setCompositions((current) => ({
-                      ...current,
-                      [composition.id]: {
-                        ...current[composition.id],
-                        lighting_settings: {
-                          ...current[composition.id].lighting_settings,
-                          [field]: Number(event.target.value),
-                        },
-                      },
-                    }))
+                    setRegionStart(snappedLocal(Number(event.target.value)))
                   }
                 />
               </label>
-            ))}
-            <label>
-              Sampling mode
-              <select
-                aria-label="Lighting sampling mode"
-                disabled={!canEdit}
-                value={composition.lighting_settings.sampling}
-                onChange={(event) =>
-                  setCompositions((current) => ({
-                    ...current,
-                    [composition.id]: {
-                      ...current[composition.id],
-                      lighting_settings: {
-                        ...current[composition.id].lighting_settings,
-                        sampling: event.target
-                          .value as Composition["lighting_settings"]["sampling"],
-                      },
-                    },
-                  }))
-                }
-              >
-                <option value="nearest">Nearest</option>
-                <option value="bilinear">Bilinear</option>
-                <option value="area">Bounded footprint / area</option>
-              </select>
-            </label>
-            <small>
-              Logical raster resolution is independent of pixel count and
-              physical output order.
-            </small>
-          </div>
-        )}
-        {composition?.space_kind === "lighting_surface" && (
-          <section className="timeline-lighting-authoring">
-            <strong>Spatial media overlays</strong>
-            <small>
-              Add an image, video, or animated GIF below, then position it in surface-local
-              coordinates. Save the revision before previewing or baking. Preview never sends output.
-            </small>
-            <button
-              disabled={!canEdit || renderJobs.some(
-                (job) => job.composition_id === composition.id &&
-                  (job.state === "queued" || job.state === "running"),
-              )}
-              onClick={async () => {
-                try {
-                  const job = await createRenderJob(projectId, composition.id);
-                  setRenderJobs((current) => [job, ...current.filter((item) => item.id !== job.id)]);
-                  setRenderJobError(null);
-                } catch (error) {
-                  setRenderJobError(error instanceof Error ? error.message : "Lighting bake failed.");
-                }
-              }}
-            >
-              Bake LED animation
-            </button>
-            {renderJobs.filter((job) => job.composition_id === composition.id).slice(0, 3).map((job) => (
-              <small key={job.id} role={job.state === "failed" ? "alert" : undefined}>
-                LED bake · revision {job.source_revision} · {job.state}
-                {job.error ? ` · ${job.error}` : ""}
-              </small>
-            ))}
-            {renderJobError && <small role="alert">{renderJobError}</small>}
-            <strong>Lighting author layers</strong>
-            {spaceLightingLayers.map((layer) => (
-              <button
-                className={
-                  layer.id === selectedLightingLayerId
-                    ? "timeline-lighting-layer timeline-lighting-layer--selected"
-                    : "timeline-lighting-layer"
-                }
-                key={layer.id}
-                onClick={() => setSelectedLightingLayerId(layer.id)}
-              >
-                {layer.mode} · {layer.name} · precedence {layer.precedence} ·{" "}
-                {layer.blend_mode}
-                {layer.persistent ? " · persistent look" : ""}
-              </button>
-            ))}
-            {selectedLightingLayer && (
-              <div className="timeline-lighting-layer-properties">
-                <label>
-                  Layer name
-                  <input
-                    aria-label="Lighting layer name"
-                    value={selectedLightingLayer.name}
-                    onChange={(event) =>
-                      setLightingAuthorLayers((current) => ({
-                        ...current,
-                        [editingSpaceId]: spaceLightingLayers.map((layer) =>
-                          layer.id === selectedLightingLayer.id
-                            ? { ...layer, name: event.target.value }
-                            : layer,
-                        ),
-                      }))
-                    }
-                  />
-                </label>
-                {(
-                  [
-                    ["Start", "start_ms", 0, duration],
-                    ["Duration", "duration_ms", 1, duration],
-                    ["Precedence", "precedence", 0, 1000],
-                    ["Opacity", "opacity", 0, 1],
-                  ] as const
-                ).map(([label, field, minimum, maximum]) => (
-                  <label key={field}>
-                    {label}
-                    <input
-                      aria-label={`Lighting layer ${label.toLocaleLowerCase()}`}
-                      max={maximum}
-                      min={minimum}
-                      step={field === "opacity" ? 0.01 : 1}
-                      type="number"
-                      disabled={
-                        selectedLightingLayer.persistent &&
-                        (field === "start_ms" || field === "duration_ms")
-                      }
-                      value={selectedLightingLayer[field]}
-                      onChange={(event) =>
-                        setLightingAuthorLayers((current) => ({
-                          ...current,
-                          [editingSpaceId]: spaceLightingLayers.map((layer) =>
-                            layer.id === selectedLightingLayer.id
-                              ? {
-                                  ...layer,
-                                  [field]: Number(event.target.value),
-                                }
-                              : layer,
-                          ),
-                        }))
-                      }
-                    />
-                  </label>
-                ))}
-                <label>
-                  <input
-                    aria-label="Persistent lighting look"
-                    checked={selectedLightingLayer.persistent}
-                    type="checkbox"
-                    onChange={(event) =>
-                      setLightingAuthorLayers((current) => ({
-                        ...current,
-                        [editingSpaceId]: spaceLightingLayers.map((layer) =>
-                          layer.id === selectedLightingLayer.id
-                            ? {
-                                ...layer,
-                                persistent: event.target.checked,
-                                start_ms: event.target.checked ? 0 : layer.start_ms,
-                                duration_ms: event.target.checked
-                                  ? duration
-                                  : layer.duration_ms,
-                              }
-                            : layer,
-                        ),
-                      }))
-                    }
-                  />
-                  Persistent look
-                </label>
-                <label>
-                  Blend
-                  <select
-                    aria-label="Lighting layer blend"
-                    value={selectedLightingLayer.blend_mode}
-                    onChange={(event) =>
-                      setLightingAuthorLayers((current) => ({
-                        ...current,
-                        [editingSpaceId]: spaceLightingLayers.map((layer) =>
-                          layer.id === selectedLightingLayer.id
-                            ? {
-                                ...layer,
-                                blend_mode: event.target
-                                  .value as LightingAuthorLayer["blend_mode"],
-                              }
-                            : layer,
-                        ),
-                      }))
-                    }
-                  >
-                    <option value="replace">Replace</option>
-                    <option value="add">Add</option>
-                    <option value="max">Max</option>
-                    <option value="multiply">Multiply</option>
-                  </select>
-                </label>
-                {selectedLightingLayer.spatial && (
-                  <label>
-                    Spatial primitive
-                    <select
-                      aria-label="Spatial lighting primitive"
-                      value={selectedLightingLayer.spatial.primitive}
-                      onChange={(event) =>
-                        setLightingAuthorLayers((current) => ({
-                          ...current,
-                          [editingSpaceId]: spaceLightingLayers.map((layer) =>
-                            layer.id === selectedLightingLayer.id &&
-                            layer.spatial
-                              ? {
-                                  ...layer,
-                                  spatial: {
-                                    ...(event.target.value === "ripple"
-                                      ? {
-                                          primitive: "ripple" as const,
-                                          coordinate_space: "surface_local" as const,
-                                          origin: [composition.width / 2, composition.height / 2] as [number, number],
-                                          speed: 1, ring_width: 0.5,
-                                          color: layer.spatial.color, repeat_ms: null,
-                                        }
-                                      : {
-                                          primitive: event.target.value as Exclude<NonNullable<LightingAuthorLayer["spatial"]>["primitive"], "ripple">,
-                                          color: layer.spatial.color, end_color: "#000000",
-                                          seed: 1, position: [0.5, 0.5] as [number, number],
-                                          size: [0.25, 0.25] as [number, number], radius: 0.5,
-                                        }),
-                                  },
-                                }
-                              : layer,
-                          ),
-                        }))
-                      }
-                    >
-                      <option value="solid">Solid</option>
-                      <option value="linear_gradient">Linear gradient</option>
-                      <option value="radial_gradient">Radial gradient</option>
-                      <option value="shape">Shape</option>
-                      <option value="procedural_noise">Procedural noise</option>
-                      <option value="ripple">2D expanding ripple</option>
-                    </select>
-                  </label>
-                )}
-                {selectedLightingLayer.spatial?.primitive === "ripple" && (
-                  <RippleEffectEditor
-                    disabled={!canEdit}
-                    effect={selectedLightingLayer.spatial}
-                    onChange={(spatial) => setLightingAuthorLayers((current) => ({
-                      ...current,
-                      [editingSpaceId]: spaceLightingLayers.map((layer) =>
-                        layer.id === selectedLightingLayer.id ? { ...layer, spatial } : layer,
-                      ),
-                    }))}
-                  />
-                )}
-                {selectedLightingLayer.path && (
-                  <label>
-                    Semantic path
-                    <select
-                      aria-label="Lighting semantic path"
-                      value={selectedLightingLayer.path.path_id}
-                      onChange={(event) =>
-                        setLightingAuthorLayers((current) => ({
-                          ...current,
-                          [editingSpaceId]: spaceLightingLayers.map((layer) =>
-                            layer.id === selectedLightingLayer.id && layer.path
-                              ? {
-                                  ...layer,
-                                  path: {
-                                    ...layer.path,
-                                    path_id: event.target.value,
-                                  },
-                                }
-                              : layer,
-                          ),
-                        }))
-                      }
-                    >
-                      <option value="">Select path</option>
-                      {mapperExport?.paths.map((path) => (
-                        <option key={path.semantic_id} value={path.semantic_id}>
-                          {path.name}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                )}
-                {selectedLightingLayer.fixture && (
-                  <label>
-                    Semantic fixture/group
-                    <input
-                      aria-label="Lighting fixture or group target"
-                      value={selectedLightingLayer.fixture.target_id}
-                      onChange={(event) =>
-                        setLightingAuthorLayers((current) => ({
-                          ...current,
-                          [editingSpaceId]: spaceLightingLayers.map((layer) =>
-                            layer.id === selectedLightingLayer.id &&
-                            layer.fixture
-                              ? {
-                                  ...layer,
-                                  fixture: {
-                                    ...layer.fixture,
-                                    target_id: event.target.value,
-                                  },
-                                }
-                              : layer,
-                          ),
-                        }))
-                      }
-                    />
-                  </label>
-                )}
-              </div>
-            )}
-            <div className="timeline-lighting-layer-create">
-              <input
-                aria-label="New lighting layer name"
-                placeholder="Lighting layer name"
-                value={newLightingLayerName}
-                onChange={(event) => setNewLightingLayerName(event.target.value)}
-              />
-              <select
-                aria-label="New lighting author mode"
-                value={newLightingLayerMode}
-                onChange={(event) =>
-                  setNewLightingLayerMode(
-                    event.target.value as LightingAuthorLayer["mode"],
-                  )
-                }
-              >
-                <option value="spatial">Spatial canvas</option>
-                <option value="path">Ordered path</option>
-                <option value="fixture">Fixture / group</option>
-              </select>
-              <button
-                disabled={!newLightingLayerName.trim()}
-                onClick={() => {
-                  const layer = defaultLightingAuthorLayer(
-                    newLightingLayerMode,
-                    newLightingLayerName.trim(),
-                    duration,
-                  );
-                  setLightingAuthorLayers((current) => ({
-                    ...current,
-                    [editingSpaceId]: [...spaceLightingLayers, layer],
-                  }));
-                  setSelectedLightingLayerId(layer.id);
-                  setNewLightingLayerName("");
-                }}
-              >
-                Add lighting layer
-              </button>
-            </div>
-          </section>
-        )}
-        <div className="timeline-keyframe-boundary">
-          <strong>Deterministic property animation boundary</strong>
-          <small>
-            Runtime-keyed: position, independent X/Y scale, rotation, anchor,
-            opacity, and crop/reveal bounds.
-          </small>
-          <small>
-            Cue-static only: lighting primitive, target, colors, brightness,
-            blend, precedence, seed, and primitive parameters. Unsupported
-            property animation is not previewed or saved.
-          </small>
-          <div>
-            <button
-              disabled
-              title="Unsupported schema gap: lighting property keyframes require runtime or GUI-05 baking support."
-            >
-              Keyframe lighting properties
-            </button>
-            <button
-              disabled
-              title="Unsupported schema gap: nested composition time remapping is not deterministic in the runtime schema."
-            >
-              Time-remap nested composition
-            </button>
-          </div>
-        </div>
-        {selectedTransformLayer && (
-          <div className="timeline-transform-properties">
-            {timelineDiagnostics
-              .filter(
-                (diagnostic) =>
-                  diagnostic.object_id === selectedTransformLayer.id ||
-                  diagnostic.object_id === selectedTransformKeyframeId,
-              )
-              .map((diagnostic) => (
-                <small
-                  className="timeline-property-error timeline-transform-error"
-                  key={`${diagnostic.code}:${diagnostic.object_id}`}
-                >
-                  {diagnostic.message}
-                </small>
-              ))}
-            <label>
-              Layer name
-              <input
-                aria-label="Transform layer name"
-                disabled={!canEdit}
-                value={selectedTransformLayer.name}
-                onChange={(event) =>
-                  updateTransformLayer(selectedTransformLayer.id, (layer) => ({
-                    ...layer,
-                    name: event.target.value,
-                  }))
-                }
-              />
-            </label>
-            <label>
-              Layer start
-              <input
-                aria-label="Transform layer start"
-                disabled={!canEdit}
-                max={duration - selectedTransformLayer.duration_ms}
-                min="0"
-                step={snapMs}
-                type="number"
-                value={selectedTransformLayer.start_ms}
-                onChange={(event) =>
-                  updateTransformLayer(selectedTransformLayer.id, (layer) => ({
-                    ...layer,
-                    start_ms: snappedLocal(Number(event.target.value)),
-                  }))
-                }
-              />
-            </label>
-            {selectedTransformLayer.kind !== "audio" && (
               <label>
-                Media playback
-                <select
-                  aria-label="Media playback"
-                  disabled={!canEdit}
-                  value={selectedTransformLayer.playback ?? "hold"}
-                  onChange={(event) => updateTransformLayer(selectedTransformLayer.id, (layer) => ({
-                    ...layer, playback: event.target.value as TransformLayer["playback"],
-                  }))}
-                >
-                  <option value="hold">Hold last frame</option>
-                  <option value="loop">Loop source</option>
-                  <option value="once">Play once, then transparent</option>
-                </select>
-              </label>
-            )}
-            {selectedTransformLayer.kind !== "audio" &&
-              composition?.space_kind === "stage" && (
-                <StageLayerShape
-                  layer={selectedTransformLayer}
-                  composition={composition}
-                  mapperExport={mapperExport}
-                  canEdit={canEdit}
-                  onChange={(update) => updateTransformLayer(selectedTransformLayer.id, update)}
+                Protected end
+                <input
+                  max={duration}
+                  min="0"
+                  step={snapMs}
+                  type="number"
+                  value={regionEnd}
+                  onChange={(event) =>
+                    setRegionEnd(snappedLocal(Number(event.target.value)))
+                  }
                 />
-              )}
-            <label>
-              Layer duration
-              <input
-                aria-label="Transform layer duration"
-                disabled={!canEdit}
-                max={duration - selectedTransformLayer.start_ms}
-                min="1"
-                step={snapMs}
-                type="number"
-                value={selectedTransformLayer.duration_ms}
-                onChange={(event) =>
-                  updateTransformLayer(selectedTransformLayer.id, (layer) => {
-                    const nextDuration = Math.max(
-                      1,
-                      Math.min(
-                        duration - layer.start_ms,
-                        Number(event.target.value),
-                      ),
-                    );
-                    return {
-                      ...layer,
-                      duration_ms: nextDuration,
-                      out_point_ms: layer.in_point_ms + nextDuration,
-                      keyframes: layer.keyframes.map((keyframe) => ({
-                        ...keyframe,
-                        time_ms: Math.min(keyframe.time_ms, nextDuration),
-                      })),
-                    };
-                  })
-                }
-              />
-            </label>
-            <label>
-              Source in
-              <input
-                aria-label="Layer source in"
-                disabled={!canEdit}
-                min="0"
-                type="number"
-                value={selectedTransformLayer.in_point_ms}
-                onChange={(event) =>
-                  updateTransformLayer(selectedTransformLayer.id, (layer) => {
-                    const inPoint = Math.max(0, Number(event.target.value));
-                    return {
-                      ...layer,
-                      in_point_ms: inPoint,
-                      out_point_ms: inPoint + layer.duration_ms,
-                    };
-                  })
-                }
-              />
-            </label>
-            <label>
-              Source out
-              <input
-                aria-label="Layer source out"
-                disabled={!canEdit}
-                min={selectedTransformLayer.in_point_ms + 1}
-                type="number"
-                value={selectedTransformLayer.out_point_ms}
-                onChange={(event) =>
-                  updateTransformLayer(selectedTransformLayer.id, (layer) => {
-                    const nextDuration = Math.max(
-                      1,
-                      Number(event.target.value) - layer.in_point_ms,
-                    );
-                    const boundedDuration = Math.min(
-                      nextDuration,
-                      duration - layer.start_ms,
-                    );
-                    return {
-                      ...layer,
-                      out_point_ms: layer.in_point_ms + boundedDuration,
-                      duration_ms: boundedDuration,
-                    };
-                  })
-                }
-              />
-            </label>
-            <label>
-              Visual order
-              <input
-                aria-label="Layer visual order"
-                disabled={!canEdit}
-                type="number"
-                value={selectedTransformLayer.z_index}
-                onChange={(event) =>
-                  updateTransformLayer(selectedTransformLayer.id, (layer) => ({
-                    ...layer,
-                    z_index: Number(event.target.value),
-                  }))
-                }
-              />
-            </label>
-            <label>
-              Fade in
-              <input
-                aria-label="Layer fade in"
-                disabled={!canEdit}
-                min="0"
-                type="number"
-                value={selectedTransformLayer.fade_in_ms}
-                onChange={(event) =>
-                  updateTransformLayer(selectedTransformLayer.id, (layer) => ({
-                    ...layer,
-                    fade_in_ms: Number(event.target.value),
-                  }))
-                }
-              />
-            </label>
-            <label>
-              Fade out
-              <input
-                aria-label="Layer fade out"
-                disabled={!canEdit}
-                min="0"
-                type="number"
-                value={selectedTransformLayer.fade_out_ms}
-                onChange={(event) =>
-                  updateTransformLayer(selectedTransformLayer.id, (layer) => ({
-                    ...layer,
-                    fade_out_ms: Number(event.target.value),
-                  }))
-                }
-              />
-            </label>
-            {selectedTransformLayer.audio && (
-              <>
-                <label>
-                  Audio gain
-                  <input
-                    aria-label="Audio gain"
-                    disabled={!canEdit}
-                    max="24"
-                    min="-96"
-                    step="0.1"
-                    type="number"
-                    value={selectedTransformLayer.audio.gain_db}
-                    onChange={(event) =>
-                      updateTransformLayer(selectedTransformLayer.id, (layer) => ({
-                        ...layer,
-                        audio: layer.audio
-                          ? {
-                              ...layer.audio,
-                              gain_db: Number(event.target.value),
-                            }
-                          : null,
-                      }))
-                    }
-                  />
-                </label>
-                <label>
-                  Audio mix order
-                  <input
-                    aria-label="Audio mix order"
-                    disabled={!canEdit}
-                    min="0"
-                    type="number"
-                    value={selectedTransformLayer.audio.mix_order}
-                    onChange={(event) =>
-                      updateTransformLayer(selectedTransformLayer.id, (layer) => ({
-                        ...layer,
-                        audio: layer.audio
-                          ? {
-                              ...layer.audio,
-                              mix_order: Number(event.target.value),
-                            }
-                          : null,
-                      }))
-                    }
-                  />
-                </label>
-                {(["mute", "solo"] as const).map((field) => (
-                  <label key={field}>
-                    <input
-                      aria-label={`Audio ${field}`}
-                      checked={selectedTransformLayer.audio![field]}
-                      disabled={!canEdit}
-                      type="checkbox"
-                      onChange={(event) =>
-                        updateTransformLayer(
-                          selectedTransformLayer.id,
-                          (layer) => ({
-                            ...layer,
-                            audio: layer.audio
-                              ? {
-                                  ...layer.audio,
-                                  [field]: event.target.checked,
-                                }
-                              : null,
-                          }),
-                        )
-                      }
-                    />
-                    {field}
-                  </label>
-                ))}
-              </>
-            )}
-            {selectedTransformLayer.kind !== "audio" && (
-              <>
-                <label>
-                  Source alpha
-                  <select
-                    aria-label="Source alpha interpretation"
-                    disabled={!canEdit}
-                    value={selectedTransformLayer.alpha_interpretation ?? "straight"}
-                    onChange={(event) =>
-                      updateTransformLayer(selectedTransformLayer.id, (layer) => ({
-                        ...layer,
-                        alpha_interpretation: event.target
-                          .value as NonNullable<TransformLayer["alpha_interpretation"]>,
-                      }))
-                    }
-                  >
-                    <option value="opaque">Opaque</option>
-                    <option value="straight">Straight alpha</option>
-                    <option value="premultiplied">Premultiplied alpha</option>
-                  </select>
-                </label>
-                <label>
-                  Source color space
-                  <select
-                    aria-label="Source color space"
-                    disabled={!canEdit}
-                    value={selectedTransformLayer.source_color_space ?? "srgb"}
-                    onChange={(event) =>
-                      updateTransformLayer(selectedTransformLayer.id, (layer) => ({
-                        ...layer,
-                        source_color_space: event.target
-                          .value as NonNullable<TransformLayer["source_color_space"]>,
-                      }))
-                    }
-                  >
-                    <option value="srgb">sRGB</option>
-                    <option value="bt709">BT.709</option>
-                    <option value="linear_srgb">Linear sRGB</option>
-                  </select>
-                </label>
-                <label>
-                  Scaling behavior
-                  <select
-                    aria-label="Source scaling behavior"
-                    disabled={!canEdit}
-                    value={selectedTransformLayer.scaling_behavior ?? "fit"}
-                    onChange={(event) =>
-                      updateTransformLayer(selectedTransformLayer.id, (layer) => ({
-                        ...layer,
-                        scaling_behavior: event.target
-                          .value as NonNullable<TransformLayer["scaling_behavior"]>,
-                      }))
-                    }
-                  >
-                    <option value="fit">Fit</option>
-                    <option value="fill">Fill</option>
-                    <option value="stretch">Stretch</option>
-                    <option value="native">Native size</option>
-                  </select>
-                </label>
-              </>
-            )}
-            <label>
-              Keyframe
-              <select
-                aria-label="Transform keyframe"
-                value={selectedTransformKeyframeId}
-                onChange={(event) =>
-                  setSelectedTransformKeyframeId(event.target.value)
+              </label>
+              <button
+                disabled={regionEnd <= regionStart}
+                onClick={() =>
+                  setRegions((current) => [
+                    ...current,
+                    { start_ms: regionStart, end_ms: regionEnd },
+                  ])
                 }
               >
-                {selectedTransformLayer.keyframes.map((keyframe) => (
-                  <option key={keyframe.id} value={keyframe.id}>
-                    {keyframe.time_ms} ms
+                Add protected region
+              </button>
+              <label>
+                Loop start
+                <input
+                  max={duration}
+                  min="0"
+                  step={snapMs}
+                  type="number"
+                  value={loopStart}
+                  onChange={(event) =>
+                    setLoopStart(snappedLocal(Number(event.target.value)))
+                  }
+                />
+              </label>
+              <label>
+                Loop end
+                <input
+                  max={duration}
+                  min="0"
+                  step={snapMs}
+                  type="number"
+                  value={loopEnd}
+                  onChange={(event) =>
+                    setLoopEnd(snappedLocal(Number(event.target.value)))
+                  }
+                />
+              </label>
+            </div>
+          )}
+            {!canEdit && <small>Loop and protected ranges are read-only.</small>}
+          </>
+        )}
+      </div>
+      {presetDialogOpen && (
+        <DetailsDialog title="New composition" onClose={() => setPresetDialogOpen(false)}>
+          <div className="composition-presets" role="radiogroup" aria-label="Composition type">
+            {([
+              ["stage", "Whole display overlay", "One image or video placed across projectors and LEDs."],
+              ["projector_native", "One projector", "Content sized to a single projector's native pixels."],
+              ["lighting_surface", "One LED surface", "Content sampled onto one mapped LED surface."],
+            ] as const).map(([value, title, description]) => (
+              <label
+                key={value}
+                className={`composition-preset${preset === value ? " composition-preset--selected" : ""}`}
+              >
+                <input
+                  type="radio"
+                  name="composition-preset"
+                  value={value}
+                  checked={preset === value}
+                  onChange={() => {
+                    setPreset(value);
+                    if (value === "projector_native") {
+                      const first = (mapperExport?.projectors ?? [])
+                        .map((item) => metadataRecord(item))
+                        .find((item) => typeof item.resource === "string");
+                      setPresetTarget(String(first?.resource ?? ""));
+                    } else if (value === "lighting_surface") {
+                      setPresetTarget(mapperExport?.lighting_surfaces[0]?.semantic_id ?? "");
+                    } else {
+                      setPresetTarget("shared-stage");
+                    }
+                  }}
+                />
+                <strong>{title}</strong>
+                <small>{description}</small>
+              </label>
+            ))}
+          </div>
+          {preset === "projector_native" && (
+            <label>
+              Projector
+              <select
+                aria-label="Preset projector"
+                value={presetTarget}
+                onChange={(event) => setPresetTarget(event.target.value)}
+              >
+                <option value="">Choose a projector</option>
+                {mappedProjectorResources.map((resource) => (
+                  <option key={resource} value={resource}>
+                    {resource}
                   </option>
                 ))}
               </select>
             </label>
-            {canEdit && selectedTransformLayer.kind !== "audio" && (
-              <button
-                disabled={selectedTransformLayer.keyframes.some(
-                  (keyframe) =>
-                    keyframe.time_ms ===
-                    Math.max(
-                      0,
-                      Math.min(
-                        selectedTransformLayer.duration_ms,
-                        localPlayhead - selectedTransformLayer.start_ms,
-                      ),
-                    ),
-                )}
-                onClick={() => {
-                  const keyframe = defaultTransformKeyframe(
-                    Math.max(
-                      0,
-                      Math.min(
-                        selectedTransformLayer.duration_ms,
-                        localPlayhead - selectedTransformLayer.start_ms,
-                      ),
-                    ),
-                  );
-                  updateTransformLayer(selectedTransformLayer.id, (layer) => ({
-                    ...layer,
-                    keyframes: [...layer.keyframes, keyframe].sort(
-                      (left, right) => left.time_ms - right.time_ms,
-                    ),
-                  }));
-                  setSelectedTransformKeyframeId(keyframe.id);
-                }}
+          )}
+          {preset === "lighting_surface" && (
+            <label>
+              LED surface
+              <select
+                aria-label="Preset LED surface"
+                value={presetTarget}
+                onChange={(event) => setPresetTarget(event.target.value)}
               >
-                Add keyframe at playhead
-              </button>
-            )}
-            {selectedTransformKeyframe && (
-              <div className="timeline-keyframe-properties">
-                <label>
-                  Keyframe time
-                  <input
-                    aria-label="Transform keyframe time"
-                    disabled={!canEdit}
-                    max={selectedTransformLayer.duration_ms}
-                    min="0"
-                    step={snapMs}
-                    type="number"
-                    value={selectedTransformKeyframe.time_ms}
-                    onChange={(event) =>
-                      updateTransformKeyframe(
-                        selectedTransformLayer.id,
-                        selectedTransformKeyframe.id,
-                        (keyframe) => ({
-                          ...keyframe,
-                          time_ms: Math.max(
-                            0,
-                            Math.min(
-                              selectedTransformLayer.duration_ms,
-                              Number(event.target.value),
-                            ),
-                          ),
-                        }),
-                      )
-                    }
-                  />
-                </label>
-                <label>
-                  Snap time to marker
-                  <select
-                    aria-label="Snap transform keyframe to marker"
-                    disabled={!canEdit}
-                    value=""
-                    onChange={(event) => {
-                      const marker = markers.find(
-                        (candidate) => candidate.id === event.target.value,
-                      );
-                      if (marker) {
-                        updateTransformKeyframe(
-                          selectedTransformLayer.id,
-                          selectedTransformKeyframe.id,
-                          (keyframe) => ({
-                            ...keyframe,
-                            time_ms: Math.max(
-                              0,
-                              Math.min(
-                                selectedTransformLayer.duration_ms,
-                                marker.time_ms - selectedTransformLayer.start_ms,
-                              ),
-                            ),
-                          }),
-                        );
-                      }
-                    }}
-                  >
-                    <option value="">Named marker…</option>
-                    {markers
-                      .filter(
-                        (marker) =>
-                          marker.time_ms >= selectedTransformLayer.start_ms &&
-                          marker.time_ms <=
-                            selectedTransformLayer.start_ms +
-                              selectedTransformLayer.duration_ms,
-                      )
-                      .map((marker) => (
-                        <option key={marker.id} value={marker.id}>
-                          {marker.name} · {marker.time_ms} ms
-                        </option>
-                      ))}
-                  </select>
-                </label>
-                <NumberVectorEditor
-                  disabled={!canEdit}
-                  label="Position"
-                  value={selectedTransformKeyframe.position}
-                  onChange={(value) =>
-                    updateTransformKeyframe(
-                      selectedTransformLayer.id,
-                      selectedTransformKeyframe.id,
-                      (keyframe) => ({
-                        ...keyframe,
-                        position: value as [number, number],
-                      }),
-                    )
-                  }
-                />
-                <NumberVectorEditor
-                  disabled={!canEdit}
-                  label="Scale"
-                  value={selectedTransformKeyframe.scale}
-                  onChange={(value) =>
-                    updateTransformKeyframe(
-                      selectedTransformLayer.id,
-                      selectedTransformKeyframe.id,
-                      (keyframe) => ({
-                        ...keyframe,
-                        scale: value as [number, number],
-                      }),
-                    )
-                  }
-                />
-                <label>
-                  Rotation
-                  <input
-                    aria-label="Rotation"
-                    disabled={!canEdit}
-                    step="any"
-                    type="number"
-                    value={selectedTransformKeyframe.rotation_deg}
-                    onChange={(event) =>
-                      updateTransformKeyframe(
-                        selectedTransformLayer.id,
-                        selectedTransformKeyframe.id,
-                        (keyframe) => ({
-                          ...keyframe,
-                          rotation_deg: Number(event.target.value),
-                        }),
-                      )
-                    }
-                  />
-                </label>
-                <NumberVectorEditor
-                  disabled={!canEdit}
-                  label="Anchor"
-                  value={selectedTransformKeyframe.anchor}
-                  onChange={(value) =>
-                    updateTransformKeyframe(
-                      selectedTransformLayer.id,
-                      selectedTransformKeyframe.id,
-                      (keyframe) => ({
-                        ...keyframe,
-                        anchor: value as [number, number],
-                      }),
-                    )
-                  }
-                />
-                <label>
-                  Opacity
-                  <input
-                    aria-label="Opacity"
-                    disabled={!canEdit}
-                    max="1"
-                    min="0"
-                    step="0.01"
-                    type="number"
-                    value={selectedTransformKeyframe.opacity}
-                    onChange={(event) =>
-                      updateTransformKeyframe(
-                        selectedTransformLayer.id,
-                        selectedTransformKeyframe.id,
-                        (keyframe) => ({
-                          ...keyframe,
-                          opacity: Number(event.target.value),
-                        }),
-                      )
-                    }
-                  />
-                </label>
-                <NumberVectorEditor
-                  disabled={!canEdit}
-                  label="Crop"
-                  max={1}
-                  min={0}
-                  value={selectedTransformKeyframe.crop}
-                  onChange={(value) =>
-                    updateTransformKeyframe(
-                      selectedTransformLayer.id,
-                      selectedTransformKeyframe.id,
-                      (keyframe) => ({
-                        ...keyframe,
-                        crop: value as [number, number, number, number],
-                      }),
-                    )
-                  }
-                />
-                <label>
-                  Interpolation
-                  <select
-                    aria-label="Transform interpolation"
-                    disabled={!canEdit}
-                    value={selectedTransformKeyframe.interpolation.kind}
-                    onChange={(event) =>
-                      updateTransformKeyframe(
-                        selectedTransformLayer.id,
-                        selectedTransformKeyframe.id,
-                        (keyframe) => ({
-                          ...keyframe,
-                          interpolation: interpolationFor(
-                            event.target.value as TransformKeyframe["interpolation"]["kind"],
-                          ),
-                        }),
-                      )
-                    }
-                  >
-                    <option value="hold">Hold</option>
-                    <option value="linear">Linear</option>
-                    <option value="ease_in">Ease in</option>
-                    <option value="ease_out">Ease out</option>
-                    <option value="bezier">Temporal + spatial Bezier</option>
-                  </select>
-                </label>
-                {selectedTransformKeyframe.interpolation.kind === "bezier" && (
-                  <>
-                    <NumberVectorEditor
-                      disabled={!canEdit}
-                      label="Temporal Bezier"
-                      value={
-                        selectedTransformKeyframe.interpolation
-                          .temporal_bezier ?? [0.25, 0.1, 0.25, 1]
-                      }
-                      onChange={(value) =>
-                        updateTransformKeyframe(
-                          selectedTransformLayer.id,
-                          selectedTransformKeyframe.id,
-                          (keyframe) => ({
-                            ...keyframe,
-                            interpolation: {
-                              ...keyframe.interpolation,
-                              temporal_bezier: value as [
-                                number,
-                                number,
-                                number,
-                                number,
-                              ],
-                            },
-                          }),
-                        )
-                      }
-                    />
-                    {(["spatial_in", "spatial_out"] as const).map((field) => (
-                      <NumberVectorEditor
-                        disabled={!canEdit}
-                        key={field}
-                        label={field === "spatial_in" ? "Spatial in" : "Spatial out"}
-                        value={
-                          selectedTransformKeyframe.interpolation[field] ?? [0, 0]
-                        }
-                        onChange={(value) =>
-                          updateTransformKeyframe(
-                            selectedTransformLayer.id,
-                            selectedTransformKeyframe.id,
-                            (keyframe) => ({
-                              ...keyframe,
-                              interpolation: {
-                                ...keyframe.interpolation,
-                                [field]: value as [number, number],
-                              },
-                            }),
-                          )
-                        }
-                      />
-                    ))}
-                  </>
-                )}
-              </div>
-            )}
-          </div>
-        )}
-        {canEdit && (
-          <div className="timeline-transform-create">
+                <option value="">Choose an LED surface</option>
+                {(mapperExport?.lighting_surfaces ?? []).map((surface) => (
+                  <option key={surface.semantic_id} value={surface.semantic_id}>
+                    {surface.resource}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+          <label>
+            Name
             <input
-              aria-label="New transform layer name"
-              placeholder="Layer name"
-              value={newTransformName}
-              onChange={(event) => setNewTransformName(event.target.value)}
+              aria-label="Preset composition name"
+              placeholder={presetSpec().label}
+              value={presetName}
+              onChange={(event) => setPresetName(event.target.value)}
             />
-            <select
-              aria-label="New transform layer kind"
-              value={newTransformKind}
-              onChange={(event) =>
-                setNewTransformKind(event.target.value as TransformLayer["kind"])
-              }
-            >
-              <option value="image">Image</option>
-              <option value="video">Video</option>
-              <option value="audio">Audio</option>
-              <option value="composition">Nested composition</option>
-            </select>
+          </label>
+          <label>
+            Duration (ms)
             <input
-              aria-label="New transform layer source"
-              list="timeline-overlay-assets"
-              placeholder="Asset or composition ID"
-              value={newTransformSource}
-              onChange={(event) => {
-                setNewTransformSource(event.target.value);
-                const asset = assets.find((item) => item.id === event.target.value);
-                if (asset?.media_type === "image/gif" || asset?.media_type?.startsWith("video/")) {
-                  setNewTransformKind("video");
-                } else if (asset?.media_type?.startsWith("image/")) {
-                  setNewTransformKind("image");
-                }
-              }}
-            />
-            <datalist id="timeline-overlay-assets">
-              {assets.filter((asset) => asset.status === "ready").map((asset) => (
-                <option key={asset.id} value={asset.id}>{asset.name} · {asset.media_type}</option>
-              ))}
-            </datalist>
-            <select
-              aria-label="New transform layer track"
-              value={newTransformTrack}
-              onChange={(event) => setNewTransformTrack(event.target.value)}
-            >
-              <option value="">Select track</option>
-              {tracks.map((track) => (
-                <option key={track.id} value={track.id}>
-                  {track.name}
-                </option>
-              ))}
-            </select>
-            <input
-              aria-label="New transform layer duration"
+              aria-label="Preset composition duration"
               min="1"
-              step={snapMs}
               type="number"
-              value={newTransformDuration}
-              onChange={(event) =>
-                setNewTransformDuration(Number(event.target.value))
-              }
+              value={presetDuration}
+              onChange={(event) => setPresetDuration(Number(event.target.value))}
             />
-            <button
-              disabled={
-                !newTransformName.trim() ||
-                !newTransformSource.trim() ||
-                !newTransformTrack ||
-                newTransformDuration <= 0 ||
-                localPlayhead + newTransformDuration > duration
-              }
-              onClick={() => {
-                const asset = assets.find((item) => item.id === newTransformSource.trim());
-                const keyframe = defaultTransformKeyframe(0);
-                if (composition?.space_kind === "lighting_surface" && asset?.metadata) {
-                  const sourceWidth = numberValue(asset.metadata.width, 0);
-                  const sourceHeight = numberValue(asset.metadata.height, 0);
-                  if (sourceWidth > 0 && sourceHeight > 0) {
-                    const scale = Math.min(composition.width / sourceWidth, composition.height / sourceHeight);
-                    keyframe.position = [composition.width / 2, composition.height / 2];
-                    keyframe.scale = [scale, scale];
+          </label>
+          <label>
+            <input
+              type="checkbox"
+              checked={presetAddToScene}
+              onChange={(event) => setPresetAddToScene(event.target.checked)}
+            />
+            Add to this scene at 0:00
+          </label>
+          <small>
+            Size {presetSpec().width} × {presetSpec().height}
+            {preset === "stage"
+              ? mapperExport?.stage
+                ? ` ${mapperExport.stage.unit} (installation stage)`
+                : " units · choose a stage view in Stage map for real-world size"
+              : preset === "projector_native"
+                ? " pixels"
+                : " surface units"}
+          </small>
+          <button
+            type="button"
+            className="timeline-primary-action"
+            disabled={presetDuration <= 0 || !presetSpec().target}
+            onClick={createFromPreset}
+          >
+            Create and open
+          </button>
+        </DetailsDialog>
+      )}
+      {sceneSettingsOpen && !composition && (
+        <DetailsDialog title={`Scene settings · ${scene.name}`} onClose={() => setSceneSettingsOpen(false)}>
+          <p className="timeline-dialog-note">Changes are kept with this timeline and saved by Save timeline.</p>
+        {!composition && (
+          <section className="timeline-scene-policy">
+            <strong>Scene scheduling and output policy</strong>
+            <label>
+              Scene priority
+              <input
+                aria-label="Scene priority"
+                disabled={!canEdit}
+                max="100"
+                min="0"
+                type="number"
+                value={scenePolicy.priority}
+                onChange={(event) =>
+                  setScenePolicy((current) => ({
+                    ...current,
+                    priority: Number(event.target.value),
+                  }))
+                }
+              />
+            </label>
+            <label>
+              Completion policy
+              <select
+                aria-label="Completion policy"
+                disabled={!canEdit}
+                value={scenePolicy.completion_policy}
+                onChange={(event) =>
+                  setScenePolicy((current) => ({
+                    ...current,
+                    completion_policy: event.target
+                      .value as SceneOperationalPolicy["completion_policy"],
+                  }))
+                }
+              >
+                <option value="loop">Loop</option>
+                <option value="select_next">Select next</option>
+                <option value="transition_to">Transition to scene</option>
+                <option value="hold">Hold</option>
+                <option value="stop">Stop</option>
+              </select>
+            </label>
+            {scenePolicy.completion_policy === "transition_to" && (
+              <label>
+                Completion target
+                <select
+                  aria-label="Completion target"
+                  disabled={!canEdit}
+                  value={scenePolicy.completion_target}
+                  onChange={(event) =>
+                    setScenePolicy((current) => ({
+                      ...current,
+                      completion_target: event.target.value,
+                    }))
                   }
-                }
-                const layer: TransformLayer = {
-                  layer_schema_version: 1,
-                  id: crypto.randomUUID(),
-                  name: newTransformName.trim(),
-                  kind: newTransformKind,
-                  source_id: newTransformSource.trim(),
-                  track_id: newTransformTrack,
-                  start_ms: localPlayhead,
-                  duration_ms: newTransformDuration,
-                  in_point_ms: 0,
-                  out_point_ms: newTransformDuration,
-                  playback: composition?.space_kind === "lighting_surface" && newTransformKind === "video"
-                    ? "loop" : "hold",
-                  z_index: spaceTransformLayers.length,
-                  fade_in_ms: 0,
-                  fade_out_ms: 0,
-                  audio:
-                    newTransformKind === "audio"
-                      ? {
-                          gain_db: 0,
-                          mute: false,
-                          solo: false,
-                          mix_order: spaceTransformLayers.filter(
-                            (candidate) => candidate.kind === "audio",
-                          ).length,
-                        }
-                      : null,
-                  alpha_interpretation:
-                    newTransformKind === "audio" ? null : "straight",
-                  source_color_space:
-                    newTransformKind === "audio" ? null : "srgb",
-                  scaling_behavior:
-                    newTransformKind === "audio" ? null : "fit",
-                  keyframes:
-                    newTransformKind === "audio"
-                      ? []
-                      : [keyframe],
-                };
-                setTransformLayers((current) => ({
-                  ...current,
-                  [editingSpaceId]: [...spaceTransformLayers, layer],
-                }));
-                setSelectedTransformLayerId(layer.id);
-                setSelectedTransformKeyframeId(layer.keyframes[0]?.id ?? "");
-                setNewTransformName("");
-              }}
-            >
-              Add transform layer
-            </button>
-          </div>
-        )}
-      </section>
-      <div className="timeline-track-properties">
-        <strong>Track properties</strong>
-        {selectedTrack ? (
-          <>
-            <small>Stable ID: {selectedTrack.id}</small>
-            <small>Kind: {humanizeTrackKind(selectedTrack.kind)}</small>
+                >
+                  <option value="">Select scene</option>
+                  {draft.draft.scenes
+                    .filter((candidate) => candidate.id !== scene.id)
+                    .map((candidate) => (
+                      <option key={candidate.id} value={candidate.id}>
+                        {candidate.name}
+                      </option>
+                    ))}
+                </select>
+              </label>
+            )}
             <label>
-              Name
-              <input
-                disabled={selectedTrack.built_in || !canEdit}
-                value={selectedTrack.name}
+              Request policy
+              <select
+                aria-label="Request policy"
+                disabled={!canEdit}
+                value={scenePolicy.request_policy}
                 onChange={(event) =>
-                  setCustomTracks((current) =>
-                    current.map((track) =>
-                      track.id === selectedTrack.id
-                        ? { ...track, name: event.target.value }
-                        : track,
-                    ),
-                  )
+                  setScenePolicy((current) => ({
+                    ...current,
+                    request_policy: event.target
+                      .value as SceneOperationalPolicy["request_policy"],
+                  }))
+                }
+              >
+                <option value="priority">Priority</option>
+                <option value="immediate">Immediate</option>
+                <option value="at_safe_point">At safe point</option>
+                <option value="after_completion">After completion</option>
+                <option value="ignore">Ignore</option>
+              </select>
+            </label>
+            <label>
+              Request TTL
+              <input
+                aria-label="Request TTL"
+                disabled={!canEdit}
+                min="1"
+                type="number"
+                value={scenePolicy.request_ttl_ms}
+                onChange={(event) =>
+                  setScenePolicy((current) => ({
+                    ...current,
+                    request_ttl_ms: Number(event.target.value),
+                  }))
                 }
               />
             </label>
-            <label>
-              Resource binding
+            <label className="timeline-scene-policy__claims">
+              Resource claims
               <input
-                disabled={selectedTrack.built_in || !canEdit}
-                value={selectedTrack.resource_binding}
+                aria-label="Resource claims"
+                disabled={!canEdit}
+                value={scenePolicy.resources}
                 onChange={(event) =>
-                  setCustomTracks((current) =>
-                    current.map((track) =>
-                      track.id === selectedTrack.id
-                        ? { ...track, resource_binding: event.target.value }
-                        : track,
-                    ),
-                  )
+                  setScenePolicy((current) => ({
+                    ...current,
+                    resources: event.target.value,
+                  }))
                 }
               />
             </label>
-          </>
-        ) : (
-          <small>Select a track to inspect its stable identity and binding.</small>
-        )}
-        {canEdit && (
-          <div className="timeline-track-create">
-            <select
-              aria-label="New track kind"
-              value={newTrackKind}
-              onChange={(event) =>
-                setNewTrackKind(event.target.value as typeof newTrackKind)
-              }
-            >
-              <option value="audio_reference">Audio reference</option>
-              <option value="fixture">Fixture</option>
-              <option value="group">Group</option>
-              <option value="path">Path</option>
-            </select>
-            <input
-              aria-label="New track name"
-              placeholder="Track name"
-              value={newTrackName}
-              onChange={(event) => setNewTrackName(event.target.value)}
-            />
-            <input
-              aria-label="New track resource binding"
-              placeholder="Resource / fixture / group / path ID"
-              value={newTrackBinding}
-              onChange={(event) => setNewTrackBinding(event.target.value)}
-            />
-            <button
-              disabled={!newTrackName.trim() || !newTrackBinding.trim()}
-              onClick={() => {
-                const track: TimelineTrack = {
-                  id: crypto.randomUUID(),
-                  kind: newTrackKind,
-                  name: newTrackName,
-                  resource_binding: newTrackBinding,
-                };
-                setCustomTracks((current) => [...current, track]);
-                setSelectedTrackId(track.id);
-                setNewTrackName("");
-                setNewTrackBinding("");
-              }}
-            >
-              Add track
-            </button>
-          </div>
-        )}
-      </div>
-      <div className="composition-hierarchy">
-        <strong>Composition hierarchy</strong>
-        {Object.values(compositions).length ? (
-          <ul>
-            {Object.values(compositions).map((candidate) => {
-              const usage = compositionUsage(
-                compositions,
-                sceneCompositions,
-                compositionInstances,
-                candidate.id,
-              );
-              return (
-                <li key={candidate.id}>
-                  <span>
-                    <strong>{candidate.name}</strong>
-                    <small>
-                      {candidate.duration_ms} ms · {humanizeSpace(
-                        candidate.space_kind,
-                      )} {candidate.width}×{candidate.height} · target{" "}
-                      {candidate.target_id} · local offset{" "}
-                      {candidate.local_time_offset_ms} ms · stable ID {candidate.id}
-                    </small>
-                    <small>
-                      {candidate.children.length
-                        ? `Children: ${candidate.children
-                            .map((id) => compositions[id]?.name ?? id)
-                            .join(", ")}`
-                        : "No child compositions"}
-                    </small>
-                    <small>
-                      {usage.length ? `Used by ${usage.join(", ")}` : "Unused"}
-                    </small>
-                  </span>
-                  <button onClick={() => setActiveCompositionId(candidate.id)}>
-                    Open timeline
-                  </button>
-                  {canEdit && usage.length === 0 && (
-                    <button
-                      className="danger-button"
-                      onClick={() => removeComposition(candidate.id)}
-                    >
-                      Delete unused
-                    </button>
-                  )}
-                  {canEdit && usage.length > 0 && (
-                    <div className="composition-replacement">
-                      <select
-                        aria-label={`Replacement for ${candidate.name}`}
-                        value={replacementByComposition[candidate.id] ?? ""}
+            {scene.schema_version === 2 && Array.isArray(scene.media) && (
+              <>
+                <label>
+                  Clock authority
+                  <select
+                    aria-label="Clock authority"
+                    disabled={!canEdit}
+                    value={scenePolicy.mode}
+                    onChange={(event) =>
+                      setScenePolicy((current) => ({
+                        ...current,
+                        mode: event.target.value as SceneOperationalPolicy["mode"],
+                        clock_source: event.target.value === "controller_timed"
+                          ? "controller"
+                          : Array.isArray(scene.media) ? scene.media[0]?.id ?? "" : "",
+                      }))
+                    }
+                  >
+                    <option value="media_synchronized">Media playback</option>
+                    <option value="controller_timed">Controller</option>
+                  </select>
+                </label>
+                <label>
+                  Clock source
+                  <select
+                    aria-label="Clock source"
+                    disabled={!canEdit || scenePolicy.mode === "controller_timed"}
+                    value={scenePolicy.clock_source}
+                    onChange={(event) =>
+                      setScenePolicy((current) => ({
+                        ...current,
+                        clock_source: event.target.value,
+                      }))
+                    }
+                  >
+                    {scenePolicy.mode === "controller_timed" && (
+                      <option value="controller">Controller monotonic clock</option>
+                    )}
+                    {scene.media.map((output) => (
+                      <option key={output.id} value={output.id}>
+                        {output.id}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                {scene.media.map((output) => (
+                  <div className="timeline-output-policy" key={output.id}>
+                    <strong>Media · {output.id}</strong>
+                    <label>
+                      <input
+                        aria-label={`Required media output ${output.id}`}
+                        checked={scenePolicy.media_required[output.id] ?? true}
+                        disabled={!canEdit}
+                        type="checkbox"
                         onChange={(event) =>
-                          setReplacementByComposition((current) => ({
+                          setScenePolicy((current) => ({
                             ...current,
-                            [candidate.id]: event.target.value,
+                            media_required: {
+                              ...current.media_required,
+                              [output.id]: event.target.checked,
+                            },
                           }))
                         }
-                      >
-                        <option value="">Select replacement</option>
-                        {Object.values(compositions)
-                          .filter((item) => item.id !== candidate.id)
-                          .map((item) => (
-                            <option key={item.id} value={item.id}>
-                              {item.name}
-                            </option>
-                          ))}
-                      </select>
-                      <button
-                        className="danger-button"
-                        disabled={
-                          !replacementByComposition[candidate.id] ||
-                          !canReplaceComposition(
-                            compositions,
-                            candidate.id,
-                            replacementByComposition[candidate.id],
-                          )
+                      />
+                      Required
+                    </label>
+                    <label>
+                      Start calibration offset
+                      <input
+                        aria-label={`Media calibration offset ${output.id}`}
+                        disabled={!canEdit}
+                        max="5000"
+                        min="0"
+                        type="number"
+                        value={scenePolicy.media_offsets[output.id] ?? 0}
+                        onChange={(event) =>
+                          setScenePolicy((current) => ({
+                            ...current,
+                            media_offsets: {
+                              ...current.media_offsets,
+                              [output.id]: Number(event.target.value),
+                            },
+                          }))
                         }
-                        onClick={() =>
-                          removeComposition(
-                            candidate.id,
-                            replacementByComposition[candidate.id],
-                          )
-                        }
-                      >
-                        Replace and delete
-                      </button>
-                    </div>
-                  )}
-                </li>
-              );
-            })}
-          </ul>
-        ) : (
-          <small>No reusable compositions.</small>
+                      />
+                    </label>
+                  </div>
+                ))}
+                {Array.isArray(scene.lighting) &&
+                  scene.lighting.map((output) => {
+                    const record = metadataRecord(output);
+                    const outputId = String(record.id ?? record.resource ?? "");
+                    return (
+                      <div className="timeline-output-policy" key={outputId}>
+                        <strong>Lighting · {outputId}</strong>
+                        <label>
+                          <input
+                            aria-label={`Required lighting output ${outputId}`}
+                            checked={
+                              scenePolicy.lighting_required[outputId] ?? true
+                            }
+                            disabled={!canEdit}
+                            type="checkbox"
+                            onChange={(event) =>
+                              setScenePolicy((current) => ({
+                                ...current,
+                                lighting_required: {
+                                  ...current.lighting_required,
+                                  [outputId]: event.target.checked,
+                                },
+                              }))
+                            }
+                          />
+                          Required
+                        </label>
+                        <label>
+                          Timing calibration offset
+                          <input
+                            aria-label={`Lighting calibration offset ${outputId}`}
+                            disabled={!canEdit}
+                            max="5000"
+                            min="-5000"
+                            type="number"
+                            value={scenePolicy.lighting_offsets[outputId] ?? 0}
+                            onChange={(event) =>
+                              setScenePolicy((current) => ({
+                                ...current,
+                                lighting_offsets: {
+                                  ...current.lighting_offsets,
+                                  [outputId]: Number(event.target.value),
+                                },
+                              }))
+                            }
+                          />
+                        </label>
+                      </div>
+                    );
+                  })}
+              </>
+            )}
+          </section>
         )}
-        {(compositionInstances[scene.id] ?? []).map((instance) => (
-          <div className="composition-instance" key={instance.id}>
-            <strong>
-              Instance · {compositions[instance.composition_id]?.name ?? instance.composition_id}
-            </strong>
-            <small>Stable instance ID: {instance.id}</small>
-            <small>
-              Start {instance.start_offset_ms} ms · time scale {instance.time_scale}× ·
-              placement ({instance.placement.x}, {instance.placement.y})
-            </small>
-            <small>
-              Overrides: {JSON.stringify(instance.parameter_overrides)}
-            </small>
-          </div>
-        ))}
-        {canEdit && (
-          <div className="composition-create">
-            <input
-              aria-label="New composition name"
-              placeholder="Composition name"
-              value={newCompositionName}
-              onChange={(event) => setNewCompositionName(event.target.value)}
-            />
-            <input
-              aria-label="New composition duration"
-              min="1"
-              type="number"
-              value={newCompositionDuration}
-              onChange={(event) =>
-                setNewCompositionDuration(Number(event.target.value))
-              }
-            />
-            <button
-              disabled={
-                !newCompositionName.trim() ||
-                !newCompositionTarget.trim() ||
-                newCompositionDuration <= 0 ||
-                newCompositionWidth <= 0 ||
-                newCompositionHeight <= 0 ||
-                newCompositionOffset < 0
-              }
-              onClick={() => {
-                const id = crypto.randomUUID();
-                setCompositions((current) => ({
-                  ...current,
-                  [id]: {
-                    id,
-                    name: newCompositionName,
-                    duration_ms: newCompositionDuration,
-                    space_kind: newCompositionSpace,
-                    target_id: newCompositionTarget,
-                    width: newCompositionWidth,
-                    height: newCompositionHeight,
-                    local_time_offset_ms: newCompositionOffset,
-                    children: [],
-                    safe_points_ms: [],
-                    protected_intervals: [],
-                    stage_lighting_surfaces: [],
-                    render_settings: defaultRenderSettings(
-                      newCompositionSpace === "projector_native"
-                        ? [newCompositionWidth, newCompositionHeight]
-                        : newCompositionSpace === "stage"
-                          ? suggestedStageRenderResolution(mapperExport)
-                          : [1920, 1080],
-                    ),
-                    lighting_settings: defaultLightingSettings(),
-                  },
-                }));
-                setActiveCompositionId(id);
-                setNewCompositionName("");
-                setNewCompositionTarget("");
-              }}
-            >
-              Create composition
-            </button>
-            <select
-              aria-label="New composition space"
-              value={newCompositionSpace}
-              onChange={(event) => {
-                const space = event.target.value as Composition["space_kind"];
-                setNewCompositionSpace(space);
-                if (space === "stage" && mapperExport?.stage) {
-                  setNewCompositionWidth(roundStage(mapperExport.stage.width));
-                  setNewCompositionHeight(roundStage(mapperExport.stage.height));
-                  if (!newCompositionTarget) setNewCompositionTarget("shared-stage");
-                }
-              }}
-            >
-              <option value="projector_native">Projector native pixels</option>
-              <option value="lighting_surface">Lighting surface local</option>
-              <option value="stage">Shared stage space</option>
-            </select>
-            <input
-              aria-label="New composition target"
-              placeholder="projector.left / surface ID / shared-stage"
-              value={newCompositionTarget}
-              onChange={(event) => setNewCompositionTarget(event.target.value)}
-            />
-            <input
-              aria-label="New composition width"
-              min="0.001"
-              step="any"
-              type="number"
-              value={newCompositionWidth}
-              onChange={(event) =>
-                setNewCompositionWidth(Number(event.target.value))
-              }
-            />
-            <input
-              aria-label="New composition height"
-              min="0.001"
-              step="any"
-              type="number"
-              value={newCompositionHeight}
-              onChange={(event) =>
-                setNewCompositionHeight(Number(event.target.value))
-              }
-            />
-            <input
-              aria-label="New composition local offset"
-              min="0"
-              type="number"
-              value={newCompositionOffset}
-              onChange={(event) =>
-                setNewCompositionOffset(Number(event.target.value))
-              }
-            />
-            <select
-              aria-label="Composition to use"
-              value={childCompositionId}
-              onChange={(event) => setChildCompositionId(event.target.value)}
-            >
-              <option value="">Select composition</option>
-              {Object.values(compositions).map((candidate) => (
-                <option key={candidate.id} value={candidate.id}>
-                  {candidate.name}
-                </option>
+        </DetailsDialog>
+      )}
+      <details
+        className="timeline-diagnostics-drawer"
+        open={diagnosticsOpen}
+        onToggle={(event) => setDiagnosticsOpen(event.currentTarget.open)}
+      >
+        <summary>Diagnostics</summary>
+        <section
+          className={`timeline-diagnostics${
+            timelineDiagnostics.length ? " timeline-diagnostics--invalid" : ""
+          }`}
+          aria-label="Timeline validation"
+        >
+          <strong>
+            {timelineDiagnostics.length
+              ? `${timelineDiagnostics.length} timeline validation issue${timelineDiagnostics.length === 1 ? "" : "s"}`
+              : "Timeline valid"}
+          </strong>
+          {timelineDiagnostics.length ? (
+            <ul>
+              {timelineDiagnostics.map((diagnostic) => (
+                <li key={`${diagnostic.code}:${diagnostic.object_id}`}>
+                  <code>{diagnostic.code}</code> · {diagnostic.message}
+                </li>
               ))}
-            </select>
+            </ul>
+          ) : (
+            <small>Scene and editor timing can be saved deterministically.</small>
+          )}
+        </section>
+        <section
+          className="timeline-preview-diagnostics"
+          aria-label="Backend preview diagnostics"
+        >
+          <strong>Backend deterministic scene evaluation</strong>
+          {previewEvaluation ? (
+            <>
+              <span>
+                {previewEvaluation.frame_rate.numerator}/
+                {previewEvaluation.frame_rate.denominator} fps · frame{" "}
+                {previewEvaluation.frame_index} · controller time{" "}
+                {previewEvaluation.frame_timestamp_ms.toFixed(3)} ms
+              </span>
+              <span>
+                Timing quantization error{" "}
+                {previewEvaluation.timing_error_ms.toFixed(3)} ms · source revision{" "}
+                {previewEvaluation.source_revision}
+              </span>
+              <span>
+                Resources: {previewEvaluation.resources.join(", ") || "none"}
+              </span>
+              <span>
+                {previewEvaluation.degraded_resources.length
+                  ? `Degraded resources: ${previewEvaluation.degraded_resources
+                      .map(
+                        (resource) =>
+                          `${resource.source_id} (${resource.reason})`,
+                      )
+                      .join(", ")}`
+                  : "Degraded resources: none"}
+              </span>
+              <small>
+                Deterministic backend evaluation only; hardware commands sent: no.
+              </small>
+            </>
+          ) : (
+            <small role={previewEvaluationError ? "alert" : undefined}>
+              {previewEvaluationError ?? "Evaluating controller scene time…"}
+            </small>
+          )}
+        </section>
+        <output className="timeline-evaluated-state" aria-label="Timeline evaluated state">
+          {JSON.stringify(evaluatedTimelineState)}
+        </output>
+      </details>
+    </>
+  );
+
+  return (
+    <section className="timeline-editor timeline-editor--workspace" aria-label="Timeline editor">
+      {content}
+    </section>
+  );
+}
+
+type KeyframePatch = Partial<
+  Pick<TransformKeyframe, "position" | "scale" | "rotation_deg" | "anchor" | "opacity" | "crop">
+>;
+
+type GestureHandlers = {
+  onGestureStart?: () => void;
+  onGestureEnd?: () => void;
+};
+
+function roundTo(value: number, precision: number): number {
+  const factor = 10 ** precision;
+  return Math.round(value * factor) / factor;
+}
+
+/** Number field whose label can be dragged horizontally to change the value (Shift ×10, Alt ×0.1). */
+function ScrubField({
+  label,
+  ariaLabel,
+  value,
+  onChange,
+  step = 1,
+  min,
+  max,
+  unit,
+  precision = 2,
+  disabled = false,
+  onGestureStart,
+  onGestureEnd,
+}: {
+  label: string;
+  ariaLabel: string;
+  value: number;
+  onChange: (value: number) => void;
+  step?: number;
+  min?: number;
+  max?: number;
+  unit?: string;
+  precision?: number;
+  disabled?: boolean;
+} & GestureHandlers) {
+  const dragRef = useRef<{ x: number; start: number; moved: boolean } | null>(null);
+  const [draft, setDraft] = useState<string | null>(null);
+  const clamp = (next: number) =>
+    Math.min(max ?? Number.POSITIVE_INFINITY, Math.max(min ?? Number.NEGATIVE_INFINITY, next));
+  return (
+    <label className={`scrub-field${disabled ? " scrub-field--disabled" : ""}`}>
+      <span
+        className="scrub-field__label"
+        title={disabled ? undefined : `Drag to adjust ${label.toLowerCase()} (Shift ×10, Alt fine)`}
+        onPointerDown={(event) => {
+          if (disabled || event.button !== 0) return;
+          event.preventDefault();
+          event.currentTarget.setPointerCapture(event.pointerId);
+          dragRef.current = { x: event.clientX, start: value, moved: false };
+        }}
+        onPointerMove={(event) => {
+          const drag = dragRef.current;
+          if (!drag) return;
+          const pixels = event.clientX - drag.x;
+          if (!drag.moved && Math.abs(pixels) < 3) return;
+          if (!drag.moved) {
+            drag.moved = true;
+            onGestureStart?.();
+          }
+          const factor = event.shiftKey ? 10 : event.altKey ? 0.1 : 1;
+          onChange(clamp(roundTo(drag.start + Math.round(pixels / 2) * step * factor, precision)));
+        }}
+        onPointerUp={() => {
+          if (dragRef.current?.moved) onGestureEnd?.();
+          dragRef.current = null;
+        }}
+        onPointerCancel={() => {
+          if (dragRef.current?.moved) onGestureEnd?.();
+          dragRef.current = null;
+        }}
+      >
+        {label}
+      </span>
+      <span className="scrub-field__control">
+        <input
+          aria-label={ariaLabel}
+          disabled={disabled}
+          step="any"
+          type="number"
+          value={draft ?? String(roundTo(value, precision))}
+          onChange={(event) => {
+            setDraft(event.target.value);
+            const next = Number(event.target.value);
+            if (event.target.value.trim() !== "" && Number.isFinite(next)) onChange(clamp(next));
+          }}
+          onBlur={() => setDraft(null)}
+          onKeyDown={(event) => {
+            if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
+            event.preventDefault();
+            const factor = event.shiftKey ? 10 : event.altKey ? 0.1 : 1;
+            setDraft(null);
+            onChange(clamp(roundTo(value + (event.key === "ArrowUp" ? 1 : -1) * step * factor, precision)));
+          }}
+        />
+        {unit && <span className="scrub-field__unit">{unit}</span>}
+      </span>
+    </label>
+  );
+}
+
+const ANCHOR_PRESETS: [number, number, string][] = [
+  [0, 0, "top left"],
+  [0.5, 0, "top"],
+  [1, 0, "top right"],
+  [0, 0.5, "left"],
+  [0.5, 0.5, "center"],
+  [1, 0.5, "right"],
+  [0, 1, "bottom left"],
+  [0.5, 1, "bottom"],
+  [1, 1, "bottom right"],
+];
+
+/** Position correction so changing the anchor keeps the layer visually in place. */
+function anchorCompensatedPosition(
+  keyframe: TransformKeyframe,
+  anchor: [number, number],
+  sourceSize: [number, number],
+  unitsPerSourcePixel: number,
+): [number, number] {
+  const dx = (anchor[0] - keyframe.anchor[0]) * sourceSize[0] * keyframe.scale[0] * unitsPerSourcePixel;
+  const dy = (anchor[1] - keyframe.anchor[1]) * sourceSize[1] * keyframe.scale[1] * unitsPerSourcePixel;
+  const angle = (keyframe.rotation_deg * Math.PI) / 180;
+  return [
+    keyframe.position[0] + dx * Math.cos(angle) - dy * Math.sin(angle),
+    keyframe.position[1] + dx * Math.sin(angle) + dy * Math.cos(angle),
+  ];
+}
+
+function TransformFields({
+  keyframe,
+  disabled,
+  positionUnit,
+  sourceSize,
+  unitsPerSourcePixel,
+  onChange,
+  onGestureStart,
+  onGestureEnd,
+}: {
+  keyframe: TransformKeyframe;
+  disabled: boolean;
+  positionUnit: string;
+  sourceSize: [number, number];
+  unitsPerSourcePixel: number;
+  onChange: (patch: KeyframePatch) => void;
+} & GestureHandlers) {
+  const [linked, setLinked] = useState(true);
+  const gesture = { onGestureStart, onGestureEnd, disabled };
+  const [scaleX, scaleY] = keyframe.scale;
+  const crop = keyframe.crop;
+  const setCrop = (index: number, percent: number) => {
+    const next = [...crop] as [number, number, number, number];
+    next[index] = percent / 100;
+    onChange({ crop: next });
+  };
+  return (
+    <div className="transform-fields" aria-label="Layer transform">
+      <div className="transform-fields__row">
+        <span className="transform-fields__name">Position</span>
+        <ScrubField
+          label="X"
+          ariaLabel="Position 1"
+          value={keyframe.position[0]}
+          unit={positionUnit}
+          onChange={(value) => onChange({ position: [value, keyframe.position[1]] })}
+          {...gesture}
+        />
+        <ScrubField
+          label="Y"
+          ariaLabel="Position 2"
+          value={keyframe.position[1]}
+          unit={positionUnit}
+          onChange={(value) => onChange({ position: [keyframe.position[0], value] })}
+          {...gesture}
+        />
+      </div>
+      <div className="transform-fields__row">
+        <span className="transform-fields__name">Scale</span>
+        <ScrubField
+          label="W"
+          ariaLabel="Scale 1"
+          value={scaleX * 100}
+          unit="%"
+          precision={1}
+          onChange={(value) => {
+            const next = value / 100;
+            onChange({
+              scale: !linked ? [next, scaleY] : scaleX !== 0 ? [next, roundTo(scaleY * (next / scaleX), 4)] : [next, next],
+            });
+          }}
+          {...gesture}
+        />
+        <ScrubField
+          label="H"
+          ariaLabel="Scale 2"
+          value={scaleY * 100}
+          unit="%"
+          precision={1}
+          onChange={(value) => {
+            const next = value / 100;
+            onChange({
+              scale: !linked ? [scaleX, next] : scaleY !== 0 ? [roundTo(scaleX * (next / scaleY), 4), next] : [next, next],
+            });
+          }}
+          {...gesture}
+        />
+        <button
+          type="button"
+          className="transform-fields__link"
+          aria-label="Lock scale proportions"
+          aria-pressed={linked}
+          title={linked ? "Proportions locked" : "Proportions unlocked"}
+          disabled={disabled}
+          onClick={() => setLinked((current) => !current)}
+        >
+          {linked ? "🔗" : "⛓️‍💥"}
+        </button>
+      </div>
+      <div className="transform-fields__row">
+        <span className="transform-fields__name">Rotation</span>
+        <ScrubField
+          label="°"
+          ariaLabel="Rotation"
+          value={keyframe.rotation_deg}
+          unit="°"
+          precision={1}
+          onChange={(value) => onChange({ rotation_deg: value })}
+          {...gesture}
+        />
+      </div>
+      <div className="transform-fields__row">
+        <span className="transform-fields__name">Opacity</span>
+        <input
+          aria-label="Opacity slider"
+          className="transform-fields__slider"
+          disabled={disabled}
+          max="100"
+          min="0"
+          step="1"
+          type="range"
+          value={Math.round(keyframe.opacity * 100)}
+          onPointerDown={() => onGestureStart?.()}
+          onPointerUp={() => onGestureEnd?.()}
+          onChange={(event) => onChange({ opacity: Number(event.target.value) / 100 })}
+        />
+        <ScrubField
+          label="%"
+          ariaLabel="Opacity"
+          value={keyframe.opacity * 100}
+          min={0}
+          max={100}
+          unit="%"
+          precision={0}
+          onChange={(value) => onChange({ opacity: value / 100 })}
+          {...gesture}
+        />
+      </div>
+      <div className="transform-fields__row transform-fields__row--anchor">
+        <span className="transform-fields__name">Anchor</span>
+        <div className="anchor-grid" role="group" aria-label="Anchor point">
+          {ANCHOR_PRESETS.map(([x, y, name]) => (
             <button
-              disabled={
-                !activeCompositionId ||
-                !childCompositionId ||
-                activeCompositionId === childCompositionId ||
-                wouldCreateCycle(
-                  compositions,
-                  activeCompositionId,
-                  childCompositionId,
-                )
-              }
+              key={name}
+              type="button"
+              aria-label={`Anchor ${name}`}
+              aria-pressed={Math.abs(keyframe.anchor[0] - x) < 1e-6 && Math.abs(keyframe.anchor[1] - y) < 1e-6}
+              disabled={disabled}
+              title={`Anchor ${name} (layer stays in place)`}
               onClick={() =>
-                setCompositions((current) => ({
-                  ...current,
-                  [activeCompositionId]: {
-                    ...current[activeCompositionId],
-                    children: [
-                      ...new Set([
-                        ...current[activeCompositionId].children,
-                        childCompositionId,
-                      ]),
-                    ],
-                  },
-                }))
-              }
-            >
-              Add child to open composition
-            </button>
-            <input
-              aria-label="Instance start offset"
-              min="0"
-              type="number"
-              value={instanceStartOffset}
-              onChange={(event) =>
-                setInstanceStartOffset(Number(event.target.value))
+                onChange({
+                  anchor: [x, y],
+                  position: anchorCompensatedPosition(keyframe, [x, y], sourceSize, unitsPerSourcePixel),
+                })
               }
             />
-            <input
-              aria-label="Instance time scale"
-              min="0.01"
-              max="16"
-              step="0.01"
-              type="number"
-              value={instanceTimeScale}
-              onChange={(event) =>
-                setInstanceTimeScale(Number(event.target.value))
-              }
-            />
-            <input
-              aria-label="Instance stage X"
-              step="any"
-              type="number"
-              value={instanceX}
-              onChange={(event) => setInstanceX(Number(event.target.value))}
-            />
-            <input
-              aria-label="Instance stage Y"
-              step="any"
-              type="number"
-              value={instanceY}
-              onChange={(event) => setInstanceY(Number(event.target.value))}
-            />
-            <textarea
-              aria-label="Instance parameter overrides"
-              rows={2}
-              value={instanceOverrides}
-              onChange={(event) => setInstanceOverrides(event.target.value)}
-            />
-            <button
-              disabled={
-                !childCompositionId ||
-                instanceStartOffset < 0 ||
-                instanceTimeScale <= 0 ||
-                instanceTimeScale > 16 ||
-                parsedInstanceOverrides === null
-              }
-              onClick={() => {
-                setSceneCompositions((current) => ({
-                  ...current,
-                  [scene.id]: [
-                    ...new Set([
-                      ...(current[scene.id] ?? []),
-                      childCompositionId,
-                    ]),
-                  ],
-                }));
-                setCompositionInstances((current) => ({
-                  ...current,
-                  [scene.id]: [
-                    ...(current[scene.id] ?? []),
-                    {
-                      id: crypto.randomUUID(),
-                      composition_id: childCompositionId,
-                      start_offset_ms: instanceStartOffset,
-                      time_scale: instanceTimeScale,
-                      parameter_overrides: parsedInstanceOverrides ?? {},
-                      placement: { x: instanceX, y: instanceY },
-                    },
-                  ],
-                }));
+          ))}
+        </div>
+        <ScrubField
+          label="X"
+          ariaLabel="Anchor 1"
+          value={keyframe.anchor[0] * 100}
+          unit="%"
+          precision={1}
+          onChange={(value) => onChange({ anchor: [value / 100, keyframe.anchor[1]] })}
+          {...gesture}
+        />
+        <ScrubField
+          label="Y"
+          ariaLabel="Anchor 2"
+          value={keyframe.anchor[1] * 100}
+          unit="%"
+          precision={1}
+          onChange={(value) => onChange({ anchor: [keyframe.anchor[0], value / 100] })}
+          {...gesture}
+        />
+      </div>
+      <div className="transform-fields__row">
+        <span className="transform-fields__name">Crop</span>
+        {(["L", "T", "R", "B"] as const).map((edge, index) => (
+          <ScrubField
+            key={edge}
+            label={edge}
+            ariaLabel={`Crop ${index + 1}`}
+            value={crop[index] * 100}
+            min={0}
+            max={99}
+            unit="%"
+            precision={1}
+            onChange={(value) => setCrop(index, value)}
+            {...gesture}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function layerUnitsPerSourcePixel(composition: Composition | undefined): number {
+  if (!composition) return 1;
+  const raster =
+    composition.space_kind === "lighting_surface"
+      ? composition.lighting_settings.canvas_width
+      : composition.render_settings.render_width;
+  return raster > 0 && composition.width > 0 ? composition.width / raster : 1;
+}
+
+function layerSourceSize(
+  layer: TransformLayer,
+  assets: AssetRecord[],
+  composition: Composition | undefined,
+  compositions: Record<string, Composition>,
+): [number, number] {
+  const child = compositions[layer.source_id];
+  if (child) return [child.render_settings.render_width, child.render_settings.render_height];
+  const asset = assets.find((candidate) => candidate.id === layer.source_id);
+  const width = numberValue(asset?.metadata?.width, 0);
+  const height = numberValue(asset?.metadata?.height, 0);
+  if (width > 0 && height > 0) return [width, height];
+  const upp = layerUnitsPerSourcePixel(composition);
+  return composition ? [composition.width / upp, composition.height / upp] : [1920, 1080];
+}
+
+function keyframeAtTime(layer: TransformLayer, localMs: number): TransformKeyframe | undefined {
+  const sorted = [...layer.keyframes].sort((left, right) => left.time_ms - right.time_ms);
+  return [...sorted].reverse().find((keyframe) => keyframe.time_ms <= localMs) ?? sorted[0];
+}
+
+type LayoutDrag =
+  | { kind: "move"; startPointer: [number, number]; keyframe: TransformKeyframe }
+  | { kind: "scale"; corner: [number, number]; keyframe: TransformKeyframe }
+  | { kind: "rotate"; startAngle: number; keyframe: TransformKeyframe };
+
+/** Composition-space layout with move / scale / rotate handles for the selected layer. */
+function CompositionLayoutCanvas({
+  composition,
+  compositions,
+  layers,
+  assets,
+  playheadMs,
+  selectedLayerId,
+  selectedKeyframeId,
+  canEdit,
+  onSelectLayer,
+  onChangeKeyframe,
+  onGestureStart,
+  onGestureEnd,
+}: {
+  composition: Composition;
+  compositions: Record<string, Composition>;
+  layers: TransformLayer[];
+  assets: AssetRecord[];
+  playheadMs: number;
+  selectedLayerId: string;
+  selectedKeyframeId: string;
+  canEdit: boolean;
+  onSelectLayer: (layerId: string) => void;
+  onChangeKeyframe: (layerId: string, keyframeId: string, patch: KeyframePatch) => void;
+} & GestureHandlers) {
+  const frameRef = useRef<HTMLDivElement | null>(null);
+  const dragRef = useRef<LayoutDrag | null>(null);
+  const upp = layerUnitsPerSourcePixel(composition);
+  const visible = layers
+    .filter(
+      (layer) =>
+        layer.kind !== "audio" &&
+        (layer.id === selectedLayerId ||
+          (playheadMs >= layer.start_ms && playheadMs < layer.start_ms + layer.duration_ms)),
+    )
+    .sort((left, right) => left.z_index - right.z_index || left.id.localeCompare(right.id));
+
+  const toLogical = (clientX: number, clientY: number): [number, number] => {
+    const bounds = frameRef.current?.getBoundingClientRect();
+    if (!bounds || bounds.width <= 0) return [0, 0];
+    return [
+      ((clientX - bounds.left) / bounds.width) * composition.width,
+      ((clientY - bounds.top) / bounds.height) * composition.height,
+    ];
+  };
+
+  const begin = (event: ReactPointerEvent<HTMLElement>, drag: LayoutDrag) => {
+    event.preventDefault();
+    event.stopPropagation();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    dragRef.current = drag;
+    onGestureStart?.();
+  };
+
+  const finish = () => {
+    if (dragRef.current) onGestureEnd?.();
+    dragRef.current = null;
+  };
+
+  const handleMove = (layer: TransformLayer, keyframeId: string, event: ReactPointerEvent<HTMLElement>) => {
+    const drag = dragRef.current;
+    if (!drag) return;
+    const pointer = toLogical(event.clientX, event.clientY);
+    const start = drag.keyframe;
+    if (drag.kind === "move") {
+      onChangeKeyframe(layer.id, keyframeId, {
+        position: [
+          roundTo(start.position[0] + pointer[0] - drag.startPointer[0], 3),
+          roundTo(start.position[1] + pointer[1] - drag.startPointer[1], 3),
+        ],
+      });
+      return;
+    }
+    const dx = pointer[0] - start.position[0];
+    const dy = pointer[1] - start.position[1];
+    if (drag.kind === "rotate") {
+      const angle = (Math.atan2(dy, dx) * 180) / Math.PI;
+      let rotation = start.rotation_deg + angle - drag.startAngle;
+      if (event.shiftKey) rotation = Math.round(rotation / 15) * 15;
+      onChangeKeyframe(layer.id, keyframeId, { rotation_deg: roundTo(rotation, 1) });
+      return;
+    }
+    const [width, height] = layerSourceSize(layer, assets, composition, compositions);
+    const radians = (-start.rotation_deg * Math.PI) / 180;
+    const localX = dx * Math.cos(radians) - dy * Math.sin(radians);
+    const localY = dx * Math.sin(radians) + dy * Math.cos(radians);
+    const baseX = (drag.corner[0] - start.anchor[0]) * width * upp;
+    const baseY = (drag.corner[1] - start.anchor[1]) * height * upp;
+    let scaleX = Math.abs(baseX) > 1e-9 ? localX / baseX : start.scale[0];
+    let scaleY = Math.abs(baseY) > 1e-9 ? localY / baseY : start.scale[1];
+    if (!event.shiftKey) {
+      const vectorX = baseX * start.scale[0];
+      const vectorY = baseY * start.scale[1];
+      const length = vectorX * vectorX + vectorY * vectorY;
+      const ratio = length > 1e-9 ? (localX * vectorX + localY * vectorY) / length : 1;
+      scaleX = start.scale[0] * ratio;
+      scaleY = start.scale[1] * ratio;
+    }
+    const guard = (value: number, fallback: number) =>
+      Math.abs(value) < 0.01 ? Math.sign(fallback || 1) * 0.01 : value;
+    onChangeKeyframe(layer.id, keyframeId, {
+      scale: [roundTo(guard(scaleX, start.scale[0]), 4), roundTo(guard(scaleY, start.scale[1]), 4)],
+    });
+  };
+
+  return (
+    <div className="layout-canvas" aria-label="Composition layout">
+      <div className="layout-canvas__stage">
+      <div
+        ref={frameRef}
+        className="layout-canvas__frame"
+        style={{ aspectRatio: `${composition.width} / ${composition.height}` }}
+      >
+        {visible.map((layer) => {
+          const selected = layer.id === selectedLayerId;
+          const keyframe =
+            (selected && layer.keyframes.find((candidate) => candidate.id === selectedKeyframeId)) ||
+            keyframeAtTime(layer, playheadMs - layer.start_ms);
+          if (!keyframe) return null;
+          if (layer.corner_pin) {
+            return (
+              <svg
+                key={layer.id}
+                className="layout-canvas__pin"
+                viewBox={`0 0 ${composition.width} ${composition.height}`}
+                preserveAspectRatio="none"
+                aria-label={`${layer.name} is corner-pinned`}
+              >
+                <polygon points={layer.corner_pin.map((point) => point.join(",")).join(" ")} />
+              </svg>
+            );
+          }
+          const [width, height] = layerSourceSize(layer, assets, composition, compositions);
+          const boxWidth = width * Math.abs(keyframe.scale[0]) * upp;
+          const boxHeight = height * Math.abs(keyframe.scale[1]) * upp;
+          const asset = assets.find((candidate) => candidate.id === layer.source_id);
+          const image =
+            asset && asset.media_type?.startsWith("image/") && hasAssetArtifact(asset, "review")
+              ? assetArtifactUrl(asset.id, "review")
+              : asset && hasAssetArtifact(asset, "thumbnail")
+                ? assetArtifactUrl(asset.id, "thumbnail")
+                : null;
+          const [left, top, right, bottom] = keyframe.crop;
+          return (
+            <div
+              key={layer.id}
+              aria-label={`Layout box ${layer.name}`}
+              className={`layout-layer${selected ? " layout-layer--selected" : ""}`}
+              style={{
+                left: `${((keyframe.position[0] - keyframe.anchor[0] * boxWidth) / composition.width) * 100}%`,
+                top: `${((keyframe.position[1] - keyframe.anchor[1] * boxHeight) / composition.height) * 100}%`,
+                width: `${(boxWidth / composition.width) * 100}%`,
+                height: `${(boxHeight / composition.height) * 100}%`,
+                transformOrigin: `${keyframe.anchor[0] * 100}% ${keyframe.anchor[1] * 100}%`,
+                transform: `rotate(${keyframe.rotation_deg}deg) scale(${Math.sign(keyframe.scale[0]) || 1}, ${Math.sign(keyframe.scale[1]) || 1})`,
+                opacity: Math.max(0.15, keyframe.opacity),
               }}
+              onPointerDown={(event) => {
+                onSelectLayer(layer.id);
+                if (!canEdit || event.button !== 0) return;
+                begin(event, { kind: "move", startPointer: toLogical(event.clientX, event.clientY), keyframe });
+              }}
+              onPointerMove={(event) => handleMove(layer, keyframe.id, event)}
+              onPointerUp={finish}
+              onPointerCancel={finish}
             >
-              Instantiate in scene
-            </button>
-          </div>
+              {image ? (
+                <img
+                  alt=""
+                  draggable={false}
+                  src={image}
+                  style={{ clipPath: `inset(${top * 100}% ${right * 100}% ${bottom * 100}% ${left * 100}%)` }}
+                />
+              ) : (
+                <span className="layout-layer__placeholder">{layer.name}</span>
+              )}
+              {selected && canEdit && (
+                <>
+                  {([
+                    [0, 0, "top left"],
+                    [1, 0, "top right"],
+                    [1, 1, "bottom right"],
+                    [0, 1, "bottom left"],
+                  ] as const).map(([cornerX, cornerY, name]) => (
+                    <span
+                      key={name}
+                      aria-label={`Scale from ${name} corner`}
+                      className="layout-layer__handle"
+                      role="presentation"
+                      style={{ left: `${cornerX * 100}%`, top: `${cornerY * 100}%` }}
+                      onPointerDown={(event) => begin(event, { kind: "scale", corner: [cornerX, cornerY], keyframe })}
+                      onPointerMove={(event) => handleMove(layer, keyframe.id, event)}
+                      onPointerUp={finish}
+                      onPointerCancel={finish}
+                    />
+                  ))}
+                  <span
+                    aria-label="Rotate layer"
+                    className="layout-layer__rotate"
+                    role="presentation"
+                    onPointerDown={(event) => {
+                      const pointer = toLogical(event.clientX, event.clientY);
+                      begin(event, {
+                        kind: "rotate",
+                        startAngle:
+                          (Math.atan2(pointer[1] - keyframe.position[1], pointer[0] - keyframe.position[0]) * 180) /
+                          Math.PI,
+                        keyframe,
+                      });
+                    }}
+                    onPointerMove={(event) => handleMove(layer, keyframe.id, event)}
+                    onPointerUp={finish}
+                    onPointerCancel={finish}
+                  />
+                  <span
+                    className="layout-layer__anchor"
+                    aria-hidden="true"
+                    style={{ left: `${keyframe.anchor[0] * 100}%`, top: `${keyframe.anchor[1] * 100}%` }}
+                  />
+                </>
+              )}
+            </div>
+          );
+        })}
+        {!visible.length && (
+          <span className="layout-canvas__empty">No visual layer at the playhead</span>
         )}
       </div>
-        </>
-      )}
-    </details>
+      </div>
+      <small>
+        {canEdit
+          ? "Drag a layer to move it, a corner to resize (Shift: free aspect), or the top knob to rotate (Shift: 15° steps). Edits the selected keyframe."
+          : "Layout of layers at the playhead."}
+      </small>
+    </div>
+  );
+}
+
+/** Approximate whole-scene monitor: the topmost visual layer's review proxy at the playhead. */
+function SceneProgramMonitor({
+  layers,
+  assets,
+  playheadMs,
+  isPlaying,
+}: {
+  layers: TransformLayer[];
+  assets: AssetRecord[];
+  playheadMs: number;
+  isPlaying: boolean;
+}) {
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const visual = layers.filter((layer) => layer.kind === "image" || layer.kind === "video");
+  const active = visual
+    .filter((layer) => playheadMs >= layer.start_ms && playheadMs < layer.start_ms + layer.duration_ms)
+    .sort(
+      (left, right) =>
+        right.z_index - left.z_index || right.start_ms - left.start_ms || left.id.localeCompare(right.id),
+    );
+  const top = active[0];
+  const asset = top ? assets.find((candidate) => candidate.id === top.source_id) : undefined;
+  const reviewUrl = asset && hasAssetArtifact(asset, "review") ? assetArtifactUrl(asset.id, "review") : null;
+  const isVideo = Boolean(asset && (asset.media_type?.startsWith("video/") || asset.media_type === "image/gif"));
+  const sourceSeconds = top ? (top.in_point_ms + playheadMs - top.start_ms) / 1000 : 0;
+
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video || !isVideo) return;
+    if (Math.abs(video.currentTime - sourceSeconds) > (isPlaying ? 0.35 : 0.04)) {
+      video.currentTime = sourceSeconds;
+    }
+    if (isPlaying && video.paused) {
+      void video.play().catch(() => undefined);
+    } else if (!isPlaying && !video.paused) {
+      video.pause();
+    }
+  }, [isPlaying, isVideo, sourceSeconds, reviewUrl]);
+
+  if (!visual.length) {
+    return (
+      <div className="timeline-viewer__empty">
+        <strong>Whole scene</strong>
+        <p>
+          Drag media from the Media bin onto a track or here to see it at the
+          playhead. Open a composition tab to preview it on the house.
+        </p>
+      </div>
+    );
+  }
+  return (
+    <figure className="timeline-program-monitor" aria-label="Scene program monitor">
+      <div className="timeline-program-monitor__frame">
+        {!top ? (
+          <span className="timeline-program-monitor__idle">Nothing on screen at {formatTimecode(playheadMs)}</span>
+        ) : !reviewUrl ? (
+          <span className="timeline-program-monitor__idle">
+            {top.name}: no review proxy available yet
+          </span>
+        ) : isVideo ? (
+          <video
+            key={reviewUrl}
+            ref={videoRef}
+            aria-label={`Program monitor showing ${top.name}`}
+            muted
+            playsInline
+            poster={asset && hasAssetArtifact(asset, "thumbnail") ? assetArtifactUrl(asset.id, "thumbnail") : undefined}
+            preload="auto"
+            src={reviewUrl}
+          />
+        ) : (
+          <img alt={`Program monitor showing ${top.name}`} src={reviewUrl} />
+        )}
+      </div>
+      <figcaption>
+        {top
+          ? `${top.name} · source ${formatTimecode(sourceSeconds * 1000)}${
+              active.length > 1 ? ` · ${active.length - 1} more layer${active.length > 2 ? "s" : ""} underneath` : ""
+            }`
+          : "No visual layer at the playhead"}
+        <small>
+          Approximate monitor: shows the top media layer only. Projector warp,
+          placement, and keyframed transforms appear in composition previews and
+          bakes.
+        </small>
+      </figcaption>
+    </figure>
   );
 }
 
@@ -6014,14 +7526,14 @@ function validateTimelineState({
   const audioMixOrders = new Set<number>();
   for (const layer of layers) {
     if (!trackIds.has(layer.track_id)) {
-      add("transform_track_unknown", "Transform layer track binding does not exist.", layer.id);
+      add("transform_track_unknown", "Media layer track does not exist.", layer.id);
     }
     if (
       layer.start_ms < 0 ||
       layer.duration_ms <= 0 ||
       layer.start_ms + layer.duration_ms > duration
     ) {
-      add("transform_interval_invalid", "Transform layer interval leaves the editing space.", layer.id);
+      add("transform_interval_invalid", "Media layer runs outside the scene or composition.", layer.id);
     }
     if (
       layer.in_point_ms < 0 ||
@@ -6074,7 +7586,7 @@ function validateTimelineState({
     }
     for (const keyframe of layer.keyframes) {
       if (keyframe.time_ms < 0 || keyframe.time_ms > layer.duration_ms) {
-        add("keyframe_time_invalid", "Keyframe time leaves its transform layer.", keyframe.id);
+        add("keyframe_time_invalid", "Keyframe is outside its media layer.", keyframe.id);
       }
       if (keyframe.scale.some((value) => value === 0)) {
         add("keyframe_scale_zero", "Independent X/Y scale cannot be zero.", keyframe.id);
@@ -6352,7 +7864,7 @@ function LightingSurfaceCompositionPreview({
 
 type StagePoint = [number, number];
 
-export function stageOutputPoints(
+function stageOutputPoints(
   composition: Pick<Composition, "stage_projector_resources" | "stage_lighting_surfaces">,
   mapperExport: InstallationMapperExport | null,
 ): StagePoint[] {
@@ -6375,7 +7887,7 @@ export function stageOutputPoints(
   return points;
 }
 
-export function projectorStageFootprint(projector: Record<string, unknown>): StagePoint[] {
+function projectorStageFootprint(projector: Record<string, unknown>): StagePoint[] {
   const matrix = projector.stage_homography;
   if (Array.isArray(matrix) && matrix.length === 9 && matrix.every((item) => typeof item === "number")) {
     const h = matrix as number[];
@@ -6392,7 +7904,7 @@ export function projectorStageFootprint(projector: Record<string, unknown>): Sta
   return [];
 }
 
-export function convexHull(points: StagePoint[]): StagePoint[] {
+function convexHull(points: StagePoint[]): StagePoint[] {
   const sorted = [...points].sort((a, b) => a[0] - b[0] || a[1] - b[1]);
   if (sorted.length < 3) return sorted;
   const cross = (o: StagePoint, a: StagePoint, b: StagePoint) =>
@@ -6410,7 +7922,7 @@ export function convexHull(points: StagePoint[]): StagePoint[] {
   return [...lower.slice(0, -1), ...upper.slice(0, -1)];
 }
 
-export function isConvexQuad(points: StagePoint[]): boolean {
+function isConvexQuad(points: StagePoint[]): boolean {
   if (points.length !== 4) return false;
   const crosses = points.map((point, index) => {
     const next = points[(index + 1) % 4];
@@ -7714,7 +9226,7 @@ function RippleEffectEditor({
           })}
         >
           <option value="surface_local">Surface local</option>
-          <option value="stage">Shared stage</option>
+          <option value="stage">Whole display</option>
         </select>
       </label>
       <NumberVectorEditor
@@ -8017,6 +9529,61 @@ function collectEditorialAudioSources(
     });
   }
   return sources;
+}
+
+function compositionTargetSuggestions(
+  space: Composition["space_kind"],
+  mapperExport: InstallationMapperExport | null,
+): [string, string][] {
+  if (space === "stage") return [["shared-stage", "Whole display"]];
+  if (space === "lighting_surface") {
+    return (mapperExport?.lighting_surfaces ?? []).map((surface) => [
+      surface.semantic_id,
+      surface.resource,
+    ]);
+  }
+  return (mapperExport?.projectors ?? []).flatMap((value) => {
+    const projector = metadataRecord(value);
+    return typeof projector.resource === "string"
+      ? [[projector.resource, "Projector"] as [string, string]]
+      : [];
+  });
+}
+
+function trackBindingSuggestions(
+  kind: TrackKind,
+  assets: AssetRecord[],
+  mapperExport: InstallationMapperExport | null,
+): [string, string][] {
+  if (kind === "audio_reference") {
+    return assets
+      .filter((asset) => asset.status === "ready" && assetSupportsEditorialAudio(asset))
+      .map((asset) => [asset.id, asset.name]);
+  }
+  if (kind === "fixture") {
+    return (mapperExport?.fixtures ?? []).map((fixture) => [fixture.semantic_id, fixture.name]);
+  }
+  if (kind === "path") {
+    return (mapperExport?.paths ?? []).map((path) => [path.semantic_id, path.name]);
+  }
+  return (mapperExport?.resources ?? []).map((resource) => [resource.resource, resource.kind]);
+}
+
+function assetKindLabel(asset: AssetRecord): string {
+  const type = asset.media_type ?? "";
+  if (type === "image/gif") return "GIF";
+  if (type.startsWith("image/")) return "image";
+  if (type.startsWith("video/")) return "video";
+  if (type.startsWith("audio/")) return "audio";
+  return type || "file";
+}
+
+function assetMatchesLayerKind(asset: AssetRecord, kind: TransformLayer["kind"]): boolean {
+  const type = asset.media_type ?? "";
+  if (kind === "image") return type.startsWith("image/") && type !== "image/gif";
+  if (kind === "video") return type.startsWith("video/") || type === "image/gif";
+  if (kind === "audio") return type.startsWith("audio/") || type.startsWith("video/");
+  return false;
 }
 
 function assetSupportsEditorialAudio(asset: AssetRecord): boolean {
@@ -8865,7 +10432,9 @@ function compositionSpace(value: unknown): Composition["space_kind"] {
 }
 
 function humanizeSpace(value: Composition["space_kind"]): string {
-  return value.replaceAll("_", " ");
+  if (value === "stage") return "Whole display overlay";
+  if (value === "lighting_surface") return "LED surface";
+  return "Projector";
 }
 
 function parseObject(value: string): Record<string, unknown> | null {

@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { openAdvancedShowWorkspace } from "./show-workspace";
+import { openAdvancedShowWorkspace, openTimelineEditor, openComposition } from "./show-workspace";
 
 const installationId = "demo-installation";
 
@@ -90,9 +90,8 @@ test("a shared stage effect picks outputs, matches the stage and pins media to c
 
   await page.goto("/demo.html");
   await page.getByRole("button", { name: "Shows", exact: true }).click();
-  await openAdvancedShowWorkspace(page);
-  await page.getByText("Timeline editor", { exact: true }).click();
-  await page.getByLabel("Editing space").selectOption("flag");
+  await openTimelineEditor(page);
+  await openComposition(page, "flag");
 
   const outputs = page.getByRole("group", { name: "Outputs in this effect" });
   await expect(outputs.getByLabel("Include projector projector.left")).toBeChecked();
@@ -112,7 +111,7 @@ test("a shared stage effect picks outputs, matches the stage and pins media to c
   await page.getByText("Show projector coverage").click();
   await expect(overlay.locator(".stage-region")).toHaveCount(0);
 
-  await page.getByRole("button", { name: "Transform layer Flag" }).click();
+  await page.getByRole("button", { name: "Media layer Flag", exact: true }).click();
   const shape = page.getByRole("group", { name: "Shape on stage" });
   await shape.getByRole("button", { name: "Fit to selected outputs" }).click();
   const pin = overlay.getByLabel("Layer corner pin");

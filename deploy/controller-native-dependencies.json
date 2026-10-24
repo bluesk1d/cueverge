@@ -1,5 +1,5 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "runtime": {
     "python": ">=3.12",
     "locked_environment": [
@@ -14,16 +14,6 @@
         "reason": "TLS trust for external services and device connections"
       },
       {
-        "name": "ffmpeg",
-        "version": "7:5.1.9-0+deb12u1",
-        "required": true,
-        "provides": [
-          "ffmpeg",
-          "ffprobe"
-        ],
-        "reason": "Asset probing, loudness analysis, thumbnails, proxies, waveforms, and final render encoding/muxing"
-      },
-      {
         "name": "clamav",
         "required": false,
         "provides": [
@@ -36,45 +26,71 @@
     "python_media_libraries": [
       {
         "name": "av",
-        "reason": "Deterministic timestamped video and audio decoding for controller-side composition"
+        "reason": "Bundled FFmpeg libraries for asset probing, loudness analysis, thumbnails, proxies, waveforms, deterministic decoding, and final render encoding/muxing",
+        "import": "av"
       },
       {
         "name": "numpy",
-        "reason": "Linear-light premultiplied alpha math and indexed triangle rasterization"
+        "reason": "Linear-light premultiplied alpha math and indexed triangle rasterization",
+        "import": "numpy"
       },
       {
         "name": "pillow",
-        "reason": "Still-image decoding and conversion into the normative RGBA working representation"
+        "import": "PIL",
+        "reason": "Still-image decoding, derivative image writing, and conversion into the normative RGBA working representation"
       }
     ],
-    "ffmpeg_capabilities": {
+    "preflight_commands": [
+      "python --version",
+      "python -c 'import av; print(av.ffmpeg_version_info)'"
+    ],
+    "media_capabilities": {
+      "provider": "av",
       "encoders": [
         "aac",
         "libmp3lame",
-        "libx264",
+        "libx264"
+      ],
+      "decoders": [
+        "aac",
+        "av1",
+        "flac",
+        "gif",
+        "h264",
+        "hevc",
         "mjpeg",
-        "png"
+        "mp3",
+        "opus",
+        "pcm_s16le",
+        "png",
+        "vorbis",
+        "vp8",
+        "vp9",
+        "webp"
       ],
       "filters": [
         "aformat",
+        "ametadata",
         "ebur128",
+        "format",
         "scale",
         "showwavespic",
         "thumbnail"
       ],
-      "probe_features": [
-        "format",
-        "streams",
-        "json_output"
+      "container_formats": [
+        "flac",
+        "gif",
+        "jpeg_pipe",
+        "matroska",
+        "mov",
+        "mp3",
+        "mp4",
+        "ogg",
+        "png_pipe",
+        "wav",
+        "webp_pipe"
       ]
-    },
-    "preflight_commands": [
-      "python --version",
-      "ffmpeg -version",
-      "ffprobe -version",
-      "ffmpeg -hide_banner -encoders",
-      "ffmpeg -hide_banner -filters"
-    ]
+    }
   },
   "frontend_build": {
     "node": ">=20.19 <23",
@@ -97,6 +113,11 @@
     "logs and audit-retention state"
   ],
   "excluded_from_controller_image": [
+    {
+      "name": "ffmpeg",
+      "owner": "python environment",
+      "reason": "The PyAV wheel bundles the FFmpeg libraries the controller uses; distribution ffmpeg/ffprobe executables would duplicate them"
+    },
     {
       "name": "mpv",
       "owner": "media agent",

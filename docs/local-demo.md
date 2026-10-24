@@ -16,7 +16,8 @@ leaves playback stopped; changing the bootstrap package alone does not replace i
 ## Start
 
 From the repository root, with the existing Python development environment,
-frontend dependencies, Node, `ffmpeg`, and `ffprobe` installed:
+frontend dependencies, and Node installed (demo media is generated with the
+PyAV-bundled FFmpeg libraries, so no `ffmpeg` executable is needed):
 
 ```bash
 .venv/bin/python examples/local_demo.py prepare
@@ -81,17 +82,17 @@ test output is not writable, pass Playwright a writable `--output` directory
 inside the sandbox rather than changing shared directory permissions.
 
 For UP-00 visual verification, the local `UP-00 Layout Regression` project has a
-three-minute synthetic scene. Open its **Autonomous show logic designer**,
-**Timeline editor**, and **Rehearsal, publication, and rollback** sections
-together. The diagram stays within the card, the timeline scrolls independently,
-and table columns and bottom controls remain reachable. Do not publish or run
+three-minute synthetic scene. Open its **Autonomous show logic designer** and
+**Rehearsal, publication, and rollback** sections together, then choose **Open
+timeline editor**. The diagram stays within the card, the full-screen timeline
+scrolls independently, and table columns and bottom controls remain reachable. Do not publish or run
 physical tests merely to inspect layout.
 
 UP-01 also provides a local **UP-01 Preservation Baseline** project, created
 from the original synthetic
 [shared regression fixture](../tests/fixtures/usability-authoring.json).
 It contains a raw ten-primitive timeline, a schema-v2 legacy sweep, and a
-schema-v1 pulse. In its timeline editor, select **Original synthetic legacy
+schema-v1 pulse. In its timeline editor (**Scenes → Edit timeline**), select **Original synthetic legacy
 sweep**: the stored zoom is 100 pixels/second and snap is 250 ms, and both survive
 Save timeline. This checks preservation, not the planned UP-03 effect editor.
 The local scoped MCP proposal/simulation check is isolated and unmerged; its

@@ -1,5 +1,5 @@
 import { expect, Page, test } from "@playwright/test";
-import { openAdvancedShowWorkspace } from "./show-workspace";
+import { openAdvancedShowWorkspace, openTimelineEditor, openTimelineTool } from "./show-workspace";
 
 let savedDraft: Record<string, unknown> | null = null;
 
@@ -42,8 +42,7 @@ test("timeline ruler markers regions loop and snapping persist", async ({ page }
 
   await page.goto("/demo.html");
   await page.getByRole("button", { name: "Shows", exact: true }).click();
-  await openAdvancedShowWorkspace(page);
-  await page.getByText("Timeline editor", { exact: true }).click();
+  await openTimelineEditor(page);
 
   await expect(page.getByText("0s", { exact: true })).toBeVisible();
   await expect(page.getByText("5s", { exact: true })).toBeVisible();
@@ -54,17 +53,19 @@ test("timeline ruler markers regions loop and snapping persist", async ({ page }
   const timeline = page.getByLabel("Timeline canvas");
   await timeline.focus();
   await page.keyboard.press("ArrowRight");
-  await expect(page.getByText("Global 100 ms")).toBeVisible();
+  await expect(page.getByLabel("Playhead time")).toContainText("0:00.100");
   await page.getByRole("button", { name: "Add marker" }).click();
   await expect(
     page.getByRole("button", { name: "Marker at 100 milliseconds" }),
   ).toBeVisible();
 
+  await openTimelineTool(page, "Loop & ranges");
   await page.getByLabel("Protected start").fill("3000");
   await page.getByLabel("Protected end").fill("3500");
   await page.getByRole("button", { name: "Add protected region" }).click();
-  await page.getByLabel("Loop start").fill("500");
-  await page.getByLabel("Loop end").fill("4000");
+  await page.getByLabel("Loop start", { exact: true }).fill("500");
+  await page.getByLabel("Loop end", { exact: true }).fill("4000");
+  await page.getByRole("button", { name: "Scene settings" }).click();
   await page.getByLabel("Scene priority").fill("75");
   await page.getByLabel("Completion policy").selectOption("loop");
   await page.getByLabel("Request policy").selectOption("at_safe_point");
@@ -76,8 +77,10 @@ test("timeline ruler markers regions loop and snapping persist", async ({ page }
   await page.getByLabel("Media calibration offset left-window").fill("125");
   await page.getByLabel("Required lighting output roofline").uncheck();
   await page.getByLabel("Lighting calibration offset roofline").fill("-40");
+  await page.getByRole("dialog").getByRole("button", { name: "Close" }).click();
   await expect(page.getByRole("button", { name: "media output · left-window" })).toBeVisible();
   await expect(page.getByRole("button", { name: "lighting output · roofline" })).toBeVisible();
+  await openTimelineTool(page, "Tracks");
   await page.getByLabel("New track kind").selectOption("fixture");
   await page.getByLabel("New track name").fill("Window fixture");
   await page.getByLabel("New track resource binding").fill("fixture.window");
@@ -87,6 +90,7 @@ test("timeline ruler markers regions loop and snapping persist", async ({ page }
   await page.getByRole("button", { name: "Save timeline" }).click();
 
   await expect.poll(() => savedDraft).not.toBeNull();
+  await openTimelineTool(page, "Compositions");
   await page.getByLabel("New composition name").fill("Parent composition");
   await page.getByLabel("New composition duration").fill("5000");
   await page.getByLabel("New composition space").selectOption("stage");
@@ -114,12 +118,13 @@ test("timeline ruler markers regions loop and snapping persist", async ({ page }
   await expect(
     page.getByRole("img", { name: "Stage composition overlay" }),
   ).toBeVisible();
+  await openTimelineTool(page, "Compositions");
   await page.getByLabel("Composition to use").selectOption({
     label: "Child composition",
   });
 
   await page
-    .getByRole("button", { name: "Add child to open composition" })
+    .getByRole("button", { name: "Nest in open composition" })
     .click();
   await page.getByLabel("Instance start offset").fill("750");
   await page.getByLabel("Instance time scale").fill("1.25");
@@ -128,7 +133,7 @@ test("timeline ruler markers regions loop and snapping persist", async ({ page }
   await page
     .getByLabel("Instance parameter overrides")
     .fill('{"opacity":0.8,"variant":"ghost"}');
-  await page.getByRole("button", { name: "Instantiate in scene" }).click();
+  await page.getByRole("button", { name: "Add to scene" }).click();
   await expect(page.getByText(/Start 750 ms · time scale 1.25×/)).toBeVisible();
   await hierarchy
     .locator("li")
@@ -140,7 +145,8 @@ test("timeline ruler markers regions loop and snapping persist", async ({ page }
   });
   await expect(breadcrumbs.getByRole("button", { name: "Parent composition" })).toBeVisible();
   await expect(breadcrumbs.getByRole("button", { name: "Child composition" })).toBeVisible();
-  await expect(page.getByText("Global 100 ms · Local 0 ms")).toBeVisible();
+  await expect(page.getByLabel("Playhead time")).toContainText("0:00.000");
+  await expect(page.getByLabel("Playhead time")).toContainText("scene 0:00.100");
   const linkedInstance = page.locator(".composition-instance").filter({
     hasText: "Instance · Child composition",
   });
@@ -151,7 +157,8 @@ test("timeline ruler markers regions loop and snapping persist", async ({ page }
   for (let index = 0; index < 5; index += 1) {
     await page.keyboard.press("ArrowRight");
   }
-  await expect(page.getByText("Global 600 ms · Local 100 ms")).toBeVisible();
+  await expect(page.getByLabel("Playhead time")).toContainText("0:00.100");
+  await expect(page.getByLabel("Playhead time")).toContainText("scene 0:00.600");
   await page.getByRole("button", { name: "Add marker" }).click();
   await page.getByRole("button", { name: "Save timeline" }).click();
   await expect.poll(() => (savedDraft as { editor_metadata?: unknown })?.editor_metadata).not.toBeNull();
@@ -280,12 +287,13 @@ test("controller clock can be selected with media outputs and saved", async ({ p
   await installTimelineRoutes(page);
   await page.goto("/demo.html");
   await page.getByRole("button", { name: "Shows", exact: true }).click();
-  await openAdvancedShowWorkspace(page);
-  await page.getByText("Timeline editor", { exact: true }).click();
+  await openTimelineEditor(page);
+  await page.getByRole("button", { name: "Scene settings" }).click();
   await page.getByLabel("Clock authority").selectOption("controller_timed");
   await expect(page.getByLabel("Clock source")).toBeDisabled();
   await expect(page.getByLabel("Clock source")).toHaveValue("controller");
   await page.getByLabel("Required media output left-window").uncheck();
+  await page.getByRole("dialog").getByRole("button", { name: "Close" }).click();
   await expect(page.getByLabel("Timeline validation")).toContainText("Timeline valid");
   await page.getByRole("button", { name: "Save timeline" }).click();
   await expect.poll(() => savedDraft).not.toBeNull();
@@ -295,6 +303,7 @@ test("controller clock can be selected with media outputs and saved", async ({ p
     media: [expect.objectContaining({ required: false })],
   });
 
+  await page.getByRole("button", { name: "Scene settings" }).click();
   await page.getByLabel("Clock authority").selectOption("media_synchronized");
   await expect(page.getByLabel("Timeline validation")).toContainText(
     "The clock-source media output must remain required.",
@@ -311,9 +320,10 @@ test("LED-only scene remains valid and saves without media dependencies", async 
   await installTimelineRoutes(page, document);
   await page.goto("/demo.html");
   await page.getByRole("button", { name: "Shows", exact: true }).click();
-  await openAdvancedShowWorkspace(page);
-  await page.getByText("Timeline editor", { exact: true }).click();
+  await openTimelineEditor(page);
+  await page.getByRole("button", { name: "Scene settings" }).click();
   await expect(page.getByLabel("Clock authority")).toHaveValue("controller_timed");
+  await page.getByRole("dialog").getByRole("button", { name: "Close" }).click();
   await expect(page.getByLabel("Timeline validation")).toContainText("Timeline valid");
   await page.getByRole("button", { name: "Save timeline" }).click();
   await expect.poll(() => savedDraft).not.toBeNull();
@@ -334,9 +344,9 @@ test("timeline marker workflow is keyboard operable", async ({ page }) => {
   await page.keyboard.press("Enter");
   await page.getByRole("button", { name: /^Open show / }).first().focus();
   await page.keyboard.press("Enter");
-  await page.getByText("Advanced authoring and history", { exact: true }).focus();
+  await page.getByRole("button", { name: "Scenes", exact: true }).focus();
   await page.keyboard.press("Enter");
-  await page.getByText("Timeline editor", { exact: true }).focus();
+  await page.getByRole("button", { name: "Edit timeline", exact: true }).focus();
   await page.keyboard.press("Enter");
 
   const timeline = page.getByLabel("Timeline canvas");
@@ -347,8 +357,16 @@ test("timeline marker workflow is keyboard operable", async ({ page }) => {
   await expect(
     page.getByRole("button", { name: "Marker at 100 milliseconds" }),
   ).toBeVisible();
-  await page.getByRole("button", { name: "Save timeline" }).focus();
-  await page.keyboard.press("Enter");
+  await timeline.focus();
+  await page.keyboard.press("ArrowRight");
+  await page.keyboard.press("m");
+  await expect(
+    page.getByRole("button", { name: "Marker at 200 milliseconds" }),
+  ).toBeVisible();
+  await page.getByLabel("Scrub position").focus();
+  await page.keyboard.press("m");
+  await expect(page.getByRole("button", { name: /^Marker at / })).toHaveCount(3);
+  await page.keyboard.press("Control+s");
   await expect.poll(() => savedDraft).not.toBeNull();
 });
 
@@ -488,9 +506,9 @@ test("maximum timeline marker collection remains virtualized", async ({ page }) 
   await installTimelineRoutes(page, document);
   await page.goto("/demo.html");
   await page.getByRole("button", { name: "Shows", exact: true }).click();
-  await openAdvancedShowWorkspace(page);
   const startedAt = Date.now();
-  await page.getByText("Timeline editor", { exact: true }).click();
+  await openTimelineEditor(page);
+  await openTimelineTool(page, "Markers & cues");
   const markerList = page.locator(
     '.virtual-list[aria-label="Synchronization markers"]',
   );
@@ -871,3 +889,63 @@ function mapperExport() {
     ],
   };
 }
+
+test("ruler scrubbing, loop handles, marker dragging and inspector selection", async ({ page }) => {
+  savedDraft = null;
+  await installTimelineRoutes(page);
+  await page.goto("/demo.html");
+  await page.getByRole("button", { name: "Shows", exact: true }).click();
+  await openTimelineEditor(page);
+
+  const canvas = page.locator(".timeline-canvas");
+  await page.setViewportSize({ width: 1280, height: 1000 });
+  await canvas.evaluate((element) => element.scrollIntoView({ block: "center" }));
+  const box = (await canvas.boundingBox())!;
+  const xAt = (ms: number) => box.x + (ms / 5000) * box.width;
+  const ruler = page.locator(".timeline-ruler");
+  const rulerBox = (await ruler.boundingBox())!;
+  await page.mouse.move(xAt(1000), rulerBox.y + 10);
+  await page.mouse.down();
+  await page.mouse.move(xAt(2500), rulerBox.y + 10, { steps: 4 });
+  await page.mouse.up();
+  await expect(page.getByLabel("Playhead time")).toContainText("0:02.500");
+
+  const loopEnd = page.getByRole("slider", { name: "Loop end handle" });
+  await loopEnd.focus();
+  await page.keyboard.press("ArrowLeft");
+  await page.keyboard.press("ArrowLeft");
+  await expect(loopEnd).toHaveAttribute("aria-valuenow", "4800");
+  const loopStart = page.getByRole("slider", { name: "Loop start handle" });
+  const startBox = (await loopStart.boundingBox())!;
+  await page.mouse.move(startBox.x + startBox.width / 2, startBox.y + startBox.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(xAt(600), startBox.y + startBox.height / 2, { steps: 4 });
+  await page.mouse.up();
+  await expect(loopStart).toHaveAttribute("aria-valuenow", "600");
+  await openTimelineTool(page, "Loop & ranges");
+  await expect(page.getByLabel("Loop end", { exact: true })).toHaveValue("4800");
+
+  const marker = page.getByRole("button", { name: "Marker at 1000 milliseconds" });
+  const markerBox = (await marker.boundingBox())!;
+  await page.mouse.move(markerBox.x + markerBox.width / 2, markerBox.y + markerBox.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(xAt(2000), markerBox.y + markerBox.height / 2, { steps: 6 });
+  await page.mouse.up();
+  await expect(page.getByRole("button", { name: "Marker at 2000 milliseconds" })).toBeVisible();
+  await expect(marker).toHaveCount(0);
+  await page.getByRole("button", { name: "Marker at 2000 milliseconds" }).click();
+  await expect(page.getByRole("button", { name: /^Marker at / })).toHaveCount(0);
+
+  const inspector = page.getByRole("complementary", { name: "Inspector" });
+  await expect(inspector).toContainText("Select a media layer or track");
+  await page.getByRole("button", { name: "media output · left-window" }).click();
+  await expect(inspector).toContainText("Kind: media output");
+
+  await page.keyboard.press("Control+s");
+  await expect.poll(() => savedDraft).not.toBeNull();
+  const saved = savedDraft as ReturnType<typeof draftDocument>;
+  expect(saved.scenes[0].scheduling.safe_points_ms).toEqual([]);
+  expect(
+    (saved.editor_metadata.timeline_views as Record<string, Record<string, number>>).ambient,
+  ).toMatchObject({ loop_start_ms: 600, loop_end_ms: 4800 });
+});

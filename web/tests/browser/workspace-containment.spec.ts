@@ -59,8 +59,6 @@ for (const viewport of viewports) {
     await expect(graph).toBeVisible();
     const initialWidth = await graph.evaluate((element) => element.getBoundingClientRect().width);
 
-    await page.getByText("Timeline editor", { exact: true }).click();
-    await expect(page.getByRole("button", { name: "lighting output · preshow-leds" })).toBeVisible();
     await page.getByText("Rehearsal, publication, and rollback", { exact: true }).click();
     const card = page.locator(".project-card");
     const cardBox = await card.boundingBox();
@@ -78,19 +76,6 @@ for (const viewport of viewports) {
       expect(box!.x + box!.width).toBeLessThanOrEqual(cardBox!.x + cardBox!.width + 1);
     }
 
-    const timeline = page.locator(".timeline-scroll");
-    const timelineSize = await timeline.evaluate((element) => ({
-      visible: element.clientWidth,
-      content: element.scrollWidth,
-    }));
-    expect(timelineSize.content).toBeGreaterThanOrEqual(14400);
-    expect(timelineSize.visible).toBeLessThan(cardBox!.width);
-    const endMarker = page.getByRole("button", { name: "Marker at 175000 milliseconds" });
-    await endMarker.scrollIntoViewIfNeeded();
-    await expect(endMarker).toBeInViewport();
-    expect(await timeline.evaluate((element) => element.scrollLeft)).toBeGreaterThan(0);
-    await endMarker.click();
-    await expect(endMarker).toHaveCount(0);
 
     for (const name of ["Encounter transitions", "Scene transition details"]) {
       const scroller = page.getByRole("region", { name, exact: true });
@@ -112,7 +97,6 @@ for (const viewport of viewports) {
 
     for (const button of [
       page.getByRole("button", { name: "Run visitor interruption rehearsal" }),
-      page.getByRole("button", { name: "Save timeline", exact: true }),
       page.getByRole("button", { name: "Publish immutable package" }),
     ]) {
       await button.scrollIntoViewIfNeeded();
@@ -121,6 +105,33 @@ for (const viewport of viewports) {
       expect(box!.x).toBeGreaterThanOrEqual(0);
       expect(box!.x + box!.width).toBeLessThanOrEqual(viewport.width);
     }
+    expect(await page.evaluate(
+      () => document.documentElement.scrollWidth > document.documentElement.clientWidth,
+    )).toBe(false);
+
+    await page.getByRole("button", { name: "Open timeline editor" }).click();
+    await expect(page.getByRole("button", { name: "lighting output · preshow-leds" })).toBeVisible();
+    const editorBox = await page.locator(".project-card--timeline").boundingBox();
+    expect(editorBox).not.toBeNull();
+    const timeline = page.locator(".timeline-scroll");
+    const timelineSize = await timeline.evaluate((element) => ({
+      visible: element.clientWidth,
+      content: element.scrollWidth,
+    }));
+    expect(timelineSize.content).toBeGreaterThanOrEqual(14400);
+    expect(timelineSize.visible).toBeLessThan(editorBox!.width);
+    const endMarker = page.getByRole("button", { name: "Marker at 175000 milliseconds" });
+    await endMarker.scrollIntoViewIfNeeded();
+    await expect(endMarker).toBeInViewport();
+    expect(await timeline.evaluate((element) => element.scrollLeft)).toBeGreaterThan(0);
+    await endMarker.click();
+    await expect(endMarker).toHaveCount(0);
+    const save = page.getByRole("button", { name: "Save timeline", exact: true });
+    await save.scrollIntoViewIfNeeded();
+    await expect(save).toBeInViewport();
+    const saveBox = await save.boundingBox();
+    expect(saveBox!.x).toBeGreaterThanOrEqual(0);
+    expect(saveBox!.x + saveBox!.width).toBeLessThanOrEqual(viewport.width);
     expect(await page.evaluate(
       () => document.documentElement.scrollWidth > document.documentElement.clientWidth,
     )).toBe(false);

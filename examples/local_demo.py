@@ -6,11 +6,11 @@ import json
 import os
 import secrets
 import shutil
-import subprocess
 import time
 from pathlib import Path
 from typing import Any
 
+import av
 import httpx
 import uvicorn
 from PIL import Image, ImageDraw
@@ -145,44 +145,35 @@ def prepare(root: Path) -> None:
         draw.text((720, 510), "BOTTOM RIGHT", fill="white")
         image.save(card)
     media = {
-        "color-motion.mp4": [
-            "-f",
-            "lavfi",
-            "-i",
+        "color-motion.mp4": (
             "testsrc2=size=640x360:rate=24:duration=4",
-            "-c:v",
             "libx264",
-            "-preset",
-            "ultrafast",
-            "-pix_fmt",
-            "yuv420p",
-        ],
-        "quiet-test-tone.ogg": [
-            "-f",
-            "lavfi",
-            "-i",
-            "sine=frequency=440:duration=4",
-            "-af",
-            "volume=0.05",
-            "-c:a",
-            "libvorbis",
-        ],
+            {"preset": "ultrafast"},
+        ),
+        "quiet-test-tone.ogg": ("sine=frequency=440:duration=4,volume=0.05", "libvorbis", {}),
     }
-    for filename, arguments in media.items():
+    for filename, (source, codec, options) in media.items():
         if not (assets / filename).exists():
-            subprocess.run(
-                [
-                    "ffmpeg",
-                    "-hide_banner",
-                    "-loglevel",
-                    "error",
-                    "-nostdin",
-                    "-y",
-                    *arguments,
-                    str(assets / filename),
-                ],
-                check=True,
+            render_lavfi(source, assets / filename, codec=codec, options=options)
+
+
+def render_lavfi(source: str, target: Path, *, codec: str, options: dict[str, str]) -> None:
+    with av.open(source, format="lavfi") as generator, av.open(str(target), "w") as output:
+        input_stream = generator.streams[0]
+        if input_stream.type == "video":
+            stream = output.add_stream(codec, rate=input_stream.average_rate, options=options)
+            stream.width = input_stream.codec_context.width
+            stream.height = input_stream.codec_context.height
+            stream.pix_fmt = "yuv420p"
+        else:
+            stream = output.add_stream(
+                codec,
+                rate=input_stream.codec_context.sample_rate,
+                options=options,
             )
+        for frame in generator.decode(input_stream):
+            output.mux(stream.encode(frame))
+        output.mux(stream.encode(None))
 
 
 def serve(root: Path) -> None:

@@ -529,7 +529,10 @@ def create_mcp_app(services: GuiServices) -> Starlette:
 
         Requires read and this runtime's installation binding. Status is placed,
         needs_update (reference view drawing differs from saved stage data), manual
-        (stage data not derived from the reference view) or unplaced. Read-only.
+        (stage data not derived from the reference view, including manually placed
+        projectors) or unplaced. Surface-placed projectors follow their drawn surface
+        automatically; get_spatial_layout reports each projector's stage_placement.
+        Read-only.
         """
         input_installation_token(McpScope.READ)
         installation = services.repository.get_runtime_installation()
@@ -553,8 +556,9 @@ def create_mcp_app(services: GuiServices) -> Starlette:
         Requires explicit installation_edit, an installation author role and the
         runtime installation binding. source_revision is the current stage reference
         revision (omit only when none exists). apply=True rewrites stage points, LED
-        stage transforms and projector stage homographies for objects drawn on the
-        reference view; photo calibration, wiring and native pixels are unchanged.
+        stage transforms and surface-placed projector stage homographies for objects
+        drawn on the reference view; manually placed projectors, photo calibration,
+        wiring and native pixels are unchanged.
         Sends no hardware commands. Re-read with get_stage_map on conflict.
         """
         token = input_installation_token(McpScope.INSTALLATION_EDIT)
@@ -1191,7 +1195,25 @@ def create_mcp_app(services: GuiServices) -> Starlette:
                         ),
                         "writes": (
                             "geometry stage points, LED stage transforms and projector "
-                            "stage homographies only"
+                            "stage homographies only; manually placed projectors are skipped"
+                        ),
+                    },
+                    "projector_stage_placement": {
+                        "modes": ["surface", "manual"],
+                        "default": "surface",
+                        "read_tools": ["get_stage_map", "get_spatial_layout"],
+                        "write_surface": "administrator_gui_only",
+                        "surface_basis_order": [
+                            "stage_view",
+                            "stage_points",
+                            "default_scale",
+                        ],
+                        "semantics": (
+                            "surface placement derives each projector's stage extent and "
+                            "homography from its drawn projector surface and re-derives it "
+                            "when the surface is redrawn; manual keeps an entered rectangle. "
+                            "Shared-stage compositions sample each projector from this "
+                            "placement."
                         ),
                     },
                     "device_writes": "administrator_gui_only",
@@ -1384,7 +1406,9 @@ def create_mcp_app(services: GuiServices) -> Starlette:
     ) -> dict[str, JsonValue]:
         """Read LED/projector stage extents, meshes, calibration and optional photo geometry.
 
-        Logical LED samples are opt-in/paginated (maximum 500). Geometry is read-only.
+        Each projector reports stage_placement: surface (follows its drawn surface) or
+        manual (entered rectangle). Logical LED samples are opt-in/paginated (maximum
+        500). Geometry is read-only.
         """
         token = _authorize(services, McpScope.READ)
         revision = services.repository.get_revision(token.project_id)

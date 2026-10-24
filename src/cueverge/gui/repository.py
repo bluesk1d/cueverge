@@ -1265,6 +1265,43 @@ class GuiRepository:
 
         self._migrate_optional_geometry_photos()
         self._migrate_stage_reference()
+        self._migrate_projector_stage_placement()
+
+    def _migrate_projector_stage_placement(self) -> None:
+        from cueverge.gui.projector_mapping import refresh_surface_placements
+
+        with closing(self._connect()) as connection, connection:
+            mapping_columns = {
+                str(row["name"])
+                for row in connection.execute("PRAGMA table_info(projector_surface_mappings)")
+            }
+            if "stage_placement" in mapping_columns:
+                return
+            connection.execute(
+                "ALTER TABLE projector_surface_mappings ADD COLUMN stage_placement TEXT "
+                "NOT NULL DEFAULT 'surface' CHECK (stage_placement IN ('surface', 'manual'))"
+            )
+            # Keep deliberately entered extents; the shared default rectangle is not a choice.
+            connection.execute(
+                """
+                UPDATE projector_surface_mappings SET stage_placement = 'manual'
+                WHERE stage_homography_json IS NULL AND surface_model = 'planar'
+                  AND NOT (stage_x = 0 AND stage_y = 0
+                           AND stage_width = 4 AND stage_height = 2.25)
+                """
+            )
+            occurred_at = datetime.now(UTC).isoformat()
+            for row in connection.execute("SELECT id FROM installations").fetchall():
+                refresh_surface_placements(
+                    connection,
+                    installation_id=str(row["id"]),
+                    semantic_id=None,
+                    occurred_at=occurred_at,
+                )
+            connection.execute(
+                "INSERT OR IGNORE INTO schema_migrations(version,applied_at) "
+                "VALUES (43,strftime('%Y-%m-%dT%H:%M:%fZ','now'))"
+            )
 
     def _migrate_stage_reference(self) -> None:
         with closing(self._connect()) as connection, connection:

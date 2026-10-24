@@ -86,7 +86,6 @@ def render_projector_composition(
     composition_id: str,
     assets: AssetUploadService,
     output_directory: Path,
-    ffmpeg: str = "ffmpeg",
 ) -> dict[str, object]:
     metadata = cast(dict[str, object], draft.editor_metadata)
     compositions = _mapping(metadata.get("compositions"))
@@ -166,7 +165,6 @@ def render_projector_composition(
         source_checksums=source_checksums,
         calibration_revisions={target_id: 0},
         media_end_behavior=_string(settings.get("media_end_behavior")),
-        ffmpeg=ffmpeg,
     )
 
 

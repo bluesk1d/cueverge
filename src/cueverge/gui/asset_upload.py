@@ -2,10 +2,10 @@ import hashlib
 import json
 import mimetypes
 import os
-import re
 import shutil
 import sqlite3
 import subprocess
+import sys
 import threading
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
@@ -38,6 +38,7 @@ REVIEW_ARTIFACT_TYPES = {
 THUMBNAIL_ARTIFACT_TYPE = ("image/jpeg", ".jpg")
 WAVEFORM_ARTIFACT_TYPE = ("image/png", ".png")
 DERIVATIVE_PROFILE = "review-v1"
+MEDIA_TOOL_MODULE = "cueverge.gui.media_tools"
 
 
 class AssetUploadError(RuntimeError):
@@ -505,7 +506,7 @@ class AssetUploadService:
             object_path.chmod(0o600)
         metadata = {
             "status": "unavailable",
-            "reason": "ffprobe is not installed on the controller",
+            "reason": "media processing has not completed",
         }
         connection.execute(
             """
@@ -594,42 +595,12 @@ class AssetUploadService:
                     occurred_at=occurred_at,
                 )
                 return
-        ffprobe = shutil.which("ffprobe")
-        if ffprobe is None:
-            self._finish_processing(
-                asset_id=asset_id,
-                status="failed",
-                scan_status=scan_status,
-                metadata={"status": "unavailable"},
-                error="ffprobe is not installed on the controller",
-                occurred_at=occurred_at,
-            )
-            return
         try:
-            probe = subprocess.run(
-                [
-                    ffprobe,
-                    "-v",
-                    "error",
-                    "-show_format",
-                    "-show_streams",
-                    "-of",
-                    "json",
-                    str(object_path),
-                ],
-                capture_output=True,
-                check=False,
-                text=True,
-                timeout=120,
+            metadata = _extract_probe_metadata(
+                json.loads(_run_media_tool(["probe", str(object_path)], timeout=120))
             )
-            if probe.returncode != 0:
-                raise ValueError(_last_diagnostic(probe.stderr))
-            metadata = _extract_probe_metadata(json.loads(probe.stdout))
-            ffmpeg = shutil.which("ffmpeg")
-            if ffmpeg is None:
-                raise ValueError("ffmpeg is not installed on the controller")
             if metadata["audio_codecs"]:
-                metadata["loudness_lufs"] = _measure_loudness(ffmpeg, object_path)
+                metadata["loudness_lufs"] = _measure_loudness(object_path)
                 metadata["loudness_status"] = (
                     "ready" if metadata["loudness_lufs"] is not None else "unavailable"
                 )
@@ -637,7 +608,6 @@ class AssetUploadService:
                 metadata["loudness_lufs"] = None
                 metadata["loudness_status"] = "not_applicable"
             metadata["artifacts"] = self._generate_artifacts(
-                ffmpeg=ffmpeg,
                 source=object_path,
                 digest=asset.digest_sha256,
                 media_type=asset.media_type,
@@ -776,7 +746,6 @@ class AssetUploadService:
     def _generate_artifacts(
         self,
         *,
-        ffmpeg: str,
         source: Path,
         digest: str,
         media_type: str | None,
@@ -793,23 +762,9 @@ class AssetUploadService:
         if family in {"image", "video"}:
             thumbnail_type, thumbnail_suffix = THUMBNAIL_ARTIFACT_TYPE
             thumbnail = directory / f"thumbnail{thumbnail_suffix}"
-            thumbnail_filter = (
-                "thumbnail,scale=640:640:force_original_aspect_ratio=decrease"
-                if family == "video"
-                else "scale=640:640:force_original_aspect_ratio=decrease"
-            )
-            self._run_ffmpeg(
-                ffmpeg,
-                [
-                    "-i",
-                    str(source),
-                    "-frames:v",
-                    "1",
-                    "-vf",
-                    thumbnail_filter,
-                    "-q:v",
-                    "3",
-                ],
+            self._run_media_artifact(
+                ["thumbnail", *(["--representative"] if family == "video" else [])],
+                source,
                 thumbnail,
             )
             artifacts["thumbnail"] = self._artifact_metadata(
@@ -824,82 +779,23 @@ class AssetUploadService:
             artifacts["review"] = self._artifact_metadata(review, media_type, digest)
             return artifacts
         review = directory / f"review{review_suffix}"
-        if family == "video":
-            review_arguments = [
-                "-i",
-                str(source),
-                "-vf",
-                ("scale='trunc(min(854/iw\\,480/ih)*iw/2)*2':'trunc(min(854/iw\\,480/ih)*ih/2)*2'"),
-                "-c:v",
-                "libx264",
-                "-preset",
-                "veryfast",
-                "-crf",
-                "28",
-                "-c:a",
-                "aac",
-                "-b:a",
-                "96k",
-                "-movflags",
-                "+faststart",
-            ]
-        elif family == "image":
-            review_arguments = [
-                "-i",
-                str(source),
-                "-frames:v",
-                "1",
-                "-vf",
-                "scale=1280:1280:force_original_aspect_ratio=decrease",
-                "-q:v",
-                "3",
-            ]
-        else:
-            review_arguments = [
-                "-i",
-                str(source),
-                "-vn",
-                "-c:a",
-                "libmp3lame",
-                "-b:a",
-                "128k",
-            ]
-        self._run_ffmpeg(ffmpeg, review_arguments, review)
+        self._run_media_artifact([f"{family}-review"], source, review)
         artifacts["review"] = self._artifact_metadata(review, review_type, digest)
         if has_audio:
             waveform_type, waveform_suffix = WAVEFORM_ARTIFACT_TYPE
             waveform = directory / f"waveform{waveform_suffix}"
-            self._run_ffmpeg(
-                ffmpeg,
-                [
-                    "-i",
-                    str(source),
-                    "-filter_complex",
-                    "aformat=channel_layouts=mono,showwavespic=s=1200x240:colors=#6ee7ff",
-                    "-frames:v",
-                    "1",
-                ],
-                waveform,
-            )
+            self._run_media_artifact(["waveform"], source, waveform)
             artifacts["waveform"] = self._artifact_metadata(waveform, waveform_type, digest)
         return artifacts
 
-    def _run_ffmpeg(self, ffmpeg: str, arguments: list[str], target: Path) -> None:
+    def _run_media_artifact(self, operation: list[str], source: Path, target: Path) -> None:
         if target.is_file():
             return
         temporary = target.with_name(f".{target.stem}-{uuid4().hex}.tmp{target.suffix}")
         try:
-            generated = subprocess.run(
-                [ffmpeg, "-hide_banner", "-loglevel", "error", "-y", *arguments, str(temporary)],
-                capture_output=True,
-                check=False,
-                text=True,
-                timeout=900,
-            )
-            if generated.returncode != 0:
-                raise ValueError(_last_diagnostic(generated.stderr))
+            _run_media_tool([*operation, str(source), str(temporary)], timeout=900)
             if not temporary.is_file() or temporary.stat().st_size == 0:
-                raise ValueError("ffmpeg did not produce the expected artifact")
+                raise ValueError("media processing did not produce the expected artifact")
             os.replace(temporary, target)
             target.chmod(0o600)
         finally:
@@ -1003,11 +899,11 @@ def _sha256_file(path: Path) -> str:
 
 def _extract_probe_metadata(value: object) -> dict[str, object]:
     if not isinstance(value, dict):
-        raise ValueError("ffprobe response must be an object")
+        raise ValueError("media probe response must be an object")
     streams = value.get("streams", [])
     format_value = value.get("format", {})
     if not isinstance(streams, list) or not isinstance(format_value, dict):
-        raise ValueError("ffprobe streams and format have invalid shapes")
+        raise ValueError("media probe streams and format have invalid shapes")
     typed_streams = [stream for stream in streams if isinstance(stream, dict)]
     video_streams = [stream for stream in typed_streams if stream.get("codec_type") == "video"]
     audio_streams = [stream for stream in typed_streams if stream.get("codec_type") == "audio"]
@@ -1074,26 +970,24 @@ def _extract_probe_metadata(value: object) -> dict[str, object]:
     }
 
 
-def _measure_loudness(ffmpeg: str, path: Path) -> float | None:
-    measured = subprocess.run(
-        [
-            ffmpeg,
-            "-nostats",
-            "-i",
-            str(path),
-            "-filter_complex",
-            "ebur128",
-            "-f",
-            "null",
-            "-",
-        ],
+def _measure_loudness(path: Path) -> float | None:
+    measured = json.loads(_run_media_tool(["loudness", str(path)], timeout=300))
+    value = measured.get("integrated_lufs") if isinstance(measured, dict) else None
+    return float(value) if isinstance(value, int | float) else None
+
+
+def _run_media_tool(arguments: list[str], *, timeout: int) -> str:
+    """Run PyAV media work in a child interpreter to isolate untrusted decoding."""
+    completed = subprocess.run(
+        [sys.executable, "-m", MEDIA_TOOL_MODULE, *arguments],
         capture_output=True,
         check=False,
         text=True,
-        timeout=300,
+        timeout=timeout,
     )
-    matches = re.findall(r"I:\s*(-?\d+(?:\.\d+)?) LUFS", measured.stderr)
-    return float(matches[-1]) if matches else None
+    if completed.returncode != 0:
+        raise ValueError(_last_diagnostic(completed.stderr))
+    return completed.stdout
 
 
 def _optional_float(value: object) -> float | None:

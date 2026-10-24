@@ -339,19 +339,43 @@ REST (installation author, origin/CSRF, revisioned):
   writes placement for every object drawn on the stage view: geometry
   `stage_points` (for all linked instances), lighting-surface `stage_matrix`
   (an exact similarity for two points, least-squares affine otherwise), and,
-  for planar projector mappings, a `stage_homography` from normalized native
-  `(u, v)` to stage units with a bounding `stage_x/y/width/height`. Subdivided
-  projector meshes receive stage coordinates only when their vertex count
-  matches the layout points. Revisions advance and one audit event is recorded.
+  for surface-placed planar projector mappings, a `stage_homography` from
+  normalized native `(u, v)` to stage units with a bounding
+  `stage_x/y/width/height`. Subdivided projector meshes receive stage
+  coordinates only when their vertex count matches the layout points.
+  Manually placed projectors are skipped and reported with a `manual` message.
+  Revisions advance and one audit event is recorded.
 
-Derived values are stored state, not a live link: removing the stage photo
-keeps them, and changing photo calibration does not move them until the next
-apply. A manual projector stage extent, orientation or mirroring change clears
-that projector's `stage_homography`. With a homography, the mapper export emits
-an 8×8 perspective mesh, `stage-coverage` returns exact polygon regions, and the
-export's `stage` object gives `width`, `height`, `unit` and the reference photo.
-Range checks then use the stage view rather than the projector bounding box, so
-LEDs outside projector coverage remain valid.
+Derived values are stored state: removing the stage photo keeps them, and
+changing photo calibration does not move them until the next apply. With a
+homography, the mapper export emits an 8×8 perspective mesh, `stage-coverage`
+returns exact polygon regions, and the export's `stage` object gives `width`,
+`height`, `unit` and the reference photo. Range checks then use the stage view
+rather than the projector bounding box, so LEDs outside projector coverage
+remain valid.
+
+#### Projector stage placement
+
+`ProjectorMappingRequest.stage_placement` is `surface` (default) or `manual`.
+
+- `surface`: the server derives `stage_x/y/width/height`, the planar
+  `stage_homography` (or subdivided mesh stage coordinates) from the drawn
+  projector surface and ignores submitted stage values when derivation
+  succeeds. The basis, reported as `stage_placement_basis`, is the first
+  available of `stage_view` (the linked surface drawn on the stage reference
+  photo), `stage_points` (saved geometry stage points), or `default_scale`
+  (only when no stage reference exists: the mapped drawing at
+  `units_per_canvas = 0.01`). Creating or updating `projector_surface` geometry
+  re-derives every surface-placed mapping with that semantic ID, advancing its
+  revision and recording an `installation.projector_mapping.stage_placement`
+  audit event. When nothing can be derived, the submitted rectangle is stored
+  and `stage_placement_message` explains why.
+- `manual`: the submitted rectangle is stored without a homography and is never
+  rewritten by geometry edits or stage reference apply. A manual mapping on the
+  default `0, 0, 4, 2.25` rectangle gets a warning `stage_placement_message`.
+
+Migration 43 adds the column, marks existing planar mappings with a non-default
+rectangle and no derived homography as `manual`, and re-derives the rest.
 
 MCP:
 
@@ -365,6 +389,11 @@ MCP:
 - Discover both under `get_capabilities.installation_setup.stage_reference`
   (with `StageReferenceRequest` JSON schema) and `features.stage_reference`.
   `get_spatial_layout` includes the `stage` frame and reports stage units.
+- `get_capabilities.installation_setup.projector_stage_placement` describes the
+  `surface`/`manual` modes and basis order. Each `get_spatial_layout` projector
+  reports `stage_placement` beside its `stage_extent`. MCP reads placement
+  only; changing a projector's placement mode is administrator GUI work, and
+  `update_stage_reference` apply skips manually placed projectors.
 
 ```json
 {
@@ -986,15 +1015,16 @@ consume or validate the manifest rather than maintaining an independent list.
 
 The controller Dockerfile derives its required and optional Debian package
 specifications from this inventory. The startup preflight reads the same file
-and fails closed when required executables, FFmpeg encoders/filters, FFprobe
-features, or required ClamAV definitions are unavailable. Keep the inventory
-synchronized with runtime subprocess calls rather than adding package or
-capability lists directly to Docker or shell files:
+and fails closed when required executables, Python media libraries, media
+encoders, decoders, filters, or container formats, or required ClamAV
+definitions are unavailable. Keep the inventory synchronized with runtime
+media operations rather than adding package or capability lists directly to
+Docker or shell files:
 
 | Tool | Image role | Requirement |
 | --- | --- | --- |
 | Python 3.12+ and the locked `pyproject.toml`/`uv.lock` environment | Controller runtime | Required |
-| `ffmpeg` and `ffprobe` (normally supplied by the distribution's `ffmpeg` package) | Asset metadata, loudness analysis, thumbnails, review proxies, waveforms, and render jobs | Required for asset processing and rendering |
+| FFmpeg libraries bundled in the locked PyAV (`av`) wheel | Asset metadata, loudness analysis, thumbnails, review proxies, waveforms, preview frames, and render jobs | Required; supplied by the Python environment, so no distribution `ffmpeg` package or `ffmpeg`/`ffprobe` executables are installed |
 | `clamscan` and current ClamAV definitions | Uploaded-asset malware scanning | Optional, but production deployments that require malware scanning must install both and arrange definition updates |
 | Node.js and npm | Building the React/Vite application | Build-stage only; do not retain them in the final controller image |
 | CA certificates | TLS connections to external services and devices | Required in the runtime image |
@@ -1002,8 +1032,17 @@ capability lists directly to Docker or shell files:
 Base images are digest-pinned and required native package versions are pinned
 in the inventory. Update each package version and its base-image digest
 together after rebuilding and running the dependency inventory tests. Startup
-reports `ffmpeg`, `ffprobe`, and configured scanner versions and verifies the
-declared codecs, filters, and probe features used by generated artifacts.
+reports the PyAV-bundled FFmpeg version and configured scanner versions and
+verifies the declared encoders, decoders, filters, and container formats used
+by asset processing and rendering. Upgrading `av` in `uv.lock` changes the
+bundled FFmpeg; rerun the preflight and render reproducibility tests when doing
+so.
+
+Asset processing decodes untrusted uploads in a child interpreter
+(`python -m cueverge.gui.media_tools`) with per-operation timeouts, so a
+malformed upload cannot crash or stall the controller process. Render encoding
+and artifact preview frames, which only handle controller-generated media, run
+in-process.
 The Dockerfile must also create writable persistent mounts for GUI data,
 original assets, derived artifacts, logs, and other configured state; these
 must not live only in the container layer.
@@ -1020,7 +1059,8 @@ them.
 
 The repository Dockerfile builds the React application and locked Python
 environment in separate stages. The final image runs as an unprivileged user,
-contains `ffmpeg`, `ffprobe`, and CA certificates, exposes the existing
+contains the locked Python environment (including PyAV's bundled FFmpeg
+libraries) and CA certificates, exposes the existing
 liveness/readiness endpoints as its container healthcheck, and stores mutable
 GUI state under `/var/lib/cueverge`. It includes the synthetic demo show as a
 safe default; mount a private show package read-only and set

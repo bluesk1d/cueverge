@@ -49,7 +49,7 @@ function time(value: number): string {
 
 export function SceneWorkspace({
   draft, sceneId, canEdit, assets, onSelectScene, onSave, onDirtyChange,
-  onOpenAdvanced, onDelete, canAdd, onCreated,
+  onOpenTimeline, onDelete, canAdd, onCreated,
 }: {
   draft: ProjectDraftRecord;
   sceneId: string;
@@ -58,7 +58,7 @@ export function SceneWorkspace({
   onSelectScene: (id: string) => void;
   onSave: (document: Document) => Promise<void>;
   onDirtyChange: (dirty: boolean) => void;
-  onOpenAdvanced: () => void;
+  onOpenTimeline: () => void;
   onDelete: (id: string) => Promise<void>;
   canAdd: boolean;
   onCreated: (updated: ProjectDraftRecord, selectedSceneId: string) => void;
@@ -293,6 +293,9 @@ export function SceneWorkspace({
         </div>
         <div>
           <span role="status">{saving ? "Saving…" : dirty ? "Unsaved edits" : "Saved · not a live update"}</span>
+          <button type="button" className="scene-open-timeline" disabled={dirty}
+            title={dirty ? "Save or cancel scene edits before opening the timeline editor." : undefined}
+            onClick={onOpenTimeline}>Edit timeline</button>
           {canEdit && <div className="scene-save-controls">
             <button form={formId} type="submit" disabled={!dirty || saving || issues.length > 0}>Save scene</button>
             <button type="button" disabled={!dirty || saving} onClick={() => {
@@ -364,19 +367,19 @@ export function SceneWorkspace({
           }}>Add light effect</button>}
           </> : <p>This is a media-only scene. Preview assigned assets below, or use Add output to include lighting.</p>}
           {advancedContributions > 0 && <div className="scene-advanced">
-            <p>This scene also has {advancedContributions} synchronized cues, transform layers, or compositions. They are preserved separately.</p>
-            <button onClick={onOpenAdvanced}>Open advanced timeline</button>
+            <p>This scene also has {advancedContributions} synchronized cues, transform layers, or compositions. They are edited in the timeline editor.</p>
+            <button onClick={onOpenTimeline}>Open timeline editor</button>
           </div>}
           {media.length > 0 && <details className="scene-advanced" open={outputs.length === 0}>
             <summary>Media in this scene ({media.length})</summary>
-            <button onClick={onOpenAdvanced}>Open media and composition timeline</button>
+            <button onClick={onOpenTimeline}>Open timeline editor</button>
             {media.map((value, index) => {
               const asset = assets.find((candidate) => candidate.id === value.asset);
               return <div key={index}>
                 <strong>{text(record(value).id, "Media output")}</strong>
                 <p>{asset?.name ?? value.asset ?? "No managed media assigned"}</p>
                 {asset && <SceneMediaPreview key={asset.id} asset={asset} />}
-                <small>Use Assets or the advanced timeline for media placement and composition preview.</small>
+                <small>Use the timeline editor for media placement and composition preview.</small>
               </div>;
             })}
           </details>}

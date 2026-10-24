@@ -9,6 +9,8 @@ import numpy as np
 CANVAS_WIDTH = 1000.0
 CANVAS_HEIGHT = 600.0
 STAGE_MESH_DIVISIONS = 8
+# Stage units per layout pixel when no stage reference view has been chosen.
+DEFAULT_UNITS_PER_CANVAS = 0.01
 
 Point = tuple[float, float]
 Polygon = tuple[Point, ...]

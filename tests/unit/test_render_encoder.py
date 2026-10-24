@@ -1,6 +1,4 @@
 import json
-import shutil
-import subprocess
 from pathlib import Path
 
 import numpy as np
@@ -11,12 +9,9 @@ from cueverge.gui.render_encoder import (
     RenderEncodingError,
     encode_output_set,
 )
+from tests.unit.media_fixtures import stream_types
 
 
-@pytest.mark.skipif(
-    shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None,
-    reason="ffmpeg and ffprobe are required",
-)
 def test_output_set_encodes_common_video_and_audio_only_on_owner(
     tmp_path: Path,
 ) -> None:
@@ -67,14 +62,14 @@ def test_output_set_encodes_common_video_and_audio_only_on_owner(
     assert stored["composition_digest"] == "b" * 64
     assert stored["source_checksums"] == {"ghost.png": "a" * 64}
     assert stored["encoder"]["identity"].startswith("ffmpeg version ")
+    assert "(PyAV " in stored["encoder"]["identity"]
     members = {item["resource"]: item for item in stored["members"]}
     assert members["projector.left"]["has_audio"] is True
     assert members["projector.right"]["has_audio"] is False
     assert members["projector.left"]["streams"]["audio"]["boundary"]["metadata_inspected"] is True
     assert members["projector.left"]["streams"]["audio"]["boundary"]["first_packet_pts_time"] <= 0
     for resource, member in members.items():
-        probe = _probe(output_root / member["filename"])
-        types = [stream["codec_type"] for stream in probe["streams"]]
+        types = stream_types(output_root / member["filename"])
         assert "video" in types
         assert ("audio" in types) is (resource == "projector.left")
         assert member["digest_sha256"]
@@ -111,25 +106,6 @@ def _frames(color: tuple[int, int, int]) -> tuple[np.ndarray, ...]:
     frame[..., :3] = color
     frame[..., 3] = 255
     return (frame.copy(), frame.copy())
-
-
-def _probe(path: Path) -> dict[str, object]:
-    completed = subprocess.run(
-        [
-            "ffprobe",
-            "-v",
-            "error",
-            "-show_streams",
-            "-of",
-            "json",
-            str(path),
-        ],
-        check=True,
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
-    return json.loads(completed.stdout)
 
 
 def test_output_set_rejects_invalid_gapless_loop_before_encoding(

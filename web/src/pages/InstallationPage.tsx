@@ -695,6 +695,7 @@ function GeometryMapper({
     resource: projectorResources[0] ?? "",
     native_width: 1920,
     native_height: 1080,
+    stage_placement: "surface" as "surface" | "manual",
     stage_x: 0,
     stage_y: 0,
     stage_width: 4,
@@ -940,6 +941,7 @@ function GeometryMapper({
           resource: loaded.resource,
           native_width: loaded.native_width,
           native_height: loaded.native_height,
+          stage_placement: loaded.stage_placement ?? "surface",
           stage_x: loaded.stage_x,
           stage_y: loaded.stage_y,
           stage_width: loaded.stage_width,
@@ -1083,7 +1085,24 @@ function GeometryMapper({
       kind === "projector_surface" &&
       (mappingValues.surface_model === "planar" ? points.length === 4 : points.length >= 5)
     ) {
-      await saveProjectorMapping(saved.id, mappingValues, mapping?.revision);
+      // Saving surface geometry re-derives surface-placed mappings, advancing their revision.
+      const mappingRevision = mapping
+        ? (await getProjectorMapping(saved.id).catch(() => mapping)).revision
+        : undefined;
+      const savedMapping = await saveProjectorMapping(
+        saved.id,
+        mappingValues,
+        mappingRevision,
+      );
+      setMapping(savedMapping);
+      setMappingValues((current) => ({
+        ...current,
+        stage_x: savedMapping.stage_x,
+        stage_y: savedMapping.stage_y,
+        stage_width: savedMapping.stage_width,
+        stage_height: savedMapping.stage_height,
+        mesh_vertices: savedMapping.mesh_vertices ?? current.mesh_vertices,
+      }));
     }
     if (kind === "pixel_segment") {
       const localPoints =
@@ -1950,6 +1969,30 @@ function GeometryMapper({
             />
             Allow overscan
           </label>
+          <label>
+            Stage placement
+            <select
+              value={mappingValues.stage_placement}
+              onChange={(event) =>
+                setMappingValues((current) => ({
+                  ...current,
+                  stage_placement: event.target.value as "surface" | "manual",
+                }))
+              }
+            >
+              <option value="surface">From drawn surface</option>
+              <option value="manual">Manual stage rectangle</option>
+            </select>
+          </label>
+          <small className="asset-governance__wide" role="status">
+            {mappingValues.stage_placement === "surface"
+              ? mapping?.stage_placement === "surface" && mapping.stage_placement_message
+                ? mapping.stage_placement_message
+                : "Stage position and size follow this drawn surface when saved."
+              : mapping?.stage_placement === "manual" && mapping.stage_placement_message
+                ? mapping.stage_placement_message
+                : "Enter the stage rectangle; redrawing the surface will not move it."}
+          </small>
           {(
             [
               ["native_width", "Native width"],
@@ -1971,7 +2014,22 @@ function GeometryMapper({
               <input
                 type="number"
                 step="any"
-                value={mappingValues[field]}
+                value={
+                  mappingValues.stage_placement === "surface" &&
+                  field.startsWith("stage_")
+                    ? Number(mappingValues[field].toFixed(4))
+                    : mappingValues[field]
+                }
+                readOnly={
+                  mappingValues.stage_placement === "surface" &&
+                  field.startsWith("stage_")
+                }
+                title={
+                  mappingValues.stage_placement === "surface" &&
+                  field.startsWith("stage_")
+                    ? "Derived from the drawn surface. Choose Manual stage rectangle to edit."
+                    : undefined
+                }
                 onChange={(event) =>
                   setMappingValues((current) => ({
                     ...current,

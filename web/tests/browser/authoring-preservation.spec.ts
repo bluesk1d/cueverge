@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { openAdvancedShowWorkspace } from "./show-workspace";
+import { openAdvancedShowWorkspace, openTimelineEditor } from "./show-workspace";
 
 import baseline from "../../../tests/fixtures/usability-authoring.json" with { type: "json" };
 
@@ -31,8 +31,7 @@ for (const scene of baseline.scenes) {
 
     await page.goto("/demo.html");
     await page.getByRole("button", { name: "Shows", exact: true }).click();
-    await openAdvancedShowWorkspace(page);
-    await page.getByText("Timeline editor", { exact: true }).click();
+    await openTimelineEditor(page);
     await page.getByRole("combobox", { name: "Scene", exact: true }).selectOption(scene.id);
     if (scene.id === "legacy-sweep") {
       await expect(page.getByRole("slider", { name: "Zoom", exact: true })).toHaveValue("100");
@@ -50,7 +49,9 @@ for (const scene of baseline.scenes) {
     );
 
     if (scene.id === "baseline-timeline") {
+      await page.getByRole("button", { name: "Scene settings" }).click();
       await page.getByLabel("Lighting calibration offset leds", { exact: true }).fill("125");
+      await page.getByRole("dialog").getByRole("button", { name: "Close" }).click();
       await page.getByRole("button", { name: "Save timeline", exact: true }).click();
       await expect.poll(() => revision).toBe(3);
       const expected = structuredClone(baseline);

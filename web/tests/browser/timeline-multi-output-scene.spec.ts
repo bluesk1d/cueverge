@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { openAdvancedShowWorkspace }from "./show-workspace";
+import { openAdvancedShowWorkspace, openTimelineEditor, openTimelineTool } from "./show-workspace";
 
 let savedDraft: Record<string, unknown> | null = null;
 
@@ -30,8 +30,7 @@ test("creator authors a complete multi-output scene without JSON edits", async (
 
   await page.goto("/demo.html");
   await page.getByRole("button", { name: "Shows", exact: true }).click();
-  await openAdvancedShowWorkspace(page);
-  await page.getByText("Timeline editor", { exact: true }).click();
+  await openTimelineEditor(page);
 
   const timeline = page.getByLabel("Timeline canvas");
   await timeline.focus();
@@ -39,6 +38,7 @@ test("creator authors a complete multi-output scene without JSON edits", async (
     await page.keyboard.press("ArrowRight");
   }
   await page.getByRole("button", { name: "Add marker" }).click();
+  await openTimelineTool(page, "Markers & cues");
   await page.getByLabel("New sync marker name").fill("Impact");
   await page.getByRole("button", { name: "Add sync marker" }).click();
 
@@ -143,6 +143,7 @@ async function addTrack(
   name: string,
   binding: string,
 ) {
+  await openTimelineTool(page, "Tracks");
   await page.getByLabel("New track kind").selectOption(kind);
   await page.getByLabel("New track name").fill(name);
   await page.getByLabel("New track resource binding").fill(binding);
@@ -155,6 +156,7 @@ async function addLightingCue(
   trackLabel: string,
   offset: string,
 ) {
+  await openTimelineTool(page, "Markers & cues");
   await page.getByLabel("New synchronized cue name").fill(name);
   await page.getByLabel("New synchronized cue kind").selectOption("lighting");
   await page

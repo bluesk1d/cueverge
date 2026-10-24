@@ -1,4 +1,5 @@
 import argparse
+import importlib
 import json
 import re
 import shutil
@@ -41,27 +42,7 @@ def validate_inventory(
             if shutil.which(executable) is None:
                 diagnostics.append(f"required deployment tool is unavailable: {executable}")
 
-    if shutil.which("ffmpeg") is not None:
-        encoders = _listed_names(["ffmpeg", "-hide_banner", "-encoders"])
-        for encoder in inventory["runtime"]["ffmpeg_capabilities"]["encoders"]:
-            if encoder not in encoders:
-                diagnostics.append(f"required FFmpeg encoder is unavailable: {encoder}")
-        filters = _listed_names(["ffmpeg", "-hide_banner", "-filters"])
-        for filter_name in inventory["runtime"]["ffmpeg_capabilities"]["filters"]:
-            if filter_name not in filters:
-                diagnostics.append(f"required FFmpeg filter is unavailable: {filter_name}")
-
-    if shutil.which("ffprobe") is not None:
-        help_text = _run(["ffprobe", "-hide_banner", "-h", "full"])
-        feature_markers = {
-            "format": "-show_format",
-            "streams": "-show_streams",
-            "json_output": "json",
-        }
-        for feature in inventory["runtime"]["ffmpeg_capabilities"]["probe_features"]:
-            marker = feature_markers[feature]
-            if marker not in help_text:
-                diagnostics.append(f"required FFprobe feature is unavailable: {feature}")
+    diagnostics.extend(_media_diagnostics(inventory))
 
     if require_optional and shutil.which("clamscan") is not None:
         version = _run(["clamscan", "--version"])
@@ -71,7 +52,9 @@ def validate_inventory(
 
 
 def version_report(inventory: dict[str, Any], *, include_optional: bool) -> tuple[str, ...]:
-    reports: list[str] = []
+    from cueverge.gui import media_tools
+
+    reports: list[str] = [media_tools.engine_identity()]
     seen: set[str] = set()
     for package in inventory["runtime"]["system_packages"]:
         if not package["required"] and not include_optional:
@@ -87,13 +70,27 @@ def version_report(inventory: dict[str, Any], *, include_optional: bool) -> tupl
     return tuple(reports)
 
 
-def _listed_names(command: list[str]) -> set[str]:
-    output = _run(command)
-    return {
-        fields[1]
-        for line in output.splitlines()
-        if len(fields := line.split()) >= 2 and not fields[0].startswith("-")
-    }
+def _media_diagnostics(inventory: dict[str, Any]) -> list[str]:
+    diagnostics: list[str] = []
+    for library in inventory["runtime"]["python_media_libraries"]:
+        module = library.get("import", library["name"])
+        try:
+            importlib.import_module(module)
+        except ImportError as error:
+            diagnostics.append(f"required Python media library is unavailable: {module} ({error})")
+    if diagnostics:
+        return diagnostics
+    from cueverge.gui import media_tools
+
+    capabilities = inventory["runtime"]["media_capabilities"]
+    return list(
+        media_tools.capability_diagnostics(
+            encoders=tuple(capabilities["encoders"]),
+            decoders=tuple(capabilities["decoders"]),
+            filters=tuple(capabilities["filters"]),
+            container_formats=tuple(capabilities["container_formats"]),
+        )
+    )
 
 
 def _run(command: list[str]) -> str:

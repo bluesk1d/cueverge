@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { openAdvancedShowWorkspace } from "./show-workspace";
+import { openAdvancedShowWorkspace, openTimelineEditor, openTimelineTool, mockReadyAsset } from "./show-workspace";
 
 let savedDraft: Record<string, unknown> | null = null;
 
@@ -10,7 +10,12 @@ test("transform layers persist independent axes crop and Bezier controls", async
     const request = route.request();
     const url = new URL(request.url());
     if (url.pathname.endsWith("/projects/demo-project/assets")) {
-      return route.fulfill({ json: [] });
+      return route.fulfill({
+        json: [
+          mockReadyAsset("ghost-video", "Ghost video", "video/mp4"),
+          mockReadyAsset("audio-asset", "Narration", "audio/wav"),
+        ],
+      });
     }
     if (url.pathname.endsWith("/projects/demo-project/draft")) {
       if (request.method() === "PUT") {
@@ -26,26 +31,26 @@ test("transform layers persist independent axes crop and Bezier controls", async
 
   await page.goto("/demo.html");
   await page.getByRole("button", { name: "Shows", exact: true }).click();
-  await openAdvancedShowWorkspace(page);
-  await page.getByText("Timeline editor", { exact: true }).click();
+  await openTimelineEditor(page);
+  await page.getByText("What can be animated?", { exact: true }).click();
   await expect(
-    page.getByText(/Runtime-keyed: position, independent X\/Y scale/),
+    page.getByText(/Keyframes: position, independent X\/Y scale/),
   ).toBeVisible();
   await expect(
-    page.getByText(/Cue-static only: lighting primitive/),
+    page.getByText(/Fixed per cue: lighting effect/),
   ).toBeVisible();
 
-  await page.getByLabel("New transform layer name").fill("Flying ghost");
-  await page.getByLabel("New transform layer kind").selectOption("video");
-  await page.getByLabel("New transform layer source").fill("ghost-video");
+  await page.getByLabel("New media layer name").fill("Flying ghost");
+  await page.getByLabel("New media layer kind").selectOption("video");
+  await page.getByLabel("New media layer source").selectOption("ghost-video");
   await page
-    .getByLabel("New transform layer track")
+    .getByLabel("New media layer track")
     .selectOption("media:left-window");
-  await page.getByLabel("New transform layer duration").fill("1000");
-  await page.getByRole("button", { name: "Add transform layer" }).click();
+  await page.getByLabel("New media layer duration").fill("1000");
+  await page.getByRole("button", { name: "Add media layer" }).click();
   await expect(
     page.getByRole("button", {
-      name: "Transform layer Flying ghost",
+      name: "Media layer Flying ghost",
       exact: true,
     }),
   ).toBeVisible();
@@ -67,18 +72,19 @@ test("transform layers persist independent axes crop and Bezier controls", async
     "Independent X/Y scale cannot be zero.",
   );
   await expect(page.getByRole("button", { name: "Save timeline" })).toBeDisabled();
-  await page.getByLabel("Scale 1").fill("1.5");
+  await page.getByLabel("Scale 1").fill("150");
   await expect(page.getByLabel("Timeline validation")).toContainText(
     "Timeline valid",
   );
   await expect(page.getByRole("button", { name: "Save timeline" })).toBeEnabled();
-  await page.getByLabel("Scale 2").fill("0.75");
+  await page.getByRole("button", { name: "Lock scale proportions" }).click();
+  await page.getByLabel("Scale 2").fill("75");
   await page.getByLabel("Rotation").fill("30");
-  await page.getByLabel("Anchor 1").fill("0.25");
-  await page.getByLabel("Anchor 2").fill("0.75");
-  await page.getByLabel("Opacity").fill("0.6");
-  await page.getByLabel("Crop 1").fill("0.1");
-  await page.getByLabel("Crop 3").fill("0.1");
+  await page.getByLabel("Anchor 1").fill("25");
+  await page.getByLabel("Anchor 2").fill("75");
+  await page.getByLabel("Opacity", { exact: true }).fill("60");
+  await page.getByLabel("Crop 1").fill("10");
+  await page.getByLabel("Crop 3").fill("10");
   await page.getByLabel("Transform interpolation").selectOption("bezier");
   await page.getByLabel("Temporal Bezier 1").fill("0.2");
   await page.getByLabel("Temporal Bezier 2").fill("0.3");
@@ -94,12 +100,13 @@ test("transform layers persist independent axes crop and Bezier controls", async
   await page.getByLabel("Position 1").fill("300");
   await page.getByLabel("Position 2").fill("150");
   await page.getByLabel("Transform interpolation").selectOption("ease_out");
-  await page.getByLabel("Select transform layer Flying ghost").check();
+  await openTimelineTool(page, "Markers & cues");
+  await page.getByLabel("Select media layer Flying ghost").check();
   await page.getByLabel("Compound shift milliseconds").fill("250");
   await page.getByRole("button", { name: "Shift selected" }).click();
   await page.getByRole("button", { name: "Duplicate selected" }).click();
   await expect(
-    page.getByRole("button", { name: "Transform layer Flying ghost copy" }),
+    page.getByRole("button", { name: "Media layer Flying ghost copy", exact: true }),
   ).toBeVisible();
   await page.getByLabel("Scrub position").fill("500");
   const firstEvaluation = await page
@@ -110,20 +117,22 @@ test("transform layers persist independent axes crop and Bezier controls", async
   await expect(page.getByLabel("Timeline evaluated state")).toHaveText(
     firstEvaluation!,
   );
+  await openTimelineTool(page, "Media layers");
+  await page.getByText("What can be animated?", { exact: true }).click();
   await expect(
     page.getByRole("button", { name: "Keyframe lighting properties" }),
   ).toBeDisabled();
   await expect(
     page.getByRole("button", { name: "Time-remap nested composition" }),
   ).toBeDisabled();
-  await page.getByLabel("New transform layer name").fill("Narration clip");
-  await page.getByLabel("New transform layer kind").selectOption("audio");
-  await page.getByLabel("New transform layer source").fill("audio-asset");
+  await page.getByLabel("New media layer name").fill("Narration clip");
+  await page.getByLabel("New media layer kind").selectOption("audio");
+  await page.getByLabel("New media layer source").selectOption("audio-asset");
   await page
-    .getByLabel("New transform layer track")
+    .getByLabel("New media layer track")
     .selectOption("media:left-window");
-  await page.getByLabel("New transform layer duration").fill("800");
-  await page.getByRole("button", { name: "Add transform layer" }).click();
+  await page.getByLabel("New media layer duration").fill("800");
+  await page.getByRole("button", { name: "Add media layer" }).click();
   await page.getByLabel("Layer source in").fill("100");
   await page.getByLabel("Layer visual order").fill("3");
   await page.getByLabel("Layer fade in").fill("100");
@@ -200,15 +209,14 @@ test("transform layers persist independent axes crop and Bezier controls", async
 
   await page.reload();
   await page.getByRole("button", { name: "Shows", exact: true }).click();
-  await openAdvancedShowWorkspace(page);
-  await page.getByText("Timeline editor", { exact: true }).click();
+  await openTimelineEditor(page);
   await expect(
     page.getByRole("button", {
-      name: "Transform layer Flying ghost",
+      name: "Media layer Flying ghost",
       exact: true,
     }),
   ).toBeVisible();
-  await expect(page.getByLabel("Transform layer start")).toHaveValue("250");
+  await expect(page.getByLabel("Media layer start")).toHaveValue("250");
 });
 
 function response(revision: number, document: Record<string, unknown>) {

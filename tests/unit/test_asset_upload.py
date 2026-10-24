@@ -1,16 +1,20 @@
 import hashlib
 import json
-import shutil
 import subprocess
+import sys
+import wave
+from fractions import Fraction
 from io import BytesIO
 from pathlib import Path
 
+import numpy as np
 import pytest
 from PIL import Image
 from pydantic import SecretStr
 
 import cueverge.gui.asset_upload as asset_upload_module
 from cueverge.core.loader import load_show_package
+from cueverge.gui import media_tools
 from cueverge.gui.asset_upload import (
     AssetUploadConflictError,
     AssetUploadError,
@@ -19,9 +23,9 @@ from cueverge.gui.asset_upload import (
 from cueverge.gui.config import GuiConfig
 from cueverge.gui.contracts import DraftProject, Role
 from cueverge.gui.repository import GuiRepository
+from tests.unit.media_fixtures import stream_types
 
 
-@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg is required")
 def test_gif_upload_preserves_animated_review_and_inspects_duration(tmp_path: Path) -> None:
     _, service, project_id = _service(tmp_path)
     output = BytesIO()
@@ -238,28 +242,33 @@ def test_processing_recovers_metadata_and_loudness(
     def which(command: str) -> str | None:
         return None if command == "clamscan" else f"/usr/bin/{command}"
 
+    operations: list[str] = []
+
     def run(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
-        if "ffprobe" in command[0]:
+        assert command[:3] == [sys.executable, "-m", "cueverge.gui.media_tools"]
+        operations.append(command[3])
+        if command[3] == "probe":
             return subprocess.CompletedProcess(
                 command,
                 0,
                 stdout=json.dumps(probe_document),
                 stderr="",
             )
-        if command[-1] != "-":
-            Path(command[-1]).write_bytes(b"generated-artifact")
-            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
-        return subprocess.CompletedProcess(
-            command,
-            0,
-            stdout="",
-            stderr="Summary:\n  I:         -18.2 LUFS\n",
-        )
+        if command[3] == "loudness":
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=json.dumps({"integrated_lufs": -18.2}),
+                stderr="",
+            )
+        Path(command[-1]).write_bytes(b"generated-artifact")
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
 
     monkeypatch.setattr(asset_upload_module.shutil, "which", which)
     monkeypatch.setattr(asset_upload_module.subprocess, "run", run)
 
     assert service.recover_pending_assets() == (asset_id,)
+    assert operations == ["probe", "loudness", "thumbnail", "video-review", "waveform"]
     processed = service.get_asset(asset_id)
     assert processed.status == "ready"
     assert processed.scan_status == "unavailable"
@@ -335,7 +344,7 @@ def test_processing_records_precise_invalid_media_failure(
     monkeypatch.setattr(
         asset_upload_module.shutil,
         "which",
-        lambda command: None if command == "clamscan" else "/usr/bin/ffprobe",
+        lambda command: None,
     )
     monkeypatch.setattr(
         asset_upload_module.subprocess,
@@ -387,6 +396,121 @@ def test_processing_quarantines_malware(
     assert processed.scan_status == "quarantined"
 
 
+@pytest.mark.parametrize(
+    ("filename", "media_type", "expected"),
+    [
+        (
+            "clip.mp4",
+            "video/mp4",
+            {
+                "review": "video/mp4",
+                "thumbnail": "image/jpeg",
+                "waveform": "image/png",
+            },
+        ),
+        ("tone.mp3", "audio/mpeg", {"review": "audio/mpeg", "waveform": "image/png"}),
+        ("still.png", "image/png", {"review": "image/jpeg", "thumbnail": "image/jpeg"}),
+    ],
+)
+def test_processing_generates_real_metadata_and_artifacts_with_pyav(
+    tmp_path: Path,
+    filename: str,
+    media_type: str,
+    expected: dict[str, str],
+) -> None:
+    _, service, project_id = _service(
+        tmp_path,
+        asset_max_bytes=1024 * 1024,
+        asset_store_quota_bytes=16 * 1024 * 1024,
+        asset_chunk_max_bytes=1024 * 1024,
+    )
+    source = tmp_path / filename
+    _write_media_fixture(source)
+    content = source.read_bytes()
+    asset, upload = service.begin(
+        project_id=project_id,
+        name=filename,
+        original_filename=filename,
+        media_type=media_type,
+        total_bytes=len(content),
+        expected_sha256=hashlib.sha256(content).hexdigest(),
+        actor="admin",
+        role=Role.ADMINISTRATOR,
+        occurred_at="2026-10-23T18:00:00Z",
+    )
+    service.append(
+        upload_id=upload.id,
+        offset=0,
+        chunk=content,
+        actor="admin",
+        role=Role.ADMINISTRATOR,
+        occurred_at="2026-10-23T18:00:01Z",
+    )
+
+    service.process_asset(asset.id, occurred_at="2026-10-23T18:00:02Z")
+
+    processed = service.get_asset(asset.id)
+    assert processed.status == "ready", processed.error
+    assert processed.metadata is not None
+    has_audio = "waveform" in expected
+    if media_type != "image/png":
+        assert processed.metadata["duration_ms"] == pytest.approx(1000, abs=50)
+    if has_audio:
+        assert processed.metadata["sample_rate"] == 48000
+        loudness = processed.metadata["loudness_lufs"]
+        assert isinstance(loudness, float)
+        assert -30 < loudness < 0
+        assert processed.metadata["loudness_status"] == "ready"
+    else:
+        assert processed.metadata["loudness_status"] == "not_applicable"
+    if media_type != "audio/mpeg":
+        assert (processed.metadata["width"], processed.metadata["height"]) == (64, 36)
+    artifacts = processed.metadata["artifacts"]
+    assert isinstance(artifacts, dict)
+    assert set(artifacts) == set(expected)
+    for kind, expected_media_type in expected.items():
+        path, artifact_media_type = service.get_artifact(asset.id, kind)
+        assert artifact_media_type == expected_media_type
+        assert path.stat().st_size > 0
+        if expected_media_type.startswith("image/"):
+            with Image.open(path) as image:
+                assert image.format == expected_media_type.split("/")[1].upper()
+        else:
+            assert stream_types(path) >= (
+                {"video"} if kind == "review" and media_type == "video/mp4" else {"audio"}
+            )
+
+
+def _write_media_fixture(path: Path) -> None:
+    samples = (np.sin(2 * np.pi * 440 * np.arange(48000) / 48000) * 0.25).astype(np.float32)
+    if path.suffix == ".png":
+        Image.new("RGB", (64, 36), "orange").save(path)
+    elif path.suffix == ".mp3":
+        wav = path.with_suffix(".wav")
+        with wave.open(str(wav), "wb") as output:
+            output.setnchannels(1)
+            output.setsampwidth(2)
+            output.setframerate(48000)
+            output.writeframes((samples * 32767).astype("<i2").tobytes())
+        media_tools.write_audio_review(wav, path)
+    else:
+        frames = tuple(
+            np.full((36, 64, 3), [index * 20, 80, 160], dtype=np.uint8) for index in range(10)
+        )
+        media_tools.encode_mp4(
+            frames=frames,
+            audio_samples=np.stack([samples, samples], axis=1),
+            frame_rate=Fraction(10),
+            video_profile="baseline",
+            video_level="3.1",
+            pixel_format="yuv420p",
+            video_bitrate_kbps=500,
+            keyframe_interval_frames=10,
+            b_frames=0,
+            target=path,
+        )
+
+
 def _completed_asset(service: AssetUploadService, project_id: str) -> str:
     content = b"synthetic-media"
     asset, upload = service.begin(
@@ -411,15 +535,21 @@ def _completed_asset(service: AssetUploadService, project_id: str) -> str:
     return asset.id
 
 
-def _service(tmp_path: Path) -> tuple[GuiRepository, AssetUploadService, str]:
+def _service(
+    tmp_path: Path,
+    *,
+    asset_max_bytes: int = 1024,
+    asset_store_quota_bytes: int = 4096,
+    asset_chunk_max_bytes: int = 512,
+) -> tuple[GuiRepository, AssetUploadService, str]:
     config = GuiConfig(
         data_root=tmp_path,
         admin_password_hash=SecretStr("unused"),
         allowed_origins=("http://localhost",),
         secure_cookies=False,
-        asset_max_bytes=1024,
-        asset_store_quota_bytes=4096,
-        asset_chunk_max_bytes=512,
+        asset_max_bytes=asset_max_bytes,
+        asset_store_quota_bytes=asset_store_quota_bytes,
+        asset_chunk_max_bytes=asset_chunk_max_bytes,
     )
     repository = GuiRepository(tmp_path / "gui.sqlite3")
     repository.migrate()

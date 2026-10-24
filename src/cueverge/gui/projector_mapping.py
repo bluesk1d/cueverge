@@ -1,15 +1,37 @@
 import json
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Literal, cast
 
 from cueverge.gui.contracts import Role
 from cueverge.gui.installation_geometry import InstallationGeometryService
 from cueverge.gui.repository import GuiRepository
+from cueverge.gui.stage_geometry import (
+    CANVAS_HEIGHT,
+    CANVAS_WIDTH,
+    DEFAULT_UNITS_PER_CANVAS,
+    bounds,
+    canvas_to_stage,
+    homography_footprint,
+    stage_homography,
+)
+
+StagePlacement = Literal["surface", "manual"]
+StagePlacementBasis = Literal["stage_view", "stage_points", "default_scale"]
+DEFAULT_STAGE_EXTENT = (0.0, 0.0, 4.0, 2.25)
 
 
 class ProjectorMappingError(RuntimeError):
     pass
+
+
+@dataclass(frozen=True)
+class DerivedStagePlacement:
+    basis: StagePlacementBasis | None
+    extent: tuple[float, float, float, float] | None
+    homography: tuple[float, ...] | None
+    mesh_vertices: tuple[tuple[float, float, float, float], ...] | None
+    message: str | None
 
 
 class ProjectorMappingConflictError(ProjectorMappingError):
@@ -55,6 +77,9 @@ class StoredProjectorMapping:
     created_at: str
     updated_at: str
     stage_homography: tuple[float, ...] | None = None
+    stage_placement: StagePlacement = "surface"
+    stage_placement_basis: StagePlacementBasis | None = None
+    stage_placement_message: str | None = None
 
 
 @dataclass(frozen=True)
@@ -83,9 +108,29 @@ class ProjectorMappingService:
                 "SELECT * FROM projector_surface_mappings WHERE geometry_id = ?",
                 (geometry_id,),
             ).fetchone()
-        if row is None:
-            raise ProjectorMappingError("projector mapping does not exist")
-        return _stored_mapping(
+            if row is None:
+                raise ProjectorMappingError("projector mapping does not exist")
+            placement = _row_placement(row)
+            derived = (
+                derive_stage_placement(
+                    connection,
+                    installation_id=geometry.installation_id,
+                    semantic_id=geometry.semantic_id,
+                    points=geometry.points,
+                    native_width=int(row["native_width"]),
+                    native_height=int(row["native_height"]),
+                    orientation_degrees=cast(
+                        Literal[0, 90, 180, 270], int(row["orientation_degrees"])
+                    ),
+                    mirror_x=bool(row["mirror_x"]),
+                    mirror_y=bool(row["mirror_y"]),
+                    surface_model=cast(Literal["planar", "subdivided"], str(row["surface_model"])),
+                    mesh_vertices=_mesh_vertices(row),
+                )
+                if placement == "surface"
+                else None
+            )
+        stored = _stored_mapping(
             row,
             geometry.points,
             self._photo_views(
@@ -99,6 +144,58 @@ class ProjectorMappingService:
                 str(row["surface_model"]) == "planar",
             ),
         )
+        return replace(
+            stored,
+            stage_placement_basis=derived.basis if derived is not None else None,
+            stage_placement_message=placement_message(
+                placement,
+                derived,
+                (stored.stage_x, stored.stage_y, stored.stage_width, stored.stage_height),
+            ),
+        )
+
+    def refresh_stage_placement(
+        self,
+        *,
+        installation_id: str,
+        semantic_id: str,
+        actor: str,
+        role: Role,
+        occurred_at: str,
+    ) -> int:
+        """Re-derive surface-placed projector mappings after their drawn surface changes."""
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            updated = refresh_surface_placements(
+                connection,
+                installation_id=installation_id,
+                semantic_id=semantic_id,
+                occurred_at=occurred_at,
+            )
+            for geometry_id in updated:
+                connection.execute(
+                    """
+                    INSERT INTO audit_events(
+                        actor, action, target, result, occurred_at,
+                        authorization_context_json
+                    ) VALUES (
+                        ?, 'installation.projector_mapping.stage_placement', ?,
+                        'success', ?, ?
+                    )
+                    """,
+                    (
+                        actor,
+                        geometry_id,
+                        occurred_at,
+                        json.dumps(
+                            {"role": role.value, "stage_placement": "surface"},
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        ),
+                    ),
+                )
+            connection.commit()
+        return len(updated)
 
     def upsert(
         self,
@@ -134,6 +231,7 @@ class ProjectorMappingService:
         actor: str,
         role: Role,
         occurred_at: str,
+        stage_placement: StagePlacement = "surface",
     ) -> StoredProjectorMapping:
         geometry = self.geometry.get(geometry_id)
         if geometry.kind != "projector_surface":
@@ -196,27 +294,39 @@ class ProjectorMappingService:
                     )
             row = connection.execute(
                 """
-                SELECT revision, created_at, stage_x, stage_y, stage_width, stage_height,
-                       orientation_degrees, mirror_x, mirror_y, stage_homography_json
+                SELECT revision, created_at
                 FROM projector_surface_mappings WHERE geometry_id = ?
                 """,
                 (geometry_id,),
             ).fetchone()
-            retained_stage_homography: str | None = None
-            if row is not None and row["stage_homography_json"] is not None:
-                # A manual stage extent or orientation change overrides derived placement.
-                unchanged = (
-                    float(row["stage_x"]) == stage_x
-                    and float(row["stage_y"]) == stage_y
-                    and float(row["stage_width"]) == stage_width
-                    and float(row["stage_height"]) == stage_height
-                    and int(row["orientation_degrees"]) == orientation_degrees
-                    and bool(row["mirror_x"]) == mirror_x
-                    and bool(row["mirror_y"]) == mirror_y
-                    and surface_model == "planar"
+            derived = (
+                derive_stage_placement(
+                    connection,
+                    installation_id=geometry.installation_id,
+                    semantic_id=geometry.semantic_id,
+                    points=geometry.points,
+                    native_width=native_width,
+                    native_height=native_height,
+                    orientation_degrees=orientation_degrees,
+                    mirror_x=mirror_x,
+                    mirror_y=mirror_y,
+                    surface_model=surface_model,
+                    mesh_vertices=mesh_vertices,
                 )
-                if unchanged:
-                    retained_stage_homography = str(row["stage_homography_json"])
+                if stage_placement == "surface"
+                else None
+            )
+            derived_stage_homography: tuple[float, ...] | None = None
+            if derived is not None and derived.extent is not None:
+                stage_x, stage_y, stage_width, stage_height = derived.extent
+                derived_stage_homography = derived.homography
+                if derived.mesh_vertices is not None:
+                    mesh_vertices = derived.mesh_vertices
+            stage_homography_json = (
+                json.dumps(derived_stage_homography, separators=(",", ":"))
+                if derived_stage_homography is not None
+                else None
+            )
             if row is None:
                 if expected_revision is not None:
                     raise ProjectorMappingConflictError(0)
@@ -234,10 +344,11 @@ class ProjectorMappingService:
                         orientation_degrees, mirror_x, mirror_y,
                         mask_semantic_ids_json, calibration_source,
                         calibration_revision, mesh_vertices_json, mesh_triangles_json,
+                        stage_homography_json, stage_placement,
                         revision, created_at, updated_at
                     ) VALUES (
                         ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?
+                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?
                     )
                     """,
                     (
@@ -268,6 +379,8 @@ class ProjectorMappingService:
                         calibration_revision,
                         json.dumps(mesh_vertices, separators=(",", ":")),
                         json.dumps(mesh_triangles, separators=(",", ":")),
+                        stage_homography_json,
+                        stage_placement,
                         occurred_at,
                         occurred_at,
                     ),
@@ -291,7 +404,7 @@ class ProjectorMappingService:
                         mask_semantic_ids_json = ?, calibration_source = ?,
                         calibration_revision = ?, mesh_vertices_json = ?,
                         mesh_triangles_json = ?, stage_homography_json = ?,
-                        revision = ?, updated_at = ?
+                        stage_placement = ?, revision = ?, updated_at = ?
                     WHERE geometry_id = ?
                     """,
                     (
@@ -321,7 +434,8 @@ class ProjectorMappingService:
                         calibration_revision,
                         json.dumps(mesh_vertices, separators=(",", ":")),
                         json.dumps(mesh_triangles, separators=(",", ":")),
-                        retained_stage_homography,
+                        stage_homography_json,
+                        stage_placement,
                         revision,
                         occurred_at,
                         geometry_id,
@@ -403,10 +517,13 @@ class ProjectorMappingService:
             revision=revision,
             created_at=created_at,
             updated_at=occurred_at,
-            stage_homography=(
-                tuple(json.loads(retained_stage_homography))
-                if retained_stage_homography is not None
-                else None
+            stage_homography=derived_stage_homography,
+            stage_placement=stage_placement,
+            stage_placement_basis=derived.basis if derived is not None else None,
+            stage_placement_message=placement_message(
+                stage_placement,
+                derived,
+                (stage_x, stage_y, stage_width, stage_height),
             ),
         )
 
@@ -571,6 +688,299 @@ def _stored_mapping(
             if row["stage_homography_json"] is not None
             else None
         ),
+        stage_placement=_row_placement(row),
+    )
+
+
+def derive_stage_placement(
+    connection: sqlite3.Connection,
+    *,
+    installation_id: str,
+    semantic_id: str,
+    points: tuple[tuple[float, float], ...],
+    native_width: int,
+    native_height: int,
+    orientation_degrees: Literal[0, 90, 180, 270],
+    mirror_x: bool,
+    mirror_y: bool,
+    surface_model: Literal["planar", "subdivided"],
+    mesh_vertices: tuple[tuple[float, float, float, float], ...],
+) -> DerivedStagePlacement:
+    """Derive a projector's shared-stage footprint from its drawn surface.
+
+    Preference order: the linked surface drawn on the stage reference view, the
+    surface's saved stage points, then (only when no stage reference exists) the
+    mapped drawing itself at the default stage scale.
+    """
+    reference = connection.execute(
+        """
+        SELECT photo_id, units_per_canvas FROM installation_stage_references
+        WHERE installation_id = ?
+        """,
+        (installation_id,),
+    ).fetchone()
+    members = connection.execute(
+        """
+        SELECT photo_id, points_json, stage_points_json FROM installation_geometry
+        WHERE installation_id = ? AND kind = 'projector_surface' AND semantic_id = ?
+        ORDER BY id
+        """,
+        (installation_id, semantic_id),
+    ).fetchall()
+    reference_member = (
+        next((row for row in members if row["photo_id"] == reference["photo_id"]), None)
+        if reference is not None and reference["photo_id"] is not None
+        else None
+    )
+    stored_stage = next(
+        (row["stage_points_json"] for row in members if row["stage_points_json"] is not None),
+        None,
+    )
+    basis: StagePlacementBasis
+    if reference_member is not None:
+        basis = "stage_view"
+        layout = _json_points(reference_member["points_json"])
+        units = float(reference["units_per_canvas"])
+    elif stored_stage is not None:
+        basis = "stage_points"
+        # Express stage points as layout points at one stage unit per layout pixel.
+        layout = tuple((x / CANVAS_WIDTH, y / CANVAS_HEIGHT) for x, y in _json_points(stored_stage))
+        units = 1.0
+    elif reference is None and not _has_stage_points(connection, installation_id):
+        basis = "default_scale"
+        layout = points
+        units = DEFAULT_UNITS_PER_CANVAS
+    elif reference is None:
+        return _unresolved(
+            "Other objects already have hand-entered stage positions. Choose a stage "
+            "view in Stage map so this surface is placed at the same scale."
+        )
+    else:
+        return DerivedStagePlacement(
+            basis=None,
+            extent=None,
+            homography=None,
+            mesh_vertices=None,
+            message=(
+                "Draw this surface on the stage view photo (or give it stage points) "
+                "so its stage placement can be derived."
+            ),
+        )
+    if surface_model == "planar":
+        if len(layout) != 4:
+            return _unresolved("A planar projector surface needs exactly four corners.")
+        try:
+            homography = stage_homography(
+                _homography(
+                    native_width, native_height, layout, orientation_degrees, mirror_x, mirror_y
+                ),
+                native_width,
+                native_height,
+                units,
+            )
+            footprint = homography_footprint(homography)
+        except (ProjectorMappingError, ValueError) as error:
+            return _unresolved(f"Projector corners cannot be placed: {error}")
+        return DerivedStagePlacement(
+            basis=basis,
+            extent=_extent(footprint),
+            homography=homography,
+            mesh_vertices=None,
+            message=None,
+        )
+    stage_points = tuple(canvas_to_stage(point, units) for point in layout)
+    if not mesh_vertices or len(mesh_vertices) != len(stage_points):
+        return _unresolved(
+            "Subdivided projector mesh does not match its drawn points; "
+            "set its stage mesh manually."
+        )
+    return DerivedStagePlacement(
+        basis=basis,
+        extent=_extent(stage_points),
+        homography=None,
+        mesh_vertices=tuple(
+            (vertex[0], vertex[1], point[0], point[1])
+            for vertex, point in zip(mesh_vertices, stage_points, strict=True)
+        ),
+        message=None,
+    )
+
+
+def refresh_surface_placements(
+    connection: sqlite3.Connection,
+    *,
+    installation_id: str,
+    semantic_id: str | None,
+    occurred_at: str,
+) -> tuple[str, ...]:
+    """Rewrite stale surface-placed mappings; returns the updated geometry ids.
+
+    The caller owns the transaction and auditing.
+    """
+    query = """
+        SELECT m.*, g.installation_id, g.semantic_id, g.points_json
+        FROM projector_surface_mappings AS m
+        JOIN installation_geometry AS g ON g.id = m.geometry_id
+        WHERE g.installation_id = ? AND m.stage_placement = 'surface'
+    """
+    values: tuple[object, ...] = (installation_id,)
+    if semantic_id is not None:
+        query += " AND g.semantic_id = ?"
+        values += (semantic_id,)
+    updated: list[str] = []
+    for row in connection.execute(query + " ORDER BY m.geometry_id", values).fetchall():
+        try:
+            orientation = cast(Literal[0, 90, 180, 270], int(row["orientation_degrees"]))
+            model = cast(Literal["planar", "subdivided"], str(row["surface_model"]))
+            mesh = _mesh_vertices(row)
+            derived = derive_stage_placement(
+                connection,
+                installation_id=installation_id,
+                semantic_id=str(row["semantic_id"]),
+                points=_json_points(row["points_json"]),
+                native_width=int(row["native_width"]),
+                native_height=int(row["native_height"]),
+                orientation_degrees=orientation,
+                mirror_x=bool(row["mirror_x"]),
+                mirror_y=bool(row["mirror_y"]),
+                surface_model=model,
+                mesh_vertices=mesh,
+            )
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+        if derived.extent is None:
+            continue
+        current_extent = (
+            float(row["stage_x"]),
+            float(row["stage_y"]),
+            float(row["stage_width"]),
+            float(row["stage_height"]),
+        )
+        current_homography = (
+            tuple(float(value) for value in json.loads(str(row["stage_homography_json"])))
+            if row["stage_homography_json"] is not None
+            else None
+        )
+        next_mesh = derived.mesh_vertices if derived.mesh_vertices is not None else mesh
+        if (
+            _close(current_extent, derived.extent)
+            and _close(current_homography, derived.homography)
+            and _close(
+                tuple(value for vertex in mesh for value in vertex),
+                tuple(value for vertex in next_mesh for value in vertex),
+            )
+        ):
+            continue
+        x, y, width, height = derived.extent
+        connection.execute(
+            """
+            UPDATE projector_surface_mappings
+            SET stage_x = ?, stage_y = ?, stage_width = ?, stage_height = ?,
+                stage_homography_json = ?, mesh_vertices_json = ?,
+                revision = revision + 1, updated_at = ?
+            WHERE geometry_id = ?
+            """,
+            (
+                x,
+                y,
+                width,
+                height,
+                (
+                    json.dumps(derived.homography, separators=(",", ":"))
+                    if derived.homography is not None
+                    else None
+                ),
+                json.dumps(next_mesh, separators=(",", ":")),
+                occurred_at,
+                str(row["geometry_id"]),
+            ),
+        )
+        updated.append(str(row["geometry_id"]))
+    return tuple(updated)
+
+
+def placement_message(
+    placement: StagePlacement,
+    derived: DerivedStagePlacement | None,
+    extent: tuple[float, float, float, float],
+) -> str | None:
+    if placement == "manual":
+        if _close(extent, DEFAULT_STAGE_EXTENT):
+            return (
+                "Manual stage placement still uses the default 4 x 2.25 rectangle at the "
+                "stage origin; every projector left on this default overlaps the others."
+            )
+        return "Stage placement is set manually; redrawing the surface does not move it."
+    if derived is None:
+        return None
+    if derived.basis == "stage_view":
+        return "Placed from the surface drawn on the stage view."
+    if derived.basis == "stage_points":
+        return "Placed from this surface's saved stage points."
+    if derived.basis == "default_scale":
+        return (
+            "Placed from the drawn surface at the default stage scale. Choose a stage "
+            "view in Stage map to set real-world size."
+        )
+    return f"{derived.message} The entered stage extent is used until then."
+
+
+def _has_stage_points(connection: sqlite3.Connection, installation_id: str) -> bool:
+    return (
+        connection.execute(
+            """
+            SELECT 1 FROM installation_geometry
+            WHERE installation_id = ? AND stage_points_json IS NOT NULL
+            LIMIT 1
+            """,
+            (installation_id,),
+        ).fetchone()
+        is not None
+    )
+
+
+def _unresolved(message: str) -> DerivedStagePlacement:
+    return DerivedStagePlacement(
+        basis=None, extent=None, homography=None, mesh_vertices=None, message=message
+    )
+
+
+def _row_placement(row: sqlite3.Row) -> StagePlacement:
+    value = str(row["stage_placement"])
+    if value not in {"surface", "manual"}:
+        raise ProjectorMappingError("projector stage placement is invalid")
+    return cast(StagePlacement, value)
+
+
+def _mesh_vertices(row: sqlite3.Row) -> tuple[tuple[float, float, float, float], ...]:
+    return tuple(
+        (float(vertex[0]), float(vertex[1]), float(vertex[2]), float(vertex[3]))
+        for vertex in json.loads(str(row["mesh_vertices_json"]))
+    )
+
+
+def _json_points(value: object) -> tuple[tuple[float, float], ...]:
+    return tuple((float(point[0]), float(point[1])) for point in json.loads(str(value)))
+
+
+def _extent(points: tuple[tuple[float, float], ...]) -> tuple[float, float, float, float]:
+    minimum_x, minimum_y, maximum_x, maximum_y = bounds(points)
+    return (
+        minimum_x,
+        minimum_y,
+        max(maximum_x - minimum_x, 1e-6),
+        max(maximum_y - minimum_y, 1e-6),
+    )
+
+
+def _close(current: tuple[float, ...] | None, derived: tuple[float, ...] | None) -> bool:
+    if current is None or derived is None:
+        return current is None and derived is None
+    if len(current) != len(derived):
+        return False
+    return all(
+        abs(left - right) <= 1e-6 * max(1.0, abs(left), abs(right))
+        for left, right in zip(current, derived, strict=True)
     )
 
 

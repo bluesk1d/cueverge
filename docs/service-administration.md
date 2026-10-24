@@ -48,7 +48,7 @@ are required.
 | Host | Required |
 | --- | --- |
 | Container controller | Docker Engine and Docker Compose; persistent writable storage; connectivity to configured devices and services |
-| Source controller | Python 3.12+, `uv`, FFmpeg/FFprobe for asset processing and rendering, CA certificates |
+| Source controller | Python 3.12+, `uv` (the locked environment's PyAV wheel bundles the FFmpeg libraries used for asset processing and rendering), CA certificates |
 | Frontend build host | Node.js and npm; the supplied Docker build uses Node 22 |
 | Media host | Python 3.12+, `uv`, mpv, local media/cache storage, GPU/display/audio access, outbound connectivity to the controller |
 | Operator workstation | A current browser able to run the React application; use a desktop-sized viewport for detailed mapper and timeline work |
@@ -180,10 +180,9 @@ and the MCP authentication boundary before pushing a multi-platform image for
 
 Both GitHub workflows use Node.js 24-based actions. GitHub-hosted runners
 support these actions; a self-hosted runner must be version 2.327.1 or newer.
-CI explicitly installs FFmpeg (including FFprobe) before running the native
-capability and renderer tests; these tools are not assumed to be present on
-GitHub-hosted runners. Production container package versions remain pinned in
-the native dependency inventory.
+CI needs no system FFmpeg: native capability and renderer tests use the
+FFmpeg libraries bundled in the locked PyAV wheel. Production container
+package versions remain pinned in the native dependency inventory.
 This is separate from the controller's frontend build, which uses Node.js 22
 in its build stage.
 
@@ -686,7 +685,7 @@ new package rather than inserting new bytes under an old digest.
 
 | Symptom | First checks and safe action |
 | --- | --- |
-| Container exits before HTTP starts | Native preflight output, FFmpeg/FFprobe capabilities, scanner definitions when required, valid hash/origins, writable GUI root and frontend build |
+| Container exits before HTTP starts | Native preflight output, PyAV media capabilities, scanner definitions when required, valid hash/origins, writable GUI root and frontend build |
 | Login fails or mutations return 403 | Exact allowed origin, HTTPS/secure-cookie settings, account state, global role, project membership, live-output grant, CSRF/session freshness |
 | New installation cannot be selected | Expected for an unprovisioned record; record creation does not attach a new runtime |
 | Device will not enroll/connect | Verified HTTPS, token expiry, exact capability document, certificate SAN/URL match, both agent transport settings, listener port/firewall, device lifecycle state |

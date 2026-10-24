@@ -3448,7 +3448,21 @@ def create_gui_router(services: GuiServices) -> APIRouter:
                 status_code=422,
                 detail={"code": "installation_geometry_rejected", "message": str(error)},
             ) from error
+        _refresh_projector_placement(geometry, identity)
         return _installation_geometry(geometry)
+
+    def _refresh_projector_placement(
+        geometry: StoredInstallationGeometry, identity: AuthenticatedSession
+    ) -> None:
+        if geometry.kind != "projector_surface":
+            return
+        services.projector_mapping.refresh_stage_placement(
+            installation_id=geometry.installation_id,
+            semantic_id=geometry.semantic_id,
+            actor=identity.username,
+            role=identity.role,
+            occurred_at=_now_iso(),
+        )
 
     @router.put(
         "/installation-geometry/{geometry_id}",
@@ -3498,6 +3512,7 @@ def create_gui_router(services: GuiServices) -> APIRouter:
                 status_code=422,
                 detail={"code": "installation_geometry_rejected", "message": str(error)},
             ) from error
+        _refresh_projector_placement(geometry, identity)
         response.headers["ETag"] = _etag(geometry.revision)
         return _installation_geometry(geometry)
 
@@ -5666,6 +5681,9 @@ def _projector_mapping(mapping: StoredProjectorMapping) -> ProjectorMappingRespo
         created_at=mapping.created_at,
         updated_at=mapping.updated_at,
         stage_homography=mapping.stage_homography,
+        stage_placement=mapping.stage_placement,
+        stage_placement_basis=mapping.stage_placement_basis,
+        stage_placement_message=mapping.stage_placement_message,
     )
 
 

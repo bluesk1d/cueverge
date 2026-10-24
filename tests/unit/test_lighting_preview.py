@@ -1,10 +1,9 @@
 import hashlib
-import shutil
-import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
 
+import numpy as np
 import pytest
 from PIL import Image
 from pydantic import ValidationError
@@ -25,6 +24,7 @@ from cueverge.gui.render_jobs import RenderJobError, RenderJobService
 from cueverge.gui.repository import GuiRepository
 from cueverge.gui.spatial_authoring import layout_digest, propose_effect_draft, spatial_context
 from cueverge.gui.spatial_effects import SpatialRipple
+from tests.unit.media_fixtures import write_video
 
 
 def test_stage_points_are_mapped_to_normalized_surface_coordinates() -> None:
@@ -333,29 +333,17 @@ def test_animated_media_overlay_bakes_the_same_seekable_frames(
         loop=0,
     )
     if media_type == "video/mp4":
-        ffmpeg = shutil.which("ffmpeg")
-        if ffmpeg is None:
-            pytest.skip("ffmpeg is required for the video fixture")
         video = tmp_path / "overlay.mp4"
-        subprocess.run(
-            [
-                ffmpeg,
-                "-v",
-                "error",
-                "-i",
-                str(source),
-                "-t",
-                "0.4",
-                "-vf",
-                "fps=10",
-                "-c:v",
-                "libx264",
-                "-pix_fmt",
-                "yuv444p",
-                str(video),
-            ],
-            check=True,
-            capture_output=True,
+        red = np.zeros((2, 2, 3), dtype=np.uint8)
+        red[..., 0] = 255
+        green = np.zeros((2, 2, 3), dtype=np.uint8)
+        green[..., 1] = 128
+        write_video(
+            video,
+            [red, green, green, green],
+            rate=10,
+            codec="libx264",
+            pixel_format="yuv444p",
         )
         source = video
 

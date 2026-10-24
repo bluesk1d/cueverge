@@ -849,7 +849,8 @@ Turn an edited project into a controlled deployed artifact.
   countdown, stop, blackout, and post-run diagnostics.
 - [x] Maintain a deploy-time dependency inventory that drives the controller
   Dockerfile and image preflight. Pin and report required native tool versions,
-  install `ffmpeg`/`ffprobe` for asset processing and rendering, explicitly
+  use PyAV's bundled FFmpeg libraries for asset processing and rendering (no
+  duplicate distribution `ffmpeg` package), explicitly
   configure optional ClamAV plus definition updates, keep frontend tooling in
   the build stage, and keep host display/audio dependencies such as `mpv` on
   media agents rather than in the headless controller image.
@@ -879,7 +880,7 @@ client's saved prior activation before the controller changes package state.
 
 GUI-09 is complete at 17/17. The machine-readable native dependency inventory
 drives pinned required package installation and startup verification of
-executables, FFmpeg encoders and filters, FFprobe features, and optional ClamAV
+executables, PyAV media encoders, decoders, filters, and container formats, and optional ClamAV
 definitions. Builder/runtime base images are digest-pinned and installed native
 tool versions are reported at startup. Publication, staging, two-phase
 activation, rollback, cache safety, rehearsal, attribution, and disaster

@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { openAdvancedShowWorkspace } from "./show-workspace";
+import { openAdvancedShowWorkspace, openTimelineEditor, openComposition } from "./show-workspace";
 
 let savedScenario: Record<string, unknown> | null = null;
 
@@ -138,18 +138,17 @@ test("stage motion paths expose handles ghosts snapping and coverage warnings", 
 
   await page.goto("/demo.html");
   await page.getByRole("button", { name: "Shows", exact: true }).click();
-  await openAdvancedShowWorkspace(page);
-  await page.getByText("Timeline editor", { exact: true }).click();
-  await page.getByLabel("Editing space").selectOption("stage-composition");
+  await openTimelineEditor(page);
+  await openComposition(page, "stage-composition");
   await expect(
-    page.getByRole("button", { name: "Transform layer Crossing ghost" }),
+    page.getByRole("button", { name: "Media layer Crossing ghost", exact: true }),
   ).toBeVisible();
   await expect(
     page.getByText(
-      /Authored once in stage · target shared-stage · 10×4.*Static projector calibration/,
+      /Placed in Whole display overlay · shared-stage · 10×4.*Projector calibration/,
     ),
   ).toBeVisible();
-  await expect(page.getByRole("button", { name: /Transform layer/ })).toHaveCount(1);
+  await expect(page.getByRole("button", { name: /^Media layer / })).toHaveCount(1);
 
   const overlay = page.getByRole("img", { name: "Stage composition overlay" });
   await expect(overlay.locator(".stage-motion-path")).toHaveCount(1);
@@ -191,20 +190,6 @@ test("stage motion paths expose handles ghosts snapping and coverage warnings", 
   await expect(page.getByLabel("Shared stage lighting sampling")).toContainText(
     "Shared stage visual sampled onto calibrated LEDs",
   );
-  await page.getByRole("button", { name: "Add accelerated advance" }).click();
-  await page.getByRole("button", { name: "Add client disconnect" }).click();
-  await page.getByRole("button", { name: "Add output failure" }).click();
-  await expect(page.getByLabel("Simulation scenario steps").locator("li")).toHaveCount(3);
-  await page.getByRole("button", { name: "Save simulation scenario" }).click();
-  await expect.poll(() => savedScenario).not.toBeNull();
-  await expect(page.getByText("Rehearsal scenario", { exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "Run saved scenario" }).click();
-  await expect(page.getByLabel("Simulation scenario result")).toContainText(
-    "Expected outcome matched",
-  );
-  await expect(page.getByLabel("Simulation scenario result")).toContainText(
-    "Hardware adapters opened: no · hardware commands sent: no",
-  );
 
   await page
     .getByLabel("Transform keyframe", { exact: true })
@@ -226,6 +211,24 @@ test("stage motion paths expose handles ghosts snapping and coverage warnings", 
   });
   await expect(page.getByLabel("Position 1")).toHaveValue("2");
   await expect(page.getByLabel("Position 2")).toHaveValue("2");
+
+  await page.getByRole("button", { name: "Back to scene", exact: true }).click();
+  await page.getByRole("button", { name: "Preview", exact: true }).click();
+  await page.getByText("Fault-injection test scenarios (advanced)", { exact: true }).click();
+  await page.getByRole("button", { name: "Add accelerated advance" }).click();
+  await page.getByRole("button", { name: "Add client disconnect" }).click();
+  await page.getByRole("button", { name: "Add output failure" }).click();
+  await expect(page.getByLabel("Simulation scenario steps").locator("li")).toHaveCount(3);
+  await page.getByRole("button", { name: "Save simulation scenario" }).click();
+  await expect.poll(() => savedScenario).not.toBeNull();
+  await expect(page.getByText("Rehearsal scenario", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Run saved scenario" }).click();
+  await expect(page.getByLabel("Simulation scenario result")).toContainText(
+    "Expected outcome matched",
+  );
+  await expect(page.getByLabel("Simulation scenario result")).toContainText(
+    "Hardware adapters opened: no · hardware commands sent: no",
+  );
 });
 
 function draftResponse() {

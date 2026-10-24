@@ -285,7 +285,7 @@ configured failure-scene behavior.
 Normal completion policies, safe-point requests, lighting offsets, and
 brightness limits apply in both modes. Controller time clamps at the scene
 duration; `hold` keeps rendering the final position, and `loop` starts a new
-scene instance. In the timeline editor, select **Clock authority → Controller**;
+scene instance. In the timeline editor's **Scene settings**, select **Clock authority → Controller**;
 the clock source then becomes **Controller monotonic clock**.
 
 Stage projector bakes normally give mixed audio to the clock-source media

@@ -1,7 +1,5 @@
 import hashlib
 import json
-import shutil
-import subprocess
 import wave
 from pathlib import Path
 from types import SimpleNamespace
@@ -9,7 +7,6 @@ from typing import cast
 
 import av
 import numpy as np
-import pytest
 from PIL import Image
 
 from cueverge.gui.asset_upload import AssetUploadService
@@ -19,12 +16,9 @@ from cueverge.gui.projector_renderer import (
     render_projector_composition,
 )
 from cueverge.gui.render_verification import compare_rgb_frames
+from tests.unit.media_fixtures import stream_types, write_video
 
 
-@pytest.mark.skipif(
-    shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None,
-    reason="ffmpeg and ffprobe are required",
-)
 def test_projector_runner_renders_still_alpha_opaque_video_and_mixed_audio(
     tmp_path: Path,
 ) -> None:
@@ -36,32 +30,20 @@ def test_projector_runner_renders_still_alpha_opaque_video_and_mixed_audio(
         mode="RGBA",
     ).save(still)
     alpha_video = sources / "alpha.mkv"
-    _ffmpeg(
-        [
-            "-f",
-            "lavfi",
-            "-i",
-            "color=c=red@0.5:s=64x36:r=4:d=1,format=bgra",
-            "-c:v",
-            "ffv1",
-            "-pix_fmt",
-            "bgra",
-            str(alpha_video),
-        ]
+    write_video(
+        alpha_video,
+        [np.full((36, 64, 4), [255, 0, 0, 128], dtype=np.uint8)] * 4,
+        rate=4,
+        codec="ffv1",
+        pixel_format="bgra",
     )
     opaque_video = sources / "opaque.mp4"
-    _ffmpeg(
-        [
-            "-f",
-            "lavfi",
-            "-i",
-            "color=c=green:s=64x36:r=4:d=1",
-            "-c:v",
-            "libx264",
-            "-pix_fmt",
-            "yuv420p",
-            str(opaque_video),
-        ]
+    write_video(
+        opaque_video,
+        [np.full((36, 64, 3), [0, 128, 0], dtype=np.uint8)] * 4,
+        rate=4,
+        codec="libx264",
+        pixel_format="yuv420p",
     )
     audio_a = sources / "audio-a.wav"
     audio_b = sources / "audio-b.wav"
@@ -107,24 +89,7 @@ def test_projector_runner_renders_still_alpha_opaque_video_and_mixed_audio(
     assert member["resource"] == "projector.left"
     assert member["has_audio"] is True
     assert member["streams"]["video"]["frame_count"] == 4
-    probe = subprocess.run(
-        [
-            "ffprobe",
-            "-v",
-            "error",
-            "-show_streams",
-            "-of",
-            "json",
-            str(output_root / member["filename"]),
-        ],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    assert {stream["codec_type"] for stream in json.loads(probe.stdout)["streams"]} == {
-        "audio",
-        "video",
-    }
+    assert stream_types(output_root / member["filename"]) == {"audio", "video"}
     with av.open(str(output_root / member["filename"])) as container:
         baked_frame = next(container.decode(video=0)).to_ndarray(format="rgba")
     comparison = compare_rgb_frames(preview, baked_frame)
@@ -319,13 +284,3 @@ def _write_wave(path: Path, frequency: float) -> None:
         output.setsampwidth(2)
         output.setframerate(48000)
         output.writeframes(samples.tobytes())
-
-
-def _ffmpeg(arguments: list[str]) -> None:
-    subprocess.run(
-        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", *arguments],
-        check=True,
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )

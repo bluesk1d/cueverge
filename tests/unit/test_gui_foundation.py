@@ -1767,6 +1767,7 @@ def test_installation_crud_preserves_runtime_active_record(tmp_path: Path) -> No
             "resource": "projector.left",
             "native_width": 1920,
             "native_height": 1080,
+            "stage_placement": "manual",
             "stage_x": 0,
             "stage_y": 0,
             "stage_width": 4.0,
@@ -1942,6 +1943,7 @@ def test_installation_crud_preserves_runtime_active_record(tmp_path: Path) -> No
             "resource": "projector.left",
             "native_width": 1920,
             "native_height": 1080,
+            "stage_placement": "manual",
             "stage_x": 0,
             "stage_y": 0,
             "stage_width": 4.0,
@@ -1997,6 +1999,7 @@ def test_installation_crud_preserves_runtime_active_record(tmp_path: Path) -> No
             "resource": "projector.right",
             "native_width": 1920,
             "native_height": 1080,
+            "stage_placement": "manual",
             "stage_x": 3,
             "stage_y": 1,
             "stage_width": 4,
@@ -2088,6 +2091,7 @@ def test_installation_crud_preserves_runtime_active_record(tmp_path: Path) -> No
             "resource": "projector.left",
             "native_width": 1920,
             "native_height": 1080,
+            "stage_placement": "manual",
             "stage_x": 3,
             "stage_y": 1,
             "stage_width": 4,
@@ -2107,6 +2111,7 @@ def test_installation_crud_preserves_runtime_active_record(tmp_path: Path) -> No
             "resource": "projector.right",
             "native_width": 1920,
             "native_height": 1080,
+            "stage_placement": "manual",
             "stage_x": 3,
             "stage_y": 1,
             "stage_width": 4,
@@ -4753,6 +4758,9 @@ def test_mcp_shared_stage_discovery_authoring_preview_and_bake_parity(
         assert completed["structuredContent"]["state"] == "completed"
         artifact = completed["structuredContent"]["artifact"]
         assert artifact["members"][0]["resource"] == "projector.demo"
+        assert artifact["encoder"]["identity"].startswith("ffmpeg version ")
+        assert "(PyAV " in artifact["encoder"]["identity"]
+        assert artifact["members"][0]["streams"]["audio"]["boundary"]["metadata_inspected"]
         assert artifact["lighting_sequences"][0]["resource"] == "roofline.demo"
         assert (
             services.render_jobs.lighting_artifacts(project_id, 2)["stage"].name

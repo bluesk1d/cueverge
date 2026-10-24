@@ -103,7 +103,17 @@ def test_stage_reference_derives_placement_from_photo_view(workspace):
     initial = client.get(_reference_path(installation))
     assert initial.status_code == 200
     assert initial.json()["reference"] is None
-    assert initial.json()["projector_overlaps"][0]["fraction"] == 1.0
+    # Drawn surfaces place projectors at the default scale before a stage view exists.
+    initial_overlap = initial.json()["projector_overlaps"][0]["fraction"]
+    assert 0 < initial_overlap < 0.5
+    left_mapping = client.get(
+        f"/api/gui/v1/installation-geometry/{left['id']}/projector-mapping"
+    ).json()
+    assert left_mapping["stage_placement"] == "surface"
+    assert left_mapping["stage_placement_basis"] == "default_scale"
+    assert left_mapping["stage_x"] == pytest.approx(1)
+    assert left_mapping["stage_width"] == pytest.approx(4)
+    assert left_mapping["stage_height"] == pytest.approx(3)
 
     saved = client.put(
         _reference_path(installation),
@@ -133,6 +143,7 @@ def test_stage_reference_derives_placement_from_photo_view(workspace):
     overlap = result["projector_overlaps"][0]
     assert set(overlap["resources"]) == {"projector.left", "projector.right"}
     assert 0 < overlap["fraction"] < 0.5
+    assert overlap["fraction"] == pytest.approx(initial_overlap, abs=1e-3)
 
     geometry = {
         item["id"]: item
@@ -238,12 +249,175 @@ def test_manual_extent_override_and_photo_removal_keep_explicit_stage_data(works
                 key: unchanged.json()[key]
                 for key in ("resource", "native_width", "native_height", "stage_y", "stage_height")
             },
+            "stage_placement": "manual",
             "stage_x": 0,
             "stage_width": 3,
         },
     )
     assert manual.status_code == 200, manual.text
     assert manual.json()["stage_homography"] is None
+    assert manual.json()["stage_placement"] == "manual"
+    assert manual.json()["stage_x"] == 0
+    assert manual.json()["stage_width"] == 3
+    assert "manually" in manual.json()["stage_placement_message"]
+    assert client.get(path).json()["stage_placement"] == "manual"
+
+    # Without the stage view photo, surface placement falls back to saved stage points.
+    surface = client.put(
+        path,
+        headers={**headers, "If-Match": f'"{manual.json()["revision"]}"'},
+        json={
+            key: unchanged.json()[key]
+            for key in ("resource", "native_width", "native_height", "stage_placement")
+        },
+    )
+    assert surface.status_code == 200, surface.text
+    assert surface.json()["stage_placement_basis"] == "stage_points"
+    assert surface.json()["stage_homography"] == pytest.approx(mapping["stage_homography"])
+    assert surface.json()["stage_x"] == pytest.approx(mapping["stage_x"])
+
+
+def test_surface_placement_follows_redrawn_surface_and_manual_is_kept(workspace):
+    _, client, headers, installation = workspace
+    photo, left, right, _, _ = _stage_installation(client, headers, installation)
+    client.put(
+        _reference_path(installation),
+        headers=headers,
+        json={"photo_id": photo["id"], "unit_label": "ft", "stage_width": 50},
+    ).raise_for_status()
+    client.post(
+        f"{_reference_path(installation)}/apply", headers={**headers, "If-Match": '"1"'}
+    ).raise_for_status()
+    left_path = f"/api/gui/v1/installation-geometry/{left['id']}/projector-mapping"
+    right_path = f"/api/gui/v1/installation-geometry/{right['id']}/projector-mapping"
+    before = client.get(left_path).json()
+    assert before["stage_placement_basis"] == "stage_view"
+
+    geometry = {
+        item["id"]: item
+        for item in client.get(f"/api/gui/v1/installations/{installation}/geometry").json()
+    }[left["id"]]
+    moved = [(x + 0.05, y) for x, y in LEFT]
+    redrawn = client.put(
+        f"/api/gui/v1/installation-geometry/{left['id']}",
+        headers={**headers, "If-Match": f'"{geometry["revision"]}"'},
+        json={
+            "photo_id": photo["id"],
+            "kind": "projector_surface",
+            "name": geometry["name"],
+            "points": [{"x": x, "y": y} for x, y in moved],
+            "closed": True,
+            "stage_points": geometry["stage_points"],
+        },
+    )
+    assert redrawn.status_code == 200, redrawn.text
+    after = client.get(left_path).json()
+    assert after["revision"] == before["revision"] + 1
+    assert after["stage_x"] == pytest.approx(moved[0][0] * 50)
+    for (u, v), (x, y) in zip(((0, 0), (1, 0), (1, 1), (0, 1)), moved, strict=True):
+        assert apply_homography(after["stage_homography"], u, v) == pytest.approx((x * 50, y * 30))
+
+    right_mapping = client.get(right_path).json()
+    manual = client.put(
+        right_path,
+        headers={**headers, "If-Match": f'"{right_mapping["revision"]}"'},
+        json={
+            "resource": "projector.right",
+            "native_width": 1280,
+            "native_height": 720,
+            "stage_placement": "manual",
+        },
+    )
+    assert manual.status_code == 200, manual.text
+    assert manual.json()["stage_x"] == 0
+    assert "default 4 x 2.25" in manual.json()["stage_placement_message"]
+    status = client.put(
+        _reference_path(installation),
+        headers={**headers, "If-Match": '"1"'},
+        json={"photo_id": photo["id"], "unit_label": "ft", "stage_width": 60},
+    ).json()
+    item = next(entry for entry in status["items"] if entry["resource"] == "projector.right")
+    assert "manual" in item["message"]
+    client.post(
+        f"{_reference_path(installation)}/apply", headers={**headers, "If-Match": '"2"'}
+    ).raise_for_status()
+    assert client.get(right_path).json()["stage_x"] == 0
+    assert client.get(right_path).json()["stage_homography"] is None
+    assert client.get(left_path).json()["stage_x"] == pytest.approx(moved[0][0] * 60)
+
+
+def test_stage_placement_migration_keeps_entered_extents_and_places_defaults(workspace):
+    import sqlite3
+
+    services, client, headers, installation = workspace
+    photo = add_photo(client, headers, installation)
+    left = _projector(client, headers, installation, photo["id"], LEFT, "projector.left")
+    right = _projector(client, headers, installation, photo["id"], RIGHT, "projector.right")
+    database = services.repository.database_path
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "UPDATE projector_surface_mappings SET stage_x = 0, stage_y = 0, "
+            "stage_width = 4, stage_height = 2.25, stage_homography_json = NULL "
+            "WHERE geometry_id = ?",
+            (left["id"],),
+        )
+        connection.execute(
+            "UPDATE projector_surface_mappings SET stage_x = 7, stage_y = 1, "
+            "stage_width = 3, stage_height = 2, stage_homography_json = NULL "
+            "WHERE geometry_id = ?",
+            (right["id"],),
+        )
+        connection.execute("ALTER TABLE projector_surface_mappings DROP COLUMN stage_placement")
+        connection.execute("DELETE FROM schema_migrations WHERE version = 43")
+    services.repository.migrate()
+
+    path = "/api/gui/v1/installation-geometry/{}/projector-mapping"
+    placed = client.get(path.format(left["id"])).json()
+    assert placed["stage_placement"] == "surface"
+    assert placed["stage_x"] == pytest.approx(1)
+    assert placed["stage_homography"] is not None
+    kept = client.get(path.format(right["id"])).json()
+    assert kept["stage_placement"] == "manual"
+    assert (kept["stage_x"], kept["stage_width"]) == (7, 3)
+    assert kept["stage_homography"] is None
+
+
+def test_default_scale_placement_waits_for_stage_view_when_other_stage_data_exists(workspace):
+    _, client, headers, installation = workspace
+    photo = add_photo(client, headers, installation)
+    _geometry(
+        client,
+        headers,
+        installation,
+        photo["id"],
+        "fixture",
+        [(0.5, 0.5)],
+        name="Hand placed star",
+        stage_points=[[0.5, 0.5]],
+    )
+    geometry = _geometry(
+        client, headers, installation, photo["id"], "projector_surface", LEFT, name="left"
+    )
+    mapped = client.put(
+        f"/api/gui/v1/installation-geometry/{geometry['id']}/projector-mapping",
+        headers=headers,
+        json={
+            "resource": "projector.left",
+            "native_width": 1280,
+            "native_height": 720,
+            "stage_x": 0.1,
+            "stage_y": 0.2,
+            "stage_width": 0.4,
+            "stage_height": 0.5,
+        },
+    )
+    assert mapped.status_code == 200, mapped.text
+    body = mapped.json()
+    assert body["stage_placement"] == "surface"
+    assert body["stage_placement_basis"] is None
+    assert body["stage_homography"] is None
+    assert (body["stage_x"], body["stage_width"]) == (0.1, 0.4)
+    assert "Choose a stage view" in body["stage_placement_message"]
 
 
 def test_stage_reference_validation_and_measured_scale(workspace):
@@ -341,7 +515,7 @@ def test_mcp_stage_map_requires_installation_edit_and_derives_placement(tmp_path
     from datetime import UTC, datetime, timedelta
 
     from cueverge.controller.app import create_app
-    from cueverge.gui.contracts import DraftProject, Role
+    from cueverge.gui.contracts import DraftProject, ProjectorMappingRequest, Role
     from cueverge.gui.mcp_authoring import McpScope
     from tests.unit.test_installation_usability import image, setup
 
@@ -379,6 +553,37 @@ def test_mcp_stage_map_requires_installation_edit_and_derives_placement(tmp_path
         actor="admin",
         role=Role.ADMINISTRATOR,
         occurred_at=now,
+    )
+    surface = services.installation_geometry.create(
+        installation_id=installation,
+        photo_id=photo.id,
+        kind="projector_surface",
+        name="Garage door",
+        points=tuple(LEFT),
+        closed=True,
+        semantic_id=None,
+        color="#ffffff",
+        label_visible=True,
+        locked=False,
+        hidden=False,
+        z_index=0,
+        direction="forward",
+        start_index=None,
+        pixel_count=None,
+        stage_points=None,
+        actor="admin",
+        role=Role.ADMINISTRATOR,
+        occurred_at=now,
+    )
+    services.projector_mapping.upsert(
+        geometry_id=surface.id,
+        expected_revision=None,
+        actor="admin",
+        role=Role.ADMINISTRATOR,
+        occurred_at=now,
+        **ProjectorMappingRequest.model_validate(
+            {"resource": "projector.left", "native_width": 1280, "native_height": 720}
+        ).model_dump(),
     )
     draft = DraftProject.model_validate_json(
         Path("tests/fixtures/usability-authoring.json").read_text()
@@ -431,9 +636,14 @@ def test_mcp_stage_map_requires_installation_edit_and_derives_placement(tmp_path
         assert stage["update_tool"] == "update_stage_reference"
         assert stage["update_scope"] == "installation_edit"
         assert capabilities["features"]["stage_reference"] is True
+        placement = capabilities["installation_setup"]["projector_stage_placement"]
+        assert placement["default"] == "surface"
+        assert placement["modes"] == ["surface", "manual"]
+        assert placement["write_surface"] == "administrator_gui_only"
         initial = tool(client, reader, "get_stage_map")["structuredContent"]
         assert initial["reference"] is None
         assert initial["counts"]["unplaced"] == 1
+        assert initial["counts"]["manual"] == 1
         assert tool(client, reader, "update_stage_reference", request=request)["isError"]
         assert services.stage_reference.get(installation) is None
 
@@ -450,8 +660,16 @@ def test_mcp_stage_map_requires_installation_edit_and_derives_placement(tmp_path
         ]
         assert result["applied"] is True
         assert result["hardware_commands_sent"] is False
-        assert result["counts"]["placed"] == 1
+        assert result["counts"]["placed"] == 2
         assert result["items"][0]["stage_points"] == [[20.0, 12.0]]
+        layout = tool(client, reader, "get_spatial_layout")
+        print(layout)
+        layout = layout["structuredContent"]
+        projector = next(
+            item for item in layout["projectors"] if item["resource"] == "projector.left"
+        )
+        assert projector["stage_placement"] == "surface"
+        assert projector["stage_extent"] == pytest.approx([4.0, 4.8, 16.0, 12.0])
         stale = tool(client, editor, "update_stage_reference", request=request)
         assert stale["isError"]
         assert services.repository.get_revision(project.project.id).revision == 1

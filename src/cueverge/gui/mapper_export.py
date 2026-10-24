@@ -57,6 +57,7 @@ class MapperExportService:
                         float(row["stage_width"]),
                         float(row["stage_height"]),
                     ],
+                    "stage_placement": str(row["stage_placement"]),
                     "mask_semantic_ids": json.loads(str(row["mask_semantic_ids_json"])),
                     "calibration_source": str(row["calibration_source"]),
                     "calibration_revision": int(row["calibration_revision"]),

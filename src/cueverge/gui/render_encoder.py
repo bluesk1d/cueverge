@@ -1,15 +1,17 @@
 import hashlib
 import json
 import os
-import subprocess
 import tempfile
 from dataclasses import dataclass
+from fractions import Fraction
 from pathlib import Path
 from uuid import uuid4
 
+import av.error
 import numpy as np
 from numpy.typing import NDArray
 
+from cueverge.gui import media_tools
 from cueverge.gui.render_pipeline import RENDER_PIPELINE_REVISION
 from cueverge.gui.render_verification import (
     VERIFICATION_POLICY_REVISION,
@@ -68,7 +70,6 @@ def encode_output_set(
     calibration_revisions: dict[str, int],
     media_end_behavior: str,
     lighting_members: tuple[LightingMember, ...] = (),
-    ffmpeg: str = "ffmpeg",
 ) -> dict[str, object]:
     if not members or audio_owner not in members:
         raise RenderEncodingError("output set requires an audio-owner member")
@@ -102,7 +103,6 @@ def encode_output_set(
                 frame_rate_denominator=frame_rate_denominator,
                 profile=profile,
                 target=target,
-                ffmpeg=ffmpeg,
             )
             encoded.append(
                 EncodedMember(
@@ -144,7 +144,7 @@ def encode_output_set(
             "hold_last_frame": media_end_behavior == "hold_last_frame",
             "calibration_revisions": calibration_revisions,
             "encoder": {
-                "identity": _ffmpeg_identity(ffmpeg),
+                "identity": media_tools.engine_identity(),
                 "name": "ffmpeg/libx264+aac",
                 "video_profile": profile.video_profile,
                 "video_level": profile.video_level,
@@ -245,7 +245,6 @@ def encode_mp4(
     frame_rate_denominator: int,
     profile: EncoderProfile,
     target: Path,
-    ffmpeg: str = "ffmpeg",
 ) -> None:
     if not frames or frame_rate_numerator <= 0 or frame_rate_denominator <= 0:
         raise RenderEncodingError("encoder requires frames and a positive frame rate")
@@ -258,81 +257,32 @@ def encode_mp4(
         audio_samples.ndim != 2 or audio_samples.shape[1] != 2 or audio_samples.dtype != np.float32
     ):
         raise RenderEncodingError("encoder audio must be float32 stereo")
+    if width % 2 or height % 2:
+        raise RenderEncodingError("encoder frames must have even dimensions")
     target.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix=".encode-", dir=target.parent) as raw_root:
-        raw_directory = Path(raw_root)
-        video_path = raw_directory / "video.rgb"
-        with video_path.open("wb") as output:
-            for frame in frames:
-                output.write(np.ascontiguousarray(frame[..., :3]).tobytes())
-        command = [
-            ffmpeg,
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-y",
-            "-f",
-            "rawvideo",
-            "-pixel_format",
-            "rgb24",
-            "-video_size",
-            f"{width}x{height}",
-            "-framerate",
-            f"{frame_rate_numerator}/{frame_rate_denominator}",
-            "-i",
-            str(video_path),
-        ]
-        if audio_samples is not None:
-            audio_path = raw_directory / "audio.f32"
-            audio_path.write_bytes(np.ascontiguousarray(audio_samples).tobytes())
-            command.extend(
-                [
-                    "-f",
-                    "f32le",
-                    "-ar",
-                    "48000",
-                    "-ac",
-                    "2",
-                    "-i",
-                    str(audio_path),
-                ]
-            )
-        command.extend(
-            [
-                "-c:v",
-                "libx264",
-                "-profile:v",
-                profile.video_profile,
-                "-level:v",
-                profile.video_level,
-                "-pix_fmt",
-                profile.pixel_format,
-                "-b:v",
-                f"{profile.max_video_bitrate_kbps}k",
-                "-g",
-                str(profile.keyframe_interval_frames),
-                "-bf",
-                str(profile.b_frames),
-            ]
+    temporary_target = target.with_suffix(".tmp.mp4")
+    try:
+        media_tools.encode_mp4(
+            frames=frames,
+            audio_samples=audio_samples,
+            frame_rate=Fraction(frame_rate_numerator, frame_rate_denominator),
+            video_profile=profile.video_profile,
+            video_level=profile.video_level,
+            pixel_format=profile.pixel_format,
+            video_bitrate_kbps=profile.max_video_bitrate_kbps,
+            keyframe_interval_frames=profile.keyframe_interval_frames,
+            b_frames=profile.b_frames,
+            target=temporary_target,
         )
-        if audio_samples is None:
-            command.append("-an")
-        else:
-            command.extend(["-c:a", "aac", "-ar", "48000", "-ac", "2", "-shortest"])
-        temporary_target = target.with_suffix(".tmp.mp4")
-        command.extend(["-movflags", "+faststart", str(temporary_target)])
-        completed = subprocess.run(
-            command,
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=600,
-        )
-        if completed.returncode != 0:
-            raise RenderEncodingError(f"ffmpeg encoding failed: {completed.stderr.strip()}")
-        if not temporary_target.is_file() or temporary_target.stat().st_size == 0:
-            raise RenderEncodingError("ffmpeg did not produce a target artifact")
-        os.replace(temporary_target, target)
+    except (av.error.FFmpegError, media_tools.MediaToolError, OSError) as error:
+        temporary_target.unlink(missing_ok=True)
+        raise RenderEncodingError(
+            f"media encoding failed: {media_tools.describe_error(error)}"
+        ) from error
+    if not temporary_target.is_file() or temporary_target.stat().st_size == 0:
+        temporary_target.unlink(missing_ok=True)
+        raise RenderEncodingError("media encoder did not produce a target artifact")
+    os.replace(temporary_target, target)
 
 
 def _sha256(path: Path) -> str:
@@ -343,73 +293,13 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _ffmpeg_identity(ffmpeg: str) -> str:
-    completed = subprocess.run(
-        [ffmpeg, "-version"],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
-    first_line = completed.stdout.splitlines()[0] if completed.stdout else ""
-    if completed.returncode != 0 or not first_line.startswith("ffmpeg version "):
-        raise RenderEncodingError("ffmpeg encoder identity is unavailable")
-    return first_line
-
-
 def _probe_audio_boundary(path: Path) -> dict[str, object]:
-    completed = subprocess.run(
-        [
-            "ffprobe",
-            "-v",
-            "error",
-            "-select_streams",
-            "a:0",
-            "-show_packets",
-            "-show_entries",
-            "packet=pts_time,side_data_list",
-            "-of",
-            "json",
-            str(path),
-        ],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
-    if completed.returncode != 0:
+    try:
+        return media_tools.audio_boundary(path)
+    except (av.error.FFmpegError, media_tools.MediaToolError, OSError) as error:
         raise RenderEncodingError(
-            f"ffprobe audio boundary inspection failed: {completed.stderr.strip()}"
-        )
-    document = json.loads(completed.stdout)
-    packets = document.get("packets")
-    if not isinstance(packets, list) or not packets:
-        raise RenderEncodingError("encoded audio stream has no packets")
-    first = packets[0]
-    if not isinstance(first, dict) or not isinstance(first.get("pts_time"), str):
-        raise RenderEncodingError("encoded audio packet timing is unavailable")
-    skip_samples = 0
-    discard_padding = 0
-    for packet in packets:
-        if not isinstance(packet, dict):
-            continue
-        side_data = packet.get("side_data_list", [])
-        if not isinstance(side_data, list):
-            continue
-        for item in side_data:
-            if not isinstance(item, dict):
-                continue
-            skip_samples = max(skip_samples, int(item.get("skip_samples", 0)))
-            discard_padding = max(
-                discard_padding,
-                int(item.get("discard_padding", 0)),
-            )
-    return {
-        "first_packet_pts_time": float(first["pts_time"]),
-        "encoder_delay_samples": skip_samples,
-        "discard_padding_samples": discard_padding,
-        "metadata_inspected": True,
-    }
+            f"audio boundary inspection failed: {media_tools.describe_error(error)}"
+        ) from error
 
 
 def _number_value(value: object) -> float:

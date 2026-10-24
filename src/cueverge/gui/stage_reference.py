@@ -21,6 +21,7 @@ from cueverge.gui.contracts import (
 from cueverge.gui.projector_mapping import ProjectorMappingError, _homography
 from cueverge.gui.repository import GuiRepository
 from cueverge.gui.stage_geometry import (
+    DEFAULT_UNITS_PER_CANVAS,
     Affine,
     Matrix3,
     Point,
@@ -38,7 +39,6 @@ from cueverge.gui.stage_geometry import (
 
 StageMapStatus = Literal["placed", "needs_update", "manual", "unplaced"]
 UnitLabel = Literal["ft", "m", "in", "cm", "units"]
-DEFAULT_UNITS_PER_CANVAS = 0.01
 
 
 class StageReferenceError(RuntimeError):
@@ -581,7 +581,9 @@ def _plan(
                 plan.changes.append("surface")
         if kind == "projector_surface" and mapping_row is None:
             messages.append("No projector is assigned to this surface yet.")
-        if mapping_row is not None:
+        if mapping_row is not None and str(mapping_row["stage_placement"]) == "manual":
+            messages.append("Projector stage placement is manual; Stage map does not move it.")
+        elif mapping_row is not None:
             plan.mapping_geometry_id = str(mapping_row["geometry_id"])
             if str(mapping_row["surface_model"]) == "planar":
                 if len(layout_points) == 4:

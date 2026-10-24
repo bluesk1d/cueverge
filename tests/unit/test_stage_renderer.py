@@ -1,7 +1,6 @@
 import copy
 import hashlib
 import json
-import subprocess
 import wave
 from pathlib import Path
 from types import SimpleNamespace
@@ -35,6 +34,7 @@ from cueverge.gui.stage_renderer import (
     selected_stage_lighting_surfaces,
 )
 from cueverge.gui.sync_rehearsal import SyncAdmission
+from tests.unit.media_fixtures import stream_types
 
 
 @pytest.mark.parametrize("mode", ["media_synchronized", "controller_timed"])
@@ -128,23 +128,7 @@ def test_stage_runner_creates_lockstep_projector_set_with_one_audio_owner(
     }
     assert {member["streams"]["video"]["frame_count"] for member in stored["members"]} == {2}
     for member in stored["members"]:
-        probe = subprocess.run(
-            [
-                "ffprobe",
-                "-v",
-                "error",
-                "-show_entries",
-                "stream=codec_type",
-                "-of",
-                "json",
-                str(output_root / member["filename"]),
-            ],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        stream_types = {stream["codec_type"] for stream in json.loads(probe.stdout)["streams"]}
-        assert ("audio" in stream_types) is member["has_audio"]
+        assert ("audio" in stream_types(output_root / member["filename"])) is member["has_audio"]
     left_member = next(
         member for member in stored["members"] if member["resource"] == "projector.left"
     )

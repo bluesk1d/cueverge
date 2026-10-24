@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { openAdvancedShowWorkspace } from "./show-workspace";
+import { openAdvancedShowWorkspace, openTimelineEditor, openTimelineTool, openComposition } from "./show-workspace";
 
 let savedDraft: Record<string, unknown> | null = null;
 
@@ -28,14 +28,14 @@ test("named markers move linked cues and compile scene timestamps", async ({ pag
 
   await page.goto("/demo.html");
   await page.getByRole("button", { name: "Shows", exact: true }).click();
-  await openAdvancedShowWorkspace(page);
-  await page.getByText("Timeline editor", { exact: true }).click();
+  await openTimelineEditor(page);
 
   const timeline = page.getByLabel("Timeline canvas");
   await timeline.focus();
   for (let index = 0; index < 10; index += 1) {
     await page.keyboard.press("ArrowRight");
   }
+  await openTimelineTool(page, "Markers & cues");
   await page.getByLabel("New sync marker name").fill("Window impact");
   await page.getByRole("button", { name: "Add sync marker" }).click();
 
@@ -136,7 +136,7 @@ test("named markers move linked cues and compile scene timestamps", async ({ pag
   await expect(page.getByText("Projection flash copy", { exact: true })).toBeVisible();
   await expect(page.getByText("Roofline flash copy", { exact: true })).toBeVisible();
 
-  await page.getByLabel("Editing space").selectOption("impact-composition");
+  await openComposition(page, "impact-composition");
   await expect(
     page.locator(".timeline-sync-cue-row").filter({ hasText: "Nested relay" }),
   ).toContainText("Scene timestamps: 800 ms");

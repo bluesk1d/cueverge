@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { openAdvancedShowWorkspace } from "./show-workspace";
+import { openAdvancedShowWorkspace, openTimelineEditor, openComposition } from "./show-workspace";
 
 let savedDraft: Record<string, unknown> | null = null;
 
@@ -73,9 +73,8 @@ test("lighting surface composition edits in logical local space", async ({ page 
 
   await page.goto("/demo.html");
   await page.getByRole("button", { name: "Shows", exact: true }).click();
-  await openAdvancedShowWorkspace(page);
-  await page.getByText("Timeline editor", { exact: true }).click();
-  await page.getByLabel("Editing space").selectOption("lighting-composition");
+  await openTimelineEditor(page);
+  await openComposition(page, "lighting-composition");
 
   await expect(
     page.getByRole("img", { name: "Lighting surface local composition canvas" }),
@@ -184,12 +183,12 @@ test("lighting surface composition edits in logical local space", async ({ page 
   await page.getByLabel("Ripple coordinate space").selectOption("stage");
   await page.getByLabel("Ripple speed").fill("2");
   await page.getByLabel("Ripple ring_width").fill("0.6");
-  await page.getByLabel("New transform layer name").fill("Ghost overlay");
-  await page.getByLabel("New transform layer source").fill("overlay-gif");
-  await expect(page.getByLabel("New transform layer kind")).toHaveValue("video");
-  await page.getByLabel("New transform layer track").selectOption("surface-track");
-  await page.getByLabel("New transform layer duration").fill("1000");
-  await page.getByRole("button", { name: "Add transform layer", exact: true }).click();
+  await page.getByLabel("New media layer name").fill("Ghost overlay");
+  await page.getByLabel("New media layer source").selectOption("overlay-gif");
+  await expect(page.getByLabel("New media layer kind")).toHaveValue("video");
+  await page.getByLabel("New media layer track").selectOption("surface-track");
+  await page.getByLabel("New media layer duration").fill("1000");
+  await page.getByRole("button", { name: "Add media layer", exact: true }).click();
   await expect(page.getByLabel("Media playback")).toHaveValue("loop");
   await expect(page.getByLabel("Position 1")).toHaveValue("2");
   await expect(page.getByLabel("Position 2")).toHaveValue("1");

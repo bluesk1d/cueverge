@@ -322,6 +322,9 @@ export interface ProjectorMapping {
   mesh_triangles: [number, number, number][];
   homography: number[] | null;
   stage_homography?: number[] | null;
+  stage_placement: "surface" | "manual";
+  stage_placement_basis?: "stage_view" | "stage_points" | "default_scale" | null;
+  stage_placement_message?: string | null;
   diagnostic: string | null;
   fit_diagnostics: string[];
   photo_views: {
@@ -2055,6 +2058,8 @@ export async function saveProjectorMapping(
     | "geometry_id"
     | "homography"
     | "stage_homography"
+    | "stage_placement_basis"
+    | "stage_placement_message"
     | "diagnostic"
     | "fit_diagnostics"
     | "photo_views"

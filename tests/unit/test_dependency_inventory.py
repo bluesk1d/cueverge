@@ -3,6 +3,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from cueverge.gui import media_tools
+
 
 def test_controller_native_dependency_inventory_covers_runtime_tools() -> None:
     repository_root = Path(__file__).parents[2]
@@ -17,27 +19,31 @@ def test_controller_native_dependency_inventory_covers_runtime_tools() -> None:
         for package in packages
         for executable in package.get("provides", [])
     }
-    assert provided["ffmpeg"] is True
-    assert provided["ffprobe"] is True
+    assert "ffmpeg" not in {package["name"] for package in packages}
+    assert "ffmpeg" not in provided
+    assert "ffprobe" not in provided
     assert provided["clamscan"] is False
     assert "freshclam" in provided
 
-    capabilities = inventory["runtime"]["ffmpeg_capabilities"]
-    assert {"aac", "libmp3lame", "libx264", "mjpeg", "png"} <= set(capabilities["encoders"])
-    assert {"aformat", "ebur128", "scale", "showwavespic", "thumbnail"} <= set(
-        capabilities["filters"]
-    )
+    capabilities = inventory["runtime"]["media_capabilities"]
+    assert capabilities["provider"] == "av"
+    assert set(media_tools.REQUIRED_ENCODERS) <= set(capabilities["encoders"])
+    assert set(media_tools.REQUIRED_FILTERS) <= set(capabilities["filters"])
+    assert set(media_tools.REQUIRED_CONTAINER_FORMATS) <= set(capabilities["container_formats"])
+    libraries = {library["name"] for library in inventory["runtime"]["python_media_libraries"]}
+    assert {"av", "numpy", "pillow"} <= libraries
 
     excluded = {dependency["name"] for dependency in inventory["excluded_from_controller_image"]}
-    assert "mpv" in excluded
+    assert {"ffmpeg", "mpv"} <= excluded
     assert inventory["frontend_build"]["runtime_image"] is False
 
     asset_processor = (repository_root / "src/cueverge/gui/asset_upload.py").read_text(
         encoding="utf-8"
     )
-    for executable in ("ffmpeg", "ffprobe", "clamscan"):
-        assert f'shutil.which("{executable}")' in asset_processor
-        assert executable in provided
+    assert 'shutil.which("clamscan")' in asset_processor
+    for executable in ("ffmpeg", "ffprobe"):
+        assert f'shutil.which("{executable}")' not in asset_processor
+    assert "cueverge.gui.media_tools" in asset_processor
 
     preflight = repository_root / "docker/native_dependency_preflight.py"
     apt_packages = subprocess.check_output(
@@ -57,6 +63,7 @@ def test_controller_native_dependency_inventory_covers_runtime_tools() -> None:
     assert "COPY deploy/controller-native-dependencies.json" in dockerfile
     assert "native_dependency_preflight.py" in dockerfile
     assert "--apt-packages" in dockerfile
+    assert "ffmpeg" not in dockerfile
     assert "python:3.12-slim-bookworm@sha256:" in dockerfile
     assert "node:22-bookworm-slim@sha256:" in dockerfile
 
@@ -77,8 +84,8 @@ def test_native_dependency_preflight_accepts_declared_host_capabilities() -> Non
         text=True,
     )
     assert completed.returncode == 0, completed.stderr
-    assert "ffmpeg version" in completed.stdout
-    assert "ffprobe version" in completed.stdout
+    assert completed.stdout.startswith("ffmpeg version ")
+    assert "(PyAV " in completed.stdout
 
 
 def test_native_dependency_preflight_rejects_missing_declared_capability(
@@ -88,7 +95,9 @@ def test_native_dependency_preflight_rejects_missing_declared_capability(
     inventory = json.loads(
         (repository_root / "deploy/controller-native-dependencies.json").read_text(encoding="utf-8")
     )
-    inventory["runtime"]["ffmpeg_capabilities"]["encoders"].append("cueverge_missing_encoder")
+    capabilities = inventory["runtime"]["media_capabilities"]
+    capabilities["encoders"].append("cueverge_missing_encoder")
+    capabilities["filters"].append("cueverge_missing_filter")
     invalid_inventory = tmp_path / "invalid-inventory.json"
     invalid_inventory.write_text(json.dumps(inventory), encoding="utf-8")
 
@@ -103,4 +112,5 @@ def test_native_dependency_preflight_rejects_missing_declared_capability(
         text=True,
     )
     assert completed.returncode == 1
-    assert "required FFmpeg encoder is unavailable: cueverge_missing_encoder" in completed.stderr
+    assert "required media encoder is unavailable: cueverge_missing_encoder" in completed.stderr
+    assert "required media filter is unavailable: cueverge_missing_filter" in completed.stderr

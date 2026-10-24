@@ -2010,10 +2010,18 @@ class ProjectorMappingRequest(GuiModel):
     resource: str = Field(min_length=1, max_length=200)
     native_width: int = Field(gt=0, le=16384)
     native_height: int = Field(gt=0, le=16384)
-    stage_x: float
-    stage_y: float
-    stage_width: float = Field(gt=0)
-    stage_height: float = Field(gt=0)
+    stage_placement: Literal["surface", "manual"] = Field(
+        default="surface",
+        description=(
+            "surface derives the stage extent/homography from the drawn projector "
+            "surface and ignores submitted stage_x/y/width/height when derivation "
+            "succeeds; manual keeps the submitted rectangle."
+        ),
+    )
+    stage_x: float = 0
+    stage_y: float = 0
+    stage_width: float = Field(default=4, gt=0)
+    stage_height: float = Field(default=2.25, gt=0)
     crop_x: float = Field(default=0, ge=0, le=1)
     crop_y: float = Field(default=0, ge=0, le=1)
     crop_width: float = Field(default=1, gt=0, le=1)
@@ -2071,10 +2079,18 @@ class ProjectorMappingResponse(ProjectorMappingRequest):
     stage_homography: tuple[float, ...] | None = Field(
         default=None,
         description=(
-            "Derived normalized-native (u, v) to stage homography from the stage "
-            "reference view; null when the stage extent is set manually."
+            "Derived normalized-native (u, v) to stage homography for surface "
+            "placement; null for manual or subdivided placement."
         ),
     )
+    stage_placement_basis: Literal["stage_view", "stage_points", "default_scale"] | None = Field(
+        default=None,
+        description=(
+            "What surface placement was derived from; null when manual or when "
+            "the drawn surface cannot be placed yet."
+        ),
+    )
+    stage_placement_message: str | None = None
 
 
 class ProjectorPhotoViewResponse(GuiModel):

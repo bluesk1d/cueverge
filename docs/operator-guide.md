@@ -379,16 +379,33 @@ shared effects, or keep a manually entered stage position.
 
 Projector pairs that overlap are reported in plain language, for example
 "projector.left and projector.right overlap 18%". Two projectors that cover the
-same area usually means their corners were not drawn on the stage view. If the
-stacking is intentional, set blending in the projector's overlap settings.
+same area usually means their surfaces were drawn over each other or they use a
+manual stage rectangle. If the stacking is intentional, set blending in the
+projector's overlap settings.
 
 Updating the stage map writes ordinary stage data: geometry stage points, LED
 stage transforms, and a perspective stage mapping for planar projectors. Photo
 calibration, wiring, and native projector pixels are not changed. Removing the
-stage photo keeps this placement. Entering a projector's stage
-placement/size by hand, or changing its orientation or mirroring, replaces the
-derived perspective mapping with the manual rectangle until you update the
-stage map again.
+stage photo keeps this placement.
+
+#### Projector stage placement
+
+Each projector's **Stage placement** (projector details in the Visual Mapper)
+decides where it sits on the shared stage, and therefore which part of a
+shared-stage effect it shows:
+
+- **From drawn surface** (default): the projector's stage position, size and
+  perspective follow its drawn projector surface. They update automatically
+  whenever you save the projector or redraw its surface; the Stage X/Y/width/
+  height fields are read-only. Placement comes from the surface drawn on the
+  stage view when there is one, otherwise from the surface's saved stage
+  points. Before any stage view is chosen, the drawn surface is placed at a
+  default scale so projectors drawn on the same photo already sit side by side;
+  choose a stage view to give them real-world size.
+- **Manual stage rectangle**: you enter Stage X/Y/width/height. Redrawing the
+  surface and **Update stage map** leave it unchanged. A projector left on the
+  default 4 x 2.25 rectangle at the stage origin is flagged because every
+  projector on that default overlaps the others.
 
 On the stage view, **Show projector coverage** draws each projector's area on
 the photo with a key: one projector, projectors overlapping (blend the seam),
@@ -573,7 +590,8 @@ Cueverge runs one active scene at a time, but a scene may contain multiple
 media and lighting outputs. Every required media output prepares before play;
 one required output supplies the scene clock in media-synchronized mode.
 For an LED-only pre-show, use a schema-v2 scene with `media: []`, only lighting
-resource claims, and **Clock authority → Controller** in the timeline editor.
+resource claims, and **Clock authority → Controller** in the timeline editor's
+**Scene settings**.
 No media client is required. Controller-timed scenes can also include media
 outputs, but lighting follows controller time rather than buffering or actual
 playback. See [controller-timed scenes](scene-schema.md#controller-timed-scenes)
@@ -678,18 +696,93 @@ unavailable; save or cancel first. Stale saves retain edits and report conflict.
 
 ### Advanced time-based content
 
-![Timeline transport, backend evaluation, and no-hardware scenario tools](assets/gui/operator-timeline.png)
+![Full-screen timeline editor with scene header, transport, timeline, and tool tabs](assets/gui/operator-timeline.png)
 
-1. Open **Advanced authoring and history > Timeline editor**. Its **Scene**
-   selection stays synchronized with the main scene workspace.
-2. Choose **Editing space**: scene root or a composition.
-3. Set zoom and snap precision, scrub to a time, and use frame steps/preview
-   speed for inspection. Check both global and composition-local time.
-4. Add or adjust media, lighting, markers, protected regions, and synchronized
-   cues in the relevant authoring panels.
-5. Use **Save timeline** to persist changes. Undo/redo and browser preview do
+1. In **Scenes**, choose **Edit timeline** (save or cancel scene edits first).
+   The timeline editor opens full-screen; **Back to scene** returns. It is also
+   reachable from **Advanced authoring and history > Open timeline editor**.
+   Its **Scene** selection stays synchronized with the main scene workspace.
+2. Use the tabs above the viewer to switch between **Whole scene** and each
+   composition. **+ New composition** opens presets: **Whole display
+   overlay** (sized to the installation stage, output `shared-stage`), **One
+   projector** (sized to the chosen projector's native pixels), or **One LED
+   surface**. **Add to this scene at 0:00** (on by default) also places the new
+   composition in the scene.
+3. Use the transport bar: stop, frame steps, play/pause, the playhead
+   timecode (composition time, plus scene time inside a composition), **Go to
+   (ms)**, speed, zoom, and snap.
+4. The **Media** bin lists ready uploads and other compositions. Drag an item
+   onto a track to place it at the drop time, or onto the **Viewer** to place
+   it at the playhead on the selected track (or the first media track). The
+   **+** button does the same without dragging. Nested compositions and videos
+   with a known length use it; other media defaults to 5 seconds; both are shortened to
+   fit the remaining time.
+5. The **Viewer** shows the open composition on the house (stage and LED
+   surface compositions) and, for whole display overlays, **Outputs in this
+   effect**. On **Whole scene** it is an approximate program monitor: the top
+   visual layer's review proxy at the playhead, following play/pause (muted;
+   no projector warp, placement, or keyframed transforms).
+
+   **Layout** (always shown for projector compositions; a toggle beside
+   **House view** otherwise) draws the composition frame and the layers at the
+   playhead exactly where the renderer places them. Drag a layer to move it,
+   drag a corner to resize it (proportions locked; hold **Shift** for free
+   resizing), and drag the knob above it to rotate (**Shift** snaps to 15°).
+   Content outside the frame stays visible, dimmed, so handles are always
+   reachable. These edit the selected keyframe; each drag is one undo step.
+   Corner-pinned layers show their pinned outline; edit those corners in
+   **House view**. New media added to a composition starts centered and
+   scaled to fit; new compositions get a **Media** track automatically.
+
+   The **Inspector** shows the media layer, keyframe, or track you last
+   clicked on the timeline. Transform values are labeled fields: position
+   (composition units, pixels for projectors), scale and anchor in %, rotation
+   in degrees, opacity as a slider, and crop per edge in %. Drag a field's
+   letter label left or right to adjust it (**Shift** ×10, **Alt** fine), type
+   a value, or use the arrow keys. The chain button locks scale proportions;
+   the 3×3 anchor grid moves the anchor without moving the layer.
+6. On the timeline:
+   - Drag the orange playhead handle (or the playhead line, or anywhere on the
+     ruler) to scrub. Focus the handle to step with the arrow keys; **Home** and
+     **End** jump to the start and end. Drag the blue loop handles (or focus one
+     and use the arrow keys).
+   - Drag a marker to move it; click a marker to remove it.
+   - Drag a media layer to move it; drag its left or right edge to trim it.
+     Trimming the start also advances the source in-point. Keyframes cut off by
+     a trim collapse onto the new edge (the nearest one is kept); undo restores
+     them.
+   - Drag a keyframe diamond to retime it; click it to move the playhead to it
+     and edit it in the Inspector.
+   - Overlapping layers on one track are drawn on separate rows; **Visual
+     order** in the Inspector decides which is on top.
+   - Remove a layer with **Delete layer** in the Inspector or the
+     **Delete**/**Backspace** key while it is selected.
+   - Track names stay pinned while scrolling. Each drag is one undo step.
+7. Use the tool tabs below the timeline:
+   - **Media layers**: add images, video/GIFs, audio, or nested compositions by
+     picking a ready asset; edit keyframes, crop, playback, and render settings.
+   - **Markers & cues**: named markers, synchronized cues, cue presets, and
+     edits to selected items.
+   - **Tracks**: add audio-reference, fixture, group, or path tracks (bindings
+     suggest installation fixtures, paths, and audio assets).
+   - **Compositions**: create, open, nest, and add compositions to the scene.
+   - **Render & bake**: render settings, controller render and bake jobs,
+     rehearsal evidence, and rendered-frame inspection for projector and whole
+     display overlay compositions.
+   - **Loop & ranges**: exact loop range and protected regions.
+8. Use **Scene settings** for priority, completion, request policy, resource
+   claims, clock authority/source, and per-output requirements and calibration
+   offsets. These are saved with the timeline.
+9. Use **Save timeline** to persist changes. Undo/redo and browser preview do
    not replace saving a revision.
-6. Check backend deterministic evaluation and diagnostics after saving.
+10. The status chip beside **Scene settings** shows **Valid** or the issue
+   count; it opens **Diagnostics** (validation issues, backend deterministic
+   evaluation, and evaluated state).
+
+Keyboard shortcuts (outside text fields): **Space** play/pause, **M** add a
+marker at the playhead, **Ctrl/⌘+Z** undo, **Ctrl/⌘+Shift+Z** redo, and
+**Ctrl/⌘+S** save (also inside fields). Arrow keys move the playhead when the
+timeline canvas has focus.
 
 Saved zoom and snap precision are restored when entering that scene or editing
 space; opening and saving it should not replace those view settings with defaults.
@@ -702,9 +795,9 @@ Choose coordinates deliberately:
 
 | Space | Use |
 | --- | --- |
-| Projector native | Content sized to an identified projector's pixel canvas |
-| Lighting surface | Logical raster/content sampled onto mapped physical pixels |
-| Shared stage | Content spanning calibrated physical/stage coordinates and outputs |
+| One projector (native pixels) | Content sized to an identified projector's pixel canvas |
+| One LED surface | Logical raster/content sampled onto mapped physical pixels |
+| Whole display overlay | Content spanning calibrated physical/stage coordinates and outputs |
 
 The editor supports composition reuse/nesting, asset references, transform
 keyframes and motion paths, time markers and synchronized cue relationships,
@@ -721,14 +814,22 @@ For schema details and creative planning, see the
 
 #### Shared-stage effects across projectors and LEDs
 
-Use a **Shared stage** composition to author one image, video, or GIF across
-projectors and LEDs, such as a flag rippling over the whole house. Shared-stage
-effects belong to the show; the installation's **Stage map** only defines where
-each output sits. New shared-stage compositions default to the installation
-stage size and a render resolution that covers it.
+Use a **Whole display overlay** composition (shared stage) to author one image,
+video, or GIF across projectors and LEDs, such as a flag rippling over the
+whole house. Overlay effects belong to the show; the installation only defines where each output
+sits: projectors follow their drawn surfaces (see
+[Projector stage placement](#projector-stage-placement)) and the **Stage map**
+scales everything to real-world size. New shared-stage compositions default to
+the installation stage size and a render resolution that covers it.
 
-1. Under **Outputs in this effect**, choose which projectors and LED outputs
-   take part. All mapped projectors are included by default; at least one is
+To create one, open the timeline editor, choose **+ New composition**, keep
+**Whole display overlay**, name it, and choose **Create and open**. Then drag
+the image, video, or GIF from the **Media** bin onto the Viewer or a track.
+(The **Compositions** tab still offers the full form: **Covers → Whole display
+overlay**.)
+
+1. In the Viewer, under **Outputs in this effect**, choose which projectors and
+   LED outputs take part. All mapped projectors are included by default; at least one is
    required. Unselected LED outputs keep their existing lighting behavior.
 2. If the composition size differs from the installation stage, choose
    **Match installation stage**. LED stage coordinates must fall within the
@@ -737,7 +838,8 @@ stage size and a render resolution that covers it.
 3. The stage preview shows the stage-view photo in true proportions, the
    rendered frame at the playhead (**Show rendered frame**), projector
    coverage, LED pixels, and the composition boundary.
-4. Select the media layer. Under **Shape on stage**, choose **Stretch to four
+4. Select the media layer on the timeline; its properties open in the
+   Inspector. Under **Shape on stage**, choose **Stretch to four
    corners** or **Fit to selected outputs**, then drag the four corner handles
    on the preview to place the media over separate devices. Corner-pinned
    layers ignore position, scale, rotation, and anchor keyframes; opacity and
@@ -747,7 +849,8 @@ stage size and a render resolution that covers it.
    **Outline of selected outputs**, with a **Soft edge** in stage units and
    **Show outside the mask instead** to invert it.
 
-Save the timeline and choose **Bake installation overlay**. One job creates
+Save the timeline, open **Render & bake**, and choose **Bake installation
+overlay**. One job creates
 the projector videos and RGB sequences from the same stage frames, at the
 composition's frame rate (up to 60 fps for mixed output, including fractional
 rates such as 30000/1001). Projector warps, masks, and overlap corrections
@@ -773,8 +876,9 @@ an automatic reconstruction of the house's depth.
 
 #### Spatial LED media overlays
 
-Open a mapped **Lighting surface** composition. Add an image, video, or GIF
-using **New transform layer source** (the asset picker lists ready uploads).
+Open a mapped **One LED surface** composition. On **Media layers**, add an
+image, video, or GIF by choosing it under **Source** (the picker lists ready
+uploads and sets the layer type).
 GIF assets use timed frames rather than a still image. Newly added video/GIF
 lighting overlays loop by default; **Media playback** can instead hold the last
 frame or play once and become transparent. The layer's interval controls how
@@ -937,10 +1041,11 @@ Use a progression from safe authoring checks to supervised physical acceptance.
 
 - In the mapper, inspect simulation overlays, selected output, native
   projector, parent/logical context, or full installation views as appropriate.
-- In the timeline, inspect deterministic backend evaluation at representative
-  timestamps, including cue boundaries, seeks, protected regions, and end
-  behavior.
-- Under **Repeatable no-hardware simulation scenarios**, name and save a
+- In the timeline editor's **Diagnostics**, inspect deterministic backend
+  evaluation at representative timestamps, including cue boundaries, seeks,
+  protected regions, and end behavior.
+- On the show's **Preview** tab, open **Fault-injection test scenarios
+  (advanced)** to name and save a
   scenario with accelerated advances, synthetic observations, operator
   overrides, disconnect/reconnect, and output-failure/recovery steps.
   Inspect the results and expected-outcome mismatches.

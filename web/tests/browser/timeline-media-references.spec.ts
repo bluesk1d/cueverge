@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { openAdvancedShowWorkspace } from "./show-workspace";
+import { openAdvancedShowWorkspace, openTimelineEditor } from "./show-workspace";
 
 test("timeline shows media thumbnails and audio waveforms", async ({ page }) => {
   await page.route("**/api/gui/v1/**", async (route) => {
@@ -27,8 +27,7 @@ test("timeline shows media thumbnails and audio waveforms", async ({ page }) => 
 
   await page.goto("/demo.html");
   await page.getByRole("button", { name: "Shows", exact: true }).click();
-  await openAdvancedShowWorkspace(page);
-  await page.getByText("Timeline editor", { exact: true }).click();
+  await openTimelineEditor(page);
 
   await expect(
     page.getByAltText("Timeline thumbnails for Window loop"),

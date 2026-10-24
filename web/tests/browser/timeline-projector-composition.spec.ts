@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { openLayout, openProjectorDetails } from "./setup-workspace";
-import { openAdvancedShowWorkspace } from "./show-workspace";
+import { openAdvancedShowWorkspace, openTimelineEditor, openTimelineTool, openComposition } from "./show-workspace";
 
 const installationId = "demo-installation";
 const geometryId = "projector-surface";
@@ -108,9 +108,9 @@ test("projector-native edit returns to root and maps through every photo view", 
 
   await page.goto("/demo.html");
   await page.getByRole("button", { name: "Shows", exact: true }).click();
-  await openAdvancedShowWorkspace(page);
-  await page.getByText("Timeline editor", { exact: true }).click();
-  await page.getByLabel("Editing space").selectOption("projector-composition");
+  await openTimelineEditor(page);
+  await openComposition(page, "projector-composition");
+  await openTimelineTool(page, "Render & bake");
   await expect(
     page.getByAltText("Controller render preview for Left projector"),
   ).toHaveAttribute(
@@ -145,9 +145,10 @@ test("projector-native edit returns to root and maps through every photo view", 
   await page.getByRole("button", { name: "Next preview frame" }).click();
   await expect(page.getByLabel("Scrub position")).not.toHaveValue("0");
 
+  await openTimelineTool(page, "Media layers");
   await expect(
     page.getByText(
-      /Authored once in projector native · target projector.left · 1920×1080/,
+      /Placed in Projector · projector.left · 1920×1080/,
     ),
   ).toBeVisible();
   await expect(
@@ -155,6 +156,7 @@ test("projector-native edit returns to root and maps through every photo view", 
   ).toHaveCount(0);
   await page.getByLabel("Position 1").fill("960");
   await page.getByLabel("Position 2").fill("540");
+  await openTimelineTool(page, "Render & bake");
   await page.getByLabel("Render frame-rate numerator").fill("24");
   await page.getByLabel("Render frame-rate denominator").fill("1");
   await page.getByLabel("Render scaling filter").selectOption("bicubic");
@@ -207,8 +209,9 @@ test("projector-native edit returns to root and maps through every photo view", 
     .getByRole("navigation", { name: "Composition breadcrumbs" })
     .getByRole("button", { name: "Scene · Ambient" })
     .click();
-  await expect(page.getByLabel("Editing space")).toHaveValue("");
-  await expect(page.getByText(/Authored once in scene root · ambient/)).toBeVisible();
+  await expect(page.getByRole("tab", { name: "Whole scene", exact: true })).toHaveAttribute("aria-selected", "true");
+  await openTimelineTool(page, "Media layers");
+  await expect(page.getByText(/Placed in the whole scene/)).toBeVisible();
 
   await page.getByRole("button", { name: "Installation", exact: true }).click();
   await openLayout(page);
@@ -280,9 +283,9 @@ test("installation overlay saves LED selection and queues one mixed bake", async
   });
   await page.goto("/demo.html");
   await page.getByRole("button", { name: "Shows", exact: true }).click();
-  await openAdvancedShowWorkspace(page);
-  await page.getByText("Timeline editor", { exact: true }).click();
-  await page.getByLabel("Editing space").selectOption("projector-composition");
+  await openTimelineEditor(page);
+  await openComposition(page, "projector-composition");
+  await openTimelineTool(page, "Render & bake");
   await expect(page.getByLabel("Include LED surface roofline")).not.toBeChecked();
   await page.getByLabel("Include LED surface roofline").check();
   await expect(page.getByRole("button", { name: "Bake installation overlay" })).toBeEnabled();
