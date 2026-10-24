@@ -8911,7 +8911,7 @@ function IntegratedPhotoPreview({
               <image
                 height="600"
                 href={installationPhotoUrl(photo.id, photo.revision)}
-                preserveAspectRatio="none"
+                preserveAspectRatio="xMidYMid meet"
                 width="1000"
               />
               {mapperExport.lighting_surfaces.map((surface) => {

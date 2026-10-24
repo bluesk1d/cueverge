@@ -722,7 +722,12 @@ unavailable; save or cancel first. Stale saves retain edits and report conflict.
    effect**. On **Whole scene** it defaults to **House view**: each scene
    media output's review proxy is warped onto the projector surface drawn for
    that output's projector on the installation photo (pick another photo
-   above the frame when there are several). It follows the playhead and
+   above the frame when there are several). The drawn surface is treated as
+   the content area: media is fitted to the surface's shape using the
+   mapping's **Content fit** (preserve or stretch), then corner-pinned. If the asset's
+   aspect ratio differs from the projector's native output (after
+   orientation), a note warns that direct playback will letterbox or
+   pillarbox it on the projector. It follows the playhead and
    play/pause, muted, honoring the output's start delay and end behavior
    (hold last frame, loop, or stop). Other projector surfaces appear as dashed
    outlines. Outputs without a drawn surface on a photo are listed below the

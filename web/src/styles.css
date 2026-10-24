@@ -6892,8 +6892,9 @@ p {
   height: 100%;
 }
 
+/* Letterboxed like the Installation canvas: surface points are normalized to the 1000×600 frame. */
 .scene-house-view__frame > img {
-  object-fit: fill;
+  object-fit: contain;
 }
 
 .scene-house-view__frame > svg {

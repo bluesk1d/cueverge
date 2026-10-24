@@ -14,7 +14,6 @@ import type {
 } from "../api";
 import { hasAssetArtifact } from "./AssetPreview";
 import {
-  applyHomography,
   cornerHomography,
   formatTimecode,
   homographyMatrix3d,
@@ -31,11 +30,18 @@ interface SurfacePlacement {
   asset: AssetRecord | undefined;
   surfaceName: string;
   photoId: string;
+  corners: { x: number; y: number }[];
+  /** Surface-shaped raster the media is fitted into before the corner warp. */
+  rasterWidth: number;
+  rasterHeight: number;
   homography: number[];
   nativeWidth: number;
   nativeHeight: number;
+  orientationDegrees: ProjectorMapping["orientation_degrees"];
   fitMode: ProjectorMapping["fit_mode"];
 }
+
+const SURFACE_RASTER_WIDTH = 1000;
 
 /** Whole-scene house view: each scene media output's review proxy warped onto its projector surface. */
 export function SceneHouseView({
@@ -110,11 +116,13 @@ export function SceneHouseView({
           ? [{ geometry_id: surface.id, photo_id: surface.photo_id, points: surface.points, homography: null }]
           : [];
       for (const view of views) {
-        if (!view.photo_id) continue;
+        if (!view.photo_id || view.points.length !== 4) continue;
         const key = `${output.id}:${view.photo_id}:${view.geometry_id}`;
         if (seen.has(key)) continue;
-        const homography =
-          view.homography ?? cornerHomography(mapping.native_width, mapping.native_height, view.points);
+        // The drawn surface is the content area: fit media to its apparent shape, then corner-pin it.
+        const rasterWidth = SURFACE_RASTER_WIDTH;
+        const rasterHeight = SURFACE_RASTER_WIDTH / surfaceAspect(view.points);
+        const homography = cornerHomography(rasterWidth, rasterHeight, view.points);
         if (!homography) continue;
         seen.add(key);
         result.push({
@@ -124,9 +132,13 @@ export function SceneHouseView({
           surfaceName:
             geometry.find((item) => item.id === view.geometry_id)?.name ?? surface?.name ?? mapping.resource,
           photoId: view.photo_id,
+          corners: view.points,
+          rasterWidth,
+          rasterHeight,
           homography,
           nativeWidth: mapping.native_width,
           nativeHeight: mapping.native_height,
+          orientationDegrees: mapping.orientation_degrees,
           fitMode: mapping.fit_mode,
         });
       }
@@ -203,21 +215,13 @@ export function SceneHouseView({
             />
           ))}
         <svg viewBox={`0 0 ${PHOTO_WIDTH} ${PHOTO_HEIGHT}`} preserveAspectRatio="none" aria-hidden="true">
-          {visible.map((placement) => {
-            const corners = [
-              [0, 0],
-              [placement.nativeWidth, 0],
-              [placement.nativeWidth, placement.nativeHeight],
-              [0, placement.nativeHeight],
-            ].map(([x, y]) => applyHomography(placement.homography, x, y));
-            return (
-              <polygon
-                key={placement.key}
-                className="scene-house-view__outline"
-                points={corners.map((point) => `${point.x * PHOTO_WIDTH},${point.y * PHOTO_HEIGHT}`).join(" ")}
-              />
-            );
-          })}
+          {visible.map((placement) => (
+            <polygon
+              key={placement.key}
+              className="scene-house-view__outline"
+              points={placement.corners.map((point) => `${point.x * PHOTO_WIDTH},${point.y * PHOTO_HEIGHT}`).join(" ")}
+            />
+          ))}
           {otherSurfaces.map((item) => (
             <polygon
               key={item.id}
@@ -245,6 +249,10 @@ export function SceneHouseView({
               );
             })
           : <span>No scene media is assigned to a projector surface on this photo.</span>}
+        {visible.map((placement) => {
+          const warning = playbackAspectWarning(placement);
+          return warning ? <small key={`${placement.key}:aspect`} role="note">{warning}</small> : null;
+        })}
         {unplaced.length > 0 && (
           <small>
             Not shown on the house: {unplaced.map((output) => output.resource ?? output.id).join(", ")} (no
@@ -258,6 +266,33 @@ export function SceneHouseView({
       </figcaption>
     </figure>
   );
+}
+
+/** Apparent width/height of a drawn quad on the 1000×600 photo frame (mean of opposite edges). */
+function surfaceAspect(points: { x: number; y: number }[]): number {
+  const length = (a: { x: number; y: number }, b: { x: number; y: number }) =>
+    Math.hypot((b.x - a.x) * PHOTO_WIDTH, (b.y - a.y) * PHOTO_HEIGHT);
+  const [topLeft, topRight, bottomRight, bottomLeft] = points;
+  const width = (length(topLeft, topRight) + length(bottomLeft, bottomRight)) / 2;
+  const height = (length(topLeft, bottomLeft) + length(topRight, bottomRight)) / 2;
+  return width > 0 && height > 0 ? width / height : 16 / 9;
+}
+
+function playbackAspectWarning(placement: SurfacePlacement): string | null {
+  const width = Number(placement.asset?.metadata?.width);
+  const height = Number(placement.asset?.metadata?.height);
+  if (!(width > 0 && height > 0)) return null;
+  const rotated = placement.orientationDegrees === 90 || placement.orientationDegrees === 270;
+  const outputWidth = rotated ? placement.nativeHeight : placement.nativeWidth;
+  const outputHeight = rotated ? placement.nativeWidth : placement.nativeHeight;
+  const assetAspect = width / height;
+  const outputAspect = outputWidth / outputHeight;
+  if (Math.abs(assetAspect - outputAspect) / outputAspect <= 0.01) return null;
+  return `${placement.asset?.name} is ${width}×${height}, but the ${placement.surfaceName} projector outputs ${outputWidth}×${outputHeight}${
+    rotated ? ` (rotated ${placement.orientationDegrees}°)` : ""
+  }. The preview fits it to the drawn surface; played directly it will be ${
+    assetAspect < outputAspect ? "pillarboxed" : "letterboxed"
+  } on the projector. Match the projector's native size and orientation in Installation, or use a projector composition.`;
 }
 
 function assetDurationMs(asset: AssetRecord | undefined): number {
@@ -308,8 +343,8 @@ function HouseSurfaceMedia({
       className={`scene-house-view__surface scene-house-view__surface--${placement.fitMode}`}
       aria-label={label}
       style={{
-        width: `${placement.nativeWidth}px`,
-        height: `${placement.nativeHeight}px`,
+        width: `${placement.rasterWidth}px`,
+        height: `${placement.rasterHeight}px`,
         transform,
         visibility: sourceMs === null ? "hidden" : "visible",
       }}

@@ -14,7 +14,7 @@ test("whole-scene house view warps scene media onto its projector surface", asyn
     const url = new URL(route.request().url());
     if (url.pathname.endsWith("/projects/demo-project/assets")) {
       return route.fulfill({
-        json: [{ ...mockReadyAsset("ghost-video", "Ghost video", "video/mp4"), metadata: { duration_ms: 2000 } }],
+        json: [{ ...mockReadyAsset("ghost-video", "Ghost video", "video/mp4"), metadata: { duration_ms: 2000, width: 1080, height: 1920 } }],
       });
     }
     if (url.pathname.endsWith("/projects/demo-project/draft")) {
@@ -41,7 +41,15 @@ test("whole-scene house view warps scene media onto its projector surface", asyn
   const surfaceMedia = house.getByLabel("Ghost video on Right window").first();
   await expect(surfaceMedia).toHaveCSS("visibility", "hidden");
   await expect(surfaceMedia).toHaveAttribute("style", /matrix3d\(/);
+  // Media is fitted to the drawn surface's apparent shape (≈1.76:1), not the 1920×1080 raster.
+  await expect(surfaceMedia).toHaveAttribute("style", /width: 1000px; height: 5\d\d\.\d+px/);
+  await expect(house.getByRole("note")).toContainText(
+    "Ghost video is 1080×1920, but the Right window projector outputs 1920×1080",
+  );
+  await expect(house.getByRole("note")).toContainText("pillarboxed");
   await expect(house.locator(".scene-house-view__outline--idle")).toHaveCount(1);
+  // Surface points are normalized to the letterboxed 1000×600 Installation canvas, so the photo must not stretch.
+  await expect(house.getByAltText("Installation photo Front of house")).toHaveCSS("object-fit", "contain");
 
   const reference = page.getByLabel("right-window timing reference");
   await expect(reference).toHaveAttribute("style", /left: 20%; width: 80%/);
