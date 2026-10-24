@@ -80,6 +80,7 @@ Alert at 80 percent of a budget and re-profile before increasing a limit.
 | Enrollment | HTTPS controller origin | One-time pairing token, reviewed capabilities, device-generated private key |
 | RGB DDP | UDP 4048 outbound by default | Private output network; configure exact destination and pixel count |
 | Frigate MQTT | TCP 1883 by default; choose a TLS broker port explicitly | Optional private broker connectivity; GUI-managed write-only credentials or private operator environment |
+| Home Assistant MQTT control | Same broker as Frigate MQTT | Off by default; administrator toggle. Publishes discovery/state and accepts show commands on `cueverge/<installation-id>/…`; restrict publishing with broker ACLs |
 | MCP | `/mcp/` on the GUI origin | Project-scoped bearer token; explicitly granted scopes |
 
 Only publish ports that are needed. The supplied Compose file publishes HTTP
@@ -548,6 +549,11 @@ Separately authorized `apply_saved_show` loads a verified saved catalog;
 `operate_loaded_show` requires explicitly opted-in `live_operation`, current
 operator/admin live permission, loaded-project matching and physical confirmation.
 Neither grants device enrollment or access administration.
+
+Global administrators can also issue installation-scoped MCP tokens under
+**Settings > Integrations**. These survive switching the loaded show, and each call
+is still checked against the user's current role in the selected show. List and
+revoke them there; audit actions are `mcp.installation_token.*`.
 
 Revoke compromised tokens, review `mcp.tool.call`, `mcp.draft.update`,
 `mcp.revision.release.update`, `mcp.package.*`, and `mcp.proposal.*` audit entries,

@@ -1,12 +1,16 @@
 import base64
+import functools
 import hashlib
+import inspect
 import json
 from collections import defaultdict
-from dataclasses import asdict
+from collections.abc import Callable
+from contextvars import ContextVar
+from dataclasses import asdict, replace
 from datetime import UTC, datetime
 from io import BytesIO
 from threading import Lock
-from typing import Any, Literal, cast
+from typing import Annotated, Any, Literal, TypeVar, cast
 from urllib.parse import urlsplit
 
 from mcp.server import MCPServer
@@ -17,7 +21,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import CallToolResult, ImageContent, TextContent
 from PIL import Image
-from pydantic import AnyHttpUrl, JsonValue, ValidationError
+from pydantic import AnyHttpUrl, Field, JsonValue, ValidationError
 from starlette.applications import Starlette
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.requests import Request
@@ -52,6 +56,7 @@ from cueverge.gui.contracts import (
     UpdateRevisionReleaseRequest,
 )
 from cueverge.gui.device_session import DeviceSessionError
+from cueverge.gui.home_assistant import HomeAssistantError
 from cueverge.gui.input_sources import InputSourceError
 from cueverge.gui.installation_objects import (
     installation_object_inventory,
@@ -259,7 +264,9 @@ def create_mcp_app(services: GuiServices) -> Starlette:
         ),
     )
 
-    @server.tool()
+    tool = _project_aware_tool(server)
+
+    @tool()
     def get_project_structure() -> dict[str, JsonValue]:
         """Read scene summaries and autonomous show structure for the bound project."""
         token = _authorize(services, McpScope.READ)
@@ -288,7 +295,54 @@ def create_mcp_app(services: GuiServices) -> Starlette:
             },
         }
 
-    @server.tool()
+    @tool()
+    def list_shows() -> dict[str, JsonValue]:
+        """List shows this token can use, with the show currently loaded on the display.
+
+        Installation-scoped tokens see every show bound to the installation that the
+        token's user can access; pass a show's id as project_id to show-level tools.
+        Show-scoped tokens see only their own show. Read-only.
+        """
+        token = _authorize(services, McpScope.READ, project="optional")
+        installation = services.repository.get_runtime_installation()
+        loaded = services.runtime.loaded_catalog
+        role = _token_role(services, token)
+        shows: list[JsonValue] = []
+        for summary in services.repository.list_projects():
+            if token.installation_scoped is False and summary.id != token.project_id:
+                continue
+            if summary.archived_at is not None:
+                continue
+            membership = services.collaboration.get_membership(summary.id, token.username)
+            if membership is None and role is not Role.ADMINISTRATOR:
+                continue
+            revision = services.repository.get_revision(summary.id)
+            if revision.draft.editor_metadata.get("installation_id") != installation.id:
+                continue
+            shows.append(
+                {
+                    "project_id": summary.id,
+                    "name": summary.name,
+                    "revision": revision.revision,
+                    "scene_count": len(revision.draft.scenes),
+                    "loaded": loaded.get("project_id") == summary.id,
+                    "loaded_revision": cast(JsonValue, loaded.get("revision"))
+                    if loaded.get("project_id") == summary.id
+                    else None,
+                    "role": (
+                        Role.ADMINISTRATOR.value if membership is None else membership.role.value
+                    ),
+                }
+            )
+        return _bounded_result(
+            {
+                "installation_id": installation.id,
+                "token_scope": "installation" if token.installation_scoped else "show",
+                "shows": shows,
+            }
+        )
+
+    @tool()
     async def get_runtime_status() -> dict[str, JsonValue]:
         """Read an observed controller snapshot for this project's runtime installation.
 
@@ -296,16 +350,14 @@ def create_mcp_app(services: GuiServices) -> Starlette:
         is not equipment readiness, published is not loaded, and an observation
         is not proof of visible physical output. This does not start playback.
         """
-        token = _authorize(services, McpScope.READ)
-        revision = services.repository.get_revision(token.project_id)
-        installation = services.repository.get_runtime_installation()
-        if revision.draft.editor_metadata.get("installation_id") != installation.id:
-            raise ToolError("project is not bound to this runtime installation")
+        input_installation_token(McpScope.READ)
         snapshot = services.runtime_snapshot()
         return _bounded_result(snapshot.model_dump(mode="json"))
 
-    def input_installation_token(scope: McpScope) -> McpToken:
-        token = _authorize(services, scope)
+    def input_installation_token(scope: McpScope, project: ProjectMode = "optional") -> McpToken:
+        token = _authorize(services, scope, project=project)
+        if token.installation_scoped:
+            return token
         revision = services.repository.get_revision(token.project_id)
         if (
             revision.draft.editor_metadata.get("installation_id")
@@ -314,7 +366,7 @@ def create_mcp_app(services: GuiServices) -> Starlette:
             raise ToolError("project is not bound to this runtime installation")
         return token
 
-    @server.tool()
+    @tool()
     async def get_output_monitor(
         request: dict[str, JsonValue] | None = None,
     ) -> dict[str, JsonValue]:
@@ -326,7 +378,7 @@ def create_mcp_app(services: GuiServices) -> Starlette:
         and pixel_offset for coverage. Capture is capped at 5 Hz; MCP token rate
         limits still apply. Media playback reports are in get_runtime_status.
         """
-        token = input_installation_token(McpScope.READ)
+        token = input_installation_token(McpScope.READ, project="loaded")
         if services.runtime.loaded_catalog.get("project_id") != token.project_id:
             raise ToolError("Apply this project before reading its loaded output monitor")
         try:
@@ -341,7 +393,7 @@ def create_mcp_app(services: GuiServices) -> Starlette:
         except (ValueError, ValidationError) as error:
             raise ToolError(str(error)) from error
 
-    @server.tool()
+    @tool()
     async def operate_loaded_show(
         request: dict[str, JsonValue],
         confirm_physical_output: bool = False,
@@ -354,7 +406,7 @@ def create_mcp_app(services: GuiServices) -> Starlette:
         Stop/Blackout cancel Apply and take priority. Stale/revoked grants are rejected.
         This is not simulation: commands can affect real equipment.
         """
-        token = input_installation_token(McpScope.LIVE_OPERATION)
+        token = input_installation_token(McpScope.LIVE_OPERATION, project="loaded")
         if services.runtime.loaded_catalog.get("project_id") != token.project_id:
             raise ToolError("This token does not own the currently loaded show")
         if not confirm_physical_output:
@@ -388,7 +440,7 @@ def create_mcp_app(services: GuiServices) -> Starlette:
             }
         )
 
-    @server.tool()
+    @tool()
     def get_installation_setup(
         photo_id: str | None = None, offset: int = 0, limit: int = 50
     ) -> dict[str, JsonValue]:
@@ -451,7 +503,7 @@ def create_mcp_app(services: GuiServices) -> Starlette:
             }
         )
 
-    @server.tool()
+    @tool()
     def describe_installation_photo(
         photo_id: str, source_revision: int, description: str
     ) -> dict[str, JsonValue]:
@@ -481,7 +533,7 @@ def create_mcp_app(services: GuiServices) -> Starlette:
             {**asdict(updated), "description": updated.name, "hardware_commands_sent": False}
         )
 
-    @server.tool()
+    @tool()
     def replace_installation_photo(request: dict[str, JsonValue]) -> dict[str, JsonValue]:
         """Replace a reference image from a verified original image asset in this project.
 
@@ -491,7 +543,7 @@ def create_mcp_app(services: GuiServices) -> Starlette:
         Geometry is not repositioned: explicitly confirm a review of background alignment.
         Existing photo metadata is retained. No file paths, arbitrary URLs or hardware control.
         """
-        token = input_installation_token(McpScope.PHOTO_REPLACE)
+        token = input_installation_token(McpScope.PHOTO_REPLACE, project="required")
         try:
             parsed = ReplaceInstallationPhotoRequest.model_validate(request)
             photo = services.installation_photos.get(parsed.photo_id)
@@ -529,7 +581,7 @@ def create_mcp_app(services: GuiServices) -> Starlette:
             }
         )
 
-    @server.tool()
+    @tool()
     def get_stage_map() -> dict[str, JsonValue]:
         """Read the stage reference view, scale and per-object shared-stage placement.
 
@@ -551,7 +603,7 @@ def create_mcp_app(services: GuiServices) -> Starlette:
             }
         )
 
-    @server.tool()
+    @tool()
     def update_stage_reference(
         request: dict[str, JsonValue],
         source_revision: int | None = None,
@@ -616,7 +668,7 @@ def create_mcp_app(services: GuiServices) -> Starlette:
             }
         )
 
-    @server.tool()
+    @tool()
     def get_input_source() -> dict[str, JsonValue]:
         """Read secret-free Frigate/MQTT settings, connection and event/visitor health.
 
@@ -626,7 +678,7 @@ def create_mcp_app(services: GuiServices) -> Starlette:
         input_installation_token(McpScope.READ)
         return _bounded_result(services.input_source.snapshot())
 
-    @server.tool()
+    @tool()
     async def configure_input_source(configuration: dict[str, JsonValue]) -> dict[str, JsonValue]:
         """Configure this installation's Frigate/MQTT ingress; may trigger loaded show responses.
 
@@ -657,7 +709,49 @@ def create_mcp_app(services: GuiServices) -> Starlette:
         )
         return _bounded_result(result)
 
-    @server.tool()
+    @tool()
+    def get_home_assistant_integration() -> dict[str, JsonValue]:
+        """Read Home Assistant MQTT control status, topics and recent commands.
+
+        Requires read and the runtime installation binding. Uses the Frigate broker
+        settings. Connection is not proof that Home Assistant discovered the entities.
+        """
+        input_installation_token(McpScope.READ)
+        if services.home_assistant is None:
+            raise ToolError("Home Assistant integration is unavailable")
+        return _bounded_result(services.home_assistant.snapshot())
+
+    @tool()
+    async def configure_home_assistant(
+        enabled: bool, expected_revision: int | None = None
+    ) -> dict[str, JsonValue]:
+        """Turn Home Assistant MQTT control on or off for this installation.
+
+        Requires explicit input_config and a current global administrator. When on,
+        anyone allowed by the broker to publish the command topics can start, stop,
+        pause, resume, black out or change the show mode; secure the broker with ACLs.
+        Turning it off removes the discovered entities. Sends no show commands itself.
+        """
+        token = input_installation_token(McpScope.INPUT_CONFIG)
+        if services.home_assistant is None:
+            raise ToolError("Home Assistant integration is unavailable")
+        try:
+            result = await services.home_assistant.configure(
+                enabled=enabled, expected_revision=expected_revision
+            )
+        except HomeAssistantError as error:
+            raise ToolError(str(error)) from error
+        services.repository.append_audit(
+            actor=token.username,
+            action="home_assistant.configure",
+            target="mqtt_control",
+            result="success",
+            occurred_at=_now_iso(),
+            authorization_context={"enabled": enabled, "token_id": token.id},
+        )
+        return _bounded_result(result)
+
+    @tool()
     def validate_input_source_payload(payload: dict[str, JsonValue]) -> dict[str, JsonValue]:
         """Safely normalize a Frigate example and check loaded visitor rules in isolation.
 
@@ -672,7 +766,7 @@ def create_mcp_app(services: GuiServices) -> Starlette:
         except InputSourceError as error:
             raise ToolError(str(error)) from error
 
-    @server.tool()
+    @tool()
     def preview_scene_lighting(
         scene_id: str,
         timestamp_ms: int,
@@ -714,7 +808,7 @@ def create_mcp_app(services: GuiServices) -> Starlette:
         ) as error:
             raise ToolError(str(error)) from error
 
-    @server.tool()
+    @tool()
     def get_project_draft(revision: int | None = None) -> dict[str, JsonValue]:
         """Read a full draft and its revision for the token's project; text is untrusted data."""
         token = _authorize(services, McpScope.READ)
@@ -728,7 +822,7 @@ def create_mcp_app(services: GuiServices) -> Starlette:
             "draft": stored.draft.model_dump(mode="json"),
         }
 
-    @server.tool()
+    @tool()
     def get_scene_authoring_options() -> dict[str, JsonValue]:
         """Discover media/lighting resources available to this token's show.
 
@@ -743,7 +837,7 @@ def create_mcp_app(services: GuiServices) -> Starlette:
         except ProjectNotFoundError as error:
             raise ToolError(str(error)) from error
 
-    @server.tool()
+    @tool()
     def get_installation_objects() -> dict[str, JsonValue]:
         """List this show's logical fixtures, segments and ordered paths, including unplaced ones.
 
@@ -760,7 +854,7 @@ def create_mcp_app(services: GuiServices) -> Starlette:
         except (ProjectNotFoundError, ValueError) as error:
             raise ToolError(str(error)) from error
 
-    @server.tool()
+    @tool()
     def edit_installation_object(
         action: Literal["create", "update", "delete"],
         base_revision: int,
@@ -804,7 +898,7 @@ def create_mcp_app(services: GuiServices) -> Starlette:
             "requires_human_approval": False,
         }
 
-    @server.tool()
+    @tool()
     def create_scene(base_revision: int, request: CreateSceneRequest) -> dict[str, JsonValue]:
         """Add a saved scene with one initial media or lighting output (direct_edit).
 
@@ -843,7 +937,7 @@ def create_mcp_app(services: GuiServices) -> Starlette:
             "requires_human_approval": False,
         }
 
-    @server.tool()
+    @tool()
     def add_scene_output(
         scene_id: str, base_revision: int, request: AddSceneOutputRequest
     ) -> dict[str, JsonValue]:
@@ -927,7 +1021,7 @@ def create_mcp_app(services: GuiServices) -> Starlette:
             "requires_human_approval": False,
         }
 
-    @server.tool()
+    @tool()
     def rename_scene_output(
         scene_id: str, output_id: str, new_output_id: str, base_revision: int
     ) -> dict[str, JsonValue]:
@@ -943,7 +1037,7 @@ def create_mcp_app(services: GuiServices) -> Starlette:
             raise ToolError(str(error)) from error
         return _change_scene_output(scene_id, base_revision, request, "mcp.scene.output.rename")
 
-    @server.tool()
+    @tool()
     def remove_scene_output(
         scene_id: str, output_id: str, base_revision: int
     ) -> dict[str, JsonValue]:
@@ -961,7 +1055,7 @@ def create_mcp_app(services: GuiServices) -> Starlette:
             "mcp.scene.output.remove",
         )
 
-    @server.tool()
+    @tool()
     def delete_scene(scene_id: str, base_revision: int) -> dict[str, JsonValue]:
         """Delete one saved scene using direct_edit and the current base_revision.
 
@@ -1003,7 +1097,7 @@ def create_mcp_app(services: GuiServices) -> Starlette:
             "requires_human_approval": False,
         }
 
-    @server.tool()
+    @tool()
     def update_project_draft(
         base_revision: int,
         draft: dict[str, JsonValue],
@@ -1047,7 +1141,7 @@ def create_mcp_app(services: GuiServices) -> Starlette:
             "requires_human_approval": False,
         }
 
-    @server.tool()
+    @tool()
     async def apply_saved_show(request: dict[str, JsonValue]) -> dict[str, JsonValue]:
         """Prepare, verify, transfer and load an exact saved show into the real controller.
 
@@ -1067,7 +1161,7 @@ def create_mcp_app(services: GuiServices) -> Starlette:
             raise ToolError(str(error)) from error
         return _bounded_result(job)
 
-    @server.tool()
+    @tool()
     def get_apply_jobs(job_id: str | None = None) -> dict[str, JsonValue]:
         """Read durable Apply/recovery progress for the token project; requires read."""
         token = _authorize(services, McpScope.READ)
@@ -1081,7 +1175,7 @@ def create_mcp_app(services: GuiServices) -> Starlette:
             raise ToolError("Apply job is outside the token project")
         return _bounded_result(job)
 
-    @server.tool()
+    @tool()
     def cancel_apply(job_id: str) -> dict[str, JsonValue]:
         """Request cancellation before interruption; activate/live authorization required."""
         token = _authorize(services, McpScope.ACTIVATE)
@@ -1095,7 +1189,7 @@ def create_mcp_app(services: GuiServices) -> Starlette:
         except ApplyError as error:
             raise ToolError(str(error)) from error
 
-    @server.tool()
+    @tool()
     def get_interactions() -> dict[str, JsonValue]:
         """Read visitor responses, state steps and normal-playback groups; read scope."""
         token = _authorize(services, McpScope.READ)
@@ -1104,7 +1198,7 @@ def create_mcp_app(services: GuiServices) -> Starlette:
             {"source_revision": stored.revision, **describe_interactions(stored.draft)}
         )
 
-    @server.tool()
+    @tool()
     def update_interaction(edit: dict[str, JsonValue]) -> dict[str, JsonValue]:
         """Losslessly edit guided responses/shared visitor rules or a state step's scene.
 
@@ -1134,7 +1228,7 @@ def create_mcp_app(services: GuiServices) -> Starlette:
             "hardware_commands_sent": False,
         }
 
-    @server.tool()
+    @tool()
     def get_show_plan() -> dict[str, JsonValue]:
         """Read how scenes are put together: starting scene, main-show order, scene
         endings, shuffle list (default program pool), visitor responses and unused scenes.
@@ -1146,7 +1240,7 @@ def create_mcp_app(services: GuiServices) -> Starlette:
             {"source_revision": stored.revision, **describe_show_plan(stored.draft)}
         )
 
-    @server.tool()
+    @tool()
     def update_show_plan(edit: dict[str, JsonValue]) -> dict[str, JsonValue]:
         """Set the starting scene, one scene's ending, or the shuffle list.
 
@@ -1178,7 +1272,7 @@ def create_mcp_app(services: GuiServices) -> Starlette:
             "hardware_commands_sent": False,
         }
 
-    @server.tool()
+    @tool()
     async def preview_interaction_workflow(request: dict[str, JsonValue]) -> dict[str, JsonValue]:
         """Run a bounded isolated visitor test with production qualification/arbitration/rendering.
 
@@ -1201,15 +1295,55 @@ def create_mcp_app(services: GuiServices) -> Starlette:
             raise ToolError(str(error)) from error
         return _bounded_result(result)
 
-    @server.tool()
+    @tool()
     def get_capabilities() -> dict[str, JsonValue]:
-        """Discover scene timing, authoring/deletion, preview/bake tools and grants."""
-        token = _authorize(services, McpScope.READ)
+        """Discover scene timing, authoring/deletion, preview/bake tools and grants.
+
+        Installation-scoped tokens describe the loaded show unless project_id is given.
+        """
+        token = _authorize(services, McpScope.READ, project="loaded")
         revision = services.repository.get_revision(token.project_id)
         return cast(
             dict[str, JsonValue],
             {
                 "project_id": token.project_id,
+                "token_scope": "installation" if token.installation_scoped else "show",
+                "token_installation_id": token.installation_id,
+                "show_selection": {
+                    "tool": "list_shows",
+                    "argument": "project_id",
+                    "required_for_installation_tokens": True,
+                    "loaded_show_default_tools": [
+                        "get_capabilities",
+                        "get_output_monitor",
+                        "operate_loaded_show",
+                    ],
+                    "installation_level_tools_without_project": [
+                        "list_shows",
+                        "get_runtime_status",
+                        "get_installation_setup",
+                        "describe_installation_photo",
+                        "get_stage_map",
+                        "update_stage_reference",
+                        "get_input_source",
+                        "configure_input_source",
+                        "validate_input_source_payload",
+                        "get_home_assistant_integration",
+                        "configure_home_assistant",
+                    ],
+                },
+                "home_assistant": {
+                    "transport": "mqtt_discovery",
+                    "read_tool": "get_home_assistant_integration",
+                    "configure_tool": "configure_home_assistant",
+                    "configure_scope": "input_config",
+                    "requires_global_administrator": True,
+                    "broker": "shared_with_frigate_input",
+                    "default_enabled": False,
+                    "commands": ["start", "stop", "pause", "resume", "blackout"],
+                    "modes": ["Automatic", "Stopped", "Maintenance", "Blackout"],
+                    "ui": "Settings > Integrations",
+                },
                 "mcp_contract_version": 2,
                 "revision": revision.revision,
                 "installation_id": revision.draft.editor_metadata.get("installation_id"),
@@ -1492,7 +1626,7 @@ def create_mcp_app(services: GuiServices) -> Starlette:
             },
         )
 
-    @server.tool()
+    @tool()
     def get_spatial_layout(
         pixel_offset: int = 0,
         pixel_limit: int = 0,
@@ -1539,13 +1673,13 @@ def create_mcp_app(services: GuiServices) -> Starlette:
             ]
         return _bounded_result(result)
 
-    @server.tool()
+    @tool()
     def get_spatial_effect_catalog() -> dict[str, object]:
         """Read typed procedural effect schemas; never invent effect fields or distance units."""
         _authorize(services, McpScope.READ)
         return spatial_effect_catalog()
 
-    @server.tool()
+    @tool()
     def propose_spatial_effect(
         base_revision: int,
         title: str,
@@ -1585,7 +1719,7 @@ def create_mcp_app(services: GuiServices) -> Starlette:
         _audit(services, token, "mcp.proposal.create", proposal.id, "success")
         return _proposal_result(proposal)
 
-    @server.tool()
+    @tool()
     def preview_spatial_proposal(
         proposal_id: str,
         composition_id: str,
@@ -1633,7 +1767,7 @@ def create_mcp_app(services: GuiServices) -> Starlette:
             structured_content=preview,
         )
 
-    @server.tool()
+    @tool()
     def get_authoring_schema() -> dict[str, Any]:
         """Read scene timing and draft/composition/media schemas, including LED-only scenes.
 
@@ -1643,7 +1777,7 @@ def create_mcp_app(services: GuiServices) -> Starlette:
         _authorize(services, McpScope.READ)
         return authoring_schema()
 
-    @server.tool()
+    @tool()
     def preview_composition(
         composition_id: str,
         timestamp_ms: int,
@@ -1802,7 +1936,7 @@ def create_mcp_app(services: GuiServices) -> Starlette:
         _page_preview_samples(diagnostics, pixel_offset, pixel_limit)
         return _image_result(image, diagnostics)
 
-    @server.tool()
+    @tool()
     def create_render_job(base_revision: int, composition_id: str) -> dict[str, JsonValue]:
         """Queue a saved-revision projector/LED/mixed bake; requires direct_edit or publish.
 
@@ -1822,7 +1956,7 @@ def create_mcp_app(services: GuiServices) -> Starlette:
         _audit(services, token, "mcp.render.create", job.id, "success")
         return _bounded_result({**asdict(job), "hardware_command_sent": False})
 
-    @server.tool()
+    @tool()
     def get_render_jobs(
         offset: int = 0,
         limit: int = 20,
@@ -1846,7 +1980,7 @@ def create_mcp_app(services: GuiServices) -> Starlette:
             }
         )
 
-    @server.tool()
+    @tool()
     def get_render_job(job_id: str, include_artifact: bool = False) -> dict[str, JsonValue]:
         """Read project-bound bake status, progress, errors and optional artifact manifest."""
         token = _authorize(services, McpScope.READ)
@@ -1858,7 +1992,7 @@ def create_mcp_app(services: GuiServices) -> Starlette:
             result["artifact"] = services.repository.get_render_artifact_manifest(job.artifact_id)
         return _bounded_result(result)
 
-    @server.tool()
+    @tool()
     def cancel_render_job(job_id: str) -> dict[str, JsonValue]:
         """Cancel a project bake; requires direct_edit or publish. No hardware output."""
         token = _authorize(services, McpScope.DIRECT_EDIT, McpScope.PUBLISH)
@@ -1870,7 +2004,7 @@ def create_mcp_app(services: GuiServices) -> Starlette:
         _audit(services, token, "mcp.render.cancel", job.id, "success")
         return _bounded_result(asdict(job))
 
-    @server.tool()
+    @tool()
     def list_asset_metadata(query: str = "", limit: int = 50) -> dict[str, JsonValue]:
         """List bounded asset metadata for the bound project; never returns storage paths."""
         token = _authorize(services, McpScope.READ)
@@ -1917,7 +2051,7 @@ def create_mcp_app(services: GuiServices) -> Starlette:
             "truncated": len(selected) < len(assets),
         }
 
-    @server.tool()
+    @tool()
     def get_timeline_range(
         scene_id: str,
         start_ms: int,
@@ -1975,7 +2109,7 @@ def create_mcp_app(services: GuiServices) -> Starlette:
             }
         )
 
-    @server.tool()
+    @tool()
     def get_publication_status() -> dict[str, JsonValue]:
         """Read release validation and immutable publication status."""
         token = _authorize(services, McpScope.PUBLISH_PREPARE, McpScope.PUBLISH, McpScope.ACTIVATE)
@@ -2012,7 +2146,7 @@ def create_mcp_app(services: GuiServices) -> Starlette:
             ],
         }
 
-    @server.tool()
+    @tool()
     def update_revision_release(
         revision: int,
         approval_state: ApprovalState,
@@ -2058,7 +2192,7 @@ def create_mcp_app(services: GuiServices) -> Starlette:
             "approved_at": release.approved_at,
         }
 
-    @server.tool()
+    @tool()
     def publish_revision(revision: int) -> dict[str, JsonValue]:
         """Publish an explicitly approved revision as an immutable package.
 
@@ -2085,7 +2219,7 @@ def create_mcp_app(services: GuiServices) -> Starlette:
         )
         return _package_result(package)
 
-    @server.tool()
+    @tool()
     async def stage_published_package(package_id: str) -> dict[str, JsonValue]:
         """Stage a published package's artifacts on devices; requires publish.
 
@@ -2100,7 +2234,7 @@ def create_mcp_app(services: GuiServices) -> Starlette:
         _audit(services, token, "mcp.package.stage", package.id, "success")
         return _package_result(package)
 
-    @server.tool()
+    @tool()
     async def activate_published_package(
         package_id: str,
         simulation_mode: bool = False,
@@ -2122,7 +2256,7 @@ def create_mcp_app(services: GuiServices) -> Starlette:
         _audit(services, token, "mcp.package.activate", package.id, "success")
         return _package_result(package)
 
-    @server.tool()
+    @tool()
     def summarize_revision_difference(
         base_revision: int,
         candidate_revision: int,
@@ -2142,7 +2276,7 @@ def create_mcp_app(services: GuiServices) -> Starlette:
             ),
         }
 
-    @server.tool()
+    @tool()
     def propose_scene_outline(
         base_revision: int,
         template_scene_id: str,
@@ -2165,7 +2299,7 @@ def create_mcp_app(services: GuiServices) -> Starlette:
         _audit(services, token, "mcp.proposal.create", proposal.id, "success")
         return _proposal_result(proposal)
 
-    @server.tool()
+    @tool()
     def propose_project_revision(
         base_revision: int,
         title: str,
@@ -2193,7 +2327,7 @@ def create_mcp_app(services: GuiServices) -> Starlette:
         _audit(services, token, "mcp.proposal.create", proposal.id, "success")
         return _proposal_result(proposal)
 
-    @server.tool()
+    @tool()
     def validate_proposal(proposal_id: str) -> dict[str, JsonValue]:
         """Compile an isolated proposal and return structured diagnostics."""
         token = _authorize(services, McpScope.DRAFT_EDIT)
@@ -2208,7 +2342,7 @@ def create_mcp_app(services: GuiServices) -> Starlette:
         )
         return _proposal_result(validated)
 
-    @server.tool()
+    @tool()
     async def simulate_proposal(
         proposal_id: str,
         steps: list[dict[str, JsonValue]],
@@ -2225,7 +2359,7 @@ def create_mcp_app(services: GuiServices) -> Starlette:
         _audit(services, token, "mcp.proposal.simulate", proposal.id, "success")
         return _proposal_result(simulated)
 
-    @server.tool()
+    @tool()
     def diagnose_proposal(proposal_id: str) -> dict[str, JsonValue]:
         """Explain current validation and simulation failures without mutating state."""
         token = _authorize(services, McpScope.READ)
@@ -2244,7 +2378,7 @@ def create_mcp_app(services: GuiServices) -> Starlette:
             ),
         }
 
-    @server.tool()
+    @tool()
     def generate_interaction_test_scenario(
         scene_id: str,
         duration_ms: int = 1000,
@@ -2289,10 +2423,76 @@ def create_mcp_app(services: GuiServices) -> Starlette:
     return app
 
 
+ProjectMode = Literal["required", "optional", "loaded"]
+_REQUESTED_PROJECT: ContextVar[str | None] = ContextVar("cueverge_mcp_project", default=None)
+_PROJECT_ARGUMENT = Annotated[
+    str | None,
+    Field(
+        description=(
+            "Show (project) ID. Required for installation-scoped tokens on show-level "
+            "tools (see list_shows); live and monitor tools default to the loaded show. "
+            "Show-scoped tokens may omit it; if given it must match the token's show."
+        )
+    ),
+]
+_ToolFunction = TypeVar("_ToolFunction", bound=Callable[..., Any])
+
+
+def _project_aware_tool(
+    server: MCPServer,
+) -> Callable[[], Callable[[_ToolFunction], _ToolFunction]]:
+    """Register tools with an optional project_id argument consumed by _authorize."""
+
+    def decorator_factory() -> Callable[[_ToolFunction], _ToolFunction]:
+        def decorator(function: _ToolFunction) -> _ToolFunction:
+            signature = inspect.signature(function)
+            parameter = inspect.Parameter(
+                "project_id",
+                inspect.Parameter.KEYWORD_ONLY,
+                default=None,
+                annotation=_PROJECT_ARGUMENT,
+            )
+            if inspect.iscoroutinefunction(function):
+
+                @functools.wraps(function)
+                async def async_wrapper(
+                    *args: Any, project_id: str | None = None, **kwargs: Any
+                ) -> Any:
+                    token = _REQUESTED_PROJECT.set(project_id)
+                    try:
+                        return await function(*args, **kwargs)
+                    finally:
+                        _REQUESTED_PROJECT.reset(token)
+
+                wrapper: Callable[..., Any] = async_wrapper
+            else:
+
+                @functools.wraps(function)
+                def sync_wrapper(*args: Any, project_id: str | None = None, **kwargs: Any) -> Any:
+                    token = _REQUESTED_PROJECT.set(project_id)
+                    try:
+                        return function(*args, **kwargs)
+                    finally:
+                        _REQUESTED_PROJECT.reset(token)
+
+                wrapper = sync_wrapper
+            wrapper.__signature__ = signature.replace(  # type: ignore[attr-defined]
+                parameters=[*signature.parameters.values(), parameter]
+            )
+            wrapper.__annotations__ = {**function.__annotations__, "project_id": _PROJECT_ARGUMENT}
+            server.tool()(wrapper)
+            return function
+
+        return decorator
+
+    return decorator_factory
+
+
 def _authorize(
     services: GuiServices,
     required_scope: McpScope,
     *alternative_scopes: McpScope,
+    project: ProjectMode = "required",
 ) -> McpToken:
     access = get_access_token()
     if access is None:
@@ -2308,15 +2508,71 @@ def _authorize(
     ):
         raise ToolError("MCP token is no longer valid")
     accepted_scopes = (required_scope, *alternative_scopes)
-    if not any(scope in token.scopes for scope in accepted_scopes):
-        raise ToolError(
-            "MCP scope required: " + " or ".join(scope.value for scope in accepted_scopes)
-        )
+    requested = _REQUESTED_PROJECT.get()
+    if token.installation_scoped:
+        token = _resolve_installation_token(services, token, requested, project, accepted_scopes)
+    else:
+        if requested is not None and requested != token.project_id:
+            raise ToolError(
+                f"This token is scoped to show {token.project_id}; omit project_id or use "
+                "an installation-scoped token"
+            )
+        if not any(scope in token.scopes for scope in accepted_scopes):
+            raise ToolError(
+                "MCP scope required: " + " or ".join(scope.value for scope in accepted_scopes)
+            )
     try:
         services.mcp_authoring.check_rate_limit(token.id)
     except McpAuthoringError as error:
         raise ToolError(str(error)) from error
     return token
+
+
+def _resolve_installation_token(
+    services: GuiServices,
+    token: McpToken,
+    requested: str | None,
+    mode: ProjectMode,
+    accepted_scopes: tuple[McpScope, ...],
+) -> McpToken:
+    if token.installation_id != services.repository.get_runtime_installation().id:
+        raise ToolError("This token belongs to a different installation")
+    project_id = requested
+    if project_id is None and mode == "loaded":
+        loaded = services.runtime.loaded_catalog.get("project_id")
+        project_id = loaded if isinstance(loaded, str) and loaded else None
+    if project_id is None and mode != "optional":
+        raise ToolError(
+            "Installation-scoped tokens must pass project_id for this tool; "
+            "call list_shows to find show IDs"
+            + ("; no show is currently loaded" if mode == "loaded" else "")
+        )
+    role = _token_role(services, token)
+    if project_id is None:
+        allowed = allowed_mcp_scopes(role, role, True)
+    else:
+        try:
+            revision = services.repository.get_revision(project_id)
+        except ProjectNotFoundError as error:
+            raise ToolError("Show does not exist") from error
+        if revision.draft.editor_metadata.get("installation_id") != token.installation_id:
+            raise ToolError("Show is not bound to this token's installation")
+        membership = services.collaboration.get_membership(project_id, token.username)
+        if membership is None and role is not Role.ADMINISTRATOR:
+            raise ToolError("You are not a member of this show")
+        allowed = allowed_mcp_scopes(
+            role,
+            membership.role if membership is not None else None,
+            membership.can_live_output if membership is not None else True,
+        )
+    if not any(scope in token.scopes and scope in allowed for scope in accepted_scopes):
+        raise ToolError(
+            "MCP scope required"
+            + (" for this show" if project_id is not None else "")
+            + ": "
+            + " or ".join(scope.value for scope in accepted_scopes)
+        )
+    return replace(token, project_id=project_id or "")
 
 
 def _proposal_for_token(
@@ -2440,6 +2696,10 @@ def _token_currently_authorized(
         if user is None or user.disabled:
             return False
         role = user.role
+    if token.installation_scoped:
+        return role is Role.ADMINISTRATOR and set(token.scopes).issubset(
+            allowed_mcp_scopes(role, role, True)
+        )
     membership = services.collaboration.get_membership(
         token.project_id,
         token.username,

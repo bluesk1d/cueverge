@@ -6,6 +6,8 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from typing import Protocol
 
+from pydantic import JsonValue
+
 from cueverge.config import FrigateMqttConfig
 from cueverge.controller.runtime import (
     ActiveScene,
@@ -29,6 +31,7 @@ from cueverge.gui.device_enrollment import DeviceEnrollmentService
 from cueverge.gui.device_session import DeviceSessionRegistry
 from cueverge.gui.endpoint_discovery import EndpointDiscoveryService
 from cueverge.gui.geometry_suggestions import GeometrySuggestionService
+from cueverge.gui.home_assistant import HomeAssistantBridge
 from cueverge.gui.input_sources import InputSourceService
 from cueverge.gui.installation_geometry import InstallationGeometryService
 from cueverge.gui.installation_photos import InstallationPhotoService
@@ -152,6 +155,7 @@ class GuiServices:
     simulation_scenarios: SimulationScenarioService
     input_source: InputSourceService
     apply: ApplyService
+    home_assistant: HomeAssistantBridge | None = None
 
     def runtime_snapshot(self) -> RuntimeStatusResponse:
         inputs = self.input_source.snapshot()
@@ -397,20 +401,46 @@ class GuiServices:
                 ).encode()
             ).hexdigest()
 
-        return cls(
+        input_source = InputSourceService(
+            config.data_root / "input-source",
+            runtime,
+            mode=config.input_management,
+            environment=FrigateMqttConfig.from_environment()
+            if config.input_management == "environment"
+            else None,
+            handler=runtime.ingest_event_with_presence,
+            installation_id=repository.get_runtime_installation().id,
+        )
+        created: list[GuiServices] = []
+
+        async def operate(body: OperateActionRequest) -> None:
+            await created[0].operate(body)
+
+        def audit(action: str, result: str, context: dict[str, JsonValue]) -> None:
+            repository.append_audit(
+                actor="home-assistant",
+                action=action,
+                target="controller",
+                result=result,
+                occurred_at=datetime.now(UTC).isoformat(),
+                authorization_context={**context, "source": "mqtt"},
+            )
+
+        home_assistant = HomeAssistantBridge(
+            config.data_root / "home-assistant",
+            installation_id=repository.get_runtime_installation().id,
+            installation_name=lambda: repository.get_runtime_installation().name,
+            status=runtime.status,
+            operate=operate,
+            broker=input_source.broker_config,
+            audit=audit,
+        )
+        services = cls(
+            home_assistant=home_assistant,
             apply=ApplyService(
                 repository, publication, runtime, authorize_apply, apply_dependencies
             ),
-            input_source=InputSourceService(
-                config.data_root / "input-source",
-                runtime,
-                mode=config.input_management,
-                environment=FrigateMqttConfig.from_environment()
-                if config.input_management == "environment"
-                else None,
-                handler=runtime.ingest_event_with_presence,
-                installation_id=repository.get_runtime_installation().id,
-            ),
+            input_source=input_source,
             config=config,
             repository=repository,
             auth=AuthService(config, repository, collaboration),
@@ -449,3 +479,5 @@ class GuiServices:
                 config.data_root / "simulation-scenarios"
             ),
         )
+        created.append(services)
+        return services

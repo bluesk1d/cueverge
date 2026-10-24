@@ -69,6 +69,7 @@ from cueverge.gui.contracts import (
     CommentResponse,
     CommentStateRequest,
     CompilationResponse,
+    ConfigureHomeAssistantRequest,
     ConfigureInputSourceRequest,
     ConnectionTestCheck,
     CreateInstallationRequest,
@@ -196,6 +197,7 @@ from cueverge.gui.geometry_suggestions import (
     GeometrySuggestionError,
     StoredGeometrySuggestion,
 )
+from cueverge.gui.home_assistant import HomeAssistantBridge, HomeAssistantError
 from cueverge.gui.input_sources import InputSourceError
 from cueverge.gui.installation_geometry import (
     InstallationGeometryConflictError,
@@ -993,6 +995,98 @@ def create_gui_router(services: GuiServices) -> APIRouter:
             occurred_at=occurred_at,
             authorization_context={
                 "project_id": project_id,
+                "client_id": token.client_id,
+            },
+        )
+        return Response(status_code=204)
+
+    def _validated_token_request(
+        body: CreateMcpTokenRequest,
+    ) -> tuple[datetime, tuple[McpScope, ...]]:
+        try:
+            expires_at = datetime.fromisoformat(body.expires_at)
+        except ValueError as error:
+            raise HTTPException(
+                status_code=422, detail={"code": "invalid_mcp_token_expiry"}
+            ) from error
+        now = datetime.now(UTC)
+        if expires_at.tzinfo is None or expires_at <= now or expires_at > now + timedelta(days=90):
+            raise HTTPException(status_code=422, detail={"code": "invalid_mcp_token_expiry"})
+        scopes = tuple(McpScope(scope) for scope in body.scopes)
+        if McpScope.READ not in scopes:
+            raise HTTPException(status_code=422, detail={"code": "mcp_read_scope_required"})
+        return expires_at, scopes
+
+    @router.get(
+        "/integrations/mcp-tokens",
+        response_model=list[McpTokenResponse],
+        dependencies=[administrator],
+    )
+    def list_installation_mcp_tokens() -> list[McpTokenResponse]:
+        installation_id = services.repository.get_runtime_installation().id
+        return [
+            _mcp_token_response(item)
+            for item in services.mcp_store.list_installation_tokens(installation_id)
+        ]
+
+    @router.post(
+        "/integrations/mcp-tokens",
+        response_model=McpTokenResponse,
+        status_code=201,
+    )
+    def create_installation_mcp_token(
+        body: CreateMcpTokenRequest,
+        identity: Annotated[AuthenticatedSession, administrator_mutation],
+    ) -> McpTokenResponse:
+        expires_at, scopes = _validated_token_request(body)
+        installation_id = services.repository.get_runtime_installation().id
+        occurred_at = _now_iso()
+        created = services.mcp_store.create_installation_token(
+            client_id=body.client_id,
+            username=identity.username,
+            installation_id=installation_id,
+            scopes=scopes,
+            expires_at=expires_at.isoformat(),
+            occurred_at=occurred_at,
+        )
+        services.repository.append_audit(
+            actor=identity.username,
+            action="mcp.installation_token.create",
+            target=created.record.id,
+            result="success",
+            occurred_at=occurred_at,
+            authorization_context={
+                "installation_id": installation_id,
+                "client_id": body.client_id,
+                "scopes": list(body.scopes),
+            },
+        )
+        return _mcp_token_response(created.record, created.token)
+
+    @router.delete("/integrations/mcp-tokens/{token_id}", status_code=204)
+    def revoke_installation_mcp_token(
+        token_id: str,
+        identity: Annotated[AuthenticatedSession, administrator_mutation],
+    ) -> Response:
+        token = services.mcp_store.get_token(token_id)
+        installation_id = services.repository.get_runtime_installation().id
+        if token is None or token.installation_id != installation_id:
+            raise HTTPException(status_code=404, detail={"code": "mcp_token_not_found"})
+        occurred_at = _now_iso()
+        try:
+            services.mcp_store.revoke_token(token_id, occurred_at)
+        except McpAuthoringError as error:
+            raise HTTPException(
+                status_code=409, detail={"code": "mcp_token_already_revoked"}
+            ) from error
+        services.repository.append_audit(
+            actor=identity.username,
+            action="mcp.installation_token.revoke",
+            target=token_id,
+            result="success",
+            occurred_at=occurred_at,
+            authorization_context={
+                "installation_id": installation_id,
                 "client_id": token.client_id,
             },
         )
@@ -4194,6 +4288,38 @@ def create_gui_router(services: GuiServices) -> APIRouter:
         )
         return result
 
+    def _home_assistant() -> HomeAssistantBridge:
+        if services.home_assistant is None:
+            raise HTTPException(404, detail={"code": "home_assistant_unavailable"})
+        return services.home_assistant
+
+    @router.get("/integrations/home-assistant", dependencies=[reader])
+    def home_assistant_status() -> dict[str, object]:
+        return _home_assistant().snapshot()
+
+    @router.put("/integrations/home-assistant")
+    async def configure_home_assistant(
+        body: ConfigureHomeAssistantRequest,
+        identity: Annotated[AuthenticatedSession, administrator_mutation],
+    ) -> dict[str, object]:
+        try:
+            result = await _home_assistant().configure(
+                enabled=body.enabled, expected_revision=body.expected_revision
+            )
+        except HomeAssistantError as error:
+            raise HTTPException(
+                409, detail={"code": "home_assistant_configuration_failed", "message": str(error)}
+            ) from error
+        services.repository.append_audit(
+            actor=identity.username,
+            action="home_assistant.configure",
+            target="mqtt_control",
+            result="success",
+            occurred_at=_now_iso(),
+            authorization_context={"enabled": body.enabled},
+        )
+        return result
+
     @router.post("/input-source/validate")
     def validate_input_source(
         body: dict[str, JsonValue],
@@ -6346,6 +6472,7 @@ def _mcp_token_response(
         revoked_at=token.revoked_at,
         created_at=token.created_at,
         token=secret,
+        installation_id=token.installation_id,
     )
 
 

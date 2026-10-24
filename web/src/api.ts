@@ -168,6 +168,36 @@ export interface McpToken {
   revoked_at: string | null;
   created_at: string;
   token: string | null;
+  installation_id?: string | null;
+}
+
+export interface HomeAssistantIntegration {
+  installation_id: string;
+  enabled: boolean;
+  configuration_revision: number;
+  state: "disabled" | "unavailable" | "connecting" | "connected";
+  error: string | null;
+  broker: { host: string; port: number; tls: boolean };
+  topics: {
+    availability: string;
+    state: string;
+    command: string;
+    scene: string;
+    mode: string;
+    discovery_prefix: string;
+  };
+  commands: string[];
+  modes: string[];
+  commands_received: number;
+  commands_rejected: number;
+  recent_commands: {
+    received_at_ms: number;
+    topic: string;
+    payload: string;
+    accepted: boolean;
+    action?: string;
+    error?: string;
+  }[];
 }
 
 export interface McpProposal {
@@ -2937,6 +2967,40 @@ export async function revokeMcpToken(
     `/api/gui/v1/projects/${encodeURIComponent(projectId)}/mcp-tokens/${encodeURIComponent(tokenId)}`,
     { method: "DELETE", headers: mutationHeaders() },
   );
+}
+
+export function getInstallationMcpTokens(): Promise<McpToken[]> {
+  return request<McpToken[]>("/api/gui/v1/integrations/mcp-tokens");
+}
+
+export function createInstallationMcpToken(
+  clientId: string, scopes: McpScope[], expiresAt: string,
+): Promise<McpToken> {
+  return request<McpToken>("/api/gui/v1/integrations/mcp-tokens", {
+    method: "POST",
+    headers: mutationHeaders(),
+    body: JSON.stringify({ client_id: clientId, scopes, expires_at: expiresAt }),
+  }, true);
+}
+
+export async function revokeInstallationMcpToken(tokenId: string): Promise<void> {
+  await request<void>(`/api/gui/v1/integrations/mcp-tokens/${encodeURIComponent(tokenId)}`, {
+    method: "DELETE", headers: mutationHeaders(),
+  }, true);
+}
+
+export function getHomeAssistantIntegration(): Promise<HomeAssistantIntegration> {
+  return request<HomeAssistantIntegration>("/api/gui/v1/integrations/home-assistant");
+}
+
+export function configureHomeAssistant(
+  enabled: boolean, expectedRevision: number,
+): Promise<HomeAssistantIntegration> {
+  return request<HomeAssistantIntegration>("/api/gui/v1/integrations/home-assistant", {
+    method: "PUT",
+    headers: mutationHeaders(),
+    body: JSON.stringify({ enabled, expected_revision: expectedRevision }),
+  }, true);
 }
 
 export async function getMcpProposals(

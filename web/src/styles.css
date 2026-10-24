@@ -7038,3 +7038,25 @@ p {
 .scene-house-view figcaption small {
   color: var(--cv-text-faint);
 }
+
+/* Settings > Integrations */
+.integrations-panel { display: grid; gap: 20px; }
+.integration-section { display: grid; gap: 10px; }
+.integration-section > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.integration-section h3 { margin: 0; font-size: 15px; }
+.integration-section p { margin: 0; color: var(--cv-text-muted); }
+.integration-section fieldset { display: grid; gap: 6px; padding: 10px; border: 1px solid var(--cv-border); border-radius: var(--cv-radius-control); }
+.integration-section > .primary-button,
+.integration-section .button-row { justify-self: start; }
+.integration-state {
+  padding: 3px 10px;
+  border: 1px solid var(--cv-border);
+  border-radius: 999px;
+  color: var(--cv-text-muted);
+  font-size: 12px;
+}
+.integration-state--connected { color: var(--cv-success, #4ade80); border-color: currentColor; }
+.integration-state--unavailable { color: var(--cv-warning); border-color: currentColor; }
+.integration-topics { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; margin: 8px 0; }
+.integration-topics dt { color: var(--cv-text-muted); }
+.integration-topics dd { margin: 0; overflow-wrap: anywhere; }

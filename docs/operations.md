@@ -82,6 +82,79 @@ issue a new token with the intended scopes, update the client, and revoke its ol
 Grant these permissions only to trusted clients: direct edits and release
 approvals can happen through chat without a subsequent GUI confirmation.
 
+### Installation-scoped tokens
+
+Show-scoped tokens above stay bound to one show. A global administrator can also
+create an **installation-scoped** token under **Settings > Integrations >
+Assistant access for all shows** (`POST /api/gui/v1/integrations/mcp-tokens`,
+CSRF-protected; `GET` lists and `DELETE …/{token_id}` revokes). It uses the same
+scopes, one-time secret, digest storage and 90-day maximum expiry, and is bound
+to the runtime installation instead of a show, so it keeps working when you apply
+a different show. Use it for long-lived assistant connections such as a ChatGPT
+tunnel.
+
+Every MCP tool accepts an optional `project_id`. `list_shows` returns the shows
+bound to the installation that the token's user can access, with the loaded show
+marked. With an installation token:
+
+- Show-level tools (drafts, scenes, previews, publication, Apply) require
+  `project_id`; omitting it returns an error that points to `list_shows`.
+- `get_capabilities`, `get_output_monitor` and `operate_loaded_show` default to
+  the show currently loaded on the display.
+- Installation-level tools (`get_runtime_status`, setup, stage map, inputs and
+  Home Assistant) work without a show.
+- Each call is authorized against the user's **current** role and live-output
+  grant in the selected show, intersected with the token's scopes. The token
+  stops working if its user is disabled or is no longer a global administrator.
+
+A show-scoped token may pass `project_id` only for its own show; any other value
+is rejected. `get_capabilities` reports `token_scope` (`show` or `installation`)
+and the `show_selection` contract. Audit actions are
+`mcp.installation_token.create` and `mcp.installation_token.revoke`.
+
+### Home Assistant control over MQTT
+
+Cueverge can appear in Home Assistant as a device through MQTT discovery. No
+custom Home Assistant integration is needed; the built-in MQTT integration
+creates the entities. It reuses the broker connection configured for camera
+events under **Installation > Inputs**, including the stored password and TLS.
+The bridge is **off by default**. A global administrator turns it on under
+**Settings > Integrations > Home Assistant**, with
+`PUT /api/gui/v1/integrations/home-assistant` (`{"enabled": true,
+"expected_revision": N}`), or with the MCP tool `configure_home_assistant`, which
+requires `input_config`. Each change is audited as `home_assistant.configure`.
+`get_home_assistant_integration` and `GET …/integrations/home-assistant` read the
+status.
+
+With base topic `cueverge/<installation-id>`:
+
+| Topic | Direction | Payload |
+| --- | --- | --- |
+| `…/availability` | published, retained, last will | `online` / `offline` |
+| `…/state` | published, retained, on change | JSON: `playback`, `active_scene`, `active_scene_name`, `mode`, `mode_label`, `loaded_show`, `loaded_revision`, `degraded` |
+| `…/command` | subscribed | `start`, `stop`, `pause`, `resume`, `blackout` |
+| `…/scene/set` | subscribed | a scene name (or ID) from the loaded show; starts it |
+| `…/mode/set` | subscribed | `Automatic`, `Stopped`, `Maintenance`, `Blackout` |
+
+Discovery configs are retained under `homeassistant/<component>/cueverge_<id>/…`:
+five buttons, a **Start scene** select whose options follow the loaded show,
+a **Show mode** select, and **Playback**, **Active scene** and **Loaded show**
+sensors. Turning the bridge off clears those configs, so the device disappears.
+
+Commands run through the same operate path as **Operate**: Apply interlocks,
+recovery requirements and Stop/Blackout priority still apply. Each command is
+audited as `mqtt.operate.<action>` (actor `home-assistant`) or `mqtt.operate`
+with `result=error`. Payloads over 256 bytes, unknown commands and scenes that
+are not in the loaded show are rejected and listed under **Topics and recent
+commands**. MQTT has no per-message authentication: anyone the broker allows to
+publish to `…/command`, `…/scene/set` or `…/mode/set` can control the show.
+Give Cueverge its own broker user and restrict those topics with broker ACLs.
+Changing the broker settings reconnects the bridge automatically.
+
+Cueverge drives WLED with DDP while a scene renders, which overrides WLED presets.
+Coordinate Home Assistant automations so presets and the show do not run at the
+same time, for example by pressing **Stop show** before activating a preset.
+
 ### Observing the running installation
 
 `get_capabilities.runtime_status` discovers `get_runtime_status`, its `read`

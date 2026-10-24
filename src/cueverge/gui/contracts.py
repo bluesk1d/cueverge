@@ -1208,6 +1208,12 @@ class McpTokenResponse(GuiModel):
     revoked_at: str | None
     created_at: str
     token: str | None = None
+    installation_id: str | None = None
+
+
+class ConfigureHomeAssistantRequest(GuiModel):
+    enabled: bool
+    expected_revision: int | None = Field(default=None, ge=0)
 
 
 class McpProposalDispositionRequest(GuiModel):

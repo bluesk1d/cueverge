@@ -116,6 +116,10 @@ class InputSourceService:
         if self._ingress is not None:
             self._ingress.start()
 
+    def broker_config(self) -> FrigateMqttConfig:
+        """Current broker connection settings, shared with the Home Assistant bridge."""
+        return self._config
+
     async def stop(self) -> None:
         self._started = False
         if self._ingress is not None:

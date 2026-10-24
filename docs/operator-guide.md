@@ -471,6 +471,19 @@ and the loaded freshness limit. A matched visitor may still wait for arrival
 confirmation, repetition limits or an eligible response. Guided response
 authoring and explicit verified Apply are separate actions.
 
+### Controlling the show from Home Assistant
+
+The same broker can also let Home Assistant control the show. An administrator
+opens **Settings > Integrations > Home Assistant** and chooses **Turn on Home
+Assistant control**. A **Cueverge** device then appears in Home Assistant's MQTT
+integration with Start, Stop, Pause, Resume and Blackout buttons, a scene picker,
+a show mode picker, and playback, scene and loaded-show sensors. Use them in
+automations like any other entity. Commands behave exactly like the Operate
+buttons and are recorded in the activity log. **Topics and recent commands**
+shows what was received and why anything was rejected. Turning control off
+removes the device from Home Assistant. Anyone allowed to publish to the command
+topics on the broker can control the show, so restrict them on the broker.
+
 An **Operator-managed connection** is deliberately read-only. The operator changes
 `CUEVERGE_FRIGATE_*` settings and restarts the controller. See
 [input deployment and credential recovery](operations.md#camera-input-management)
@@ -572,6 +585,12 @@ does not replace the running controller scene catalog or start a scene.
 The proposal path remains available, although direct edits can make pending
 proposals stale. See [MCP-assisted authoring](operations.md#mcp-assisted-authoring)
 for exact tool names, scopes, and limits.
+
+For an assistant that should work with every show on the installation, for
+example one that keeps working after you apply a different show, an
+administrator can create one token under **Settings > Integrations > Assistant
+access for all shows**. The assistant chooses a show for each request
+(`list_shows`), and your current permission in that show still applies.
 
 ## Authoring scenes and timelines
 

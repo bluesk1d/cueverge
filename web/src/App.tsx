@@ -11,6 +11,7 @@ import { PhysicalOutputTestControls } from "./components/PhysicalOutputTestContr
 import { AssetPreview } from "./components/AssetPreview";
 import { DetailsDialog } from "./components/DetailsDialog";
 import { ApplyPanel } from "./pages/ApplyPanel";
+import { IntegrationsPanel } from "./pages/IntegrationsPanel";
 import { LiveOutputMonitor } from "./pages/LiveOutputMonitor";
 
 import {
@@ -2495,6 +2496,12 @@ export function SettingsPage({
         </div>
         </details>
         {error && <p role="alert">{error}</p>}
+      </Panel>
+      <Panel
+        title="Integrations"
+        description="Connect home automation and assistants to this installation."
+      >
+        <IntegrationsPanel canManage={canManage} />
       </Panel>
     </>
   );

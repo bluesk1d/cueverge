@@ -71,6 +71,8 @@ def create_app(
             ingress.start()
         if device_listener is not None:
             await device_listener.start()
+        if configured_gui is not None and configured_gui.home_assistant is not None:
+            configured_gui.home_assistant.start()
         asset_recovery = (
             asyncio.create_task(
                 asyncio.to_thread(configured_gui.asset_upload.recover_pending_assets)
@@ -85,6 +87,8 @@ def create_app(
                 yield
         finally:
             if configured_gui is not None:
+                if configured_gui.home_assistant is not None:
+                    await configured_gui.home_assistant.stop()
                 await configured_gui.apply.stop()
             if asset_recovery is not None:
                 await asset_recovery
