@@ -172,7 +172,10 @@ inbound port, or MQTT broker port is needed for this GUI/MCP deployment.
 Private show mounts and hardware output/observation adapters remain separate
 opt-in configuration.
 
-Controller images are published manually by the
+Controller images are published automatically after the CI test job succeeds
+for a push to `main`, using the same tested commit. Pull requests and pushes
+to other branches do not publish images. Manual publishing from `main` remains
+available through the
 [Publish controller image workflow](../.github/workflows/publish-image.yml).
 It checks AMD64 startup, native dependency preflight, frontend availability,
 and the MCP authentication boundary before pushing a multi-platform image for
@@ -189,7 +192,7 @@ in its build stage.
 The registry image is `ghcr.io/bluesk1d/cueverge:latest`. Each publication also
 has a `sha-<full-git-commit>` tag, and the workflow summary records the exact
 digest. Prefer a digest-pinned image for a qualified installation; `latest`
-changes on the next successful manual publication. The GitHub package remains
+changes on the next successful automatic or manual publication. The GitHub package remains
 private unless its owner explicitly changes visibility.
 
 On the NAS, authenticate with a GitHub credential authorized to read the

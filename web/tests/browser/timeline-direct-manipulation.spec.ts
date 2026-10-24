@@ -96,6 +96,8 @@ test("media bin, drag and drop, clip move and trim, keyframe retime and composit
 
   await page.getByLabel("Scrub position").fill("4000");
   await bin.getByRole("button", { name: "Add Ghost video at playhead" }).click();
+  await expect(bin.getByRole("status")).toContainText("runs past the scene end at 0:05.000");
+  await bin.getByRole("button", { name: "Trim clip to fit" }).click();
   const extra = page.getByRole("button", { name: "Media layer Ghost video", exact: true }).nth(1);
   await expect(page.getByRole("button", { name: "Media layer Ghost video", exact: true })).toHaveCount(2);
   const [firstBox, secondBox] = await Promise.all([
@@ -214,6 +216,77 @@ test("media bin, drag and drop, clip move and trim, keyframe retime and composit
     expect.objectContaining({ id: flagLayer.track_id, kind: "group", resource_binding: "shared-stage" }),
   ]);
   expect(instances[0].start_offset_ms).toBe(0);
+});
+
+test("overflowing clips can extend the scene and scene duration is editable in the timeline", async ({ page }) => {
+  savedDraft = null;
+  await page.setViewportSize({ width: 1500, height: 1100 });
+  await page.route("**/api/gui/v1/**", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (url.pathname.endsWith("/projects/demo-project/assets")) {
+      return route.fulfill({
+        json: [{ ...mockReadyAsset("long-video", "Long video", "video/mp4"), metadata: { duration_ms: 3000 } }],
+      });
+    }
+    if (url.pathname.endsWith("/projects/demo-project/draft")) {
+      if (request.method() === "PUT") {
+        savedDraft = request.postDataJSON();
+        return route.fulfill({ json: response(2, savedDraft!) });
+      }
+      return route.fulfill({ json: response(1, draft()) });
+    }
+    return route.fulfill({ status: 404, json: { detail: "fixture route missing" } });
+  });
+  await page.goto("/demo.html");
+  await page.getByRole("button", { name: "Shows", exact: true }).click();
+  await openTimelineEditor(page);
+  const bin = page.getByRole("region", { name: "Media bin" });
+  const clip = page.getByRole("button", { name: "Media layer Long video", exact: true });
+
+  await page.getByLabel("Scrub position").fill("4000");
+  await bin.getByRole("button", { name: "Add Long video at playhead" }).click();
+  await expect(bin.getByRole("status")).toContainText("Long video (0:03.000) runs past the scene end at 0:05.000");
+  await expect(clip).toHaveCount(0);
+  await bin.getByRole("button", { name: "Cancel" }).click();
+  await expect(bin.getByRole("group", { name: "Clip runs past scene end" })).toHaveCount(0);
+  await expect(clip).toHaveCount(0);
+
+  await bin.getByRole("button", { name: "Add Long video at playhead" }).click();
+  await bin.getByRole("button", { name: "Extend scene to 0:07.000" }).click();
+  await expect(clip).toHaveCount(1);
+  await expect(bin.getByRole("status")).toContainText("extended the scene to 0:07.000");
+  await page.getByRole("button", { name: "Scene settings" }).click();
+  const duration = page.getByLabel("Scene duration (seconds)");
+  await expect(duration).toHaveValue("7");
+  await page.getByRole("button", { name: "Close" }).click();
+
+  await page.getByRole("button", { name: "Undo timeline edit" }).click();
+  await expect(clip).toHaveCount(0);
+  await page.getByRole("button", { name: "Scene settings" }).click();
+  await expect(duration).toHaveValue("5");
+  await page.getByRole("button", { name: "Close" }).click();
+  await page.getByRole("button", { name: "Redo timeline edit" }).click();
+  await expect(clip).toHaveCount(1);
+
+  await page.getByRole("button", { name: "Scene settings" }).click();
+  await duration.fill("6");
+  await expect(page.getByLabel("Timeline validation")).toContainText("outside the scene");
+  await duration.fill("0");
+  await expect(page.getByLabel("Timeline validation")).toContainText("Scene duration must be a positive");
+  await duration.fill("8.5");
+  await page.getByRole("button", { name: "Close" }).click();
+  await expect(page.getByLabel("Timeline validation")).toContainText("Timeline valid");
+  await page.getByRole("button", { name: "Save timeline" }).click();
+  await expect.poll(() => savedDraft).not.toBeNull();
+  const saved = savedDraft as unknown as {
+    scenes: { duration_ms: number }[];
+    editor_metadata: { timeline_transform_layers: Record<string, Layer[]> };
+  };
+  expect(saved.scenes[0].duration_ms).toBe(8500);
+  expect(saved.editor_metadata.timeline_transform_layers.ambient[0]).toMatchObject({
+    start_ms: 4000, duration_ms: 3000, in_point_ms: 0, out_point_ms: 3000,
+  });
 });
 
 async function dragBy(

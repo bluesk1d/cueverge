@@ -760,6 +760,27 @@ unavailable; save or cancel first. Stale saves retain edits and report conflict.
    a value, or use the arrow keys. The chain button locks scale proportions;
    the 3×3 anchor grid moves the anchor without moving the layer.
 6. On the timeline:
+   - Click a scene media clip (the strip with the asset name or thumbnail) to
+     select its output without moving the playhead. The **Inspector** shows its
+     resource and lets you change the managed asset. Schema-v2 outputs also expose
+     **Media start delay (ms)** (0–5000), **Media end behavior** (hold, loop, or
+     stop), and **Required**. The clock-source output must remain required.
+     These are output settings, not transform-layer trim or composition settings.
+     Keyboard users can focus the strip and press **Enter** or **Space**.
+     Click empty timeline space to seek instead. **Save timeline** creates a
+     working-draft revision; it does not publish or change live playback.
+   - The scene length is the scene's duration. Change it in the timeline under
+     **Scene settings → Scene duration (seconds)**, or on the Scenes page under
+     **Scene details**. A timeline duration change is one undo step and is saved
+     with **Save timeline**. Clips, cues, markers and regions are never trimmed
+     automatically: anything that now runs past the end is reported as a
+     timeline issue and blocks saving until you fix it.
+   - Adding a clip whose natural length runs past the scene end offers
+     **Extend scene to …** (lengthens the scene so the whole clip fits),
+     **Trim clip to fit** (ends the clip at the scene end) or **Cancel**.
+     Extending and placing together are one undo step. Still images have no
+     natural length; they are placed for up to 5 s and trimmed to fit. Inside a
+     composition, clips are trimmed to the composition length instead.
    - Drag the orange playhead handle (or the playhead line, or anywhere on the
      ruler) to scrub. Focus the handle to step with the arrow keys; **Home** and
      **End** jump to the start and end. Drag the blue loop handles (or focus one

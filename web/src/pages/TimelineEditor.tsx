@@ -43,7 +43,7 @@ import {
   stackLayerRows,
   trimKeyframes,
 } from "./timelineUtils";
-import type { SceneMediaOutputRef } from "./timelineUtils";
+import type { SceneMediaEndBehavior, SceneMediaOutputRef } from "./timelineUtils";
 
 const TIMELINE_SOURCE_MIME = "application/x-cueverge-timeline-source";
 
@@ -260,6 +260,7 @@ type EditorialAudioSource = {
 };
 
 type SceneOperationalPolicy = {
+  duration_ms: number;
   priority: number;
   completion_policy: "loop" | "select_next" | "transition_to" | "hold" | "stop";
   completion_target: string;
@@ -276,6 +277,8 @@ type SceneOperationalPolicy = {
   media_required: Record<string, boolean>;
   lighting_required: Record<string, boolean>;
   media_offsets: Record<string, number>;
+  media_assets: Record<string, string | null>;
+  media_end_behaviors: Record<string, SceneMediaEndBehavior>;
   lighting_offsets: Record<string, number>;
 };
 
@@ -380,6 +383,9 @@ export function TimelineEditor({
   const scene =
     draft.draft.scenes.find((candidate) => candidate.id === (selectedSceneId ?? sceneId)) ??
     draft.draft.scenes[0];
+  const [scenePolicy, setScenePolicy] = useState<SceneOperationalPolicy>(() =>
+    readSceneOperationalPolicy(scene),
+  );
   const [compositions, setCompositions] = useState<Record<string, Composition>>(
     () => compositionMap(draft.draft.editor_metadata.compositions),
   );
@@ -415,7 +421,7 @@ export function TimelineEditor({
     ? compositions[activeCompositionId]
     : undefined;
   const editingSpaceId = composition?.id ?? scene?.id ?? "";
-  const duration = composition?.duration_ms ?? scene?.duration_ms ?? 1000;
+  const duration = composition?.duration_ms ?? (scene ? scenePolicy.duration_ms : 1000);
   const localOffset = composition?.local_time_offset_ms ?? 0;
   const [zoom, setZoom] = useState(80);
   const [snapMs, setSnapMs] = useState(100);
@@ -469,7 +475,6 @@ export function TimelineEditor({
   const previousSpaceRef = useRef<string | null>(null);
   const [viewerMode, setViewerMode] = useState<"house" | "layout">("house");
   const [sceneViewerMode, setSceneViewerMode] = useState<"house" | "monitor">("house");
-  const sceneOutputs = useMemo(() => sceneMediaOutputs(scene?.media), [scene?.media]);
   const playheadDragRef = useRef(false);
   const [layerDrag, setLayerDrag] = useState<{
     id: string;
@@ -489,6 +494,13 @@ export function TimelineEditor({
   const suppressLayerClickRef = useRef(false);
   const [binSearch, setBinSearch] = useState("");
   const [binMessage, setBinMessage] = useState<string | null>(null);
+  const [pendingPlacement, setPendingPlacement] = useState<{
+    sourceId: string;
+    trackId: string;
+    startMs: number;
+    naturalMs: number;
+    name: string;
+  } | null>(null);
   const [dropTargetId, setDropTargetId] = useState<string | null>(null);
   const [presetDialogOpen, setPresetDialogOpen] = useState(false);
   const [preset, setPreset] = useState<"stage" | "projector_native" | "lighting_surface">("stage");
@@ -507,9 +519,6 @@ export function TimelineEditor({
   const [spatialSnapMode, setSpatialSnapMode] = useState<
     "none" | "landmarks" | "surfaces" | "all"
   >("all");
-  const [scenePolicy, setScenePolicy] = useState<SceneOperationalPolicy>(() =>
-    readSceneOperationalPolicy(scene),
-  );
   const [cuePresets, setCuePresets] = useState<CuePreset[]>(() =>
     cuePresetArray(draft.draft.editor_metadata.timeline_cue_presets),
   );
@@ -951,6 +960,15 @@ export function TimelineEditor({
     return [...media, ...lighting, ...customTracks];
   }, [composition, customTracks, scene]);
   const selectedTrack = tracks.find((track) => track.id === selectedTrackId);
+  const previewScene = useMemo(
+    () => scene ? applySceneOperationalPolicy(scene, scenePolicy) : undefined,
+    [scene, scenePolicy],
+  );
+  const sceneOutputs = useMemo(() => sceneMediaOutputs(previewScene?.media), [previewScene?.media]);
+  const selectedMediaOutput = !composition && selectedTrack?.built_in && selectedTrack.kind === "media_output"
+    ? sceneOutputs.find((output) => `media:${output.id}` === selectedTrack.id) ??
+      (sceneOutputs.length === 1 ? sceneOutputs[0] : undefined)
+    : undefined;
   const parsedInstanceOverrides = parseObject(instanceOverrides);
   const markers = syncMarkers[editingSpaceId] ?? [];
   const cues = syncCues[editingSpaceId] ?? [];
@@ -979,14 +997,14 @@ export function TimelineEditor({
   const editorialAudioSources = useMemo(
     () =>
       collectEditorialAudioSources(
-        scene,
+        previewScene,
         composition,
         tracks,
         spaceTransformLayers,
         assets,
         duration,
       ),
-    [assets, composition, duration, scene, spaceTransformLayers, tracks],
+    [assets, composition, duration, previewScene, spaceTransformLayers, tracks],
   );
   const selectedTransformLayer = spaceTransformLayers.find(
     (layer) => layer.id === selectedTransformLayerId,
@@ -1036,7 +1054,9 @@ export function TimelineEditor({
       resolveSyncSchedule(
         draft.draft.scenes.map((candidate) => ({
           id: candidate.id,
-          duration_ms: candidate.duration_ms ?? 1000,
+          duration_ms: candidate.id === scene?.id
+            ? scenePolicy.duration_ms
+            : candidate.duration_ms ?? 1000,
         })),
         compositions,
         sceneCompositions,
@@ -1049,6 +1069,8 @@ export function TimelineEditor({
       compositions,
       draft.draft.scenes,
       sceneCompositions,
+      scene?.id,
+      scenePolicy.duration_ms,
       syncCues,
       syncMarkers,
     ],
@@ -1058,7 +1080,7 @@ export function TimelineEditor({
     return Math.max(
       0,
       Math.min(
-        scene?.duration_ms ?? duration,
+        scene ? scenePolicy.duration_ms : duration,
         Math.round(value / snapMs) * snapMs,
       ),
     );
@@ -1447,6 +1469,7 @@ export function TimelineEditor({
 
   function placeSource(sourceId: string, trackId: string | undefined, startMs: number) {
     if (!canEdit) return;
+    setPendingPlacement(null);
     let track = tracks.find((candidate) => candidate.id === trackId);
     if (!track && composition && tracks.length === 0) {
       track = defaultCompositionTrack(composition.space_kind, composition.target_id);
@@ -1478,17 +1501,70 @@ export function TimelineEditor({
           ? "video"
           : "image";
     const start = clampNumber(snappedLocal(startMs), 0, Math.max(0, duration - 1));
-    const natural = child
-      ? child.duration_ms
-      : numberValue(asset?.metadata?.duration_ms, 0) || 5000;
+    const knownLength = child ? child.duration_ms : numberValue(asset?.metadata?.duration_ms, 0);
+    const natural = knownLength || 5000;
+    const name = child ? child.name : asset!.name;
+    if (!composition && knownLength > 0 && start + natural > duration) {
+      setPendingPlacement({ sourceId, trackId: track.id, startMs: start, naturalMs: Math.round(natural), name });
+      setBinMessage(
+        `${name} (${formatTimecode(natural)}) runs past the scene end at ${formatTimecode(duration)}.`,
+      );
+      return;
+    }
     const length = Math.round(Math.min(natural, duration - start));
     if (length <= 0) {
       setBinMessage("There is no room left on the timeline at that point.");
       return;
     }
-    const name = child ? child.name : asset!.name;
     addMediaLayer({ name, kind, sourceId, trackId: track.id, startMs: start, durationMs: length });
-    setBinMessage(`Added ${name} to ${track.name} at ${formatTimecode(start)}.`);
+    setBinMessage(
+      length < knownLength
+        ? `Added ${name} to ${track.name} at ${formatTimecode(start)}, trimmed to fit the composition.`
+        : `Added ${name} to ${track.name} at ${formatTimecode(start)}.`,
+    );
+  }
+
+  function placementKind(sourceId: string): TransformLayer["kind"] {
+    if (compositions[sourceId]) return "composition";
+    const type = assets.find((candidate) => candidate.id === sourceId)?.media_type ?? "";
+    return type.startsWith("audio/")
+      ? "audio"
+      : type.startsWith("video/") || type === "image/gif"
+        ? "video"
+        : "image";
+  }
+
+  function setSceneDuration(next: number) {
+    setScenePolicy((current) => ({ ...current, duration_ms: next }));
+    if (!Number.isInteger(next) || next <= 0) return;
+    setLoopEnd((end) => (end >= duration ? next : Math.min(end, next)));
+    setLoopStart((loopStartMs) => Math.min(loopStartMs, Math.max(0, next - 1)));
+  }
+
+  function resolvePendingPlacement(mode: "extend" | "trim") {
+    const pending = pendingPlacement;
+    if (!pending || !canEdit) return;
+    setPendingPlacement(null);
+    const track = tracks.find((candidate) => candidate.id === pending.trackId);
+    const length = mode === "extend" ? pending.naturalMs : duration - pending.startMs;
+    if (!track || length <= 0) {
+      setBinMessage("There is no room left on the timeline at that point.");
+      return;
+    }
+    if (mode === "extend") setSceneDuration(pending.startMs + pending.naturalMs);
+    addMediaLayer({
+      name: pending.name,
+      kind: placementKind(pending.sourceId),
+      sourceId: pending.sourceId,
+      trackId: track.id,
+      startMs: pending.startMs,
+      durationMs: length,
+    });
+    setBinMessage(
+      mode === "extend"
+        ? `Added ${pending.name} at ${formatTimecode(pending.startMs)} and extended the scene to ${formatTimecode(pending.startMs + pending.naturalMs)}.`
+        : `Added ${pending.name} at ${formatTimecode(pending.startMs)}, trimmed to end with the scene.`,
+    );
   }
 
   function msPerPixel(): number {
@@ -2064,6 +2140,23 @@ export function TimelineEditor({
             <small>No ready media yet. Upload assets on the show page.</small>
           )}
           {binMessage && <small role="status">{binMessage}</small>}
+          {pendingPlacement && canEdit && (
+            <div className="timeline-bin__overflow" role="group" aria-label="Clip runs past scene end">
+              <button type="button" onClick={() => resolvePendingPlacement("extend")}>
+                Extend scene to {formatTimecode(pendingPlacement.startMs + pendingPlacement.naturalMs)}
+              </button>
+              <button
+                type="button"
+                disabled={pendingPlacement.startMs >= duration}
+                onClick={() => resolvePendingPlacement("trim")}
+              >
+                Trim clip to fit
+              </button>
+              <button type="button" onClick={() => { setPendingPlacement(null); setBinMessage(null); }}>
+                Cancel
+              </button>
+            </div>
+          )}
         </section>
         <section
           className={`timeline-viewer${dropTargetId === "viewer" ? " timeline-drop-target" : ""}`}
@@ -2840,6 +2933,93 @@ export function TimelineEditor({
                 <>
                   <small>Stable ID: {selectedTrack.id}</small>
                   <small>Kind: {humanizeTrackKind(selectedTrack.kind)}</small>
+                  {selectedMediaOutput && (
+                    <>
+                      <strong>Media output · {selectedMediaOutput.id}</strong>
+                      <small>Resource: {selectedMediaOutput.resource}</small>
+                      <label>
+                        Media asset
+                        <select
+                          disabled={!canEdit}
+                          value={selectedMediaOutput.asset ?? ""}
+                          onChange={(event) => setScenePolicy((current) => ({
+                            ...current,
+                            media_assets: {
+                              ...current.media_assets,
+                              [selectedMediaOutput.id]: event.target.value || null,
+                            },
+                          }))}
+                        >
+                          <option value="">No managed asset</option>
+                          {selectedMediaOutput.asset && !assets.some((asset) => asset.id === selectedMediaOutput.asset) && (
+                            <option value={selectedMediaOutput.asset}>{selectedMediaOutput.asset} (unavailable)</option>
+                          )}
+                          {assets.filter((asset) => asset.status === "ready" || asset.id === selectedMediaOutput.asset).map((asset) => (
+                            <option key={asset.id} value={asset.id}>{asset.name}</option>
+                          ))}
+                        </select>
+                      </label>
+                      {scene.schema_version === 2 && (
+                        <>
+                          <label>
+                            Media start delay (ms)
+                            <input
+                              type="number"
+                              min="0"
+                              max="5000"
+                              step="1"
+                              disabled={!canEdit}
+                              value={selectedMediaOutput.startDelayMs}
+                              onChange={(event) => setScenePolicy((current) => ({
+                                ...current,
+                                media_offsets: {
+                                  ...current.media_offsets,
+                                  [selectedMediaOutput.id]: Number(event.target.value),
+                                },
+                              }))}
+                            />
+                          </label>
+                          <label>
+                            Media end behavior
+                            <select
+                              disabled={!canEdit}
+                              value={selectedMediaOutput.endBehavior}
+                              onChange={(event) => setScenePolicy((current) => ({
+                                ...current,
+                                media_end_behaviors: {
+                                  ...current.media_end_behaviors,
+                                  [selectedMediaOutput.id]: event.target.value as SceneMediaEndBehavior,
+                                },
+                              }))}
+                            >
+                              <option value="hold_last_frame">Hold last frame</option>
+                              <option value="loop">Loop</option>
+                              <option value="stop">Stop</option>
+                            </select>
+                          </label>
+                          <label>
+                            <input
+                              type="checkbox"
+                              aria-label="Required media output"
+                              disabled={!canEdit}
+                              checked={scenePolicy.media_required[selectedMediaOutput.id] ?? true}
+                              onChange={(event) => setScenePolicy((current) => ({
+                                ...current,
+                                media_required: {
+                                  ...current.media_required,
+                                  [selectedMediaOutput.id]: event.target.checked,
+                                },
+                              }))}
+                            />
+                            Required
+                          </label>
+                          {timelineDiagnostics.filter((diagnostic) => diagnostic.object_id === selectedMediaOutput.id).map((diagnostic) => (
+                            <small className="timeline-property-error" key={diagnostic.code}>{diagnostic.message}</small>
+                          ))}
+                        </>
+                      )}
+                    </>
+                  )}
                   <label>
                     Name
                     <input
@@ -2970,7 +3150,7 @@ export function TimelineEditor({
               />
             ))}
           {tracks.map((track) => {
-            const asset = timelineTrackAsset(scene, track, assets);
+            const asset = timelineTrackAsset(previewScene ?? scene, track, assets);
             const showThumbnail =
               track.kind === "media_output" &&
               asset &&
@@ -3036,14 +3216,21 @@ export function TimelineEditor({
                 </button>
                 {(track.kind === "media_output" ||
                   track.kind === "audio_reference") && (
-                  <div
+                  <button
+                    type="button"
                     aria-label={`${track.name} timing reference`}
+                    aria-pressed={inspectorTarget === "track" && selectedTrackId === track.id}
                     className={`timeline-track-reference${asset ? " timeline-track-reference--clip" : ""}`}
                     style={{
                       left: `${(referenceStartMs * 100) / duration}%`,
                       width: `${((referenceEndMs - referenceStartMs) * 100) / duration}%`,
                     }}
                     title={asset ? `${asset.name}${assetDuration > 0 ? ` · ${formatTimecode(assetDuration)}` : ""}` : undefined}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      setSelectedTrackId(track.id);
+                      setInspectorTarget("track");
+                    }}
                   >
                     {showWaveform && (
                       <img
@@ -3079,7 +3266,7 @@ export function TimelineEditor({
                           : "No asset bound for timing reference"}
                       </small>
                     )}
-                  </div>
+                  </button>
                 )}
                 {[...spaceTransformLayers]
                   .filter((layer) => layer.track_id === track.id)
@@ -5999,6 +6186,22 @@ export function TimelineEditor({
           <section className="timeline-scene-policy">
             <strong>Scene scheduling and output policy</strong>
             <label>
+              Scene duration (seconds)
+              <input
+                aria-label="Scene duration (seconds)"
+                disabled={!canEdit}
+                min="0.001"
+                step="0.001"
+                type="number"
+                value={scenePolicy.duration_ms / 1000}
+                onChange={(event) => setSceneDuration(Math.round(Number(event.target.value) * 1000))}
+              />
+              <small>
+                Clips, cues, markers and regions are not trimmed automatically; anything past the
+                new end is reported as an issue.
+              </small>
+            </label>
+            <label>
               Scene priority
               <input
                 aria-label="Scene priority"
@@ -7382,6 +7585,7 @@ function readSceneOperationalPolicy(
     ? scene.lighting.map(metadataRecord)
     : [];
   return {
+    duration_ms: numberValue(value.duration_ms, 1000),
     priority: numberValue(value.priority, 50),
     completion_policy: [
       "loop",
@@ -7428,6 +7632,8 @@ function readSceneOperationalPolicy(
         numberValue(metadataRecord(output).start_delay_ms, 0),
       ]),
     ),
+    media_assets: {},
+    media_end_behaviors: {},
     lighting_offsets: Object.fromEntries(
       lighting.map((output) => [
         String(output.id ?? output.resource ?? ""),
@@ -7516,6 +7722,25 @@ function validateTimelineState({
   const lighting = Array.isArray(scene?.lighting)
     ? scene.lighting.map(metadataRecord)
     : [];
+  for (const output of media) {
+    const delay = policy.media_offsets[output.id] ?? 0;
+    if (!Number.isInteger(delay) || delay < 0 || delay > 5000) {
+      add("media_offset_invalid", "Media start delay must be an integer between 0 and 5000 ms.", output.id);
+    }
+  }
+  if (!composition && scene) {
+    if (!Number.isInteger(policy.duration_ms) || policy.duration_ms <= 0) {
+      add("scene_duration_invalid", "Scene duration must be a positive whole number of milliseconds.", scene.id);
+    } else {
+      for (const output of lighting) {
+        const outputId = String(output.id ?? output.resource ?? "lighting");
+        const timeline = Array.isArray(output.timeline) ? output.timeline.map(metadataRecord) : [];
+        if (timeline.some((cue) => numberValue(cue.start_ms, 0) + numberValue(cue.duration_ms, 0) > policy.duration_ms)) {
+          add("lighting_cue_past_scene_end", `Lighting effects on ${outputId} run past the scene end.`, scene.id);
+        }
+      }
+    }
+  }
   for (const output of [...media.map(metadataRecord), ...lighting]) {
     const resource = output.resource;
     if (typeof resource === "string" && !claims.has(resource)) {
@@ -7713,6 +7938,7 @@ function applySceneOperationalPolicy(
       : { policy: policy.completion_policy };
   const updated = {
     ...scene,
+    duration_ms: policy.duration_ms,
     priority: policy.priority,
     resources: policy.resources
       .split(",")
@@ -7726,7 +7952,13 @@ function applySceneOperationalPolicy(
     },
   };
   if (scene.schema_version !== 2 || !Array.isArray(scene.media)) {
-    return updated;
+    return Array.isArray(scene.media) ? updated : {
+      ...updated,
+      media: {
+        ...scene.media,
+        asset: policy.media_assets.media === undefined ? scene.media.asset : policy.media_assets.media,
+      },
+    };
   }
   return {
     ...updated,
@@ -7736,6 +7968,10 @@ function applySceneOperationalPolicy(
       const record = metadataRecord(output);
       return {
         ...output,
+        asset: policy.media_assets[output.id] === undefined ? output.asset : policy.media_assets[output.id],
+        ...(policy.media_end_behaviors[output.id] === undefined ? {} : {
+          end_behavior: policy.media_end_behaviors[output.id],
+        }),
         required: policy.media_required[output.id] ?? record.required ?? true,
         start_delay_ms:
           policy.media_offsets[output.id] ??

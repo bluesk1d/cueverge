@@ -1328,6 +1328,14 @@ def create_mcp_app(services: GuiServices) -> Starlette:
                     "bake_cancel": "cancel_render_job",
                 },
                 "authoring_representations": {
+                    "runtime_scene_media": {
+                        "read_tool": "get_project_draft",
+                        "write_tool": "update_project_draft",
+                        "write_requires_scope": "direct_edit",
+                        "schema": ["MediaDefinition", "MediaOutputDefinition"],
+                        "editor_metadata_required": False,
+                        "ui_workflow": "Scenes > Edit timeline > select media clip > Inspector",
+                    },
                     "runtime_scene_lighting": {
                         "read_tool": "get_project_draft",
                         "write_tool": "update_project_draft",
@@ -1340,6 +1348,7 @@ def create_mcp_app(services: GuiServices) -> Starlette:
                         "range_tool": "get_timeline_range",
                         "source": "editor_metadata",
                         "includes_runtime_scene_lighting": False,
+                        "includes_runtime_scene_media": False,
                     },
                 },
                 "runtime_status": {
@@ -1831,8 +1840,8 @@ def create_mcp_app(services: GuiServices) -> Starlette:
     ) -> dict[str, JsonValue]:
         """Read editor markers, synchronized cues and composition layers in a time range.
 
-        This reads editor_metadata, not raw runtime scene lighting.
-        Use get_project_draft for legacy effects and lighting.timeline cues.
+        This reads editor_metadata, not raw runtime scene media or lighting.
+        Use get_project_draft for scene media outputs, legacy effects and lighting.timeline cues.
         """
         token = _authorize(services, McpScope.READ)
         if start_ms < 0 or end_ms <= start_ms or end_ms - start_ms > MAX_TIMELINE_RANGE_MS:

@@ -652,6 +652,27 @@ not mean the scene has no runtime lighting. Direct draft writes still require
 representation, targets, policy, and unrelated metadata rather than rebuilding
 the scene from editor-only range results.
 
+`get_capabilities.authoring_representations.runtime_scene_media` describes scene
+media separately from editor transform layers. Read and edit these outputs through
+`get_project_draft` and the existing revision/proposal workflows; their schemas are
+`MediaDefinition` (schema v1) and `MediaOutputDefinition` (schema v2).
+`get_timeline_range` does not include these runtime media outputs. In the UI,
+open **Scenes > Edit timeline**, select the media strip, and use the **Inspector**
+to change its asset, or (v2) `start_delay_ms`, `end_behavior`, and `required`.
+Preserve output IDs, resource bindings, unrelated outputs and editor metadata.
+Start delay remains an integer in 0–5000 ms, and a media clock source must remain
+required. Save through the existing validated working-draft boundary; this does
+not publish, apply, or send hardware commands. Simulation semantics are unchanged:
+these are existing runtime media fields, not a new clip or playback representation.
+
+Scene length is `scenes[].duration_ms` (a positive integer) in the draft read by
+`get_project_draft`; edit it with the same direct-edit or proposal workflows.
+Lengthening a scene never rewrites existing layers. Shortening one is rejected by
+draft validation when runtime lighting cues, safe points or protected intervals
+would run past the new end; trim those first. Editor transform layers that run past
+the end are flagged by the timeline editor. The UI equivalent is **Scene settings →
+Scene duration** in the timeline editor (or **Scene details** on the Scenes page).
+
 The accepted [UP-01 architecture decisions](decisions/0016-lossless-hobbyist-authoring-and-runtime-handover.md)
 record the accepted preservation, explicit Apply, unified Preview and monitoring
 contracts. Discover current tool schemas and grants before attempting a workflow.

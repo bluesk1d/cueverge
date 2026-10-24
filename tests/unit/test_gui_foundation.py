@@ -851,6 +851,89 @@ def test_scene_deletion_preserves_composition_editing_space_with_same_id() -> No
     assert "unwanted" in result.editor_metadata["compositions"]
 
 
+def test_mcp_scene_media_inspector_fields_share_revision_and_validation_boundaries(
+    tmp_path: Path,
+) -> None:
+    runtime, services, project_id = _mcp_fixture(tmp_path)
+    token = _mcp_token(services, project_id, (McpScope.READ, McpScope.DIRECT_EDIT))
+    read_only = _mcp_token(services, project_id, (McpScope.READ,))
+    with TestClient(
+        create_app(runtime, gui_services=services), base_url="http://localhost"
+    ) as client:
+        capabilities = _mcp_tool(client, token, "get_capabilities")["structuredContent"]
+        representation = capabilities["authoring_representations"]["runtime_scene_media"]
+        assert representation["write_requires_scope"] == "direct_edit"
+        assert representation["editor_metadata_required"] is False
+        assert "Inspector" in representation["ui_workflow"]
+        assert (
+            capabilities["authoring_representations"]["editor_timeline"][
+                "includes_runtime_scene_media"
+            ]
+            is False
+        )
+        schema = _mcp_tool(client, token, "get_authoring_schema")["structuredContent"]
+        properties = schema["$defs"]["MediaOutputDefinition"]["properties"]
+        assert {"asset", "required", "start_delay_ms", "end_behavior"} <= properties.keys()
+        assert properties["start_delay_ms"]["maximum"] == 5000
+
+        document = _mcp_tool(client, token, "get_project_draft")["structuredContent"]["draft"]
+        original = copy.deepcopy(document)
+        scene = document["scenes"][0]
+        scene.update(
+            schema_version=2,
+            mode="media_synchronized",
+            clock_source="main",
+            media=[
+                {
+                    **scene["media"],
+                    "id": "main",
+                    "required": True,
+                    "start_delay_ms": 500,
+                    "end_behavior": "loop",
+                }
+            ],
+            lighting=[],
+        )
+        denied = _mcp_tool(
+            client, read_only, "update_project_draft", base_revision=1, draft=document
+        )
+        assert denied["isError"] is True
+        updated = _mcp_tool(client, token, "update_project_draft", base_revision=1, draft=document)
+        assert updated["isError"] is False
+        saved = _mcp_tool(client, token, "get_project_draft")["structuredContent"]
+        assert saved["revision"] == 2
+        assert saved["draft"]["scenes"][0]["media"] == scene["media"]
+        assert saved["draft"]["editor_metadata"] == original["editor_metadata"]
+        for changes in ({"start_delay_ms": 5001}, {"required": False}, {"end_behavior": "bad"}):
+            invalid = copy.deepcopy(saved["draft"])
+            invalid["scenes"][0]["media"][0].update(changes)
+            rejected = _mcp_tool(
+                client, token, "update_project_draft", base_revision=2, draft=invalid
+            )
+            assert rejected["isError"] is True
+            assert services.repository.get_revision(project_id).revision == 2
+        for scene_duration in (0, -1):
+            invalid = copy.deepcopy(saved["draft"])
+            invalid["scenes"][0]["duration_ms"] = scene_duration
+            rejected = _mcp_tool(
+                client, token, "update_project_draft", base_revision=2, draft=invalid
+            )
+            assert rejected["isError"] is True
+        scene_properties = schema["$defs"]["SceneDefinitionV2"]["properties"]
+        assert scene_properties["duration_ms"]["exclusiveMinimum"] == 0
+        longer = copy.deepcopy(saved["draft"])
+        longer["scenes"][0]["duration_ms"] = scene.get("duration_ms", 1000) + 30000
+        extended = _mcp_tool(client, token, "update_project_draft", base_revision=2, draft=longer)
+        assert extended["isError"] is False
+        assert (
+            services.repository.get_revision(project_id).draft.scenes[0].duration_ms
+            == (longer["scenes"][0]["duration_ms"])
+        )
+        stale = _mcp_tool(client, token, "update_project_draft", base_revision=1, draft=document)
+        assert stale["isError"] is True
+        assert runtime.active_scene is None
+
+
 def test_mcp_direct_edit_is_immediate_revisioned_and_schema_validated(tmp_path: Path) -> None:
     runtime, services, project_id = _mcp_fixture(tmp_path)
     direct_token = _mcp_token(services, project_id, (McpScope.READ, McpScope.DIRECT_EDIT))

@@ -2396,7 +2396,16 @@ p {
   overflow: hidden;
   color: var(--cv-text-faint);
   background: color-mix(in srgb, var(--cv-primary) 5%, transparent);
-  pointer-events: none;
+  padding: 0;
+  border: 0;
+  text-align: left;
+  cursor: pointer;
+}
+
+.timeline-track-reference[aria-pressed="true"],
+.timeline-track-reference:focus-visible {
+  outline: 2px solid var(--cv-focus);
+  outline-offset: -2px;
 }
 
 .timeline-track-reference--clip {
@@ -6334,6 +6343,12 @@ p {
   background: var(--cv-surface);
   border: 1px solid var(--cv-border);
   border-radius: var(--cv-radius-panel);
+}
+
+.timeline-bin__overflow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
 }
 
 .timeline-bin__list {

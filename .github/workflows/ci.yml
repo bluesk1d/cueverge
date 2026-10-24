@@ -21,3 +21,11 @@ jobs:
       - run: uv run ruff check .
       - run: uv run mypy src
       - run: uv run pytest
+
+  publish:
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/publish-image.yml

@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { demoInstallation, demoInstallations, demoProjects, demoRuntime, demoTopology } from "../../src/demo/overview-fixtures";
 import { openAdvancedShowWorkspace, openTimelineEditor } from "./show-workspace";
 
 test("timeline shows media thumbnails and audio waveforms", async ({ page }) => {
@@ -73,6 +74,142 @@ test("timeline shows media thumbnails and audio waveforms", async ({ page }) => 
   await page.waitForTimeout(150);
   expect(Number(await scrub.inputValue())).toBe(pausedAt);
 });
+
+test("scene media clips select editable output properties instead of seeking", async ({ page }) => {
+  let current = draftResponse();
+  current.draft.scenes[0].media.push({
+    id: "right-window", resource: "projector.right", asset: "video-asset",
+    required: false, start_delay_ms: 0,
+  });
+  current.draft.scenes[0].resources.push("projector.right");
+  await page.route("**/api/gui/v1/**", async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path.endsWith("/projects/demo-project/assets")) {
+      return route.fulfill({ json: assets() });
+    }
+    if (path.endsWith("/projects/demo-project/draft")) {
+      if (route.request().method() === "PUT") {
+        current = { ...current, revision: current.revision + 1, draft: route.request().postDataJSON() };
+      }
+      return route.fulfill({ json: current });
+    }
+    return route.fulfill({ status: 404, json: { detail: "fixture route missing" } });
+  });
+  await page.goto("/demo.html");
+  await page.getByRole("button", { name: "Shows", exact: true }).click();
+  await openTimelineEditor(page);
+  const scrub = page.getByLabel("Scrub position");
+  await scrub.fill("1000");
+  const clip = page.getByRole("button", { name: "left-window timing reference", exact: true });
+  await clip.click({ position: { x: 180, y: 10 } });
+  await expect(scrub).toHaveValue("1000");
+  await expect(clip).toHaveAttribute("aria-pressed", "true");
+  const inspector = page.getByRole("complementary", { name: "Inspector" });
+  await expect(inspector).toContainText("projector.left");
+  await expect(inspector.getByLabel("Media asset")).toHaveValue("video-asset");
+  await inspector.getByLabel("Media start delay (ms)").fill("500");
+  await inspector.getByLabel("Media end behavior").selectOption("loop");
+  await expect(inspector.getByLabel("Required media output")).toBeChecked();
+  await expect(clip).toHaveAttribute("style", /left: 10%/);
+  await page.getByRole("button", { name: "Undo timeline edit" }).click();
+  await expect(inspector.getByLabel("Media end behavior")).toHaveValue("hold_last_frame");
+  await page.getByRole("button", { name: "Redo timeline edit" }).click();
+  await expect(inspector.getByLabel("Media end behavior")).toHaveValue("loop");
+  await page.getByRole("button", { name: "Save timeline" }).click();
+  await expect.poll(() => current.revision).toBe(2);
+  expect(current.draft.scenes[0].media[0]).toMatchObject({
+    id: "left-window", asset: "video-asset", resource: "projector.left",
+    required: true, start_delay_ms: 500, end_behavior: "loop",
+  });
+  expect(current.draft.scenes[0].media[1]).toMatchObject({
+    id: "right-window", required: false, start_delay_ms: 0,
+  });
+  expect(current.draft.scenes[0].media[1]).not.toHaveProperty("end_behavior");
+  await page.reload();
+  await page.getByRole("button", { name: "Shows", exact: true }).click();
+  await openTimelineEditor(page);
+  await clip.focus();
+  await page.keyboard.press("Enter");
+  await expect(inspector.getByLabel("Media start delay (ms)")).toHaveValue("500");
+  await expect(inspector.getByLabel("Media end behavior")).toHaveValue("loop");
+  const lane = page.getByLabel("Track left-window");
+  const bounds = (await lane.boundingBox())!;
+  await lane.click({ position: { x: bounds.width * 0.6, y: 5 } });
+  await expect(scrub).toHaveValue("3000");
+  await page.getByRole("button", { name: "right-window timing reference", exact: true }).focus();
+  await page.keyboard.press("Space");
+  await expect(inspector).toContainText("projector.right");
+  await expect(inspector.getByLabel("Media start delay (ms)")).toHaveValue("0");
+  await expect(inspector.getByLabel("Required media output")).not.toBeChecked();
+  await inspector.getByLabel("Media asset").selectOption("audio-asset");
+  await expect(inspector.getByLabel("Media asset")).toHaveValue("audio-asset");
+  await page.getByRole("button", { name: "Save timeline" }).click();
+  await expect.poll(() => current.revision).toBe(3);
+  expect(current.draft.scenes[0].media[1].asset).toBe("audio-asset");
+  expect(current.draft.scenes[0].media[0].asset).toBe("video-asset");
+  await inspector.getByLabel("Media start delay (ms)").fill("5001");
+  await expect(page.getByLabel("Timeline validation")).toContainText("between 0 and 5000");
+  await expect(page.getByRole("button", { name: "Save timeline" })).toBeDisabled();
+});
+
+for (const readOnly of [false, true]) {
+  test(`legacy media clip supports ${readOnly ? "read-only inspection" : "asset editing"}`, async ({ page }) => {
+    const original = draftResponse();
+    const legacy = {
+      ...original,
+      draft: {
+        ...original.draft,
+        scenes: [{
+          schema_version: 1, id: "ambient", name: "Ambient", duration_ms: 5000,
+          media: { resource: "projector.left", asset: "video-asset" },
+          lighting: { resource: "wled-001", effect: "solid", color: "#ffffff" },
+        }],
+      },
+    };
+    let saved: unknown = null;
+    await page.route("**/api/gui/v1/**", async (route) => {
+      const path = new URL(route.request().url()).pathname;
+      if (path.endsWith("/auth/session") && readOnly) {
+        return route.fulfill({ json: { username: "viewer", role: "designer" } });
+      }
+      if (path.endsWith("/members") && readOnly) return route.fulfill({ json: [] });
+      if (path.endsWith("/installation")) return route.fulfill({ json: demoInstallation });
+      if (path.endsWith("/installations")) return route.fulfill({ json: demoInstallations });
+      if (path.endsWith("/runtime/status")) return route.fulfill({ json: demoRuntime });
+      if (path.endsWith("/topology")) return route.fulfill({ json: demoTopology });
+      if (path.endsWith("/projects")) return route.fulfill({ json: demoProjects });
+      if (path.endsWith("/activity")) return route.fulfill({ json: [] });
+      if (path.endsWith("/projects/demo-project/assets")) return route.fulfill({ json: assets() });
+      if (path.endsWith("/projects/demo-project/draft")) {
+        if (route.request().method() === "PUT") saved = route.request().postDataJSON();
+        return route.fulfill({ json: legacy });
+      }
+      return route.fulfill({ status: 404, json: { detail: "fixture route missing" } });
+    });
+    await page.goto(readOnly ? "/" : "/demo.html");
+    await page.getByRole("button", { name: "Shows", exact: true }).click();
+    await openTimelineEditor(page);
+    await page.getByRole("button", { name: "Media timing reference", exact: true }).click();
+    const inspector = page.getByRole("complementary", { name: "Inspector" });
+    await expect(inspector).toContainText("projector.left");
+    await expect(inspector.getByLabel("Media start delay (ms)")).toHaveCount(0);
+    if (readOnly) {
+      await expect(inspector.getByLabel("Media asset")).toBeDisabled();
+      await expect(page.getByRole("button", { name: "Save timeline" })).toHaveCount(0);
+      expect(saved).toBeNull();
+    } else {
+      await inspector.getByLabel("Media asset").selectOption("audio-asset");
+      await page.getByRole("button", { name: "Save timeline" }).click();
+      await expect.poll(() => saved).toMatchObject({
+        scenes: [{
+          schema_version: 1,
+          media: { resource: "projector.left", asset: "audio-asset" },
+          lighting: legacy.draft.scenes[0].lighting,
+        }],
+      });
+    }
+  });
+}
 
 function draftResponse() {
   return {
