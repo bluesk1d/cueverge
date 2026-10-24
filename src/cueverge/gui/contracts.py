@@ -2467,6 +2467,18 @@ class AddSceneOutputRequest(SceneOutputCreate):
     make_clock_source: bool = False
 
 
+class RenameSceneOutputBody(GuiModel):
+    new_output_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
+
+
+class RenameSceneOutputRequest(RenameSceneOutputBody):
+    output_id: str = Field(min_length=1)
+
+
+class RemoveSceneOutputRequest(GuiModel):
+    output_id: str = Field(min_length=1)
+
+
 class SceneAuthoringOptions(GuiModel):
     project_id: str
     revision: int

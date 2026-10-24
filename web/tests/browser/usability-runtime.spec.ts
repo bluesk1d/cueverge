@@ -61,15 +61,26 @@ test("Apply reviews an exact saved version and surfaces acknowledged completion 
   await page.getByRole("button", { name: "Apply saved changes", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Apply saved changes" });
   await expect(dialog.getByRole("button", { name: "Apply now", exact: true })).toBeDisabled();
-  await dialog.getByLabel("I approve this exact saved version", { exact: false }).check();
-  await dialog.getByLabel("I authorize the controller load", { exact: false }).check();
+  await expect(dialog.getByRole("region", { name: "What's changing" })).toContainText("already on the display");
+  await dialog.getByLabel("This version is ready to go live", { exact: false }).check();
+  await expect(dialog.getByRole("button", { name: "Apply now", exact: true })).toBeDisabled();
+  await dialog.getByLabel("It's OK to briefly stop playback", { exact: false }).check();
   await dialog.getByRole("button", { name: "Apply now", exact: true }).click();
-  await expect(page.getByText("Apply completed · playback remains stopped", { exact: true })).toBeVisible();
+  await expect(page.getByText("Applied · playback remains stopped", { exact: true })).toBeVisible();
   expect(state.starts).toHaveLength(1);
   expect(state.starts[0]).toMatchObject({ source_revision: 1, expected_head_revision: 1,
     approve_release: true, confirm_interruption: true, preserve_controller_looks: true });
-  await page.getByText("Loaded identity and retained versions", { exact: true }).click();
-  await expect(page.getByRole("button", { name: "Restore retained version 1" })).toBeVisible();
+  await page.getByText("Earlier versions", { exact: true }).click();
+  await page.getByRole("button", { name: "Restore version 1" }).click();
+  const restore = page.getByRole("dialog", { name: "Restore an earlier version" });
+  await expect(restore.getByLabel("This version is ready to go live", { exact: false })).toHaveCount(0);
+  await restore.getByText("Advanced options", { exact: true }).click();
+  await restore.getByLabel("Keep the controller's standby and safety lighting looks").uncheck();
+  await restore.getByLabel("It's OK to briefly stop playback", { exact: false }).check();
+  await restore.getByRole("button", { name: "Restore now", exact: true }).click();
+  await expect.poll(() => state.starts.length).toBe(2);
+  expect(state.starts[1]).toMatchObject({ restore_package_id: "retained-one", preserve_controller_looks: false,
+    confirm_interruption: true, approve_release: false });
 });
 
 test("monitor is opt-in, read-only, bounded, non-overlapping and pauses when hidden", async ({ page }) => {

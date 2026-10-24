@@ -36,6 +36,7 @@ import { VirtualizedList } from "../components/VirtualizedList";
 import { SurfaceMediaOverlay } from "../components/SurfaceMediaOverlay";
 import { DetailsDialog } from "../components/DetailsDialog";
 import { SceneHouseView } from "../components/SceneHouseView";
+import { SceneOutputActions } from "../components/SceneOutputActions";
 import {
   formatTimecode,
   mediaOutputSourceMs,
@@ -367,6 +368,7 @@ export function TimelineEditor({
   onSave,
   selectedSceneId,
   onSceneChange,
+  onOutputsChanged,
 }: {
   draft: ProjectDraftRecord;
   assets: AssetRecord[];
@@ -375,6 +377,7 @@ export function TimelineEditor({
   onSave: (draft: ProjectDraftRecord["draft"]) => Promise<void>;
   selectedSceneId?: string;
   onSceneChange?: (id: string) => void;
+  onOutputsChanged?: (updated: ProjectDraftRecord) => void;
 }) {
   const [toolTab, setToolTab] = useState<TimelineToolTab>("layers");
   const [sceneSettingsOpen, setSceneSettingsOpen] = useState(false);
@@ -529,6 +532,8 @@ export function TimelineEditor({
   const historyRef = useRef<TimelineSnapshot[]>([]);
   const historyIndexRef = useRef(-1);
   const restoringHistoryRef = useRef(false);
+  const savedSnapshotRef = useRef<string | null>(null);
+  const [timelineDirty, setTimelineDirty] = useState(false);
   const [historyVersion, setHistoryVersion] = useState(0);
   const [renderJobs, setRenderJobs] = useState<RenderJob[]>([]);
   const hasPendingRenderJobs = renderJobs.some(
@@ -856,13 +861,9 @@ export function TimelineEditor({
     setScenePolicy(readSceneOperationalPolicy(scene));
   }, [scene?.id]);
 
-  useEffect(() => {
-    if (restoringHistoryRef.current) {
-      restoringHistoryRef.current = false;
-      return;
-    }
-    const snapshot: TimelineSnapshot = {
-      compositions,
+  function timelineSnapshot(compositionsValue = compositions): TimelineSnapshot {
+    return {
+      compositions: compositionsValue,
       sceneCompositions,
       compositionInstances,
       syncMarkers,
@@ -875,7 +876,17 @@ export function TimelineEditor({
       scenePolicy,
       lightingAuthorLayers,
     };
+  }
+
+  useEffect(() => {
+    const snapshot = timelineSnapshot();
     const serialized = JSON.stringify(snapshot);
+    if (savedSnapshotRef.current === null) savedSnapshotRef.current = serialized;
+    setTimelineDirty(serialized !== savedSnapshotRef.current);
+    if (restoringHistoryRef.current) {
+      restoringHistoryRef.current = false;
+      return;
+    }
     const current = historyRef.current[historyIndexRef.current];
     if (current && JSON.stringify(current) === serialized) {
       return;
@@ -960,6 +971,15 @@ export function TimelineEditor({
     return [...media, ...lighting, ...customTracks];
   }, [composition, customTracks, scene]);
   const selectedTrack = tracks.find((track) => track.id === selectedTrackId);
+  const selectedOutputRef = !composition && selectedTrack?.built_in &&
+    (selectedTrack.kind === "media_output" || selectedTrack.kind === "lighting_output")
+    ? {
+        kind: selectedTrack.kind === "media_output" ? "media" as const : "lighting" as const,
+        outputId: selectedTrack.kind === "media_output"
+          ? Array.isArray(scene?.media) ? selectedTrack.id.slice("media:".length) : "media"
+          : Array.isArray(scene?.lighting) ? selectedTrack.id.slice("lighting:".length) : "lighting",
+      }
+    : undefined;
   const previewScene = useMemo(
     () => scene ? applySceneOperationalPolicy(scene, scenePolicy) : undefined,
     [scene, scenePolicy],
@@ -1235,6 +1255,8 @@ export function TimelineEditor({
         ),
       },
     });
+    savedSnapshotRef.current = JSON.stringify(timelineSnapshot(updatedCompositions));
+    setTimelineDirty(false);
   }
 
   function removeComposition(
@@ -2933,6 +2955,22 @@ export function TimelineEditor({
                 <>
                   <small>Stable ID: {selectedTrack.id}</small>
                   <small>Kind: {humanizeTrackKind(selectedTrack.kind)}</small>
+                  {selectedOutputRef && onOutputsChanged && (
+                    <SceneOutputActions
+                      draft={draft}
+                      sceneId={scene?.id ?? ""}
+                      outputId={selectedOutputRef.outputId}
+                      kind={selectedOutputRef.kind}
+                      disabledReason={
+                        !canEdit
+                          ? "You can inspect this output but not change it."
+                          : timelineDirty
+                            ? "Save timeline or undo your edits before renaming or removing outputs."
+                            : null
+                      }
+                      onChanged={onOutputsChanged}
+                    />
+                  )}
                   {selectedMediaOutput && (
                     <>
                       <strong>Media output · {selectedMediaOutput.id}</strong>

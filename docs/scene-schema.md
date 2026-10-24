@@ -239,7 +239,9 @@ The GUI **Add scene** / **Add output** workflows create schema-v2 definitions.
 Adding to a v1 scene retains its old singular outputs under IDs `media` and
 `lighting`; media remains the clock unless the author explicitly changes it.
 New lighting starts with a blackout timeline, while new media awaits asset
-placement. See the [operator workflow](operator-guide.md#add-scenes-and-outputs).
+placement. Renaming or removing outputs uses the same schema-v2 upgrade and keeps
+every reference consistent; see the
+[operator workflow](operator-guide.md#add-scenes-and-outputs).
 
 ### Controller-timed scenes
 

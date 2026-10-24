@@ -6,6 +6,8 @@ from cueverge.gui.contracts import (
     AddSceneOutputRequest,
     CreateSceneRequest,
     DraftProject,
+    RemoveSceneOutputRequest,
+    RenameSceneOutputRequest,
     Role,
     SceneAuthoringOptions,
     SceneOutputCreate,
@@ -188,6 +190,162 @@ def save_scene_edit(
 
 class SceneDeletionError(ValueError):
     pass
+
+
+_TRACK_KEYS = ("timeline_transform_layers", "timeline_cues")
+
+
+def _scene_document(draft: DraftProject, scene_id: str) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Return the draft and scene documents, upgrading v1 scenes and their track references."""
+    original = next((scene for scene in draft.scenes if scene.id == scene_id), None)
+    if original is None:
+        raise ValueError("Scene does not exist.")
+    document = draft.model_dump(mode="json")
+    scene = next(item for item in document["scenes"] if item["id"] == scene_id)
+    if original.schema_version == 1:
+        scene.update(
+            schema_version=2,
+            clock_source="media",
+            media=[{"id": "media", **scene["media"]}],
+            lighting=[{"id": "lighting", **scene["lighting"]}],
+        )
+        _rewrite_tracks(
+            document,
+            scene_id,
+            {f"media:{scene_id}": "media:media", f"lighting:{scene_id}": "lighting:lighting"},
+        )
+    return document, scene
+
+
+def _rewrite_tracks(document: dict[str, Any], scene_id: str, renames: dict[str, str]) -> None:
+    metadata = document["editor_metadata"]
+    for key in _TRACK_KEYS:
+        values = metadata.get(key)
+        items = values.get(scene_id) if isinstance(values, dict) else None
+        for item in items if isinstance(items, list) else []:
+            if isinstance(item, dict) and item.get("track_id") in renames:
+                item["track_id"] = renames[item["track_id"]]
+    schedule = metadata.get("timeline_sync_schedule")
+    for entry in schedule if isinstance(schedule, list) else []:
+        if (
+            isinstance(entry, dict)
+            and entry.get("scene_id") == scene_id
+            and entry.get("editing_space_id") == scene_id
+            and entry.get("track_id") in renames
+        ):
+            entry["track_id"] = renames[entry["track_id"]]
+
+
+def _find_output(scene: dict[str, Any], output_id: str) -> tuple[str, dict[str, Any]]:
+    for key in ("media", "lighting"):
+        for output in scene[key]:
+            if output["id"] == output_id:
+                return key, output
+    raise ValueError(f"Output {output_id} does not exist in this scene.")
+
+
+def _validated(document: dict[str, Any], scene: dict[str, Any]) -> DraftProject:
+    SceneDefinitionV2.model_validate(scene)
+    return DraftProject.model_validate(document)
+
+
+def rename_scene_output(
+    draft: DraftProject, scene_id: str, request: RenameSceneOutputRequest
+) -> DraftProject:
+    document, scene = _scene_document(draft, scene_id)
+    key, output = _find_output(scene, request.output_id)
+    if request.new_output_id == request.output_id:
+        raise ValueError("Enter a different output ID.")
+    if any(item["id"] == request.new_output_id for item in [*scene["media"], *scene["lighting"]]):
+        raise ValueError("Output ID already exists in this scene.")
+    output["id"] = request.new_output_id
+    if key == "media" and scene.get("clock_source") == request.output_id:
+        scene["clock_source"] = request.new_output_id
+    _rewrite_tracks(
+        document,
+        scene_id,
+        {f"{key}:{request.output_id}": f"{key}:{request.new_output_id}"},
+    )
+    return _validated(document, scene)
+
+
+def remove_scene_output(
+    draft: DraftProject, scene_id: str, request: RemoveSceneOutputRequest
+) -> DraftProject:
+    document, scene = _scene_document(draft, scene_id)
+    key, output = _find_output(scene, request.output_id)
+    if len(scene["media"]) + len(scene["lighting"]) == 1:
+        raise ValueError("A scene needs at least one output. Delete the scene instead.")
+    blockers: list[str] = []
+    if (
+        key == "media"
+        and scene.get("mode") == "media_synchronized"
+        and scene.get("clock_source") == request.output_id
+    ):
+        blockers.append(
+            "it is the scene's media clock (choose another clock source or the controller "
+            "timer in Scene settings)"
+        )
+    track_id = f"{key}:{request.output_id}"
+    metadata = document["editor_metadata"]
+    for metadata_key, label in (
+        ("timeline_transform_layers", "media layer"),
+        ("timeline_cues", "synchronized cue"),
+    ):
+        values = metadata.get(metadata_key)
+        items = values.get(scene_id) if isinstance(values, dict) else None
+        names = [
+            str(item.get("name") or item.get("id"))
+            for item in (items if isinstance(items, list) else [])
+            if isinstance(item, dict) and item.get("track_id") == track_id
+        ]
+        if names:
+            blockers.append(f"{label}{'s' if len(names) > 1 else ''} {', '.join(names)}")
+    if blockers:
+        raise ValueError(
+            f"Output {request.output_id} cannot be removed while used by: "
+            + "; ".join(blockers)
+            + ". Update these first."
+        )
+    scene[key] = [item for item in scene[key] if item["id"] != request.output_id]
+    remaining = {item["resource"] for item in [*scene["media"], *scene["lighting"]]}
+    if output["resource"] not in remaining:
+        scene["resources"] = [item for item in scene["resources"] if item != output["resource"]]
+    return _validated(document, scene)
+
+
+def save_scene_output_change(
+    services: "GuiServices",
+    *,
+    project_id: str,
+    scene_id: str,
+    base_revision: int,
+    request: RenameSceneOutputRequest | RemoveSceneOutputRequest,
+    actor: str,
+    role: Role,
+) -> StoredRevision:
+    stored = services.repository.get_revision(project_id)
+    if stored.revision != base_revision:
+        raise RevisionConflictError(
+            requested_revision=base_revision,
+            current_revision=stored.revision,
+            conflicting_paths=("/scenes",),
+        )
+    if stored.project.archived_at is not None:
+        raise ValueError("Archived shows cannot be edited.")
+    candidate = (
+        rename_scene_output(stored.draft, scene_id, request)
+        if isinstance(request, RenameSceneOutputRequest)
+        else remove_scene_output(stored.draft, scene_id, request)
+    )
+    return services.repository.update_draft(
+        project_id=project_id,
+        expected_revision=base_revision,
+        draft=candidate,
+        actor=actor,
+        role=role,
+        occurred_at=datetime.now(UTC).isoformat(),
+    )
 
 
 def delete_scene(draft: DraftProject, scene_id: str) -> DraftProject:

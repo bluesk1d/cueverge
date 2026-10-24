@@ -144,6 +144,9 @@ from cueverge.gui.contracts import (
     PublicationValidationResponse,
     PublishedPackageResponse,
     RecordSyncRehearsalRequest,
+    RemoveSceneOutputRequest,
+    RenameSceneOutputBody,
+    RenameSceneOutputRequest,
     RenderJobResponse,
     ResourceAssignmentConflictResponse,
     ResourceAssignmentResponse,
@@ -282,7 +285,11 @@ from cueverge.gui.repository import (
     StoredRevision,
 )
 from cueverge.gui.scene_authoring import delete_scene as delete_draft_scene
-from cueverge.gui.scene_authoring import save_scene_edit, scene_authoring_options
+from cueverge.gui.scene_authoring import (
+    save_scene_edit,
+    save_scene_output_change,
+    scene_authoring_options,
+)
 from cueverge.gui.scene_preview import (
     ScenePreviewBusyError,
     ScenePreviewError,
@@ -1458,6 +1465,68 @@ def create_gui_router(services: GuiServices) -> APIRouter:
             return _revision_conflict_response(error)
         response.headers["ETag"] = _etag(revision.revision)
         return _project_draft(revision)
+
+    def _change_scene_output(
+        project_id: str,
+        scene_id: str,
+        request: RenameSceneOutputRequest | RemoveSceneOutputRequest,
+        response: Response,
+        identity: AuthenticatedSession,
+        if_match: str | None,
+    ) -> ProjectDraftResponse | JSONResponse:
+        expected_revision = _parse_if_match(if_match)
+        try:
+            revision = save_scene_output_change(
+                services,
+                project_id=project_id,
+                scene_id=scene_id,
+                base_revision=expected_revision,
+                request=request,
+                actor=identity.username,
+                role=identity.role,
+            )
+        except ProjectNotFoundError as error:
+            raise HTTPException(status_code=404, detail={"code": "project_not_found"}) from error
+        except ValueError as error:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "scene_output_invalid", "message": str(error)},
+            ) from error
+        except RevisionConflictError as error:
+            return _revision_conflict_response(error)
+        response.headers["ETag"] = _etag(revision.revision)
+        return _project_draft(revision)
+
+    @router.post(
+        "/projects/{project_id}/scenes/{scene_id}/outputs/{output_id}/rename",
+        response_model=ProjectDraftResponse,
+    )
+    def rename_scene_output(
+        project_id: str,
+        scene_id: str,
+        output_id: str,
+        body: RenameSceneOutputBody,
+        response: Response,
+        identity: Annotated[AuthenticatedSession, project_designer],
+        if_match: Annotated[str | None, Header(alias="If-Match")] = None,
+    ) -> ProjectDraftResponse | JSONResponse:
+        request = RenameSceneOutputRequest(output_id=output_id, new_output_id=body.new_output_id)
+        return _change_scene_output(project_id, scene_id, request, response, identity, if_match)
+
+    @router.delete(
+        "/projects/{project_id}/scenes/{scene_id}/outputs/{output_id}",
+        response_model=ProjectDraftResponse,
+    )
+    def remove_scene_output(
+        project_id: str,
+        scene_id: str,
+        output_id: str,
+        response: Response,
+        identity: Annotated[AuthenticatedSession, project_designer],
+        if_match: Annotated[str | None, Header(alias="If-Match")] = None,
+    ) -> ProjectDraftResponse | JSONResponse:
+        request = RemoveSceneOutputRequest(output_id=output_id)
+        return _change_scene_output(project_id, scene_id, request, response, identity, if_match)
 
     @router.delete(
         "/projects/{project_id}/scenes/{scene_id}",

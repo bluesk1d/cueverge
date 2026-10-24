@@ -16,10 +16,17 @@ from cueverge.gui.contracts import (
     AddSceneOutputRequest,
     CreateSceneRequest,
     DraftProject,
+    RemoveSceneOutputRequest,
+    RenameSceneOutputRequest,
     Role,
 )
 from cueverge.gui.mcp_authoring import McpScope
-from cueverge.gui.scene_authoring import add_scene_output, create_scene
+from cueverge.gui.scene_authoring import (
+    add_scene_output,
+    create_scene,
+    remove_scene_output,
+    rename_scene_output,
+)
 from cueverge.simulation import ShowSimulation
 from tests.unit.test_gui_foundation import (
     _draft,
@@ -607,3 +614,324 @@ def test_creation_and_output_addition_enforce_current_project_permissions(tmp_pa
             )
             assert response.status_code == 401
         assert services.repository.get_revision(project_id).revision == 1
+
+
+def _output_fixture() -> dict[str, Any]:
+    document = _draft()
+    document["installation"]["resources"].append(
+        {"resource": "projector.extra", "kind": "media_agent", "target": "extra-agent"}
+    )
+    document["scenes"][0] = {
+        "schema_version": 2,
+        "id": "ambient",
+        "name": "Ambient",
+        "mode": "media_synchronized",
+        "clock_source": "clock",
+        "duration_ms": 4000,
+        "resources": ["projector.demo", "projector.extra", "roofline.demo", "spare.claim"],
+        "media": [
+            {"id": "clock", "resource": "projector.demo", "asset": None},
+            {"id": "extra", "resource": "projector.extra", "asset": None},
+        ],
+        "lighting": [{"id": "roof", "resource": "roofline.demo", "effect": "synthetic_sweep"}],
+    }
+    layer = {
+        "layer_schema_version": 1,
+        "id": "overlay",
+        "name": "Overlay",
+        "kind": "image",
+        "source_id": "still",
+        "track_id": "media:extra",
+        "start_ms": 0,
+        "duration_ms": 1000,
+        "in_point_ms": 0,
+        "out_point_ms": 1000,
+        "z_index": 0,
+        "fade_in_ms": 0,
+        "fade_out_ms": 0,
+        "audio": None,
+        "alpha_interpretation": "straight",
+        "source_color_space": "srgb",
+        "scaling_behavior": "native",
+        "keyframes": [
+            {
+                "id": "overlay-frame",
+                "time_ms": 0,
+                "position": [32, 18],
+                "scale": [1, 1],
+                "rotation_deg": 0,
+                "anchor": [0.5, 0.5],
+                "opacity": 1,
+                "crop": [0, 0, 0, 0],
+                "interpolation": {
+                    "kind": "linear",
+                    "temporal_bezier": None,
+                    "spatial_in": None,
+                    "spatial_out": None,
+                },
+            }
+        ],
+    }
+    cue = {
+        "id": "flash",
+        "name": "Flash",
+        "kind": "lighting",
+        "track_id": "lighting:roof",
+        "time_ms": 100,
+        "marker_id": None,
+        "marker_offset_ms": 0,
+        "lighting": {
+            "primitive": "solid",
+            "duration_ms": 250,
+            "target": None,
+            "color": "#FFFFFF",
+            "brightness": 1,
+        },
+    }
+    document["editor_metadata"] = {
+        "custom_note": "Keep me",
+        "timeline_transform_layers": {"ambient": [layer]},
+        "timeline_cues": {"ambient": [cue]},
+        "timeline_sync_schedule": [
+            {
+                "cue_id": "flash",
+                "scene_id": "ambient",
+                "editing_space_id": "ambient",
+                "track_id": "lighting:roof",
+            },
+            {
+                "cue_id": "other",
+                "scene_id": "other-scene",
+                "editing_space_id": "other-scene",
+                "track_id": "lighting:roof",
+            },
+        ],
+    }
+    return document
+
+
+def test_output_rename_rewrites_every_reference() -> None:
+    original = DraftProject.model_validate(_output_fixture())
+    renamed = rename_scene_output(
+        original,
+        "ambient",
+        RenameSceneOutputRequest(output_id="clock", new_output_id="main-window"),
+    )
+    scene = renamed.scenes[0]
+    assert isinstance(scene, SceneDefinitionV2)
+    assert [output.id for output in scene.media] == ["main-window", "extra"]
+    assert scene.clock_source == "main-window"
+    renamed = rename_scene_output(
+        renamed, "ambient", RenameSceneOutputRequest(output_id="roof", new_output_id="eaves")
+    )
+    renamed = rename_scene_output(
+        renamed, "ambient", RenameSceneOutputRequest(output_id="extra", new_output_id="side")
+    )
+    metadata = renamed.editor_metadata
+    assert metadata["timeline_transform_layers"]["ambient"][0]["track_id"] == "media:side"
+    assert metadata["timeline_cues"]["ambient"][0]["track_id"] == "lighting:eaves"
+    schedule = metadata["timeline_sync_schedule"]
+    assert schedule[0]["track_id"] == "lighting:eaves"
+    assert schedule[1]["track_id"] == "lighting:roof"
+    assert metadata["custom_note"] == "Keep me"
+    assert renamed.scenes[0].resources == original.scenes[0].resources
+    for bad in ("side", "eaves"):
+        with pytest.raises(ValueError, match="already exists"):
+            rename_scene_output(
+                renamed,
+                "ambient",
+                RenameSceneOutputRequest(output_id="main-window", new_output_id=bad),
+            )
+    with pytest.raises(ValueError, match="does not exist"):
+        rename_scene_output(
+            renamed, "ambient", RenameSceneOutputRequest(output_id="missing", new_output_id="x")
+        )
+    with pytest.raises(ValueError):
+        RenameSceneOutputRequest(output_id="side", new_output_id="has space")
+
+
+def test_output_removal_blocks_dependents_and_drops_unused_claim() -> None:
+    document = _output_fixture()
+    original = DraftProject.model_validate(document)
+    with pytest.raises(ValueError, match="media clock"):
+        remove_scene_output(original, "ambient", RemoveSceneOutputRequest(output_id="clock"))
+    with pytest.raises(ValueError, match="media layer Overlay"):
+        remove_scene_output(original, "ambient", RemoveSceneOutputRequest(output_id="extra"))
+    with pytest.raises(ValueError, match="synchronized cue Flash"):
+        remove_scene_output(original, "ambient", RemoveSceneOutputRequest(output_id="roof"))
+    document["editor_metadata"]["timeline_transform_layers"] = {"ambient": []}
+    freed = DraftProject.model_validate(document)
+    removed = remove_scene_output(freed, "ambient", RemoveSceneOutputRequest(output_id="extra"))
+    scene = removed.scenes[0]
+    assert isinstance(scene, SceneDefinitionV2)
+    assert [output.id for output in scene.media] == ["clock"]
+    assert scene.resources == ("projector.demo", "roofline.demo", "spare.claim")
+    assert removed.editor_metadata == freed.editor_metadata
+    assert removed.installation == freed.installation
+    single = document["scenes"][0] | {
+        "mode": "controller_timed",
+        "clock_source": "controller",
+        "media": [],
+        "resources": ["roofline.demo"],
+    }
+    document["scenes"][0] = single
+    document["editor_metadata"] = {}
+    with pytest.raises(ValueError, match="at least one output"):
+        remove_scene_output(
+            DraftProject.model_validate(document),
+            "ambient",
+            RemoveSceneOutputRequest(output_id="roof"),
+        )
+
+
+def test_v1_output_rename_upgrades_and_rewrites_legacy_tracks() -> None:
+    document = _draft()
+    document["editor_metadata"] = {
+        "timeline_cues": {
+            "ambient": [
+                {
+                    "id": "flash",
+                    "name": "Flash",
+                    "kind": "lighting",
+                    "track_id": "lighting:ambient",
+                    "time_ms": 100,
+                    "marker_id": None,
+                    "marker_offset_ms": 0,
+                    "lighting": {
+                        "primitive": "solid",
+                        "duration_ms": 250,
+                        "target": None,
+                        "color": "#FFFFFF",
+                        "brightness": 1,
+                    },
+                }
+            ]
+        }
+    }
+    renamed = rename_scene_output(
+        DraftProject.model_validate(document),
+        "ambient",
+        RenameSceneOutputRequest(output_id="lighting", new_output_id="roofline"),
+    )
+    scene = renamed.scenes[0]
+    assert isinstance(scene, SceneDefinitionV2)
+    assert [output.id for output in scene.lighting] == ["roofline"]
+    assert scene.clock_source == "media"
+    assert renamed.editor_metadata["timeline_cues"]["ambient"][0]["track_id"] == "lighting:roofline"
+
+
+@pytest.mark.parametrize("via_mcp", [False, True])
+def test_output_rename_and_remove_share_revision_and_permission_boundaries(
+    tmp_path: Path, via_mcp: bool
+) -> None:
+    runtime, services, _ = _mcp_fixture(tmp_path)
+    stored = services.repository.create_project(
+        name="Output edits",
+        draft=DraftProject.model_validate(_output_fixture()),
+        actor="admin",
+        role=Role.ADMINISTRATOR,
+        occurred_at=datetime.now(UTC).isoformat(),
+    )
+    project_id = stored.project.id
+    path = f"/api/gui/v1/projects/{project_id}/scenes/ambient/outputs"
+    token = _mcp_token(services, project_id, (McpScope.READ, McpScope.DIRECT_EDIT))
+    read_token = _mcp_token(services, project_id, (McpScope.READ, McpScope.DRAFT_EDIT))
+    with TestClient(
+        create_app(runtime, gui_services=services), base_url="http://localhost"
+    ) as client:
+        rename_body = {"new_output_id": "side"}
+        assert client.post(f"{path}/extra/rename", json=rename_body).status_code == 401
+        assert client.delete(f"{path}/extra").status_code == 401
+        capabilities = _mcp_tool(client, read_token, "get_capabilities")["structuredContent"]
+        assert capabilities["features"]["scene_output_rename"] is True
+        assert capabilities["features"]["scene_output_removal"] is True
+        assert capabilities["tools"]["rename_scene_output"] == "rename_scene_output"
+        assert capabilities["tools"]["remove_scene_output"] == "remove_scene_output"
+        schema = _mcp_tool(client, read_token, "get_authoring_schema")["structuredContent"]
+        authoring = schema["x-scene-authoring"]
+        assert authoring["rename_output_tool"] == "rename_scene_output"
+        assert authoring["remove_output_tool"] == "remove_scene_output"
+        assert "Inspector" in authoring["ui"]
+        for tool, arguments in (
+            ("rename_scene_output", {"output_id": "extra", "new_output_id": "side"}),
+            ("remove_scene_output", {"output_id": "extra"}),
+        ):
+            denied = _mcp_tool(
+                client, read_token, tool, scene_id="ambient", base_revision=1, **arguments
+            )
+            assert denied["isError"] is True
+        _login(client)
+        assert client.post(f"{path}/extra/rename", json=rename_body).status_code == 403
+        assert (
+            client.post(
+                f"{path}/extra/rename", json=rename_body, headers=_mutation_headers(client)
+            ).status_code
+            == 428
+        )
+        assert services.repository.get_revision(project_id).revision == 1
+
+        def change(
+            action: str, revision: int, output_id: str, new_output_id: str | None = None
+        ) -> tuple[bool, str]:
+            if via_mcp:
+                arguments: dict[str, Any] = {
+                    "scene_id": "ambient",
+                    "output_id": output_id,
+                    "base_revision": revision,
+                }
+                if new_output_id is not None:
+                    arguments["new_output_id"] = new_output_id
+                result = _mcp_tool(client, token, f"{action}_scene_output", **arguments)
+                if not result["isError"]:
+                    assert result["structuredContent"]["hardware_commands_sent"] is False
+                    assert result["structuredContent"]["revision"] == revision + 1
+                return not result["isError"], json.dumps(result)
+            headers = _mutation_headers(client, if_match=f'"{revision}"')
+            response = (
+                client.post(
+                    f"{path}/{output_id}/rename",
+                    json={"new_output_id": new_output_id},
+                    headers=headers,
+                )
+                if action == "rename"
+                else client.delete(f"{path}/{output_id}", headers=headers)
+            )
+            if response.status_code == 200:
+                assert response.headers["etag"] == f'"{revision + 1}"'
+            return response.status_code == 200, response.text
+
+        ok, message = change("remove", 1, "extra")
+        assert not ok and "media layer Overlay" in message
+        ok, message = change("rename", 1, "extra", "side")
+        assert ok, message
+        saved = services.repository.get_revision(project_id)
+        assert saved.revision == 2
+        assert (
+            saved.draft.editor_metadata["timeline_transform_layers"]["ambient"][0]["track_id"]
+            == "media:side"
+        )
+        ok, message = change("rename", 1, "side", "stale")
+        assert not ok
+        ok, message = change("rename", 2, "clock", "side")
+        assert not ok and "already exists" in message
+        ok, message = change("remove", 2, "clock")
+        assert not ok and "media clock" in message
+        assert services.repository.get_revision(project_id).revision == 2
+        ok, message = change("rename", 2, "clock", "main")
+        assert ok, message
+        scene = services.repository.get_revision(project_id).draft.scenes[0]
+        assert isinstance(scene, SceneDefinitionV2)
+        assert scene.clock_source == "main"
+        services.repository.archive_project(
+            project_id=project_id,
+            expected_revision=services.repository.get_revision(
+                project_id
+            ).project.metadata_revision,
+            actor="admin",
+            role=Role.ADMINISTRATOR,
+            occurred_at=datetime.now(UTC).isoformat(),
+        )
+        ok, message = change("rename", 3, "main", "archived")
+        assert not ok and "Archived" in message
+        assert services.repository.get_revision(project_id).revision == 3
+        assert runtime.active_scene is None

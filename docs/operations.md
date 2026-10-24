@@ -784,10 +784,27 @@ dummy LED outputs. Adding outputs preserves the existing clock by default;
 switches to media-synchronized mode. Schema-v1 scenes are upgraded with old
 output IDs `media`/`lighting`, preserving their content and metadata.
 
+`rename_scene_output(scene_id, output_id, new_output_id, base_revision)` and
+`remove_scene_output(scene_id, output_id, base_revision)` also require
+`direct_edit` and the current revision; each creates one revision, is audited,
+and sends no hardware commands. Rename refuses duplicate or invalid IDs and
+updates `clock_source` plus the scene's `timeline_transform_layers`,
+`timeline_cues` and `timeline_sync_schedule` track IDs (`media:<id>` /
+`lighting:<id>`). Remove refuses the last output, the media clock of a
+media-synchronized scene, and outputs still used by media layers or synchronized
+cues; the error lists them. It drops the resource claim only when no other output
+uses that resource. Discover these through `get_capabilities` (`features.
+scene_output_rename`, `features.scene_output_removal`, `tools`) and
+`get_authoring_schema` (`x-scene-authoring.rename_output_*`/`remove_output_*`).
+The UI equivalent is **Rename output** / **Remove output** in the timeline
+Inspector or on the Scenes page.
+
 HTTP equivalents are read-authorized
 `GET /api/gui/v1/projects/{project_id}/scene-authoring-options` and
 designer-authorized, CSRF-protected `POST .../projects/{project_id}/scenes`
-and `POST .../projects/{project_id}/scenes/{scene_id}/outputs`, using the same
+and `POST .../projects/{project_id}/scenes/{scene_id}/outputs`,
+`POST .../scenes/{scene_id}/outputs/{output_id}/rename` (body
+`{"new_output_id": "..."}`) and `DELETE .../scenes/{scene_id}/outputs/{output_id}`, using the same
 request schemas and `If-Match` revision fence. Writes return the saved draft
 and ETag; MCP returns project/scene/output IDs, base/new revisions and
 `hardware_commands_sent: false`. Archived shows and revision conflicts cannot

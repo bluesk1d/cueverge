@@ -98,6 +98,11 @@ class McpToken:
     expires_at: str
     revoked_at: str | None
     created_at: str
+    installation_id: str | None = None
+
+    @property
+    def installation_scoped(self) -> bool:
+        return self.installation_id is not None
 
 
 @dataclass(frozen=True)
@@ -126,6 +131,18 @@ class McpProposal:
     updated_at: str
 
 
+_SHOW_TOKEN_SELECT = """
+    SELECT id, client_id, username, project_id, NULL AS installation_id, scopes_json,
+           expires_at, revoked_at, created_at
+    FROM mcp_tokens
+"""
+_INSTALLATION_TOKEN_SELECT = """
+    SELECT id, client_id, username, NULL AS project_id, installation_id, scopes_json,
+           expires_at, revoked_at, created_at
+    FROM mcp_installation_tokens
+"""
+
+
 class McpAuthoringStore:
     def __init__(self, database_path: Path) -> None:
         self.database_path = database_path
@@ -145,6 +162,19 @@ class McpAuthoringStore:
                     revoked_at TEXT,
                     created_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS mcp_installation_tokens (
+                    id TEXT PRIMARY KEY,
+                    token_hash TEXT NOT NULL UNIQUE,
+                    client_id TEXT NOT NULL,
+                    username TEXT NOT NULL,
+                    installation_id TEXT NOT NULL,
+                    scopes_json TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    revoked_at TEXT,
+                    created_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS mcp_installation_tokens_installation
+                ON mcp_installation_tokens(installation_id);
                 CREATE TABLE IF NOT EXISTS mcp_proposals (
                     id TEXT PRIMARY KEY,
                     project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -210,54 +240,87 @@ class McpAuthoringStore:
             raise McpAuthoringError("MCP token was not persisted")
         return NewMcpToken(record=record, token=token)
 
+    def create_installation_token(
+        self,
+        *,
+        client_id: str,
+        username: str,
+        installation_id: str,
+        scopes: tuple[McpScope, ...],
+        expires_at: str,
+        occurred_at: str,
+    ) -> NewMcpToken:
+        token_id = str(uuid4())
+        token = f"cvmcp_{token_id}_{secrets.token_urlsafe(32)}"
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO mcp_installation_tokens(
+                    id, token_hash, client_id, username, installation_id,
+                    scopes_json, expires_at, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    token_id,
+                    _digest(token),
+                    client_id,
+                    username,
+                    installation_id,
+                    json.dumps([scope.value for scope in scopes]),
+                    expires_at,
+                    occurred_at,
+                ),
+            )
+        record = self.get_token(token_id)
+        if record is None:
+            raise McpAuthoringError("MCP token was not persisted")
+        return NewMcpToken(record=record, token=token)
+
     def verify_token(self, token: str, occurred_at: str) -> McpToken | None:
         with self._connect() as connection:
-            row = connection.execute(
-                """
-                SELECT id, client_id, username, project_id, scopes_json,
-                       expires_at, revoked_at, created_at
-                FROM mcp_tokens
-                WHERE token_hash = ? AND revoked_at IS NULL AND expires_at > ?
-                """,
-                (_digest(token), occurred_at),
-            ).fetchone()
-        return self._token(row) if row is not None else None
+            for query in (_SHOW_TOKEN_SELECT, _INSTALLATION_TOKEN_SELECT):
+                row = connection.execute(
+                    f"{query} WHERE token_hash = ? AND revoked_at IS NULL AND expires_at > ?",
+                    (_digest(token), occurred_at),
+                ).fetchone()
+                if row is not None:
+                    return self._token(row)
+        return None
 
     def get_token(self, token_id: str) -> McpToken | None:
         with self._connect() as connection:
-            row = connection.execute(
-                """
-                SELECT id, client_id, username, project_id, scopes_json,
-                       expires_at, revoked_at, created_at
-                FROM mcp_tokens WHERE id = ?
-                """,
-                (token_id,),
-            ).fetchone()
-        return self._token(row) if row is not None else None
+            for query in (_SHOW_TOKEN_SELECT, _INSTALLATION_TOKEN_SELECT):
+                row = connection.execute(f"{query} WHERE id = ?", (token_id,)).fetchone()
+                if row is not None:
+                    return self._token(row)
+        return None
 
     def list_tokens(self, project_id: str) -> tuple[McpToken, ...]:
         with self._connect() as connection:
             rows = connection.execute(
-                """
-                SELECT id, client_id, username, project_id, scopes_json,
-                       expires_at, revoked_at, created_at
-                FROM mcp_tokens WHERE project_id = ?
-                ORDER BY created_at DESC
-                """,
+                f"{_SHOW_TOKEN_SELECT} WHERE project_id = ? ORDER BY created_at DESC",
                 (project_id,),
+            ).fetchall()
+        return tuple(self._token(row) for row in rows)
+
+    def list_installation_tokens(self, installation_id: str) -> tuple[McpToken, ...]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"{_INSTALLATION_TOKEN_SELECT} WHERE installation_id = ? ORDER BY created_at DESC",
+                (installation_id,),
             ).fetchall()
         return tuple(self._token(row) for row in rows)
 
     def revoke_token(self, token_id: str, occurred_at: str) -> None:
         with self._connect() as connection:
-            cursor = connection.execute(
-                """
-                UPDATE mcp_tokens SET revoked_at = ?
-                WHERE id = ? AND revoked_at IS NULL
-                """,
-                (occurred_at, token_id),
-            )
-        if cursor.rowcount != 1:
+            revoked = 0
+            for table in ("mcp_tokens", "mcp_installation_tokens"):
+                cursor = connection.execute(
+                    f"UPDATE {table} SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL",
+                    (occurred_at, token_id),
+                )
+                revoked += cursor.rowcount
+        if revoked != 1:
             raise McpAuthoringError("MCP token does not exist or is already revoked")
 
     def create_proposal(
@@ -374,11 +437,14 @@ class McpAuthoringStore:
             id=str(row["id"]),
             client_id=str(row["client_id"]),
             username=str(row["username"]),
-            project_id=str(row["project_id"]),
+            project_id=str(row["project_id"] or ""),
             scopes=tuple(McpScope(value) for value in json.loads(row["scopes_json"])),
             expires_at=str(row["expires_at"]),
             revoked_at=(str(row["revoked_at"]) if row["revoked_at"] is not None else None),
             created_at=str(row["created_at"]),
+            installation_id=(
+                str(row["installation_id"]) if row["installation_id"] is not None else None
+            ),
         )
 
     @staticmethod

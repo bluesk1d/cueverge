@@ -10,6 +10,7 @@ import { nightPreviewColor } from "../components/led-preview";
 import { AssetPreview, hasAssetArtifact } from "../components/AssetPreview";
 import { ErrorState } from "../components/ui";
 import { SceneAuthoringDialog } from "../components/SceneAuthoringDialog";
+import { SceneOutputActions } from "../components/SceneOutputActions";
 
 type Document = ProjectDraftRecord["draft"];
 type Scene = Document["scenes"][number];
@@ -252,6 +253,9 @@ export function SceneWorkspace({
   }
 
   const media = Array.isArray(scene.media) ? scene.media : [scene.media];
+  const outputActionBlock = dirty || saving || !canAdd
+    ? "Save or cancel pending scene and visitor-response edits before renaming or removing outputs."
+    : null;
   const advancedContributions = [
     "timeline_cues", "timeline_transform_layers", "scene_compositions", "composition_instances",
   ].reduce((total, key) => {
@@ -336,6 +340,9 @@ export function SceneWorkspace({
               ))}
             </select>
           </label>
+          {canEdit && output && <SceneOutputActions draft={draft} sceneId={sceneId}
+            outputId={Array.isArray(scene.lighting) ? text(output.id) : "lighting"} kind="lighting"
+            disabledReason={outputActionBlock} onChanged={(updated) => { setOutputIndex(0); onCreated(updated, sceneId); }} />}
           <label>Find an effect
             <input type="search" value={filter} onChange={(event) => setFilter(event.target.value)} />
           </label>
@@ -379,6 +386,9 @@ export function SceneWorkspace({
                 <strong>{text(record(value).id, "Media output")}</strong>
                 <p>{asset?.name ?? value.asset ?? "No managed media assigned"}</p>
                 {asset && <SceneMediaPreview key={asset.id} asset={asset} />}
+                {canEdit && <SceneOutputActions draft={draft} sceneId={sceneId}
+                  outputId={Array.isArray(scene.media) ? text(record(value).id) : "media"} kind="media"
+                  disabledReason={outputActionBlock} onChanged={(updated) => onCreated(updated, sceneId)} />}
                 <small>Use the timeline editor for media placement and composition preview.</small>
               </div>;
             })}

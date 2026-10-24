@@ -655,6 +655,7 @@ function ProjectCard({
   const [sharingOpen, setSharingOpen] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [logicOpenRequest, setLogicOpenRequest] = useState(0);
+  const [timelineReload, setTimelineReload] = useState(0);
   const [projectRole, setProjectRole] = useState<Role>(
     session.role === "administrator" ? "administrator" : "viewer",
   );
@@ -769,6 +770,7 @@ function ProjectCard({
         </nav>
         <Suspense fallback={<p>Loading timeline editor…</p>}>
           <TimelineEditor
+            key={`timeline-${timelineReload}`}
             assets={assets ?? []}
             canEdit={canAuthor && !project.archived_at}
             draft={draft}
@@ -777,6 +779,10 @@ function ProjectCard({
             onSceneChange={setSceneId}
             onSave={async (document) => {
               setDraft(await updateProjectDraft(project.id, draft.revision, document));
+            }}
+            onOutputsChanged={(updated) => {
+              setDraft(updated);
+              setTimelineReload((value) => value + 1);
             }}
           />
         </Suspense>

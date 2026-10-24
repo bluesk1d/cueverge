@@ -609,6 +609,22 @@ end behavior, installation resource, and output name/ID. A scene starts with
 one output; add others with **Add output** on the selected scene.
 Save or cancel pending scene and visitor-response edits first.
 
+To rename or remove an output, select its track in the timeline editor (or use
+the output under **Lighting output** / **Media in this scene** on the Scenes page),
+then use **Rename output** or **Remove output**. Each action saves a new working
+draft revision immediately; save or undo unsaved timeline edits first. It does
+not publish or change live playback.
+
+- **Rename** changes the output's stable ID and updates the scene clock source and
+  every media layer, synchronized cue and sync schedule entry on its track.
+- **Remove** is blocked, with a list of what to change, while the output is the
+  scene's media clock, the scene's only output, or still used by media layers or
+  synchronized cues. Move or delete those first, or pick another clock in
+  **Scene settings**. Removing drops the output's resource claim when no other
+  output uses that resource; assets and installation bindings are never deleted.
+- Legacy single-output scenes are upgraded to the multi-output format first, with
+  output IDs `media` and `lighting`.
+
 - Choose a video/audio resource for a media-only scene, an LED resource for a
   lighting-only scene, or add both kinds for a mixed scene.
 - New lighting outputs contain an editable, full-duration **Blackout** cue.
@@ -1153,17 +1169,22 @@ editorial preview looks correct. Devices protect candidate, active, rollback,
 and playing artifacts; staging can fail rather than evict a protected file.
 
 For everyday changes use **Shows > Apply saved changes** instead of coordinating
-the advanced release buttons. Review the target, change categories and restart
-scene; explicitly approve this saved version and authorize safe interruption.
+the advanced release buttons. The dialog summarizes what will load, lists
+**What's changing** compared with the version on the display, and explains
+**What happens to playback**. Pick the scene to restart with if the show is
+playing, then confirm **This version is ready to go live on the display** and
+**It's OK to briefly stop playback to load it**.
 Preparation, publication and checksummed device transfers happen before the
 controller stops and loads the verified catalog. Progress and failures persist
 when the browser closes. Cancel during preparation; Stop/Blackout take priority
 once handover starts. A playing show restarts from zero; paused/stopped stays
-stopped. Baseline/safe controller lighting is preserved unless deliberately
-cleared. Routing changes need deployment configuration, not automatic rewiring.
+stopped. Under **Advanced options**, the controller's standby and safety lighting
+looks are kept unless you deliberately clear **Keep the controller's standby and
+safety lighting looks**. Routing changes need deployment configuration, not
+automatic rewiring.
 
-Open **Loaded identity and retained versions** to restore a verified retained
-version without overwriting saved editing work. Failed/interrupted handover
+Open **Earlier versions** and choose **Restore version N** to restore a verified
+retained version without overwriting saved editing work. Failed/interrupted handover
 attempts stopped recovery; restart re-verifies the retained package before
 accepting input and never automatically starts playback. Review any
 `recovery_required` failure and recover/apply a valid show.

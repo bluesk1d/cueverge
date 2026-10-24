@@ -42,6 +42,8 @@ from cueverge.gui.contracts import (
     OperateActionRequest,
     OutputMonitorRequest,
     PhotoDescriptionRequest,
+    RemoveSceneOutputRequest,
+    RenameSceneOutputRequest,
     ReplaceInstallationPhotoRequest,
     Role,
     SceneLightingPreviewRequest,
@@ -83,7 +85,11 @@ from cueverge.gui.publication import ApprovalState, PublicationError, PublishedP
 from cueverge.gui.render_jobs import RenderJobError, StoredRenderJob
 from cueverge.gui.repository import ProjectNotFoundError, RevisionConflictError
 from cueverge.gui.scene_authoring import delete_scene as delete_draft_scene
-from cueverge.gui.scene_authoring import save_scene_edit, scene_authoring_options
+from cueverge.gui.scene_authoring import (
+    save_scene_edit,
+    save_scene_output_change,
+    scene_authoring_options,
+)
 from cueverge.gui.scene_preview import ScenePreviewError, preview_project_scene
 from cueverge.gui.service import GuiServices
 from cueverge.gui.show_plan import ShowPlanError, apply_show_plan_edit, describe_show_plan
@@ -880,6 +886,81 @@ def create_mcp_app(services: GuiServices) -> Starlette:
             "requires_human_approval": False,
         }
 
+    def _change_scene_output(
+        scene_id: str,
+        base_revision: int,
+        request: RenameSceneOutputRequest | RemoveSceneOutputRequest,
+        action: str,
+    ) -> dict[str, JsonValue]:
+        token = _authorize(services, McpScope.DIRECT_EDIT)
+        try:
+            updated = save_scene_output_change(
+                services,
+                project_id=token.project_id,
+                scene_id=scene_id,
+                base_revision=base_revision,
+                request=request,
+                actor=token.username,
+                role=_token_role(services, token),
+            )
+        except (ProjectNotFoundError, ValueError, RevisionConflictError) as error:
+            raise ToolError(str(error)) from error
+        _audit(
+            services,
+            token,
+            action,
+            scene_id,
+            "success",
+            details={
+                "base_revision": base_revision,
+                "created_revision": updated.revision,
+                "output_id": request.output_id,
+            },
+        )
+        return {
+            "project_id": token.project_id,
+            "scene_id": scene_id,
+            "output_id": request.output_id,
+            "base_revision": base_revision,
+            "revision": updated.revision,
+            "hardware_commands_sent": False,
+            "requires_human_approval": False,
+        }
+
+    @server.tool()
+    def rename_scene_output(
+        scene_id: str, output_id: str, new_output_id: str, base_revision: int
+    ) -> dict[str, JsonValue]:
+        """Rename a media or lighting output's stable ID in one revision (direct_edit).
+
+        Updates the scene clock source and the scene's media layer, synchronized cue and
+        sync schedule track references (media:<id> / lighting:<id>). Refuses duplicate IDs.
+        Upgrades v1 scenes to v2 (IDs media/lighting) first. No publish, apply or hardware.
+        """
+        try:
+            request = RenameSceneOutputRequest(output_id=output_id, new_output_id=new_output_id)
+        except ValueError as error:
+            raise ToolError(str(error)) from error
+        return _change_scene_output(scene_id, base_revision, request, "mcp.scene.output.rename")
+
+    @server.tool()
+    def remove_scene_output(
+        scene_id: str, output_id: str, base_revision: int
+    ) -> dict[str, JsonValue]:
+        """Remove a media or lighting output from a scene (direct_edit).
+
+        Refuses the scene's last output, the media clock source of a media-synchronized
+        scene, and outputs still used by media layers or synchronized cues; the error
+        lists what to change first. Drops the resource claim when no other output uses it.
+        Never deletes assets or other work. No publish, apply or hardware commands.
+        """
+        return _change_scene_output(
+            scene_id,
+            base_revision,
+            RemoveSceneOutputRequest(output_id=output_id),
+            "mcp.scene.output.remove",
+        )
+
     @server.tool()
     def delete_scene(scene_id: str, base_revision: int) -> dict[str, JsonValue]:
         """Delete one saved scene using direct_edit and the current base_revision.
@@ -1286,6 +1367,8 @@ def create_mcp_app(services: GuiServices) -> Starlette:
                     "scene_deletion": True,
                     "scene_creation": True,
                     "scene_output_creation": True,
+                    "scene_output_rename": True,
+                    "scene_output_removal": True,
                     "media_only_scenes": True,
                     "geometry_editing": False,
                     "live_media_rendering": False,
@@ -1320,6 +1403,8 @@ def create_mcp_app(services: GuiServices) -> Starlette:
                     "scene_authoring_options": "get_scene_authoring_options",
                     "create_scene": "create_scene",
                     "add_scene_output": "add_scene_output",
+                    "rename_scene_output": "rename_scene_output",
+                    "remove_scene_output": "remove_scene_output",
                     "preview": "preview_composition",
                     "scene_lighting_preview": "preview_scene_lighting",
                     "bake": "create_render_job",

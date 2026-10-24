@@ -2308,6 +2308,25 @@ export function addSceneOutput(
   }, true);
 }
 
+export function renameSceneOutput(
+  projectId: string, revision: number, sceneId: string, outputId: string, newOutputId: string,
+): Promise<ProjectDraftRecord> {
+  return request(`/api/gui/v1/projects/${encodeURIComponent(projectId)}/scenes/${encodeURIComponent(sceneId)}/outputs/${encodeURIComponent(outputId)}/rename`, {
+    method: "POST",
+    headers: { ...mutationHeaders(), "If-Match": `"${revision}"` },
+    body: JSON.stringify({ new_output_id: newOutputId }),
+  }, true);
+}
+
+export function removeSceneOutput(
+  projectId: string, revision: number, sceneId: string, outputId: string,
+): Promise<ProjectDraftRecord> {
+  return request(`/api/gui/v1/projects/${encodeURIComponent(projectId)}/scenes/${encodeURIComponent(sceneId)}/outputs/${encodeURIComponent(outputId)}`, {
+    method: "DELETE",
+    headers: { ...mutationHeaders(), "If-Match": `"${revision}"` },
+  }, true);
+}
+
 export async function deleteScene(
   projectId: string, revision: number, sceneId: string,
 ): Promise<ProjectDraftRecord> {
