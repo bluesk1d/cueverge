@@ -719,9 +719,22 @@ unavailable; save or cancel first. Stale saves retain edits and report conflict.
    fit the remaining time.
 5. The **Viewer** shows the open composition on the house (stage and LED
    surface compositions) and, for whole display overlays, **Outputs in this
-   effect**. On **Whole scene** it is an approximate program monitor: the top
-   visual layer's review proxy at the playhead, following play/pause (muted;
-   no projector warp, placement, or keyframed transforms).
+   effect**. On **Whole scene** it defaults to **House view**: each scene
+   media output's review proxy is warped onto the projector surface drawn for
+   that output's projector on the installation photo (pick another photo
+   above the frame when there are several). It follows the playhead and
+   play/pause, muted, honoring the output's start delay and end behavior
+   (hold last frame, loop, or stop). Other projector surfaces appear as dashed
+   outlines. Outputs without a drawn surface on a photo are listed below the
+   frame. **Program monitor** instead shows the top source at the playhead:
+   the topmost visual layer, or else the scene's media output, without
+   projector warp, placement, or keyframed transforms. Both are approximate;
+   bakes are the exact output.
+
+   On a media output track, the clip bar starts at the output's start delay
+   and spans the asset's length, showing its head frame and name. A dashed
+   **hold** or **loop** marker shows where the asset ends and the end behavior
+   takes over.
 
    **Layout** (always shown for projector compositions; a toggle beside
    **House view** otherwise) draws the composition frame and the layers at the

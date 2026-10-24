@@ -35,7 +35,15 @@ import {
 import { VirtualizedList } from "../components/VirtualizedList";
 import { SurfaceMediaOverlay } from "../components/SurfaceMediaOverlay";
 import { DetailsDialog } from "../components/DetailsDialog";
-import { formatTimecode, stackLayerRows, trimKeyframes } from "./timelineUtils";
+import { SceneHouseView } from "../components/SceneHouseView";
+import {
+  formatTimecode,
+  mediaOutputSourceMs,
+  sceneMediaOutputs,
+  stackLayerRows,
+  trimKeyframes,
+} from "./timelineUtils";
+import type { SceneMediaOutputRef } from "./timelineUtils";
 
 const TIMELINE_SOURCE_MIME = "application/x-cueverge-timeline-source";
 
@@ -460,6 +468,8 @@ export function TimelineEditor({
   const stashedTracksRef = useRef<Record<string, TimelineTrack[]>>({});
   const previousSpaceRef = useRef<string | null>(null);
   const [viewerMode, setViewerMode] = useState<"house" | "layout">("house");
+  const [sceneViewerMode, setSceneViewerMode] = useState<"house" | "monitor">("house");
+  const sceneOutputs = useMemo(() => sceneMediaOutputs(scene?.media), [scene?.media]);
   const playheadDragRef = useRef(false);
   const [layerDrag, setLayerDrag] = useState<{
     id: string;
@@ -2149,11 +2159,39 @@ export function TimelineEditor({
               }
             />
           )}
-          {!composition && (
+          {!composition && installationId && (
+            <div className="timeline-viewer__modes" role="group" aria-label="Scene viewer mode">
+              <button
+                type="button"
+                aria-pressed={sceneViewerMode === "house"}
+                onClick={() => setSceneViewerMode("house")}
+              >
+                House view
+              </button>
+              <button
+                type="button"
+                aria-pressed={sceneViewerMode === "monitor"}
+                onClick={() => setSceneViewerMode("monitor")}
+              >
+                Program monitor
+              </button>
+            </div>
+          )}
+          {!composition && installationId && sceneViewerMode === "house" && (
+            <SceneHouseView
+              assets={assets}
+              installationId={installationId}
+              isPlaying={isPreviewPlaying}
+              outputs={sceneOutputs}
+              playheadMs={localPlayhead}
+            />
+          )}
+          {!composition && (!installationId || sceneViewerMode === "monitor") && (
             <SceneProgramMonitor
               assets={assets}
               isPlaying={isPreviewPlaying}
               layers={spaceTransformLayers}
+              outputs={sceneOutputs}
               playheadMs={localPlayhead}
             />
           )}
@@ -2942,6 +2980,22 @@ export function TimelineEditor({
                 track.kind === "audio_reference") &&
               asset &&
               hasAssetArtifact(asset, "waveform");
+            const trackOutput =
+              track.kind === "media_output"
+                ? sceneOutputs.find((output) => `media:${output.id}` === track.id) ??
+                  (sceneOutputs.length === 1 ? sceneOutputs[0] : undefined)
+                : undefined;
+            const referenceStartMs = Math.min(trackOutput?.startDelayMs ?? 0, duration);
+            const assetDuration = numberValue(asset?.metadata?.duration_ms, 0);
+            const extendsPastClip = trackOutput?.endBehavior === "loop" || trackOutput?.endBehavior === "hold_last_frame";
+            const referenceEndMs =
+              assetDuration > 0 && !extendsPastClip
+                ? Math.min(duration, referenceStartMs + assetDuration)
+                : duration;
+            const clipEndPercent =
+              assetDuration > 0 && extendsPastClip && referenceStartMs + assetDuration < duration
+                ? (assetDuration * 100) / Math.max(1, referenceEndMs - referenceStartMs)
+                : null;
             const layerRow = stackLayerRows(
               spaceTransformLayers.filter((layer) => layer.track_id === track.id),
             );
@@ -2984,21 +3038,39 @@ export function TimelineEditor({
                   track.kind === "audio_reference") && (
                   <div
                     aria-label={`${track.name} timing reference`}
-                    className="timeline-track-reference"
+                    className={`timeline-track-reference${asset ? " timeline-track-reference--clip" : ""}`}
+                    style={{
+                      left: `${(referenceStartMs * 100) / duration}%`,
+                      width: `${((referenceEndMs - referenceStartMs) * 100) / duration}%`,
+                    }}
+                    title={asset ? `${asset.name}${assetDuration > 0 ? ` · ${formatTimecode(assetDuration)}` : ""}` : undefined}
                   >
-                    {showThumbnail && (
-                      <img
-                        alt={`Timeline thumbnails for ${asset.name}`}
-                        className="timeline-track-reference__thumbnail"
-                        src={assetArtifactUrl(asset.id, "thumbnail")}
-                      />
-                    )}
                     {showWaveform && (
                       <img
                         alt={`Timeline waveform for ${asset.name}`}
                         className="timeline-track-reference__waveform"
                         src={assetArtifactUrl(asset.id, "waveform")}
+                        style={clipEndPercent === null ? undefined : { width: `${clipEndPercent}%` }}
                       />
+                    )}
+                    {showThumbnail && (
+                      <img
+                        alt={`Head frame of ${asset.name}`}
+                        className="timeline-track-reference__thumbnail"
+                        src={assetArtifactUrl(asset.id, "thumbnail")}
+                      />
+                    )}
+                    {asset && track.kind === "media_output" && (
+                      <span className="timeline-track-reference__name">{asset.name}</span>
+                    )}
+                    {clipEndPercent !== null && (
+                      <span
+                        className="timeline-track-reference__hold"
+                        style={{ left: `${clipEndPercent}%` }}
+                        title={trackOutput?.endBehavior === "loop" ? "Loops" : "Holds last frame"}
+                      >
+                        {trackOutput?.endBehavior === "loop" ? "loop" : "hold"}
+                      </span>
                     )}
                     {!showThumbnail && !showWaveform && layerRow.size === 0 && (
                       <small>
@@ -6863,19 +6935,23 @@ function CompositionLayoutCanvas({
   );
 }
 
-/** Approximate whole-scene monitor: the topmost visual layer's review proxy at the playhead. */
+/** Approximate whole-scene monitor: the topmost visual layer (or scene media output) at the playhead. */
 function SceneProgramMonitor({
   layers,
+  outputs,
   assets,
   playheadMs,
   isPlaying,
 }: {
   layers: TransformLayer[];
+  outputs: SceneMediaOutputRef[];
   assets: AssetRecord[];
   playheadMs: number;
   isPlaying: boolean;
 }) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const isVisualAsset = (asset: AssetRecord | undefined) =>
+    Boolean(asset && (asset.media_type?.startsWith("video/") || asset.media_type?.startsWith("image/")));
   const visual = layers.filter((layer) => layer.kind === "image" || layer.kind === "video");
   const active = visual
     .filter((layer) => playheadMs >= layer.start_ms && playheadMs < layer.start_ms + layer.duration_ms)
@@ -6883,11 +6959,29 @@ function SceneProgramMonitor({
       (left, right) =>
         right.z_index - left.z_index || right.start_ms - left.start_ms || left.id.localeCompare(right.id),
     );
+  const outputSources = outputs.flatMap((output) => {
+    const asset = output.asset ? assets.find((candidate) => candidate.id === output.asset) : undefined;
+    if (!asset || !isVisualAsset(asset)) return [];
+    const sourceMs = mediaOutputSourceMs(
+      playheadMs,
+      output.startDelayMs,
+      numberValue(asset.metadata?.duration_ms, 0),
+      output.endBehavior,
+    );
+    return [{ output, asset, sourceMs }];
+  });
+  const activeOutputs = outputSources.filter((item) => item.sourceMs !== null);
   const top = active[0];
-  const asset = top ? assets.find((candidate) => candidate.id === top.source_id) : undefined;
+  const fallback = top ? undefined : activeOutputs[0];
+  const asset = top ? assets.find((candidate) => candidate.id === top.source_id) : fallback?.asset;
+  const name = top?.name ?? (fallback ? `${fallback.asset.name} (${fallback.output.resource ?? fallback.output.id})` : "");
   const reviewUrl = asset && hasAssetArtifact(asset, "review") ? assetArtifactUrl(asset.id, "review") : null;
   const isVideo = Boolean(asset && (asset.media_type?.startsWith("video/") || asset.media_type === "image/gif"));
-  const sourceSeconds = top ? (top.in_point_ms + playheadMs - top.start_ms) / 1000 : 0;
+  const sourceSeconds = top
+    ? (top.in_point_ms + playheadMs - top.start_ms) / 1000
+    : (fallback?.sourceMs ?? 0) / 1000;
+  const showing = Boolean(top || fallback);
+  const underneath = active.length + activeOutputs.length - (showing ? 1 : 0);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -6902,7 +6996,7 @@ function SceneProgramMonitor({
     }
   }, [isPlaying, isVideo, sourceSeconds, reviewUrl]);
 
-  if (!visual.length) {
+  if (!visual.length && !outputSources.length) {
     return (
       <div className="timeline-viewer__empty">
         <strong>Whole scene</strong>
@@ -6916,17 +7010,17 @@ function SceneProgramMonitor({
   return (
     <figure className="timeline-program-monitor" aria-label="Scene program monitor">
       <div className="timeline-program-monitor__frame">
-        {!top ? (
+        {!showing ? (
           <span className="timeline-program-monitor__idle">Nothing on screen at {formatTimecode(playheadMs)}</span>
         ) : !reviewUrl ? (
           <span className="timeline-program-monitor__idle">
-            {top.name}: no review proxy available yet
+            {name}: no review proxy available yet
           </span>
         ) : isVideo ? (
           <video
             key={reviewUrl}
             ref={videoRef}
-            aria-label={`Program monitor showing ${top.name}`}
+            aria-label={`Program monitor showing ${name}`}
             muted
             playsInline
             poster={asset && hasAssetArtifact(asset, "thumbnail") ? assetArtifactUrl(asset.id, "thumbnail") : undefined}
@@ -6934,19 +7028,19 @@ function SceneProgramMonitor({
             src={reviewUrl}
           />
         ) : (
-          <img alt={`Program monitor showing ${top.name}`} src={reviewUrl} />
+          <img alt={`Program monitor showing ${name}`} src={reviewUrl} />
         )}
       </div>
       <figcaption>
-        {top
-          ? `${top.name} · source ${formatTimecode(sourceSeconds * 1000)}${
-              active.length > 1 ? ` · ${active.length - 1} more layer${active.length > 2 ? "s" : ""} underneath` : ""
+        {showing
+          ? `${name} · source ${formatTimecode(sourceSeconds * 1000)}${
+              underneath > 0 ? ` · ${underneath} more source${underneath > 1 ? "s" : ""} underneath` : ""
             }`
-          : "No visual layer at the playhead"}
+          : "No visual media at the playhead"}
         <small>
-          Approximate monitor: shows the top media layer only. Projector warp,
-          placement, and keyframed transforms appear in composition previews and
-          bakes.
+          Approximate monitor: shows the top source only. Use House view to see
+          media on its projector surfaces; composition previews and bakes show
+          exact warp and transforms.
         </small>
       </figcaption>
     </figure>

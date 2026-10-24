@@ -30,7 +30,7 @@ test("timeline shows media thumbnails and audio waveforms", async ({ page }) => 
   await openTimelineEditor(page);
 
   await expect(
-    page.getByAltText("Timeline thumbnails for Window loop"),
+    page.getByAltText("Head frame of Window loop"),
   ).toHaveAttribute(
     "src",
     "/api/gui/v1/assets/video-asset/artifacts/thumbnail",

@@ -2399,20 +2399,53 @@ p {
   pointer-events: none;
 }
 
+.timeline-track-reference--clip {
+  border: 1px solid color-mix(in srgb, var(--cv-primary) 45%, transparent);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--cv-primary) 14%, transparent);
+}
+
 .timeline-track-reference img {
-  position: absolute;
-  width: 100%;
   height: 100%;
 }
 
 .timeline-track-reference__thumbnail {
+  flex: none;
+  width: auto;
+  max-width: 40%;
+  aspect-ratio: 16 / 9;
   object-fit: cover;
-  opacity: 0.38;
+  border-right: 1px solid color-mix(in srgb, var(--cv-primary) 45%, transparent);
 }
 
 .timeline-track-reference__waveform {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
   object-fit: fill;
   opacity: 0.82;
+}
+
+.timeline-track-reference__name {
+  position: relative;
+  z-index: 1;
+  margin-left: 6px;
+  overflow: hidden;
+  color: var(--cv-text);
+  font-size: 0.75rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.timeline-track-reference__hold {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  padding-left: 4px;
+  border-left: 2px dashed color-mix(in srgb, var(--cv-primary) 60%, transparent);
+  font-size: 0.7rem;
+  line-height: 1.6;
 }
 
 .timeline-track-reference small {
@@ -6827,4 +6860,94 @@ p {
   border-color: var(--cv-warning);
   border-radius: 50%;
   pointer-events: none;
+}
+
+/* Whole-scene house view: scene media warped onto projector surfaces */
+.scene-house-view {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  min-width: 0;
+}
+
+.scene-house-view__photos {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.scene-house-view__frame {
+  position: relative;
+  width: 100%;
+  overflow: hidden;
+  border-radius: 6px;
+  background: #000;
+}
+
+.scene-house-view__frame > img,
+.scene-house-view__frame > svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.scene-house-view__frame > img {
+  object-fit: fill;
+}
+
+.scene-house-view__frame > svg {
+  pointer-events: none;
+}
+
+.scene-house-view__surface {
+  position: absolute;
+  top: 0;
+  left: 0;
+  overflow: hidden;
+  transform-origin: 0 0;
+  background: #000;
+}
+
+.scene-house-view__surface video,
+.scene-house-view__surface img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.scene-house-view__surface--stretch video,
+.scene-house-view__surface--stretch img {
+  object-fit: fill;
+}
+
+.scene-house-view__surface > span {
+  display: grid;
+  place-items: center;
+  height: 100%;
+  color: #fff;
+  font-size: 64px;
+}
+
+.scene-house-view__outline {
+  fill: none;
+  stroke: var(--cv-primary);
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+}
+
+.scene-house-view__outline--idle {
+  stroke: color-mix(in srgb, #fff 55%, transparent);
+  stroke-dasharray: 6 4;
+}
+
+.scene-house-view figcaption {
+  display: grid;
+  gap: 2px;
+  font-size: 0.8rem;
+}
+
+.scene-house-view figcaption small {
+  color: var(--cv-text-faint);
 }
