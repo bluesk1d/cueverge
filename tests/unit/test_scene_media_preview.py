@@ -229,3 +229,32 @@ def _decode(frame: dict[str, Any]) -> np.ndarray:
     assert frame["media_type"] == "image/png"
     with Image.open(BytesIO(base64.b64decode(frame["data_base64"]))) as image:
         return np.asarray(image.convert("RGBA"))
+
+
+def test_media_position_plays_repeat_count_times_before_end_behavior() -> None:
+    output = _Output("left", "projector.left", "clip", True, 0, "hold_last_frame", 3)
+    assert _media_position(2500, output, 1000) == ("playing", 500)
+    assert _media_position(2999, output, 1000) == ("playing", 999)
+    assert _media_position(3000, output, 1000) == ("holding", 999)
+
+
+def test_scene_media_preview_reports_which_repeat_is_playing(tmp_path: Path) -> None:
+    services = _services(tmp_path)
+    document = _draft()
+    scene = cast(list[dict[str, Any]], document["scenes"])[0]
+    scene["duration_ms"] = 3000
+    scene["media"][0].update({"asset": "clip", "repeat_count": 3})
+    preview = evaluate_scene_media(
+        cast(Any, services),
+        project_id="demo-project",
+        source_revision=4,
+        draft=DraftProject.model_validate(document),
+        scene_id="ambient",
+        timestamp_ms=2250,
+        include_frames=False,
+    )
+    output = cast(list[dict[str, Any]], preview["outputs"])[0]
+    assert output["state"] == "playing"
+    assert output["media_position_ms"] == 250
+    assert output["repeat_count"] == 3
+    assert output["play_number"] == 3

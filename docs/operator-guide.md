@@ -821,14 +821,16 @@ unavailable; save or cancel first. Stale saves retain edits and report conflict.
    (hold last frame, loop, or stop). Other projector surfaces appear as dashed
    outlines. Outputs without a drawn surface on a photo are listed below the
    frame. **Program monitor** instead shows the top source at the playhead:
-   the topmost visual layer, or else the scene's media output, without
-   projector warp, placement, or keyframed transforms. Both are approximate;
+   the topmost visual layer, or else the scene's media output, letterboxed
+   whole into its 16:9 frame (portrait media is pillarboxed, not cropped),
+   without projector warp, placement, or keyframed transforms. Both are approximate;
    bakes are the exact output.
 
    On a media output track, the clip bar starts at the output's start delay
-   and spans the asset's length, showing its head frame and name. A dashed
-   **hold** or **loop** marker shows where the asset ends and the end behavior
-   takes over.
+   and spans the asset's length times its **Plays** count, showing its head
+   frame and name (with **×N** when it repeats). Thin dashed lines mark each
+   repeat, and a dashed **hold** or **loop** marker shows where the last play
+   ends and the end behavior takes over.
 
    **Layout** (always shown for projector compositions; a toggle beside
    **House view** otherwise) draws the composition frame and the layers at the
@@ -853,7 +855,16 @@ unavailable; save or cancel first. Stale saves retain edits and report conflict.
      select its output without moving the playhead. The **Inspector** shows its
      resource and lets you change the managed asset. Schema-v2 outputs also expose
      **Media start delay (ms)** (0–5000), **Media end behavior** (hold, loop, or
-     stop), and **Required**. The clock-source output must remain required.
+     stop), **Plays**, and **Required**. The clock-source output must remain required.
+     **Plays** (1–10000) plays the media that many times back to back, gaplessly,
+     before the end behavior applies; it is unavailable with **Loop**, which
+     repeats until the scene ends. Below it, the inspector compares the total
+     media time with the scene length; **Match scene length** sets the scene
+     duration to start delay + plays × media length, for example to loop a clip
+     exactly three times before the next scene. In a media-synchronized scene the
+     scene ends when its clock output finishes its last play, so a scene ending of
+     **Then plays…** cuts straight from that last frame into the next scene (see
+     [Seamless scene changes](#seamless-scene-changes)).
      These are output settings, not transform-layer trim or composition settings.
      Keyboard users can focus the strip and press **Enter** or **Space**.
      Click empty timeline space to seek instead. **Save timeline** creates a
@@ -1086,6 +1097,32 @@ The Scenes tab then shows a **Show plan › scene name** breadcrumb; choose
 revision and is not live until you apply saved changes. Warnings explain
 problems such as no starting scene, or visitor responses that can never play
 because no main-show scene lets the show pick next.
+
+#### Seamless scene changes
+
+When a scene ends with **Repeat this scene**, **Play a specific scene next** or
+**Let the show pick next**, the controller picks the next scene 3 seconds before
+the end and loads its media behind the current video on every projector or
+player used by both scenes. At the change there is no stop, black frame or
+reload:
+
+- If the current scene follows its media clock and that clock output does not
+  **Loop**, the device cuts from the last frame of the current media straight to
+  the first frame of the next. Combined with **Plays**, a clip can loop an exact
+  number of times and flow into the next scene.
+- Other preloaded outputs switch as soon as the controller changes scene.
+- **Let the show pick next** makes its choice (including any waiting visitor
+  response) at that 3-second point, so a visitor arriving in the last 3 seconds
+  is handled at the following boundary.
+- Outputs on a device that is idle in the current scene, outputs with a start
+  delay, visitor responses or encounters that interrupt a scene, and operator
+  starts still use the normal start (prepare, then play).
+
+Operate's **Controller details** shows **Next scene** with the preloaded outputs
+once a change is planned. Seamless changes require updated media agents (the
+`seamless_transition` and `repeat_count` media features). Update the controller
+first, then each media agent. Older agents keep the previous behavior, and a
+scene whose required output uses **Plays** will not start on them.
 
 ### Visitor responses and the shared Preview workspace
 

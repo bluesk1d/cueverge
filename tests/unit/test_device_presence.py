@@ -115,6 +115,7 @@ async def _presence_scenario() -> None:
     client.media_client = SimpleNamespace(
         agent_session_id="",
         controller_epoch=None,
+        media_features=("seamless_transition", "repeat_count"),
     )
     client._heartbeat_sent = {}
     welcome = DeviceWelcome(
@@ -130,6 +131,7 @@ async def _presence_scenario() -> None:
     hello = DeviceHello.model_validate_json(websocket.sent[0])
     assert hello.device_id == DEVICE_ID
     assert hello.capabilities == _capabilities()
+    assert hello.media_features == ("seamless_transition", "repeat_count")
     assert client.media_client.agent_session_id == str(hello.device_session_id)
     assert client.media_client.controller_epoch == str(welcome.controller_epoch)
 

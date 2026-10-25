@@ -32,6 +32,25 @@ This avoids concurrent operations on a synchronous Windows pipe handle, which
 can deadlock when a blocking read begins before the corresponding write.
 Intervening unsolicited mpv events are queued while awaiting the response ID.
 
+## Repeat counts and seamless scene changes
+
+The agent advertises the `seamless_transition` and `repeat_count` media
+features when it connects. Update the controller before the agents: an older
+controller rejects the new hello field. With these features, mpv:
+
+- plays `repeat_count` back to back with `loop-file` and reports one continuous
+  position across the plays;
+- preloads the next scene's file as a second playlist entry with its own
+  per-file options (named `loadfile` arguments, so mpv 0.37 and later behave the
+  same) and `prefetch-playlist`, and either continues into it at the end of the
+  current file or switches with `playlist-next` on `advance`;
+- reports a held final frame (`keep-open`) as completed, so scenes whose clock
+  output holds its last frame now finish and continue to their next scene.
+
+When validating hardware, confirm the cut between two scenes on the actual
+projector: there should be no black frame between the last frame of one clip
+and the first frame of the next. Record the mpv version you validated.
+
 ## 2026-10-08 hardware checks
 
 The target Windows 11 laptop was checked with portable mpv 0.41.0:

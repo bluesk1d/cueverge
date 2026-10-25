@@ -14,7 +14,7 @@ from pydantic import (
     model_validator,
 )
 
-from cueverge.protocol.models import Discontinuity, PlaybackState
+from cueverge.protocol.models import Discontinuity, MediaCommandName, PlaybackState
 
 DEVICE_PROTOCOL_VERSION: Literal[2] = 2
 
@@ -47,6 +47,9 @@ class ProtocolRange(DeviceProtocolModel):
         if not self.minimum <= DEVICE_PROTOCOL_VERSION <= self.maximum:
             raise ValueError("capability document must support device protocol version 2")
         return self
+
+
+MediaFeature = Literal["seamless_transition", "repeat_count"]
 
 
 class MediaPlaybackCapability(DeviceProtocolModel):
@@ -299,6 +302,14 @@ class DeviceHello(DeviceProtocolModel):
     device_id: UUID
     device_session_id: UUID
     capabilities: DeviceCapabilityDocument
+    media_features: tuple[MediaFeature, ...] = Field(
+        default=(),
+        exclude_if=lambda value: not value,
+        description=(
+            "Player behaviors implemented by this agent build. They do not grant trust, so "
+            "they are reported per connection rather than in the enrolled capability document."
+        ),
+    )
 
 
 class DeviceWelcome(DeviceProtocolModel):
@@ -530,26 +541,38 @@ class DeviceMediaCommand(DeviceProtocolModel):
     request_id: UUID
     device_session_id: UUID
     controller_epoch: UUID
-    command: Literal["prepare", "play", "pause", "resume", "seek", "stop", "get_status"]
+    command: MediaCommandName
     scene_id: str = Field(min_length=1, max_length=128)
     scene_instance_id: UUID
     playback_session_id: UUID
     asset_id: str | None = None
     end_behavior: Literal["stop", "hold_last_frame", "loop"] | None = None
     target_position_ms: int | None = Field(default=None, ge=0)
+    # Omitted when unset so agents that predate these fields still accept commands.
+    repeat_count: int | None = Field(
+        default=None, ge=1, le=10000, exclude_if=lambda value: value is None
+    )
+    auto_advance: bool | None = Field(default=None, exclude_if=lambda value: value is None)
 
     @model_validator(mode="after")
     def validate_command_fields(self) -> "DeviceMediaCommand":
+        loads_media = self.command in {"prepare", "queue"}
         if self.command == "seek" and self.target_position_ms is None:
             raise ValueError("seek command requires target_position_ms")
         if self.command != "seek" and self.target_position_ms is not None:
             raise ValueError("target_position_ms is valid only for seek")
-        if self.command != "prepare" and self.asset_id is not None:
-            raise ValueError("asset_id is valid only for prepare")
-        if self.command == "prepare" and self.end_behavior is None:
-            raise ValueError("prepare command requires end_behavior")
-        if self.command != "prepare" and self.end_behavior is not None:
-            raise ValueError("end_behavior is valid only for prepare")
+        if not loads_media and self.asset_id is not None:
+            raise ValueError("asset_id is valid only for prepare or queue")
+        if loads_media and self.end_behavior is None:
+            raise ValueError(f"{self.command} command requires end_behavior")
+        if not loads_media and self.end_behavior is not None:
+            raise ValueError("end_behavior is valid only for prepare or queue")
+        if not loads_media and self.repeat_count is not None:
+            raise ValueError("repeat_count is valid only for prepare or queue")
+        if self.repeat_count is not None and self.end_behavior == "loop":
+            raise ValueError("repeat_count cannot be combined with end_behavior loop")
+        if (self.command == "queue") != (self.auto_advance is not None):
+            raise ValueError("auto_advance is required for queue and valid only for queue")
         return self
 
 

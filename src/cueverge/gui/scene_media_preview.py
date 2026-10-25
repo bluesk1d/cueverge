@@ -59,6 +59,7 @@ class _Output:
     required: bool
     start_delay_ms: int
     end_behavior: str
+    repeat_count: int | None = None
 
 
 @contextmanager
@@ -191,6 +192,8 @@ def _evaluate_output(
         "required": output.required,
         "start_delay_ms": output.start_delay_ms,
         "end_behavior": output.end_behavior,
+        "repeat_count": output.repeat_count,
+        "play_number": None,
         "source": None,
         "state": "unassigned",
         "media_position_ms": None,
@@ -241,6 +244,11 @@ def _evaluate_output(
     state, position = _media_position(timestamp_ms, output, duration_ms)
     result["state"] = state
     result["media_position_ms"] = position
+    if output.repeat_count is not None and duration_ms:
+        elapsed = timestamp_ms - output.start_delay_ms
+        result["play_number"] = (
+            min(output.repeat_count, elapsed // duration_ms + 1) if elapsed >= 0 else None
+        )
     if position is None:
         return result
     source = cast(dict[str, object], result["source"])
@@ -290,8 +298,11 @@ def _media_position(
     position = timestamp_ms - output.start_delay_ms
     if position < 0:
         return "waiting", None
-    if duration_ms is None or position < duration_ms:
+    if duration_ms is None:
         return "playing", position
+    plays = output.repeat_count or 1
+    if position < duration_ms * plays:
+        return "playing", position % duration_ms
     if output.end_behavior == "loop":
         return "looping", position % duration_ms
     if output.end_behavior == "stop":
@@ -321,6 +332,7 @@ def _scene_outputs(draft: DraftProject, scene_id: str) -> list[_Output]:
             required=output.required,
             start_delay_ms=output.start_delay_ms,
             end_behavior=output.end_behavior,
+            repeat_count=output.repeat_count,
         )
         for output in scene.media
     ]

@@ -42,6 +42,29 @@ seek, stop, and replacement commands fan out to all participating resources.
 One required output is the declared clock source; other telemetry is
 diagnostic and cannot advance authoritative scene time.
 
+`device.media.command` names are `prepare`, `queue`, `advance`, `play`,
+`pause`, `resume`, `seek`, `stop` and `get_status`. Only `prepare` and `queue`
+carry `asset_id`, `end_behavior` and an optional `repeat_count` (total plays,
+not with `loop`). `queue` preloads the next scene's media behind the current
+file under the next scene-instance and playback-session UUIDs, and requires
+`auto_advance`. With `auto_advance: true` the device continues into that file
+by itself when the current media ends. It then sends one `completed` position
+for the old session, followed by positions for the new session. Telemetry for
+the new session reaches the controller before it adopts the next scene and is
+answered with the non-error reason `handoff_pending`. With `auto_advance:
+false` the device holds the queued file until `advance` names its playback
+session. `advance` is idempotent once the device has already continued into
+that session. A new `prepare` or `stop` discards anything queued. A failed
+`queue` only cancels preloading for that device, and a failed `advance` makes
+the controller fall back to `prepare`.
+
+`device.hello` may list `media_features` (`seamless_transition`,
+`repeat_count`) implemented by the agent build. They describe player behavior
+rather than trust, so they are reported per connection and are not part of the
+enrolled capability document. Devices without them keep the stop, prepare and
+play sequence, and refuse repeat counts. Update the controller before media
+agents: an older controller rejects a hello that includes `media_features`.
+
 Valid heartbeats refresh both certificate-session presence and runtime
 liveness. A stale session is disconnected and cannot update or disconnect a
 replacement session. Losing the active clock source freezes time-following and

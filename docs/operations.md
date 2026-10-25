@@ -996,6 +996,21 @@ hardware synchronization. Omitting `resource` evaluates every lighting output of
 the scene; the browser does this by default and splits the 4096-sample budget
 evenly across outputs.
 
+### Repeat counts and seamless scene changes
+
+`get_capabilities` reports `features.media_repeat_count`,
+`features.seamless_scene_transitions` and a `scene_transitions` block. Author
+`scenes[].media[].repeat_count` (1-10000; not with `end_behavior: "loop"`)
+through `update_project_draft` or proposals. The authoring schema documents it
+under `MediaOutputDefinition`; the UI equivalent is **Plays** in the timeline
+inspector. Seamless changes are automatic, with no authoring field. MCP clients
+observe them through `get_runtime_status`: `status.next_scene` (`scene_id`,
+`preloaded_outputs`, `automatic_cut`) once the next scene is planned 3 seconds
+before the end, and `status.seamless_transitions`. `preview_scene_media` reports
+`repeat_count` and the 1-based `play_number` for each output. See
+[scene lifecycle](scene-schema.md#seamless-scene-changes) and the device
+protocol for `queue`/`advance` semantics.
+
 ### Scene media preview
 
 `get_capabilities.scene_media_preview` discovers `preview_scene_media`

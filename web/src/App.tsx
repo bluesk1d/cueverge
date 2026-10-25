@@ -2059,6 +2059,12 @@ export function OperatePage({
               <dd>{runtime.status.active_scene ?? "None"}</dd>
             </div>
             <div>
+              <dt>Next scene</dt>
+              <dd>{runtime.status.next_scene
+                ? `${sceneOptions?.find((value) => value.id === runtime.status.next_scene?.scene_id)?.name ?? runtime.status.next_scene.scene_id} · preloaded on ${runtime.status.next_scene.preloaded_outputs.join(", ")}${runtime.status.next_scene.automatic_cut ? " · cuts at the end of the clock media" : ""}`
+                : "Not preloaded"}</dd>
+            </div>
+            <div>
               <dt>Playback</dt>
               <dd>{runtime.status.playback_state ?? "Stopped"}</dd>
             </div>

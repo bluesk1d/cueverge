@@ -240,6 +240,7 @@ export function SceneHouseView({
                 placement.output.startDelayMs,
                 durationMs,
                 placement.output.endBehavior,
+                placement.output.repeatCount,
               );
               return (
                 <span key={placement.key}>
@@ -320,6 +321,7 @@ function HouseSurfaceMedia({
     output.startDelayMs,
     assetDurationMs(asset),
     output.endBehavior,
+    output.repeatCount,
   );
   const sourceSeconds = (sourceMs ?? 0) / 1000;
   const playing = isPlaying && sourceMs !== null;

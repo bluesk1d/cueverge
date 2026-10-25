@@ -27,6 +27,7 @@ from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoin
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
+from cueverge.controller.runtime import SEAMLESS_PRELOAD_LEAD_MS
 from cueverge.core.loader import ShowPackageError
 from cueverge.gui.apply import ApplyError, ApplyRequest
 from cueverge.gui.artifact_deployment import ArtifactDeploymentError
@@ -1575,6 +1576,8 @@ def create_mcp_app(services: GuiServices) -> Starlette:
                     "led_only_scenes": True,
                     "scene_lighting_preview": True,
                     "scene_media_preview": True,
+                    "media_repeat_count": True,
+                    "seamless_scene_transitions": True,
                     "scene_deletion": True,
                     "scene_creation": True,
                     "scene_output_creation": True,
@@ -1697,6 +1700,38 @@ def create_mcp_app(services: GuiServices) -> Starlette:
                     "spatial_compositions": "use preview_composition",
                     "evaluation": "production_lighting_renderer",
                     "led_composition_bakes": "included for the saved revision when current",
+                },
+                "scene_transitions": {
+                    "media_repeat_count": {
+                        "field": "scenes[].media[].repeat_count",
+                        "range": [1, 10000],
+                        "semantics": (
+                            "total back-to-back plays, then end_behavior (hold_last_frame or "
+                            "stop); not allowed with loop"
+                        ),
+                        "requires_device_feature": "repeat_count",
+                        "ui_workflow": "Timeline editor > select media clip > Inspector > Plays",
+                    },
+                    "seamless": {
+                        "automatic": True,
+                        "preload_lead_ms": SEAMLESS_PRELOAD_LEAD_MS,
+                        "endings": ["transition_to", "loop", "select_next"],
+                        "select_next_chosen_at": "preload_lead_ms before the scene ends",
+                        "frame_accurate_cut": (
+                            "media_synchronized scenes whose clock output is not loop: the "
+                            "clock device continues into the preloaded file at end of media"
+                        ),
+                        "other_preloaded_outputs": "switch on controller command at the change",
+                        "not_preloaded": [
+                            "outputs on devices idle in the current scene",
+                            "outputs with start_delay_ms",
+                            "devices without the seamless_transition feature",
+                            "interruptions (visitor responses, encounters, operator starts)",
+                        ],
+                        "requires_device_feature": "seamless_transition",
+                        "runtime_status_fields": ["next_scene", "seamless_transitions"],
+                        "status_tool": "get_runtime_status",
+                    },
                 },
                 "scene_media_preview": {
                     "tool": "preview_scene_media",

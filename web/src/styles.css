@@ -6790,6 +6790,7 @@ p {
 }
 
 .timeline-program-monitor__frame {
+  position: relative;
   display: grid;
   place-items: center;
   aspect-ratio: 16 / 9;
@@ -6801,6 +6802,9 @@ p {
 
 .timeline-program-monitor__frame video,
 .timeline-program-monitor__frame img {
+  /* Out of grid flow so tall (e.g. 9:16) media letterboxes instead of growing the row and being cropped. */
+  position: absolute;
+  inset: 0;
   width: 100%;
   height: 100%;
   object-fit: contain;
@@ -7215,3 +7219,19 @@ p {
 .integration-topics { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; margin: 8px 0; }
 .integration-topics dt { color: var(--cv-text-muted); }
 .integration-topics dd { margin: 0; overflow-wrap: anywhere; }
+
+.timeline-track-reference__repeat {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 0;
+  border-left: 1px dashed color-mix(in srgb, var(--cv-text) 55%, transparent);
+  pointer-events: none;
+}
+
+.timeline-media-repeat-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}

@@ -56,6 +56,8 @@ export interface SceneMediaOutputRef {
   asset: string | null;
   startDelayMs: number;
   endBehavior: SceneMediaEndBehavior;
+  /** Total plays before the end behavior applies; null plays once. */
+  repeatCount: number | null;
 }
 
 /** Normalize a scene's single-output or multi-output `media` field. */
@@ -72,6 +74,8 @@ export function sceneMediaOutputs(media: unknown): SceneMediaOutputRef[] {
       startDelayMs: typeof record.start_delay_ms === "number" ? Math.max(0, record.start_delay_ms) : 0,
       endBehavior:
         endBehavior === "stop" || endBehavior === "loop" ? endBehavior : "hold_last_frame",
+      repeatCount:
+        typeof record.repeat_count === "number" && record.repeat_count >= 1 ? record.repeat_count : null,
     }];
   });
 }
@@ -82,10 +86,12 @@ export function mediaOutputSourceMs(
   startDelayMs: number,
   durationMs: number,
   endBehavior: SceneMediaEndBehavior,
+  repeatCount: number | null = null,
 ): number | null {
   const local = playheadMs - startDelayMs;
   if (local < 0) return null;
-  if (!(durationMs > 0) || local < durationMs) return local;
+  if (!(durationMs > 0)) return local;
+  if (local < durationMs * (repeatCount ?? 1)) return local % durationMs;
   if (endBehavior === "loop") return local % durationMs;
   if (endBehavior === "hold_last_frame") return Math.max(0, durationMs - 1);
   return null;

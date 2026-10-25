@@ -130,6 +130,22 @@ class MediaOutputDefinition(MediaDefinition):
     required: bool = True
     start_delay_ms: int = Field(default=0, ge=0, le=5000)
     end_behavior: Literal["stop", "hold_last_frame", "loop"] = "hold_last_frame"
+    repeat_count: int | None = Field(
+        default=None,
+        ge=1,
+        le=10000,
+        exclude_if=lambda value: value is None,
+        description=(
+            "Total number of times the media plays back to back before end_behavior "
+            "(hold_last_frame or stop) applies. Omit to play once."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def validate_repeat_count(self) -> "MediaOutputDefinition":
+        if self.repeat_count is not None and self.end_behavior == "loop":
+            raise ValueError("repeat_count cannot be combined with end_behavior loop")
+        return self
 
 
 class LightingTargetDefinition(FrozenModel):

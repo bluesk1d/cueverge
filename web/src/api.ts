@@ -812,6 +812,9 @@ export interface SceneMediaPreviewOutput {
   required: boolean;
   start_delay_ms: number;
   end_behavior: "stop" | "hold_last_frame" | "loop";
+  repeat_count?: number | null;
+  /** Which of repeat_count plays is showing (1-based); null without a repeat count. */
+  play_number?: number | null;
   source:
     | { kind: "composition"; composition_id: string; name: string; space_kind: string }
     | { kind: "asset"; asset_id: string; name: string; media_type: string | null }
@@ -1040,6 +1043,13 @@ export interface RuntimeStatus {
   status: {
     controller_epoch: string;
     active_scene: string | null;
+    /** Next scene chosen ahead of time with media preloaded for a seamless change. */
+    next_scene?: {
+      scene_id: string;
+      preloaded_outputs: string[];
+      automatic_cut: boolean;
+    } | null;
+    seamless_transitions?: number;
     scene_instance_id: string | null;
     playback_session_id: string | null;
     estimated_position_ms: number | null;

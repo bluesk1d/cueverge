@@ -62,13 +62,14 @@ describe("stackLayerRows", () => {
 describe("scene media outputs", () => {
   it("normalizes single and multi-output media", () => {
     expect(sceneMediaOutputs({ resource: "projector.main", asset: "a" })).toEqual([
-      { id: "media", resource: "projector.main", asset: "a", startDelayMs: 0, endBehavior: "hold_last_frame" },
+      { id: "media", resource: "projector.main", asset: "a", startDelayMs: 0, endBehavior: "hold_last_frame", repeatCount: null },
     ]);
     expect(
       sceneMediaOutputs([
         { id: "right", resource: "projector.right", asset: "b", start_delay_ms: 500, end_behavior: "loop" },
       ]),
-    ).toEqual([{ id: "right", resource: "projector.right", asset: "b", startDelayMs: 500, endBehavior: "loop" }]);
+    ).toEqual([{ id: "right", resource: "projector.right", asset: "b", startDelayMs: 500, endBehavior: "loop", repeatCount: null }]);
+    expect(sceneMediaOutputs([{ id: "main", asset: "c", repeat_count: 3 }])[0].repeatCount).toBe(3);
     expect(sceneMediaOutputs(undefined)).toEqual([]);
   });
 
@@ -79,6 +80,13 @@ describe("scene media outputs", () => {
     expect(mediaOutputSourceMs(1600, 500, 1000, "hold_last_frame")).toBe(999);
     expect(mediaOutputSourceMs(1700, 500, 1000, "loop")).toBe(200);
     expect(mediaOutputSourceMs(9000, 0, 0, "stop")).toBe(9000);
+  });
+
+  it("plays the source repeat-count times before the end behavior", () => {
+    expect(mediaOutputSourceMs(2500, 0, 1000, "hold_last_frame", 3)).toBe(500);
+    expect(mediaOutputSourceMs(3000, 0, 1000, "hold_last_frame", 3)).toBe(999);
+    expect(mediaOutputSourceMs(3200, 200, 1000, "stop", 3)).toBeNull();
+    expect(mediaOutputSourceMs(3100, 200, 1000, "stop", 3)).toBe(900);
   });
 });
 

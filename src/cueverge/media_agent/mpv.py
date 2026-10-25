@@ -28,7 +28,7 @@ class ConnectableMpvTransport(MpvTransport, Protocol):
 @dataclass
 class JsonLineCodec:
     @staticmethod
-    def encode(command: list[object], request_id: int) -> bytes:
+    def encode(command: list[object] | dict[str, object], request_id: int) -> bytes:
         return (
             json.dumps(
                 {"command": command, "request_id": request_id},
@@ -208,12 +208,19 @@ class MpvClient:
         self._started = True
 
     async def command(self, *items: object) -> Any:
+        return await self._request(list(items))
+
+    async def named_command(self, name: str, **arguments: object) -> Any:
+        """Send a named-argument command, which is stable across mpv argument reorderings."""
+        return await self._request({"name": name, **arguments})
+
+    async def _request(self, command: list[object] | dict[str, object]) -> Any:
         if not self._started:
             raise MpvError("mpv client is not started")
         async with self._command_lock:
             request_id = self._next_request_id
             self._next_request_id += 1
-            await self.transport.write(JsonLineCodec.encode(list(items), request_id))
+            await self.transport.write(JsonLineCodec.encode(command, request_id))
             try:
                 response = await asyncio.wait_for(
                     self._read_response(request_id),

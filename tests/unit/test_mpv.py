@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from cueverge.media_agent.client import PlayerError
 from cueverge.media_agent.mpv import (
     JsonLineCodec,
     MpvClient,
@@ -252,6 +253,7 @@ def test_player_configures_exact_end_behavior(
         await player.prepare(asset.name, end_behavior)  # type: ignore[arg-type]
 
         assert fake.commands == [
+            ("playlist-clear",),
             ("set_property", "loop-file", "no"),
             ("set_property", "keep-open", keep_open_value),
             (
@@ -259,6 +261,7 @@ def test_player_configures_exact_end_behavior(
                 "gapless-audio",
                 "yes" if end_behavior == "loop" else "no",
             ),
+            ("set_property", "vid", "auto"),
             ("loadfile", str(asset.resolve()), "replace"),
             ("set_property", "pause", True),
             *(
@@ -274,5 +277,138 @@ def test_player_configures_exact_end_behavior(
                 ]
             ),
         ]
+        assert player.entry == 1
+
+    asyncio.run(scenario())
+
+
+class ScriptedMpvClient:
+    def __init__(self) -> None:
+        self.commands: list[tuple[object, ...]] = []
+        self.named: list[tuple[str, dict[str, object]]] = []
+        self.properties: dict[str, object] = {
+            "idle-active": False,
+            "time-pos": 0.0,
+            "pause": False,
+            "duration": 4.0,
+            "speed": 1.0,
+            "eof-reached": False,
+            "playlist-pos": 0,
+        }
+
+    async def command(self, *items: object) -> object:
+        if items[0] == "get_property":
+            return self.properties[str(items[1])]
+        self.commands.append(items)
+        return None
+
+    async def named_command(self, name: str, **arguments: object) -> object:
+        self.named.append((name, arguments))
+        return None
+
+
+def test_player_repeats_media_with_cumulative_position_then_completes(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        (tmp_path / "clip.mp4").write_bytes(b"video")
+        fake = ScriptedMpvClient()
+        player = MpvPlayer(fake, tmp_path)  # type: ignore[arg-type]
+        await player.prepare("clip.mp4", "hold_last_frame", 3)
+        assert ("set_property", "loop-file", "2") in fake.commands
+
+        fake.properties["time-pos"] = 3.9
+        first = await player.status()
+        assert (first.position_ms, first.duration_ms) == (3900, 12000)
+        fake.properties["time-pos"] = 0.1
+        second = await player.status()
+        assert second.position_ms == 4100
+        assert second.state is PlaybackState.PLAYING
+
+        await player.seek(9000)
+        assert ("set_property", "loop-file", "no") in fake.commands
+        assert ("seek", 1.0, "absolute+exact") in fake.commands
+        fake.properties.update({"time-pos": 4.0, "pause": True, "eof-reached": True})
+        finished = await player.status()
+        assert finished.state is PlaybackState.COMPLETED
+        assert finished.position_ms == 12000
+
+    asyncio.run(scenario())
+
+
+def test_player_queues_next_file_and_continues_into_it_automatically(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        (tmp_path / "a.mp4").write_bytes(b"a")
+        (tmp_path / "b.mp4").write_bytes(b"b")
+        fake = ScriptedMpvClient()
+        player = MpvPlayer(fake, tmp_path)  # type: ignore[arg-type]
+        await player.prepare("a.mp4", "hold_last_frame")
+        fake.commands.clear()
+
+        await player.queue("b.mp4", "stop", 2, True)
+
+        assert fake.named == [
+            (
+                "loadfile",
+                {
+                    "url": str((tmp_path / "b.mp4").resolve()),
+                    "flags": "append",
+                    "options": (
+                        "loop-file=1,keep-open=no,gapless-audio=no,"
+                        "ab-loop-a=no,ab-loop-b=no,vid=auto"
+                    ),
+                },
+            )
+        ]
+        assert fake.commands == [
+            ("playlist-clear",),
+            ("set_property", "prefetch-playlist", "yes"),
+            ("set_property", "keep-open", "no"),
+        ]
+        fake.properties.update({"playlist-pos": 1, "time-pos": 0.04})
+        status = await player.status()
+        assert status.entry == 2
+        assert status.position_ms == 40
+        assert status.duration_ms == 8000
+        assert ("playlist-remove", 0) in fake.commands
+
+    asyncio.run(scenario())
+
+
+def test_player_holds_queued_switch_until_advance(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        (tmp_path / "a.mp4").write_bytes(b"a")
+        (tmp_path / "b.mp4").write_bytes(b"b")
+        fake = ScriptedMpvClient()
+        player = MpvPlayer(fake, tmp_path)  # type: ignore[arg-type]
+        await player.prepare("a.mp4", "stop")
+        await player.queue("b.mp4", "hold_last_frame", None, False)
+        assert ("set_property", "keep-open", "always") in fake.commands
+
+        fake.properties.update({"time-pos": 4.0, "pause": True, "eof-reached": True})
+        held = await player.status()
+        assert held.state is PlaybackState.COMPLETED
+        assert ("set_property", "vid", "no") in fake.commands
+
+        fake.commands.clear()
+        await player.advance()
+        assert fake.commands == [
+            ("playlist-next", "force"),
+            ("set_property", "pause", False),
+            ("playlist-remove", 0),
+        ]
+        assert player.entry == 2
+        with pytest.raises(PlayerError):
+            await player.advance()
+
+    asyncio.run(scenario())
+
+
+def test_player_refuses_automatic_advance_after_looping_media(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        (tmp_path / "a.mp4").write_bytes(b"a")
+        fake = ScriptedMpvClient()
+        player = MpvPlayer(fake, tmp_path)  # type: ignore[arg-type]
+        await player.prepare("a.mp4", "loop")
+        with pytest.raises(PlayerError, match="never ends"):
+            await player.queue("a.mp4", "stop", None, True)
 
     asyncio.run(scenario())

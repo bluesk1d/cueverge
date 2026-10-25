@@ -5230,6 +5230,17 @@ def test_scene_media_preview_rest_and_mcp_render_assigned_media(tmp_path: Path) 
         assert capabilities["features"]["scene_media_preview"] is True
         assert capabilities["tools"]["scene_media_preview"] == "preview_scene_media"
         assert capabilities["scene_media_preview"]["requires_scope"] == "simulation"
+        assert capabilities["features"]["seamless_scene_transitions"] is True
+        assert capabilities["features"]["media_repeat_count"] is True
+        transitions = capabilities["scene_transitions"]
+        assert transitions["seamless"]["requires_device_feature"] == "seamless_transition"
+        assert transitions["media_repeat_count"]["field"] == "scenes[].media[].repeat_count"
+        schema = _mcp_tool(client, reader, "get_authoring_schema")["structuredContent"]
+        repeat = schema["$defs"]["MediaOutputDefinition"]["properties"]["repeat_count"]
+        assert repeat["anyOf"][0]["minimum"] == 1
+        status = _mcp_tool(client, reader, "get_runtime_status")["structuredContent"]
+        assert status["status"]["next_scene"] is None
+        assert status["status"]["seamless_transitions"] == 0
         denied = _mcp_tool(
             client, reader, "preview_scene_media", scene_id=scene["id"], timestamp_ms=0
         )

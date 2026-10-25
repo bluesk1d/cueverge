@@ -3,7 +3,7 @@ import time
 from collections import deque
 from collections.abc import Awaitable, Callable, Mapping
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
@@ -35,11 +35,14 @@ from cueverge.lighting.sink import FrameSink, FrameSinkRouter, MemoryFrameSink, 
 from cueverge.lighting.timeline import LightingTimeline
 from cueverge.observation.presence import AudiencePresenceEstimator
 from cueverge.protocol.models import (
+    MEDIA_REPEAT_CAPABILITY,
+    MEDIA_SEAMLESS_CAPABILITY,
     AgentCommand,
     AgentHeartbeat,
     AgentHello,
     AgentWelcome,
     CommandAck,
+    MediaCommandName,
     MediaPosition,
     PlaybackState,
 )
@@ -49,6 +52,10 @@ from cueverge.timing.follower import TelemetryDecision, TimecodeFollower, TimeEs
 Clock = Callable[[], float]
 EventClock = Callable[[], int]
 SceneSelector = Callable[["ActiveScene"], Awaitable[str | None]]
+
+
+SEAMLESS_PRELOAD_LEAD_MS = 3000
+"""How long before a scene's end its successor is chosen and its media preloaded."""
 
 
 class CommandChannel(Protocol):
@@ -71,6 +78,23 @@ class ActiveMediaSession:
     required: bool
     start_delay_ms: int
     end_behavior: Literal["stop", "hold_last_frame", "loop"]
+    repeat_count: int | None = None
+
+
+@dataclass(frozen=True)
+class PlannedHandoff:
+    """The next scene chosen ahead of time, with media preloaded behind the current files.
+
+    ``sessions`` maps agent IDs to the next scene's media sessions queued on those agents.
+    ``auto_agent_id`` continues into its queued file by itself when the current clock media
+    ends, so the cut is frame-accurate; other queued agents switch on ``advance``.
+    """
+
+    from_scene_instance_id: str
+    scene_id: str
+    scene_instance_id: str
+    sessions: dict[str, ActiveMediaSession]
+    auto_agent_id: str | None
 
 
 @dataclass(frozen=True)
@@ -98,6 +122,7 @@ class ActiveScene:
                 required=output.definition.required,
                 start_delay_ms=output.definition.start_delay_ms,
                 end_behavior=output.definition.end_behavior,
+                repeat_count=getattr(output.definition, "repeat_count", None),
             ),
         )
 
@@ -253,6 +278,10 @@ class ControllerRuntime:
             else None
         )
         self.active_scene: ActiveScene | None = None
+        self._handoff: PlannedHandoff | None = None
+        self._handoff_considered_for: str | None = None
+        self._preselected_next: tuple[str, str | None] | None = None
+        self.seamless_transitions = 0
         self._agents: dict[str, AgentConnection] = {}
         self._pending_commands: dict[str, PendingCommand] = {}
         self._recent_command_failures: deque[RuntimeCommandFailure] = deque(maxlen=50)
@@ -441,17 +470,45 @@ class ControllerRuntime:
         ]
         if missing_required:
             raise RuntimeError(f"required agents are not connected: {sorted(missing_required)}")
+        unsupported_repeat = [
+            output.agent_id
+            for output in scene.media_outputs
+            if output.definition.required
+            and getattr(output.definition, "repeat_count", None) is not None
+            and MEDIA_REPEAT_CAPABILITY not in self._agents[output.agent_id].capabilities
+        ]
+        if unsupported_repeat:
+            raise RuntimeError(
+                "media devices do not support repeat counts; update their media agent: "
+                f"{sorted(unsupported_repeat)}"
+            )
+
+        handoff = self._handoff
+        self._handoff = None
+        self._preselected_next = None
+        if handoff is not None and (
+            handoff.scene_id != scene_id
+            or self.active_scene is None
+            or self.active_scene.scene_instance_id != handoff.from_scene_instance_id
+        ):
+            handoff = None
+        adopted = {
+            agent_id: session
+            for agent_id, session in (handoff.sessions.items() if handoff else ())
+            if agent_id in self._agents
+        }
 
         await self._stop_render_loop()
         if self.active_scene is not None:
-            await self._stop_media_sessions(self.active_scene)
+            await self._stop_media_sessions(self.active_scene, keep_agents=frozenset(adopted))
         if expected_generation != self._scene_control_generation:
             raise RuntimeError("scene start was cancelled by Stop")
         for output in scene.media_outputs:
             self._abandon_commands(output.agent_id)
         self._degraded_reason = None
         media_sessions = tuple(
-            ActiveMediaSession(
+            adopted.get(output.agent_id)
+            or ActiveMediaSession(
                 output_id=output.definition.id,
                 agent_id=output.agent_id,
                 playback_session_id=str(uuid4()),
@@ -459,9 +516,14 @@ class ControllerRuntime:
                 required=output.definition.required,
                 start_delay_ms=output.definition.start_delay_ms,
                 end_behavior=output.definition.end_behavior,
+                repeat_count=getattr(output.definition, "repeat_count", None),
             )
             for output in scene.media_outputs
             if output.agent_id in self._agents
+            and (
+                getattr(output.definition, "repeat_count", None) is None
+                or MEDIA_REPEAT_CAPABILITY in self._agents[output.agent_id].capabilities
+            )
         )
         clock_session = (
             next(
@@ -472,7 +534,7 @@ class ControllerRuntime:
         )
         active = ActiveScene(
             scene=scene,
-            scene_instance_id=str(uuid4()),
+            scene_instance_id=handoff.scene_instance_id if handoff else str(uuid4()),
             playback_session_id=(
                 clock_session.playback_session_id if clock_session is not None else str(uuid4())
             ),
@@ -490,10 +552,19 @@ class ControllerRuntime:
             if active.definition.mode == "controller_timed"
             else None
         )
+        prepared = False
         for session in media_sessions:
             connection = self._agents[session.agent_id]
-            await self._send_command(active, session, "prepare", connection)
-        if not media_sessions:
+            if adopted.get(session.agent_id) is session:
+                # Already loaded behind the previous file; advance is a no-op if the agent
+                # continued into it by itself at the end of the clock media.
+                await self._send_command(active, session, "advance", connection)
+            else:
+                await self._send_command(active, session, "prepare", connection)
+                prepared = True
+        if adopted:
+            self.seamless_transitions += 1
+        if not prepared:
             await self._play_when_prepared(active)
         self._ensure_render_loop(active.scene_instance_id)
         return active
@@ -646,6 +717,14 @@ class ControllerRuntime:
     def ingest(self, telemetry: MediaPosition) -> TelemetryDecision:
         self.check_timeouts()
         active = self.active_scene
+        handoff = self._handoff
+        if handoff is not None and any(
+            session.playback_session_id == telemetry.playback_session_id
+            for session in handoff.sessions.values()
+        ):
+            # Preloaded media that already started; the controller adopts it when the
+            # current scene completes, so this is expected rather than a fencing error.
+            return TelemetryDecision(False, "handoff_pending")
         if active is None:
             self.rejected_telemetry += 1
             return TelemetryDecision(False, "no_active_scene")
@@ -695,6 +774,12 @@ class ControllerRuntime:
                 )
                 if ready is not None:
                     self._schedule_scene_start(ready.definition.id, active)
+                elif telemetry.state is PlaybackState.PLAYING:
+                    self._maybe_plan_handoff(
+                        active,
+                        telemetry.position_ms,
+                        telemetry.duration_ms or active.definition.duration_ms,
+                    )
         return decision
 
     async def acknowledge_command(self, acknowledgment: CommandAck) -> TelemetryDecision:
@@ -712,6 +797,9 @@ class ControllerRuntime:
 
         del self._pending_commands[acknowledgment.request_id]
         connection.last_seen_at = self.clock()
+        if pending.command.command in {"queue", "advance"} and acknowledgment.status == "error":
+            await self._handoff_command_failed(pending.command, acknowledgment)
+            return TelemetryDecision(True)
         media_session = (
             self.active_scene.session_for_playback(pending.command.playback_session_id)
             if self.active_scene is not None
@@ -756,37 +844,179 @@ class ControllerRuntime:
             await self._play_when_prepared(self.active_scene)
         return TelemetryDecision(True)
 
+    def _maybe_plan_handoff(self, active: ActiveScene, position_ms: int, duration_ms: int) -> None:
+        if (
+            self._handoff_considered_for == active.scene_instance_id
+            or self._catalog_loading
+            or self._scene_starting
+            or duration_ms - position_ms > SEAMLESS_PRELOAD_LEAD_MS
+        ):
+            return
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return  # Synchronous callers without an event loop cannot preload.
+        self._handoff_considered_for = active.scene_instance_id
+        task = asyncio.create_task(
+            self._plan_handoff(active),
+            name=f"plan-handoff-{active.scene_instance_id}",
+        )
+        self._lifecycle_tasks.add(task)
+        task.add_done_callback(self._lifecycle_task_done)
+
+    async def _plan_handoff(self, active: ActiveScene) -> None:
+        """Choose the next scene shortly before the end and preload its media.
+
+        Only outputs whose device already plays this scene and supports seamless
+        transitions are preloaded; other outputs start normally when the scene changes.
+        """
+        if self.active_scene is not active:
+            return
+        completion = active.definition.completion
+        next_scene_id: str | None
+        if completion.policy == "transition_to":
+            next_scene_id = completion.target_scene_id
+        elif completion.policy == "loop":
+            next_scene_id = active.definition.id
+        elif completion.policy == "select_next" and self.scene_selector is not None:
+            next_scene_id = await self.scene_selector(active)
+            if self.active_scene is not active:
+                return
+            self._preselected_next = (active.scene_instance_id, next_scene_id)
+        else:
+            return
+        if next_scene_id is None or next_scene_id not in self.catalog.scenes:
+            return
+        next_scene = self.catalog.require(next_scene_id)
+        current = {session.agent_id: session for session in active.resolved_media_sessions}
+        clock = active.clock_session
+        auto_agent: str | None = None
+        sessions: dict[str, ActiveMediaSession] = {}
+        for output in next_scene.media_outputs:
+            connection = self._agents.get(output.agent_id)
+            running = current.get(output.agent_id)
+            repeat_count = getattr(output.definition, "repeat_count", None)
+            if (
+                connection is None
+                or running is None
+                or running.playback_session_id in self._failed_prepare_sessions
+                or MEDIA_SEAMLESS_CAPABILITY not in connection.capabilities
+                or output.definition.start_delay_ms != 0
+                or output.asset_id is None
+                or (
+                    repeat_count is not None
+                    and MEDIA_REPEAT_CAPABILITY not in connection.capabilities
+                )
+            ):
+                continue
+            sessions[output.agent_id] = ActiveMediaSession(
+                output_id=output.definition.id,
+                agent_id=output.agent_id,
+                playback_session_id=str(uuid4()),
+                asset_id=output.asset_id,
+                required=output.definition.required,
+                start_delay_ms=0,
+                end_behavior=output.definition.end_behavior,
+                repeat_count=repeat_count,
+            )
+            if (
+                clock is not None
+                and clock.agent_id == output.agent_id
+                and clock.end_behavior != "loop"
+            ):
+                auto_agent = output.agent_id
+        if not sessions:
+            return
+        handoff = PlannedHandoff(
+            from_scene_instance_id=active.scene_instance_id,
+            scene_id=next_scene_id,
+            scene_instance_id=str(uuid4()),
+            sessions=sessions,
+            auto_agent_id=auto_agent,
+        )
+        self._handoff = handoff
+        for agent_id, session in sessions.items():
+            connection = self._agents.get(agent_id)
+            if connection is None or self._handoff is not handoff:
+                continue
+            await self._send_command(
+                active,
+                session,
+                "queue",
+                connection,
+                target_scene=(handoff.scene_id, handoff.scene_instance_id),
+                auto_advance=agent_id == auto_agent,
+            )
+
+    async def _handoff_command_failed(
+        self, command: AgentCommand, acknowledgment: CommandAck
+    ) -> None:
+        self._recent_command_failures.appendleft(
+            RuntimeCommandFailure(
+                agent_id=acknowledgment.agent_id,
+                command=command.command,
+                error_code=acknowledgment.error_code or "unknown",
+                detail=acknowledgment.detail,
+                occurred_at=self.clock(),
+            )
+        )
+        handoff = self._handoff
+        if command.command == "queue":
+            if handoff is not None and command.agent_id in handoff.sessions:
+                sessions = {
+                    agent_id: session
+                    for agent_id, session in handoff.sessions.items()
+                    if agent_id != command.agent_id
+                }
+                self._handoff = replace(
+                    handoff,
+                    sessions=sessions,
+                    auto_agent_id=(
+                        None if handoff.auto_agent_id == command.agent_id else handoff.auto_agent_id
+                    ),
+                )
+            return
+        active = self.active_scene
+        session = (
+            active.session_for_playback(command.playback_session_id) if active is not None else None
+        )
+        connection = self._agents.get(command.agent_id)
+        if active is not None and session is not None and connection is not None:
+            # The preloaded file could not be switched to; load it the normal way instead.
+            await self._send_command(active, session, "prepare", connection)
+
     async def _send_command(
         self,
         active: ActiveScene,
         media_session: ActiveMediaSession,
-        command_name: Literal[
-            "prepare",
-            "play",
-            "pause",
-            "resume",
-            "seek",
-            "stop",
-            "get_status",
-        ],
+        command_name: MediaCommandName,
         connection: AgentConnection,
         *,
         target_position_ms: int | None = None,
+        target_scene: tuple[str, str] | None = None,
+        auto_advance: bool | None = None,
     ) -> None:
         if command_name != "stop" and self.active_scene is not active:
             raise RuntimeError("scene command was cancelled by Stop")
+        loads_media = command_name in {"prepare", "queue"}
+        scene_id, scene_instance_id = target_scene or (
+            active.definition.id,
+            active.scene_instance_id,
+        )
         command = AgentCommand(
             request_id=str(uuid4()),
             command=command_name,
             agent_id=media_session.agent_id,
             agent_session_id=connection.session_id,
             controller_epoch=self.controller_epoch,
-            scene_id=active.definition.id,
-            scene_instance_id=active.scene_instance_id,
+            scene_id=scene_id,
+            scene_instance_id=scene_instance_id,
             playback_session_id=media_session.playback_session_id,
-            asset_id=media_session.asset_id,
-            end_behavior=(media_session.end_behavior if command_name == "prepare" else None),
+            asset_id=media_session.asset_id if loads_media else None,
+            end_behavior=media_session.end_behavior if loads_media else None,
             target_position_ms=target_position_ms,
+            repeat_count=media_session.repeat_count if loads_media else None,
+            auto_advance=auto_advance if command_name == "queue" else None,
         )
         self._pending_commands[command.request_id] = PendingCommand(command, self.clock())
         if self._catalog_commands_sent is not None:
@@ -1057,6 +1287,10 @@ class ControllerRuntime:
                 )
                 if ready is not None:
                     self._schedule_scene_start(ready.definition.id, active)
+                elif estimate.state is PlaybackState.PLAYING:
+                    self._maybe_plan_handoff(
+                        active, estimate.position_ms, active.definition.duration_ms
+                    )
             self._last_media_positions[active.playback_session_id] = estimate.position_ms
 
         if not render_pixels:
@@ -1133,6 +1367,8 @@ class ControllerRuntime:
                 return
         await self._stop_render_loop()
         active = self.active_scene
+        self._handoff = None
+        self._preselected_next = None
         if active is not None:
             await self._stop_media_sessions(active)
         self._degraded_reason = None
@@ -1304,8 +1540,15 @@ class ControllerRuntime:
             "outputs": outputs,
         }
 
-    async def _stop_media_sessions(self, active: ActiveScene) -> None:
+    async def _stop_media_sessions(
+        self,
+        active: ActiveScene,
+        *,
+        keep_agents: frozenset[str] = frozenset(),
+    ) -> None:
         for session in active.resolved_media_sessions:
+            if session.agent_id in keep_agents:
+                continue
             connection = self._agents.get(session.agent_id)
             self._abandon_commands(session.agent_id)
             if connection is not None:
@@ -1520,6 +1763,9 @@ class ControllerRuntime:
     async def wait_for_lifecycle_idle(self) -> None:
         while self._lifecycle_tasks:
             await asyncio.gather(*tuple(self._lifecycle_tasks), return_exceptions=True)
+            # Let done-callbacks remove finished tasks; gathering already-finished tasks
+            # does not yield to the event loop.
+            await asyncio.sleep(0)
 
     def _schedule_completion(self, active: ActiveScene) -> None:
         if self._catalog_loading:
@@ -1570,6 +1816,14 @@ class ControllerRuntime:
             if completion.target_scene_id is None:
                 raise RuntimeError("transition_to completion has no target scene")
             await self.start_scene(completion.target_scene_id)
+            return
+        preselected = self._preselected_next
+        if preselected is not None and preselected[0] == completed.scene_instance_id:
+            selected = preselected[1]
+            if selected is None:
+                await self.stop()
+            else:
+                await self.start_scene(selected)
             return
         if self.scene_selector is None:
             self.scene_completion_errors += 1
@@ -1781,6 +2035,19 @@ class ControllerRuntime:
             "controller_epoch": self.controller_epoch,
             "loaded_catalog": dict(self.loaded_catalog),
             "active_scene": self.active_scene.definition.id if self.active_scene else None,
+            "next_scene": (
+                {
+                    "scene_id": self._handoff.scene_id,
+                    "preloaded_outputs": sorted(
+                        session.output_id for session in self._handoff.sessions.values()
+                    ),
+                    "automatic_cut": self._handoff.auto_agent_id is not None,
+                }
+                if self._handoff is not None
+                and self.active_scene is not None
+                and self._handoff.from_scene_instance_id == self.active_scene.scene_instance_id
+                else None
+            ),
             "scene_instance_id": self.active_scene.scene_instance_id if self.active_scene else None,
             "playback_session_id": self.active_scene.playback_session_id
             if self.active_scene
@@ -1826,6 +2093,7 @@ class ControllerRuntime:
             "heartbeat_timeouts": self.heartbeat_timeouts,
             "reconciliations": self.reconciliations,
             "scene_completions": self.scene_completions,
+            "seamless_transitions": self.seamless_transitions,
             "scene_completion_errors": self.scene_completion_errors,
             "scene_failovers": self.scene_failovers,
             "rejected_protocol_messages": self.rejected_protocol_messages,

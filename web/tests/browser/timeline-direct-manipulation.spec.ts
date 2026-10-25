@@ -20,11 +20,20 @@ test("media bin, drag and drop, clip move and trim, keyframe retime and composit
   await page.route("**/api/gui/v1/**", async (route) => {
     const request = route.request();
     const url = new URL(request.url());
+    if (url.pathname.endsWith("/assets/still-image/artifacts/review")) {
+      return route.fulfill({
+        contentType: "image/svg+xml",
+        body: '<svg xmlns="http://www.w3.org/2000/svg" width="90" height="160"><rect width="90" height="160" fill="#c33"/></svg>',
+      });
+    }
     if (url.pathname.endsWith("/projects/demo-project/assets")) {
       return route.fulfill({
         json: [
           { ...mockReadyAsset("ghost-video", "Ghost video", "video/mp4"), metadata: { duration_ms: 1500 } },
-          mockReadyAsset("still-image", "Still image", "image/png"),
+          {
+            ...mockReadyAsset("still-image", "Still image", "image/png"),
+            metadata: { artifacts: { review: { media_type: "image/svg+xml" } } },
+          },
         ],
       });
     }
@@ -94,7 +103,17 @@ test("media bin, drag and drop, clip move and trim, keyframe retime and composit
   await page.getByLabel("Scrub position").fill("2000");
   await expect(monitor).toContainText("Ghost video");
 
+  // Portrait media must letterbox inside the 16:9 frame instead of being cropped to its top slice.
   await page.getByLabel("Scrub position").fill("4000");
+  const portrait = monitor.getByRole("img", { name: "Program monitor showing Still image" });
+  await expect(portrait).toHaveJSProperty("complete", true);
+  const [frameBox, portraitBox] = await Promise.all([
+    monitor.locator(".timeline-program-monitor__frame").boundingBox(),
+    portrait.boundingBox(),
+  ]);
+  expect(portraitBox!.height).toBeLessThanOrEqual(frameBox!.height + 1);
+  expect(Math.abs(portraitBox!.y - frameBox!.y)).toBeLessThanOrEqual(1);
+
   await bin.getByRole("button", { name: "Add Ghost video at playhead" }).click();
   await expect(bin.getByRole("status")).toContainText("runs past the scene end at 0:05.000");
   await bin.getByRole("button", { name: "Trim clip to fit" }).click();

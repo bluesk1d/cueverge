@@ -346,3 +346,55 @@ function asset(
     updated_at: "2026-10-14T12:00:00Z",
   };
 }
+
+test("media outputs play a set number of times and can size the scene to fit", async ({ page }) => {
+  let current = draftResponse();
+  const assetList = assets().map((item) =>
+    item.id === "video-asset" ? { ...item, metadata: { ...item.metadata, duration_ms: 1500 } } : item);
+  await page.route("**/api/gui/v1/**", async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path.endsWith("/projects/demo-project/assets")) return route.fulfill({ json: assetList });
+    if (path.endsWith("/projects/demo-project/draft")) {
+      if (route.request().method() === "PUT") {
+        current = { ...current, revision: current.revision + 1, draft: route.request().postDataJSON() };
+      }
+      return route.fulfill({ json: current });
+    }
+    if (path.includes("/artifacts/")) {
+      return route.fulfill({
+        contentType: "image/svg+xml",
+        body: '<svg xmlns="http://www.w3.org/2000/svg" width="320" height="48"/>',
+      });
+    }
+    return route.fulfill({ status: 404, json: { detail: "fixture route missing" } });
+  });
+  await page.goto("/demo.html");
+  await page.getByRole("button", { name: "Shows", exact: true }).click();
+  await openTimelineEditor(page);
+  const clip = page.getByRole("button", { name: "left-window timing reference", exact: true });
+  await clip.focus();
+  await page.keyboard.press("Enter");
+  const inspector = page.getByRole("complementary", { name: "Inspector" });
+  const plays = inspector.getByLabel("Media plays");
+  await expect(plays).toHaveValue("1");
+  await plays.fill("3");
+  await expect(clip).toContainText("Window loop ×3");
+  await expect(inspector).toContainText("3 × 0:01.500 = 0:04.500 · scene is 0:05.000");
+  await inspector.getByRole("button", { name: "Match scene length" }).click();
+  await expect(inspector).toContainText("scene is 0:04.500");
+  await expect(inspector.getByRole("button", { name: "Match scene length" })).toHaveCount(0);
+  await page.getByRole("button", { name: "Save timeline" }).click();
+  await expect.poll(() => current.revision).toBe(2);
+  expect(current.draft.scenes[0].duration_ms).toBe(4500);
+  expect(current.draft.scenes[0].media[0]).toMatchObject({ id: "left-window", repeat_count: 3 });
+
+  await clip.focus();
+  await page.keyboard.press("Enter");
+  await expect(plays).toHaveValue("3");
+  await inspector.getByLabel("Media end behavior").selectOption("loop");
+  await expect(plays).toBeDisabled();
+  await page.getByRole("button", { name: "Save timeline" }).click();
+  await expect.poll(() => current.revision).toBe(3);
+  expect(current.draft.scenes[0].media[0]).not.toHaveProperty("repeat_count");
+  expect(current.draft.scenes[0].media[0].end_behavior).toBe("loop");
+});

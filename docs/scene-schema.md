@@ -192,6 +192,27 @@ after the prepare barrier opens and is intended for measured, static startup
 calibration. It does not change clock authority or apply ongoing drift
 correction.
 
+`end_behavior` (`hold_last_frame` by default, `loop`, or `stop`) decides what
+the output shows after its media ends. `repeat_count` (1 to 10000, omitted means
+once) plays the media that many times back to back before `end_behavior`
+applies; it cannot be combined with `loop`. Repeats are gapless on the device,
+and the reported media position runs continuously across them, so a
+`media_synchronized` scene clock covers all plays. Set the scene `duration_ms`
+to `start_delay_ms + repeat_count x media length` so lighting and previews line
+up. A media-synchronized scene completes when its clock-source output finishes
+its last play. Devices must report the `repeat_count` media feature; a required
+output with a repeat count refuses to start on older agents.
+
+```json
+{
+  "id": "klown",
+  "resource": "projector.porch",
+  "asset": "klown-loop.mp4",
+  "end_behavior": "hold_last_frame",
+  "repeat_count": 3
+}
+```
+
 Lighting outputs may set `timing_offset_ms` from -5000 through 5000. Positive
 values delay that output by rendering an earlier scene position; negative
 values advance it. The existing controller-wide lighting delay is applied
@@ -506,6 +527,31 @@ Completion is fenced by playback session and applied once even if completed
 telemetry is delivered repeatedly or late. `select_next` requires a configured
 director; without one, the active scene is held and status reports
 `scene_selector_unavailable`.
+
+### Seamless scene changes
+
+For `transition_to`, `loop` and `select_next`, the controller chooses the next
+scene 3 seconds before the current one ends (for `select_next` this is when the
+director and waiting visitor responses are consulted) and preloads its media
+behind the current file on every device that plays both scenes. Nothing new is
+shown until the change:
+
+- In a `media_synchronized` scene whose clock output is not `loop`, the clock
+  device continues into the preloaded file the moment its media ends, so the
+  last frame of the current scene is followed directly by the first frame of the
+  next. That end of media is also what completes the scene.
+- Other preloaded outputs, and all outputs of `controller_timed` scenes, switch
+  immediately when the controller changes scene, without stopping or reloading.
+- Outputs on devices that are idle in the current scene, outputs with a
+  `start_delay_ms`, and devices without the `seamless_transition` media feature
+  are prepared and started the existing way.
+- Visitor responses, encounters and operator starts interrupt the plan and use
+  the existing stop, prepare and play sequence.
+
+While a preloaded change waits for a controller command, a current output set
+to `stop` blanks at its end and one set to `hold_last_frame` holds its last
+frame, as before. Runtime status reports the planned `next_scene` and a
+`seamless_transitions` count.
 
 ## Show programming
 

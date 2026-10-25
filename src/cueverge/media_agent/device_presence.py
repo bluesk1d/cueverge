@@ -110,6 +110,7 @@ class DevicePresenceClient:
             device_id=self.identity.device_id,
             device_session_id=session_id,
             capabilities=self.identity.capabilities,
+            media_features=self.media_client.media_features,
         )
         await websocket.send(hello.model_dump_json())
         welcome = DeviceWelcome.model_validate_json(await websocket.recv())
@@ -188,6 +189,8 @@ class DevicePresenceClient:
                     asset_id=media_command.asset_id,
                     end_behavior=media_command.end_behavior,
                     target_position_ms=media_command.target_position_ms,
+                    repeat_count=media_command.repeat_count,
+                    auto_advance=media_command.auto_advance,
                 )
                 result = await self.media_client.handle_command(internal)
                 response = DeviceCommandAck(

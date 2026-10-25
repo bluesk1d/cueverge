@@ -37,6 +37,8 @@ from cueverge.protocol.device_v2 import (
     DeviceTimingReport,
 )
 from cueverge.protocol.models import (
+    MEDIA_REPEAT_CAPABILITY,
+    MEDIA_SEAMLESS_CAPABILITY,
     AgentCommand,
     AgentHeartbeat,
     AgentHello,
@@ -66,6 +68,8 @@ class DeviceCommandChannel:
             asset_id=command.asset_id,
             end_behavior=command.end_behavior,
             target_position_ms=command.target_position_ms,
+            repeat_count=command.repeat_count,
+            auto_advance=command.auto_advance,
         )
         async with self._send_lock:
             await self.websocket.send_json(message.model_dump(mode="json"))
@@ -236,9 +240,7 @@ def create_device_app(
                     AgentHello(
                         agent_id=runtime_agent_id,
                         agent_session_id=str(session_id),
-                        capabilities=tuple(
-                            capability.kind for capability in hello.capabilities.capabilities
-                        ),
+                        capabilities=_runtime_capabilities(hello),
                     ),
                     channel,
                 )
@@ -501,3 +503,15 @@ def _assigned_agent_id(
     if len(agent_ids) != 1:
         raise ValueError("device must have exactly one active media assignment")
     return next(iter(agent_ids))
+
+
+def _runtime_capabilities(hello: DeviceHello) -> tuple[str, ...]:
+    """Capability kinds plus the media player features the controller runtime checks."""
+    features = {
+        "seamless_transition": MEDIA_SEAMLESS_CAPABILITY,
+        "repeat_count": MEDIA_REPEAT_CAPABILITY,
+    }
+    return (
+        *(capability.kind for capability in hello.capabilities.capabilities),
+        *(features[feature] for feature in hello.media_features),
+    )

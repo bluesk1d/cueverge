@@ -145,6 +145,9 @@ function MediaOutputCard({ output }: { output: SceneMediaPreviewOutput }) {
       </span>{" "}
       {sourceLabel}{timing ? ` · ${timing}` : ""}
     </p>
+    {output.repeat_count && output.repeat_count > 1 && <small>
+      {output.play_number ? `Play ${output.play_number} of ${output.repeat_count}` : `Plays ${output.repeat_count} times`}
+    </small>}
     {output.start_delay_ms > 0 && <small>Starts {output.start_delay_ms / 1000} s after the scene.</small>}
     {output.audio.length > 0 && <small>
       Audio: {output.audio.map((value) => `${value.name}${value.mute ? " (muted)" : ""}`).join(", ")}

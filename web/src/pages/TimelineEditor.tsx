@@ -280,6 +280,7 @@ type SceneOperationalPolicy = {
   media_offsets: Record<string, number>;
   media_assets: Record<string, string | null>;
   media_end_behaviors: Record<string, SceneMediaEndBehavior>;
+  media_repeat_counts: Record<string, number | null>;
   lighting_offsets: Record<string, number>;
 };
 
@@ -3035,6 +3036,20 @@ export function TimelineEditor({
                               <option value="stop">Stop</option>
                             </select>
                           </label>
+                          <MediaOutputRepeatControls
+                            asset={assets.find((asset) => asset.id === selectedMediaOutput.asset)}
+                            canEdit={canEdit}
+                            output={selectedMediaOutput}
+                            sceneDurationMs={scenePolicy.duration_ms}
+                            onRepeatCount={(count) => setScenePolicy((current) => ({
+                              ...current,
+                              media_repeat_counts: {
+                                ...current.media_repeat_counts,
+                                [selectedMediaOutput.id]: count,
+                              },
+                            }))}
+                            onMatchSceneLength={setSceneDuration}
+                          />
                           <label>
                             <input
                               type="checkbox"
@@ -3205,15 +3220,22 @@ export function TimelineEditor({
                 : undefined;
             const referenceStartMs = Math.min(trackOutput?.startDelayMs ?? 0, duration);
             const assetDuration = numberValue(asset?.metadata?.duration_ms, 0);
+            const plays = trackOutput?.repeatCount ?? 1;
+            const playedDuration = assetDuration * plays;
             const extendsPastClip = trackOutput?.endBehavior === "loop" || trackOutput?.endBehavior === "hold_last_frame";
             const referenceEndMs =
-              assetDuration > 0 && !extendsPastClip
-                ? Math.min(duration, referenceStartMs + assetDuration)
+              playedDuration > 0 && !extendsPastClip
+                ? Math.min(duration, referenceStartMs + playedDuration)
                 : duration;
             const clipEndPercent =
-              assetDuration > 0 && extendsPastClip && referenceStartMs + assetDuration < duration
-                ? (assetDuration * 100) / Math.max(1, referenceEndMs - referenceStartMs)
+              playedDuration > 0 && extendsPastClip && referenceStartMs + playedDuration < duration
+                ? (playedDuration * 100) / Math.max(1, referenceEndMs - referenceStartMs)
                 : null;
+            const repeatMarks =
+              plays > 1 && assetDuration > 0 && referenceEndMs > referenceStartMs
+                ? Array.from({ length: plays - 1 }, (_, index) => ((index + 1) * assetDuration * 100) /
+                    (referenceEndMs - referenceStartMs)).filter((percent) => percent < 100)
+                : [];
             const layerRow = stackLayerRows(
               spaceTransformLayers.filter((layer) => layer.track_id === track.id),
             );
@@ -3286,8 +3308,18 @@ export function TimelineEditor({
                       />
                     )}
                     {asset && track.kind === "media_output" && (
-                      <span className="timeline-track-reference__name">{asset.name}</span>
+                      <span className="timeline-track-reference__name">
+                        {asset.name}{plays > 1 ? ` ×${plays}` : ""}
+                      </span>
                     )}
+                    {repeatMarks.map((percent) => (
+                      <span
+                        aria-hidden="true"
+                        className="timeline-track-reference__repeat"
+                        key={percent}
+                        style={{ left: `${percent}%` }}
+                      />
+                    ))}
                     {clipEndPercent !== null && (
                       <span
                         className="timeline-track-reference__hold"
@@ -7208,6 +7240,7 @@ function SceneProgramMonitor({
       output.startDelayMs,
       numberValue(asset.metadata?.duration_ms, 0),
       output.endBehavior,
+      output.repeatCount,
     );
     return [{ output, asset, sourceMs }];
   });
@@ -7672,6 +7705,7 @@ function readSceneOperationalPolicy(
     ),
     media_assets: {},
     media_end_behaviors: {},
+    media_repeat_counts: {},
     lighting_offsets: Object.fromEntries(
       lighting.map((output) => [
         String(output.id ?? output.resource ?? ""),
@@ -8010,6 +8044,10 @@ function applySceneOperationalPolicy(
         ...(policy.media_end_behaviors[output.id] === undefined ? {} : {
           end_behavior: policy.media_end_behaviors[output.id],
         }),
+        ...repeatCountUpdate(
+          policy.media_repeat_counts[output.id],
+          policy.media_end_behaviors[output.id] ?? record.end_behavior,
+        ),
         required: policy.media_required[output.id] ?? record.required ?? true,
         start_delay_ms:
           policy.media_offsets[output.id] ??
@@ -10918,4 +10956,76 @@ function canReplaceComposition(
       ]),
   );
   return !compositionGraphHasCycle(candidate);
+}
+
+/** Repeat count to write; undefined removes it (loop repeats forever, one play is the default). */
+function repeatCountUpdate(
+  count: number | null | undefined,
+  endBehavior: unknown,
+): { repeat_count?: number | undefined } {
+  if (endBehavior === "loop") return { repeat_count: undefined };
+  if (count === undefined) return {};
+  return { repeat_count: count !== null && count > 1 ? count : undefined };
+}
+
+function MediaOutputRepeatControls({
+  asset,
+  canEdit,
+  output,
+  sceneDurationMs,
+  onRepeatCount,
+  onMatchSceneLength,
+}: {
+  asset: AssetRecord | undefined;
+  canEdit: boolean;
+  output: SceneMediaOutputRef;
+  sceneDurationMs: number;
+  onRepeatCount: (count: number | null) => void;
+  onMatchSceneLength: (durationMs: number) => void;
+}) {
+  const looping = output.endBehavior === "loop";
+  const plays = output.repeatCount ?? 1;
+  const assetDuration = numberValue(asset?.metadata?.duration_ms, 0);
+  const playedMs = output.startDelayMs + assetDuration * plays;
+  return (
+    <>
+      <label>
+        Plays
+        <input
+          aria-label="Media plays"
+          type="number"
+          min="1"
+          max="10000"
+          step="1"
+          disabled={!canEdit || looping}
+          value={looping ? 1 : plays}
+          onChange={(event) => {
+            const value = Math.round(Number(event.target.value));
+            onRepeatCount(Number.isFinite(value) && value > 1 ? Math.min(10000, value) : null);
+          }}
+        />
+        <small>
+          {looping
+            ? "Loop repeats until the scene ends. Choose Hold last frame or Stop to play a set number of times."
+            : "Plays the media back to back this many times, then applies the end behavior."}
+        </small>
+      </label>
+      {!looping && assetDuration > 0 && (
+        <div className="timeline-media-repeat-summary">
+          <small>
+            {plays > 1 ? `${plays} × ${formatTimecode(assetDuration)} = ` : ""}
+            {formatTimecode(playedMs - output.startDelayMs)}
+            {output.startDelayMs > 0 ? ` after a ${formatTimecode(output.startDelayMs)} delay` : ""}
+            {" · scene is "}
+            {formatTimecode(sceneDurationMs)}
+          </small>
+          {playedMs !== sceneDurationMs && canEdit && (
+            <button type="button" onClick={() => onMatchSceneLength(playedMs)}>
+              Match scene length
+            </button>
+          )}
+        </div>
+      )}
+    </>
+  );
 }

@@ -15,14 +15,39 @@ class FakePlayer:
     position_ms: int = 1250
     status_error: bool = False
     end_behavior: str | None = None
+    repeat_count: int | None = None
+    queued: tuple[str | None, str, int | None, bool] | None = None
+    entry: int = 0
+    media_features: tuple[str, ...] = ("seamless_transition", "repeat_count")
 
     async def prepare(
         self,
         asset_id: str | None,
         end_behavior: Literal["stop", "hold_last_frame", "loop"],
+        repeat_count: int | None = None,
     ) -> None:
         self.prepared = asset_id
         self.end_behavior = end_behavior
+        self.repeat_count = repeat_count
+        self.entry += 1
+
+    async def queue(
+        self,
+        asset_id: str | None,
+        end_behavior: Literal["stop", "hold_last_frame", "loop"],
+        repeat_count: int | None,
+        auto_advance: bool,
+    ) -> None:
+        self.queued = (asset_id, end_behavior, repeat_count, auto_advance)
+
+    async def advance(self) -> None:
+        if self.queued is None:
+            raise PlayerError("nothing queued")
+        self.prepared = self.queued[0]
+        self.queued = None
+        self.entry += 1
+        self.position_ms = 0
+        self.playing = True
 
     async def play(self) -> None:
         self.playing = True
@@ -47,6 +72,7 @@ class FakePlayer:
             playback_rate=1.0,
             state=PlaybackState.PLAYING if self.playing else PlaybackState.PAUSED,
             duration_ms=4000,
+            entry=self.entry,
         )
 
 
@@ -87,6 +113,85 @@ def test_commands_are_fenced_acknowledged_and_emit_telemetry() -> None:
     asyncio.run(scenario())
 
 
+def test_queue_then_advance_switches_sessions_on_command() -> None:
+    async def scenario() -> None:
+        player = FakePlayer()
+        client = _ready_client(player)
+        assert client.media_features == ("seamless_transition", "repeat_count")
+        assert (
+            await client.handle_command(
+                _command(client, "prepare", asset_id="media/a.mp4", repeat_count=3)
+            )
+        ).status == "completed"
+        assert player.repeat_count == 3
+        queue = _command(
+            client,
+            "queue",
+            asset_id="media/b.mp4",
+            scene_instance_id="scene-2",
+            playback_session_id="playback-2",
+            auto_advance=False,
+        )
+        assert (await client.handle_command(queue)).status == "completed"
+        assert player.queued == ("media/b.mp4", "hold_last_frame", None, False)
+        wrong = _command(client, "advance", playback_session_id="playback-9")
+        assert (await client.handle_command(wrong)).error_code == "player_error"
+        advance = _command(
+            client, "advance", scene_instance_id="scene-2", playback_session_id="playback-2"
+        )
+        assert (await client.handle_command(advance)).status == "completed"
+        assert player.prepared == "media/b.mp4"
+        telemetry = await client.telemetry()
+        assert telemetry is not None
+        assert (telemetry.scene_instance_id, telemetry.playback_session_id) == (
+            "scene-2",
+            "playback-2",
+        )
+        assert telemetry.sequence == 1
+        assert (await client.handle_command(advance)).status == "completed"
+
+    asyncio.run(scenario())
+
+
+def test_automatic_advance_reports_completion_then_follows_queued_session() -> None:
+    async def scenario() -> None:
+        player = FakePlayer(playing=True, position_ms=3900)
+        client = _ready_client(player)
+        await client.handle_command(_command(client, "prepare", asset_id="media/a.mp4"))
+        assert (await client.telemetry()) is not None
+        await client.handle_command(
+            _command(
+                client,
+                "queue",
+                asset_id="media/b.mp4",
+                scene_instance_id="scene-2",
+                playback_session_id="playback-2",
+                auto_advance=True,
+            )
+        )
+        await player.advance()
+
+        completed = await client.telemetry()
+        assert completed is not None
+        assert completed.playback_session_id == "playback-1"
+        assert completed.state is PlaybackState.COMPLETED
+        assert completed.position_ms == 4000
+        following = await client.telemetry()
+        assert following is not None
+        assert following.playback_session_id == "playback-2"
+        assert following.state is PlaybackState.PLAYING
+        assert following.sequence == 1
+
+    asyncio.run(scenario())
+
+
+def _ready_client(player: FakePlayer) -> MediaAgentClient:
+    client = MediaAgentClient(_config(), player)
+    client.agent_session_id = "device-session-1"
+    client.controller_epoch = "controller-1"
+    return client
+
+
 def _config() -> MediaAgentConfig:
     return MediaAgentConfig(
         asset_root=Path("C:/cueverge/assets"),
@@ -99,6 +204,10 @@ def _command(
     command: str,
     *,
     asset_id: str | None = None,
+    scene_instance_id: str = "scene-1",
+    playback_session_id: str = "playback-1",
+    repeat_count: int | None = None,
+    auto_advance: bool | None = None,
 ) -> AgentCommand:
     return AgentCommand(
         request_id=f"request-{command}",
@@ -107,8 +216,10 @@ def _command(
         agent_session_id=client.agent_session_id,
         controller_epoch="controller-1",
         scene_id="scene",
-        scene_instance_id="scene-1",
-        playback_session_id="playback-1",
+        scene_instance_id=scene_instance_id,
+        playback_session_id=playback_session_id,
         asset_id=asset_id,
-        end_behavior="hold_last_frame" if command == "prepare" else None,
+        end_behavior="hold_last_frame" if command in {"prepare", "queue"} else None,
+        repeat_count=repeat_count,
+        auto_advance=auto_advance,
     )

@@ -10,6 +10,28 @@ class ProtocolMessage(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+MediaCommandName = Literal[
+    "prepare",
+    "queue",
+    "advance",
+    "play",
+    "pause",
+    "resume",
+    "seek",
+    "stop",
+    "get_status",
+]
+"""Media agent commands.
+
+``queue`` preloads the next scene's media behind the current file without showing it.
+With ``auto_advance`` the player switches to it gaplessly when the current media ends;
+otherwise ``advance`` switches to it on command.
+"""
+
+MEDIA_SEAMLESS_CAPABILITY = "media.seamless_transition"
+MEDIA_REPEAT_CAPABILITY = "media.repeat_count"
+
+
 class PlaybackState(StrEnum):
     PLAYING = "playing"
     PAUSED = "paused"
@@ -73,7 +95,7 @@ class AgentCommand(ProtocolMessage):
     type: Literal["agent.command"] = "agent.command"
     protocol_version: Literal[1] = PROTOCOL_VERSION
     request_id: str
-    command: Literal["prepare", "play", "pause", "resume", "seek", "stop", "get_status"]
+    command: MediaCommandName
     agent_id: str
     agent_session_id: str
     controller_epoch: str
@@ -83,6 +105,11 @@ class AgentCommand(ProtocolMessage):
     asset_id: str | None = None
     end_behavior: Literal["stop", "hold_last_frame", "loop"] | None = None
     target_position_ms: int | None = Field(default=None, ge=0)
+    # Omitted when unset so agents that predate these fields still accept commands.
+    repeat_count: int | None = Field(
+        default=None, ge=1, le=10000, exclude_if=lambda value: value is None
+    )
+    auto_advance: bool | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 class CommandAck(ProtocolMessage):
