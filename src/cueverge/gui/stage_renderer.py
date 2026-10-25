@@ -2,7 +2,7 @@ import base64
 import hashlib
 import json
 import math
-from collections.abc import Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, replace
 from io import BytesIO
 from pathlib import Path
@@ -68,6 +68,7 @@ def prepare_stage_composition(
     overlaps: tuple[StoredProjectorOverlap, ...],
     sync_admission: SyncAdmission,
     preview_timestamp_ms: int | None = None,
+    on_frame: Callable[[int, int], None] | None = None,
 ) -> PreparedStageOutput:
     if not sync_admission.allowed:
         raise ProjectorRenderError(
@@ -138,19 +139,25 @@ def prepare_stage_composition(
             raise ProjectorRenderError("mixed stage lighting supports at most 60 fps")
         if pixel_count * frame_count * 3 > MAX_SEQUENCE_BYTES:
             raise ProjectorRenderError("stage lighting exceeds the 256 MiB sequence budget")
-    stage_frames = tuple(
-        compose_visual_frame(
-            stage_layers,
-            timestamp_ms=((index + first_frame) * 1000 * frame_rate_denominator)
-            // frame_rate_numerator,
-            output_width=render_width,
-            output_height=render_height,
-            background_rgb=_hex_rgb(_string(settings.get("output_background_color"))),
-        )[0]
-        for index in range(frame_count)
-    )
+    background = _hex_rgb(_string(settings.get("output_background_color")))
+
+    def compose_frames() -> Iterator[np.ndarray]:
+        for index in range(frame_count):
+            if on_frame is not None:
+                on_frame(index, frame_count)
+            yield compose_visual_frame(
+                stage_layers,
+                timestamp_ms=((index + first_frame) * 1000 * frame_rate_denominator)
+                // frame_rate_numerator,
+                output_width=render_width,
+                output_height=render_height,
+                background_rgb=background,
+            )[0]
+
+    # Lights-only bakes sample each frame and discard it; projector bakes need every frame.
+    stage_frames: tuple[np.ndarray, ...] = () if lights_only else tuple(compose_frames())
     lighting_members = _prepare_stage_lighting(
-        stage_frames,
+        compose_frames() if lights_only else stage_frames,
         lighting_surfaces,
         logical_width,
         logical_height,
@@ -402,7 +409,7 @@ def _sample_stage_surface(
 
 
 def _prepare_stage_lighting(
-    frames: tuple[np.ndarray, ...],
+    frames: Iterable[np.ndarray],
     surfaces: tuple[dict[str, object], ...],
     width: float,
     height: float,
@@ -556,6 +563,7 @@ def render_stage_composition(
     overlaps: tuple[StoredProjectorOverlap, ...],
     sync_admission: SyncAdmission,
     output_directory: Path,
+    on_frame: Callable[[int, int], None] | None = None,
 ) -> dict[str, object]:
     prepared = prepare_stage_composition(
         project_id=project_id,
@@ -567,6 +575,7 @@ def render_stage_composition(
         coverage=coverage,
         overlaps=overlaps,
         sync_admission=sync_admission,
+        on_frame=on_frame,
     )
     if not prepared.members:
         return encode_lighting_sequence_set(

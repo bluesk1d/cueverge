@@ -23,7 +23,7 @@ from cueverge.gui.frame_compositor import compose_visual_frame
 from cueverge.gui.projector_overlap import StoredProjectorOverlap
 from cueverge.gui.projector_renderer import ProjectorRenderError
 from cueverge.gui.publication import PublicationService
-from cueverge.gui.render_jobs import RenderJobError, RenderJobService
+from cueverge.gui.render_jobs import RenderJobError, RenderJobService, _estimate_reservation
 from cueverge.gui.render_verification import compare_rgb_frames
 from cueverge.gui.repository import GuiRepository
 from cueverge.gui.stage_coverage import StageCoverage, StageRegion
@@ -447,9 +447,20 @@ def test_lights_only_overlay_bakes_led_sequences_without_projector_video(
     layers["stage-composition"] = [{**_visual_layer(), "kind": "image"}]
     draft = DraftProject.model_validate(document)
     assert bakes_lighting_only(composition)
+    frames: list[tuple[int, int]] = []
     with patch("cueverge.gui.stage_renderer.render_stage_to_projector") as projector_render:
-        manifest = render_stage_composition(draft=draft, **render)
+        manifest = render_stage_composition(
+            draft=draft, **render, on_frame=lambda index, total: frames.append((index, total))
+        )
     projector_render.assert_not_called()
+    assert frames == [(0, 2), (1, 2)]
+
+    def cancel(index: int, total: int) -> None:
+        raise InterruptedError("canceled")
+
+    with pytest.raises(InterruptedError):
+        render_stage_composition(draft=draft, **render, on_frame=cancel)
+    assert _estimate_reservation(composition) < 300 * 1024 * 1024
     assert manifest["lights_only"] is True
     assert manifest["members"] == []
     assert manifest["calibration_revisions"] == {}

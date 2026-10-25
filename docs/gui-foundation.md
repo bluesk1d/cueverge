@@ -415,7 +415,10 @@ it keeps every mapped projector, and synchronization admission covers only the
 selected projectors. An empty list makes a lights-only overlay: it requires at
 least one `stage_lighting_surfaces` entry, rejects audio layers, skips projector
 synchronization admission, and bakes a render manifest with `lights_only: true`,
-no `members`, and `lighting_sequences` only. Publication installs those
+no `members`, and `lighting_sequences` only. It composes, samples and discards
+one stage frame at a time, so memory stays near one frame regardless of
+length, and the job reports per-frame progress and honors cancellation
+between frames. Publication installs those
 sequences in the controller package and excludes the artifact from media-agent
 artifact sets, like lighting-surface bakes.
 

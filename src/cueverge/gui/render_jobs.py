@@ -21,6 +21,7 @@ from cueverge.gui.projector_renderer import ProjectorRenderError, render_project
 from cueverge.gui.repository import GuiRepository
 from cueverge.gui.stage_coverage import StageCoverage, StageCoverageService
 from cueverge.gui.stage_renderer import (
+    is_lights_only_stage,
     render_stage_composition,
     selected_stage_lighting_surfaces,
     selected_stage_projectors,
@@ -374,6 +375,7 @@ class RenderJobService:
                     overlaps=overlaps,
                     sync_admission=admission,
                     output_directory=self.output_root / "sets",
+                    on_frame=lambda index, total: self._stage_frame_progress(job.id, index, total),
                 )
                 if (
                     self._render_inputs(
@@ -478,6 +480,13 @@ class RenderJobService:
                 """,
                 (occurred_at, occurred_at, job_id),
             )
+
+    def _stage_frame_progress(self, job_id: str, index: int, total: int) -> None:
+        if index % 10 != 0:
+            return
+        if self._cancel_requested(job_id):
+            raise InterruptedError("stage bake canceled")
+        self._set_progress(job_id, 0.1 + 0.8 * index / max(1, total))
 
     def _set_progress(self, job_id: str, progress: float) -> None:
         with self._connect() as connection:
@@ -703,9 +712,12 @@ def _estimate_reservation(composition: dict[str, object]) -> int:
         1,
         (duration_ms * numerator + 1000 * denominator - 1) // (1000 * denominator),
     )
+    lighting = 256 * 1024 * 1024 if composition.get("stage_lighting_surfaces") else 0
+    if is_lights_only_stage(composition):
+        # Frames are composed, sampled and discarded one at a time (float32 RGBA).
+        return width * height * 4 * 4 * 2 + lighting
     raw_video = width * height * 4 * frame_count
     raw_audio = duration_ms * 48 * 2 * 4
-    lighting = 256 * 1024 * 1024 if composition.get("stage_lighting_surfaces") else 0
     return (raw_video + raw_audio) * 2 + lighting
 
 
