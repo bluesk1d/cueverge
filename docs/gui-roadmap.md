@@ -245,6 +245,9 @@ Create the durable authoring model and an After Effects-style project panel.
   where applicable.
 - [x] Define relink, replace, version, retention, backup, and garbage-collection
   behavior.
+- [x] Remove assets through a 30-day recoverable trash (UI, HTTP, MCP) with
+  live-use blockers, administrator permanent deletion, automatic expiry, and
+  reference-counted cleanup of shared stored files.
 
 ### Acceptance
 

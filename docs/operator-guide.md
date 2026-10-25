@@ -556,6 +556,34 @@ actual render/playback output. Package-relative media used outside the managed
 artifact workflow must also exist beneath the media agent's private asset
 root; importing a project JSON file does not copy those files.
 
+#### Remove assets
+
+Each asset card shows where the current draft uses it (scenes, timeline media
+layers, scene presets, compositions). To remove an asset from the show:
+
+1. Remove every current use first, for example delete its media layer in the
+   timeline editor or replace it in the scene output. **Move to trash** stays
+   disabled and lists what still uses the asset while it is used by the current
+   draft of any show, as installation projector review content, as an accepted
+   timing-calibration test asset, or by a staged or active release. Earlier
+   draft revisions do not block removal.
+2. Choose **Move to trash** (designer, publisher, or administrator). Unfinished
+   uploads for that asset are canceled. The asset leaves the library, can no
+   longer be placed, and publishing a revision that still references it fails
+   with `asset_trashed`.
+3. Open **Assets > Trash** to review trashed assets. **Restore** brings an asset
+   back with the same ID, revisions, and metadata; it is not re-placed in
+   scenes.
+
+Trashed assets keep their files for **30 days**, then the controller deletes
+them permanently (it checks at startup and hourly). An asset still referenced by
+any published release is kept so rollback keeps working; the trash shows why.
+Administrators can **Delete permanently** sooner by typing the asset name. The
+same file uploaded as several assets or shows, or used by an installation
+photo, is stored once and is deleted only when nothing references it. Restoring
+an older draft revision that used a permanently deleted asset reports
+`asset_missing` until it is relinked.
+
 ### 4. Optionally author through chat
 
 Open **Advanced authoring and history > MCP-assisted authoring** and create a named
@@ -687,10 +715,20 @@ Scene name/duration are under **Scene details**. Invalid timing is explained and
 cannot be saved. Shortening a scene does not automatically delete or trim effects,
 markers, or protected intervals.
 
-**Play scene preview** and the seconds scrubber request frames from the same
-lighting evaluator used by the controller. Frames include declared output timing
-offsets. Looping scenes wrap to the start using whole-millisecond preview
-positions; other completion policies stop the preview at the last millisecond.
+**Play scene preview** and the seconds scrubber drive one preview of every scene
+output: all LED outputs together and every projector/media output. The Show's
+**Preview** tab uses the same combined preview, with **Preview output** narrowing
+the LED view to one output.
+
+LED frames come from the same lighting evaluator used by the controller.
+Frames include declared output timing offsets. Looping scenes wrap to the start
+using whole-millisecond preview positions; other completion policies stop the
+preview at the last millisecond. For a saved show, LED compositions (spatial
+lighting, or whole-display compositions that drive LEDs) are included when they
+have a current bake for that revision. Otherwise the preview still shows the
+scene's own lighting effects and names the compositions that need **Bake LED
+animation** first. All outputs share a 4,096-LED sample budget; large
+installations show a paged sample (choose one output in Preview to see more).
 A matching saved photo displays evaluated LED locations; the output
 strip remains available when mapping is absent or incomplete. Different
 allocations withhold the overlay rather than paint incorrect locations.
@@ -702,15 +740,31 @@ black dots. This improves low-level visibility without increasing saved effect
 brightness or device output. Collapsed **LED output details** retains the
 unmodified sampled RGB values. Scene, visitor Preview and Operate's intended
 output monitor share this photo presentation; it is not photometric calibration.
+
+**Projectors and media** shows one card per media output with a still rendered
+by the same compositor used for bakes. As on the controller, a scene composition
+that targets the output (projector-only or whole-display overlay) takes
+precedence over the output's assigned asset. Media starts after the output's
+start delay and then follows its end behavior, so each card reports **Waiting
+for start delay**, **Playing**, **Looping**, **Holding last frame**, **Stopped**,
+or **No media assigned**, with the source and media time. Two compositions
+targeting one output are reported as an error, matching Apply. Turn on **Play
+audio during preview playback** to hear asset and composition audio layers
+through their review proxies while the preview plays; browser audio timing is
+approximate. Unsaved scene edits are previewed before saving.
+
 This is a candidate scene preview, not a live monitor, automatic visitor/show
-simulation, or proof of physical output. Media reference proxies are explicitly
-independent of the LED preview clock and venue playback.
+simulation, or proof of physical output. Media device timing, codecs and
+projector calibration on site can still differ.
 
 To remove an unwanted scene, select it in **Scenes** and choose **Delete scene**.
 Save or cancel any unsaved scene edits first, then confirm the scene's name in
 the confirmation message. The last scene cannot be deleted. If another scene's
-fallback/completion transition, automatic program, visitor response, or encounter
-uses it, deletion is refused with a list of references to update first.
+fallback/completion transition, the Show plan (starting scene or shuffle list),
+a visitor response, or an encounter uses it, deletion is refused. The reasons
+appear directly under **Delete scene**, each saying where to change it. The
+shuffle list must keep at least one scene, so to delete its only scene, add
+another scene to the shuffle list first and then remove it.
 Deletion saves a new working revision and selects a remaining scene. It removes
 the deleted scene's editor data, not reusable compositions, presets, media assets,
 or historical revisions. It does not change the loaded show: publish/apply the

@@ -5,6 +5,7 @@ import hashlib
 import json
 import shutil
 import socket
+import sqlite3
 import time
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -27,7 +28,7 @@ from cueverge.core.loader import load_show_package
 from cueverge.core.models import SceneDefinitionV2
 from cueverge.gui.asset_upload import StoredAsset
 from cueverge.gui.config import GuiConfig
-from cueverge.gui.contracts import DraftProject, Role
+from cueverge.gui.contracts import DraftProject, Role, SceneLightingPreviewRequest
 from cueverge.gui.endpoint_discovery import (
     DiscoveredController,
     EndpointDiscoveryService,
@@ -38,6 +39,7 @@ from cueverge.gui.passwords import hash_password
 from cueverge.gui.publication import PublicationDiagnostic, PublicationError
 from cueverge.gui.repository import StoredDevice
 from cueverge.gui.scene_authoring import delete_scene
+from cueverge.gui.scene_preview import preview_project_scene
 from cueverge.gui.service import GuiServices
 from cueverge.lighting.ddp import DdpUdpSink
 from cueverge.lighting.evaluation import evaluate_lighting_output
@@ -784,7 +786,18 @@ def test_scene_deletion_blocks_incoming_references_through_http_and_mcp(
             headers=_mutation_headers(client, if_match='"1"'),
         )
         assert rejected.status_code == 422
-        assert "Update these references first" in rejected.json()["detail"]["message"]
+        message = rejected.json()["detail"]["message"]
+        assert "Update these references first" in message
+        expected_guidance = {
+            "fallback": "failure fallback of scene",
+            "completion": "which plays it next",
+            "program-start": "choose another under Starts with",
+            "program-pool": "adding another scene first if it is the only one",
+            "visitor-response": "(Interactions)",
+            "encounter-ambient": "encounter ambient scene",
+            "encounter-transition": "encounter transition",
+        }
+        assert expected_guidance[reference] in message
         assert (
             _mcp_tool(client, token, "delete_scene", scene_id="unwanted", base_revision=1)[
                 "isError"
@@ -3257,6 +3270,7 @@ def test_publication_requires_approval_and_writes_reproducible_manifest(
         ({"original_file_status": "size_mismatch"}, "asset_original_size_mismatch"),
         ({"original_file_status": "pending"}, "asset_original_unverified"),
         ({"digest_sha256": None}, "asset_checksum_missing"),
+        ({"trashed_at": "2026-10-16T13:00:00Z"}, "asset_trashed"),
     ],
 )
 def test_publication_reports_exact_asset_blocker_and_remediation(
@@ -3304,7 +3318,7 @@ def test_publication_reports_exact_asset_blocker_and_remediation(
     monkeypatch.setattr(
         services.asset_upload,
         "list_assets",
-        lambda _project_id: (replace(asset, **changes),),
+        lambda _project_id, **_: (replace(asset, **changes),),
     )
 
     diagnostics = services.publication.validate(
@@ -3329,7 +3343,7 @@ def test_publication_reports_missing_asset_with_relink_remediation(
         role=Role.ADMINISTRATOR,
         occurred_at="2026-10-16T12:00:00Z",
     )
-    monkeypatch.setattr(services.asset_upload, "list_assets", lambda _project_id: ())
+    monkeypatch.setattr(services.asset_upload, "list_assets", lambda _project_id, **_: ())
 
     diagnostics = services.publication.validate(
         revision.project.id,
@@ -4293,6 +4307,16 @@ def test_mcp_spatial_context_proposal_and_image_preview_are_isolated(
         role=Role.ADMINISTRATOR,
         occurred_at=datetime.now(UTC).isoformat(),
     )
+    unbaked = preview_project_scene(
+        services,
+        project_id,
+        SceneLightingPreviewRequest(source_revision=2, scene_id="ambient", timestamp_ms=0),
+    )
+    assert unbaked["outputs"]
+    assert unbaked["limitations"] == [
+        "LED compositions not shown: Front of house. Bake them for this saved revision "
+        "(Timeline editor > Bake LED animation) to include them in this preview."
+    ]
     mapper: dict[str, Any] = {
         "lighting_surfaces": [
             {
@@ -4478,9 +4502,12 @@ def test_mcp_shared_stage_discovery_authoring_preview_and_bake_parity(
         review_status="approved",
         tags=(),
         metadata={"width": 64, "height": 32, "duration_ms": 1000, "private_path": "/not-exposed"},
+        metadata_revision=1,
+        draft_usage=(),
+        removal_blockers=(),
     )
     monkeypatch.setattr(services.asset_upload, "get_original", lambda _: (asset, image))
-    monkeypatch.setattr(services.asset_upload, "list_assets", lambda _: (asset,))
+    monkeypatch.setattr(services.asset_upload, "list_assets", lambda _, **__: (asset,))
     monkeypatch.setattr(services.render_jobs, "_ensure_worker", lambda: None)
     mapper: dict[str, Any] = {
         "projectors": [
@@ -4980,6 +5007,242 @@ def test_mcp_image_results_fit_exact_png_and_wire_budgets() -> None:
 
     with pytest.raises(ToolError, match="payload budget"):
         _image_result(image, {"samples": ["x" * 200000]})
+
+
+def test_asset_trash_rest_and_mcp_share_blockers_revisions_and_purge(tmp_path: Path) -> None:
+    runtime = ControllerRuntime()
+    services = _services(tmp_path, runtime)
+    services.asset_upload.object_cleanup_grace_seconds = 0
+    with TestClient(
+        create_app(runtime, gui_services=services), base_url="http://localhost"
+    ) as client:
+        _login(client)
+        project = client.post(
+            "/api/gui/v1/projects/from-active",
+            json={"name": "Trash fixture"},
+            headers=_mutation_headers(client),
+        ).json()
+        project_id = project["project"]["id"]
+        content = b"trash-me"
+        asset, upload = services.asset_upload.begin(
+            project_id=project_id,
+            name="Window loop",
+            original_filename="loop.mp4",
+            media_type="video/mp4",
+            total_bytes=len(content),
+            expected_sha256=None,
+            actor="admin",
+            role=Role.ADMINISTRATOR,
+            occurred_at="2026-10-20T12:00:00Z",
+        )
+        services.asset_upload.append(
+            upload_id=upload.id,
+            offset=0,
+            chunk=content,
+            actor="admin",
+            role=Role.ADMINISTRATOR,
+            occurred_at="2026-10-20T12:00:01Z",
+        )
+        with sqlite3.connect(services.repository.database_path) as connection:
+            connection.execute("UPDATE assets SET status = 'ready' WHERE id = ?", (asset.id,))
+        scene = project["draft"]["scenes"][0]
+        placed = client.post(
+            f"/api/gui/v1/projects/{project_id}/assets/{asset.id}/place",
+            json={
+                "scene_id": scene["id"],
+                "output_id": scene["media"][0]["id"] if scene["schema_version"] == 2 else None,
+            },
+            headers=_mutation_headers(client, if_match='"1"'),
+        )
+        assert placed.status_code == 200
+        listed = client.get(f"/api/gui/v1/projects/{project_id}/assets").json()[0]
+        assert listed["unused"] is False
+        assert listed["draft_usage"] == [f'scene "{scene["name"]}"']
+        assert "current draft" in listed["removal_blockers"][0]
+
+        blocked = client.post(
+            f"/api/gui/v1/projects/{project_id}/assets/{asset.id}/trash",
+            headers=_mutation_headers(client, if_match='"1"'),
+        )
+        assert blocked.status_code == 409
+        assert blocked.json()["detail"]["code"] == "asset_in_use"
+        assert blocked.json()["detail"]["blockers"] == listed["removal_blockers"]
+        reader = _mcp_token(services, project_id, (McpScope.READ,))
+        editor = _mcp_token(services, project_id, (McpScope.READ, McpScope.DIRECT_EDIT))
+        mcp_blocked = _mcp_tool(
+            client, editor, "trash_asset", asset_id=asset.id, metadata_revision=1
+        )
+        assert mcp_blocked["isError"] is True
+        assert "removal_blockers" in mcp_blocked["content"][0]["text"]
+        denied = _mcp_tool(client, reader, "trash_asset", asset_id=asset.id, metadata_revision=1)
+        assert denied["isError"] is True
+        assert "direct_edit" in denied["content"][0]["text"]
+
+        services.repository.update_draft(
+            project_id=project_id,
+            expected_revision=2,
+            draft=DraftProject.model_validate(project["draft"]),
+            actor="admin",
+            role=Role.ADMINISTRATOR,
+            occurred_at="2026-10-20T12:01:00Z",
+        )
+        capabilities = _mcp_tool(client, reader, "get_capabilities")["structuredContent"]
+        assert capabilities["features"]["asset_trash"] is True
+        assert capabilities["asset_lifecycle"]["trash_tool"] == "trash_asset"
+        assert capabilities["asset_lifecycle"]["permanent_delete"] == "administrator_gui_only"
+        metadata = _mcp_tool(client, reader, "list_asset_metadata")["structuredContent"]
+        assert metadata["assets"][0]["metadata_revision"] == 1
+        assert metadata["assets"][0]["removal_blockers"] == []
+        trashed = _mcp_tool(client, editor, "trash_asset", asset_id=asset.id, metadata_revision=1)
+        assert trashed["isError"] is False
+        assert trashed["structuredContent"]["metadata_revision"] == 2
+        assert trashed["structuredContent"]["purge_after"] is not None
+        assert client.get(f"/api/gui/v1/projects/{project_id}/assets").json() == []
+        trash = client.get(f"/api/gui/v1/projects/{project_id}/assets/trash").json()
+        assert [item["id"] for item in trash] == [asset.id]
+        assert trash[0]["trashed_by"] == "admin"
+        mcp_trash = _mcp_tool(client, reader, "list_trashed_assets")["structuredContent"]
+        assert mcp_trash["retention_days"] == 30
+        assert mcp_trash["assets"][0]["id"] == asset.id
+        rejected_place = client.post(
+            f"/api/gui/v1/projects/{project_id}/assets/{asset.id}/place",
+            json={
+                "scene_id": scene["id"],
+                "output_id": scene["media"][0]["id"] if scene["schema_version"] == 2 else None,
+            },
+            headers=_mutation_headers(client, if_match='"3"'),
+        )
+        assert rejected_place.status_code == 409
+        assert rejected_place.json()["detail"]["code"] == "asset_trashed"
+
+        stale = client.post(
+            f"/api/gui/v1/projects/{project_id}/assets/{asset.id}/restore",
+            headers=_mutation_headers(client, if_match='"1"'),
+        )
+        assert stale.status_code == 409
+        assert stale.json()["code"] == "asset_metadata_conflict"
+        restored = _mcp_tool(
+            client, editor, "restore_asset", asset_id=asset.id, metadata_revision=2
+        )
+        assert restored["isError"] is False
+        assert restored["structuredContent"]["metadata_revision"] == 3
+        retrashed = client.post(
+            f"/api/gui/v1/projects/{project_id}/assets/{asset.id}/trash",
+            headers=_mutation_headers(client, if_match='"3"'),
+        )
+        assert retrashed.status_code == 200
+        assert retrashed.headers["etag"] == '"4"'
+        mismatch = client.post(
+            f"/api/gui/v1/projects/{project_id}/assets/{asset.id}/purge",
+            json={"confirmation_name": "window loop"},
+            headers=_mutation_headers(client, if_match='"4"'),
+        )
+        assert mismatch.status_code == 422
+        assert mismatch.json()["detail"]["code"] == "asset_purge_confirmation_mismatch"
+        purged = client.post(
+            f"/api/gui/v1/projects/{project_id}/assets/{asset.id}/purge",
+            json={"confirmation_name": "Window loop"},
+            headers=_mutation_headers(client, if_match='"4"'),
+        )
+        assert purged.status_code == 200
+        assert purged.json()["released_bytes"] == len(content)
+        assert client.get(f"/api/gui/v1/projects/{project_id}/assets/trash").json() == []
+        actions = {event.action for event in services.repository.list_audit_events()}
+        assert {"asset.trash", "asset.restore", "asset.purge", "mcp.asset.trash"} <= actions
+
+
+def test_scene_media_preview_rest_and_mcp_render_assigned_media(tmp_path: Path) -> None:
+    runtime = ControllerRuntime()
+    services = _services(tmp_path, runtime)
+    with TestClient(
+        create_app(runtime, gui_services=services), base_url="http://localhost"
+    ) as client:
+        _login(client)
+        project = client.post(
+            "/api/gui/v1/projects/from-active",
+            json={"name": "Media preview fixture"},
+            headers=_mutation_headers(client),
+        ).json()
+        project_id = project["project"]["id"]
+        image = BytesIO()
+        Image.new("RGB", (32, 18), (200, 40, 10)).save(image, format="PNG")
+        content = image.getvalue()
+        asset, upload = services.asset_upload.begin(
+            project_id=project_id,
+            name="Red card",
+            original_filename="red.png",
+            media_type="image/png",
+            total_bytes=len(content),
+            expected_sha256=None,
+            actor="admin",
+            role=Role.ADMINISTRATOR,
+            occurred_at="2026-10-20T12:00:00Z",
+        )
+        services.asset_upload.append(
+            upload_id=upload.id,
+            offset=0,
+            chunk=content,
+            actor="admin",
+            role=Role.ADMINISTRATOR,
+            occurred_at="2026-10-20T12:00:01Z",
+        )
+        with sqlite3.connect(services.repository.database_path) as connection:
+            connection.execute("UPDATE assets SET status = 'ready' WHERE id = ?", (asset.id,))
+        scene = project["draft"]["scenes"][0]
+        output_id = scene["media"][0]["id"] if scene["schema_version"] == 2 else None
+        placed = client.post(
+            f"/api/gui/v1/projects/{project_id}/assets/{asset.id}/place",
+            json={"scene_id": scene["id"], "output_id": output_id},
+            headers=_mutation_headers(client, if_match='"1"'),
+        )
+        assert placed.status_code == 200
+
+        response = client.post(
+            f"/api/gui/v1/projects/{project_id}/scene-media-preview",
+            json={"source_revision": 2, "scene_id": scene["id"], "timestamp_ms": 0},
+            headers=_mutation_headers(client),
+        )
+        assert response.status_code == 200
+        preview = response.json()
+        assert preview["hardware_commands_sent"] is False
+        output = preview["outputs"][0]
+        assert output["state"] == "playing"
+        assert output["source"] == {
+            "kind": "asset",
+            "asset_id": asset.id,
+            "name": "Red card",
+            "media_type": "image/png",
+        }
+        decoded = Image.open(BytesIO(base64.b64decode(output["frame"]["data_base64"])))
+        assert decoded.size == (32, 18)
+        assert decoded.convert("RGB").getpixel((0, 0)) == (200, 40, 10)
+        invalid = client.post(
+            f"/api/gui/v1/projects/{project_id}/scene-media-preview",
+            json={"source_revision": 2, "scene_id": "missing", "timestamp_ms": 0},
+            headers=_mutation_headers(client),
+        )
+        assert invalid.status_code == 422
+        assert invalid.json()["detail"]["code"] == "scene_media_preview_invalid"
+
+        reader = _mcp_token(services, project_id, (McpScope.READ,))
+        simulator = _mcp_token(services, project_id, (McpScope.READ, McpScope.SIMULATION))
+        capabilities = _mcp_tool(client, reader, "get_capabilities")["structuredContent"]
+        assert capabilities["features"]["scene_media_preview"] is True
+        assert capabilities["tools"]["scene_media_preview"] == "preview_scene_media"
+        assert capabilities["scene_media_preview"]["requires_scope"] == "simulation"
+        denied = _mcp_tool(
+            client, reader, "preview_scene_media", scene_id=scene["id"], timestamp_ms=0
+        )
+        assert denied["isError"] is True
+        tool = _mcp_tool(
+            client, simulator, "preview_scene_media", scene_id=scene["id"], timestamp_ms=0
+        )
+        assert tool["isError"] is False
+        structured = tool["structuredContent"]["outputs"][0]
+        assert structured["frame"]["attached_image_index"] == 0
+        assert "data_base64" not in structured["frame"]
+        assert tool["content"][1]["type"] == "image"
+        assert tool["content"][1]["mimeType"] == "image/png"
 
 
 def _mcp_token(

@@ -30,6 +30,7 @@ import {
   exportProject,
   getActivity,
   getAssets,
+  getTrashedAssets,
   getInstallation,
   getInstallations,
   getLocalUsers,
@@ -48,6 +49,7 @@ import {
   operate,
   organizeScene,
   placeAsset,
+  purgeAsset,
   OperateAction,
   OutputArm,
   ProjectSummary,
@@ -62,6 +64,8 @@ import {
   stopOutputArm,
   Topology,
   updateInstallation,
+  restoreAsset,
+  trashAsset,
   updateAssetMetadata,
   updateProjectDraft,
   putLocalUser,
@@ -630,6 +634,7 @@ function ProjectCard({
 }) {
   const [name, setName] = useState(project.name);
   const [assets, setAssets] = useState<AssetRecord[] | null>(null);
+  const [trashedAssets, setTrashedAssets] = useState<AssetRecord[]>([]);
   const [draft, setDraft] = useState<ProjectDraftRecord | null>(null);
   const [assetSearch, setAssetSearch] = useState("");
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
@@ -672,13 +677,16 @@ function ProjectCard({
   }, []);
 
   const loadAssets = useCallback(async () => {
-      const [assetResult, draftResult] = await Promise.allSettled([
+      const [assetResult, draftResult, trashResult] = await Promise.allSettled([
         getAssets(project.id),
         getProjectDraft(project.id),
+        getTrashedAssets(project.id),
       ]);
       const issues: string[] = [];
       if (assetResult.status === "fulfilled") setAssets(assetResult.value);
       else issues.push("Assets could not be refreshed.");
+      if (trashResult.status === "fulfilled") setTrashedAssets(trashResult.value);
+      else issues.push("Asset trash could not be refreshed.");
       if (draftResult.status === "fulfilled") {
         if (!sceneDirtyRef.current && !interactionDirtyRef.current) {
           const loadedDraft = draftResult.value;
@@ -825,7 +833,7 @@ function ProjectCard({
           }} />
       </Suspense>}
       {draft && showView === "preview" && <Suspense fallback={<p>Loading preview workspace…</p>}>
-        <ShowPreviewWorkspace draft={draft} startWithVisitors={previewStartsWithVisitors} canTestVisitors={["designer", "operator", "publisher", "administrator"].includes(projectRole)} />
+        <ShowPreviewWorkspace draft={draft} assets={assets ?? []} startWithVisitors={previewStartsWithVisitors} canTestVisitors={["designer", "operator", "publisher", "administrator"].includes(projectRole)} />
         <SimulationScenarioPanel draft={draft} projectId={project.id} sceneId={sceneId}
           canEdit={canAuthor && !project.archived_at} />
       </Suspense>}
@@ -1006,13 +1014,14 @@ function ProjectCard({
                     ) : (
                       <small>
                         Used by{" "}
-                        {asset.references
-                          .map((reference) =>
-                            reference.output_id
-                              ? `${reference.scene_name} (${reference.output_id})`
-                              : reference.scene_name,
-                          )
-                          .join(", ")}
+                        {(asset.draft_usage?.length
+                          ? asset.draft_usage
+                          : asset.references.map((reference) =>
+                              reference.output_id
+                                ? `${reference.scene_name} (${reference.output_id})`
+                                : reference.scene_name,
+                            )
+                        ).join(", ")}
                       </small>
                     )}
                     {asset.error && <small role="alert">{asset.error}</small>}
@@ -1039,6 +1048,9 @@ function ProjectCard({
                       }}
                     />
                   )}
+                  {canAuthor && !project.archived_at && (
+                    <AssetRemoval asset={asset} onChanged={loadAssets} />
+                  )}
                 </div>
               </div>
             )}
@@ -1048,6 +1060,12 @@ function ProjectCard({
         ) : (
           <small>No assets imported.</small>
         )}
+        <AssetTrash
+          assets={trashedAssets}
+          canRestore={canAuthor && !project.archived_at}
+          canPurge={projectRole === "administrator"}
+          onChanged={loadAssets}
+        />
       </details>
       {draft && <ApplyPanel draft={draft} canApply={canPublish && canLiveOutput && !project.archived_at} runtime={runtime} runtimeFresh={runtimeFresh} />}
       {draft && (
@@ -1548,6 +1566,186 @@ function AssetGovernance({
         )}
       </form>
     </details>
+  );
+}
+
+function AssetRemoval({
+  asset,
+  onChanged,
+}: {
+  asset: AssetRecord;
+  onChanged: () => Promise<void>;
+}) {
+  const [working, setWorking] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const blockers = asset.removal_blockers ?? [];
+
+  async function moveToTrash() {
+    if (!window.confirm(`Move "${asset.name}" to the trash? You can restore it for 30 days.`)) {
+      return;
+    }
+    setWorking(true);
+    setError(null);
+    try {
+      await trashAsset(asset);
+      await onChanged();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "The asset could not be moved to the trash.");
+    } finally {
+      setWorking(false);
+    }
+  }
+
+  return (
+    <div className="asset-removal">
+      <button
+        aria-label={`Move ${asset.name} to trash`}
+        disabled={working || blockers.length > 0}
+        aria-describedby={blockers.length ? `asset-removal-blockers-${asset.id}` : undefined}
+        onClick={() => void moveToTrash()}
+      >
+        {working ? "Moving to trash…" : "Move to trash"}
+      </button>
+      {blockers.length > 0 && (
+        <div id={`asset-removal-blockers-${asset.id}`} className="asset-removal__blockers">
+          <small>Remove these uses before moving it to the trash:</small>
+          <ul>
+            {blockers.map((blocker) => (
+              <li key={blocker}>
+                <small>{blocker}</small>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {error && <small role="alert">{error}</small>}
+    </div>
+  );
+}
+
+function AssetTrash({
+  assets,
+  canRestore,
+  canPurge,
+  onChanged,
+}: {
+  assets: AssetRecord[];
+  canRestore: boolean;
+  canPurge: boolean;
+  onChanged: () => Promise<void>;
+}) {
+  return (
+    <details className="asset-trash">
+      <summary>Trash ({assets.length})</summary>
+      <small>
+        Trashed assets keep their files and can be restored. Each is deleted permanently
+        after 30 days unless a published release still needs it. Files shared with other
+        assets or shows are kept until nothing uses them.
+      </small>
+      {assets.length ? (
+        <ul aria-label="Trashed assets">
+          {assets.map((asset) => (
+            <AssetTrashItem
+              key={asset.id}
+              asset={asset}
+              canRestore={canRestore}
+              canPurge={canPurge}
+              onChanged={onChanged}
+            />
+          ))}
+        </ul>
+      ) : (
+        <small>The trash is empty.</small>
+      )}
+    </details>
+  );
+}
+
+function AssetTrashItem({
+  asset,
+  canRestore,
+  canPurge,
+  onChanged,
+}: {
+  asset: AssetRecord;
+  canRestore: boolean;
+  canPurge: boolean;
+  onChanged: () => Promise<void>;
+}) {
+  const [working, setWorking] = useState(false);
+  const [confirmation, setConfirmation] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const purgeBlockers = asset.purge_blockers ?? [];
+
+  async function perform(action: () => Promise<unknown>, failure: string) {
+    setWorking(true);
+    setError(null);
+    try {
+      await action();
+      await onChanged();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : failure);
+    } finally {
+      setWorking(false);
+    }
+  }
+
+  return (
+    <li className="asset-trash__item">
+      <strong>{asset.name}</strong>
+      <small>
+        {asset.original_filename ?? "Upload pending"} ·{" "}
+        {asset.size_bytes === null ? "—" : formatAssetBytes(asset.size_bytes)}
+      </small>
+      <small>
+        Moved to trash{asset.trashed_by ? ` by ${asset.trashed_by}` : ""}
+        {asset.trashed_at ? ` on ${new Date(asset.trashed_at).toLocaleString()}` : ""}
+        {asset.purge_after
+          ? ` · deleted permanently after ${new Date(asset.purge_after).toLocaleDateString()}`
+          : ""}
+      </small>
+      {purgeBlockers.map((blocker) => (
+        <small className="asset-diagnostic asset-diagnostic--warning" key={blocker}>
+          {blocker}
+        </small>
+      ))}
+      {canRestore && (
+        <button
+          aria-label={`Restore ${asset.name}`}
+          disabled={working}
+          onClick={() => void perform(() => restoreAsset(asset), "The asset could not be restored.")}
+        >
+          Restore
+        </button>
+      )}
+      {canPurge && (
+        <div className="asset-trash__purge">
+          <label>
+            Type <strong>{asset.name}</strong> to delete permanently
+            <input
+              aria-label={`Confirm permanent deletion of ${asset.name}`}
+              disabled={working || purgeBlockers.length > 0}
+              value={confirmation}
+              onChange={(event) => setConfirmation(event.target.value)}
+            />
+          </label>
+          <button
+            aria-label={`Delete ${asset.name} permanently`}
+            className="danger-button"
+            disabled={working || purgeBlockers.length > 0 || confirmation !== asset.name}
+            onClick={() =>
+              void perform(
+                () => purgeAsset(asset, confirmation),
+                "The asset could not be deleted permanently.",
+              )
+            }
+          >
+            Delete permanently
+          </button>
+        </div>
+      )}
+      {error && <small role="alert">{error}</small>}
+    </li>
   );
 }
 

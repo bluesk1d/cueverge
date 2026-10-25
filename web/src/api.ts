@@ -799,6 +799,55 @@ export interface SceneLightingPreview {
     next_pixel_offset: number | null;
     limitations: string[];
   }[];
+  /** Scene-level notes, such as LED compositions that need a bake to be shown. */
+  limitations?: string[];
+}
+
+export type MediaPreviewState =
+  | "unassigned" | "waiting" | "playing" | "looping" | "holding" | "stopped" | "error";
+
+export interface SceneMediaPreviewOutput {
+  output_id: string;
+  resource: string;
+  required: boolean;
+  start_delay_ms: number;
+  end_behavior: "stop" | "hold_last_frame" | "loop";
+  source:
+    | { kind: "composition"; composition_id: string; name: string; space_kind: string }
+    | { kind: "asset"; asset_id: string; name: string; media_type: string | null }
+    | null;
+  state: MediaPreviewState;
+  media_position_ms: number | null;
+  media_duration_ms: number | null;
+  frame: {
+    media_type: "image/png";
+    width: number;
+    height: number;
+    native_width: number;
+    native_height: number;
+    data_base64: string;
+  } | null;
+  audio: {
+    asset_id: string;
+    name: string;
+    source_position_ms: number;
+    gain_db: number;
+    mute: boolean;
+  }[];
+  message: string | null;
+}
+
+export interface SceneMediaPreview {
+  project_id: string;
+  source_revision: number;
+  scene_id: string;
+  timestamp_ms: number;
+  duration_ms: number;
+  unsaved: boolean;
+  evaluation: "controller_media_compositor";
+  hardware_commands_sent: false;
+  outputs: SceneMediaPreviewOutput[];
+  limitations: string[];
 }
 
 export type LightingFrameView = Pick<SceneLightingPreview, "timestamp_ms" | "unsaved" | "outputs">;
@@ -824,9 +873,10 @@ export async function previewSceneLighting(
   sourceRevision: number,
   sceneId: string,
   timestampMs: number,
-  resource: string,
+  resource: string | null,
   proposedDraft?: ProjectDraftRecord["draft"],
   signal?: AbortSignal,
+  pixelLimit = 4096,
 ): Promise<SceneLightingPreview> {
   return request<SceneLightingPreview>(
     `/api/gui/v1/projects/${encodeURIComponent(projectId)}/scene-lighting-preview`,
@@ -836,7 +886,31 @@ export async function previewSceneLighting(
       signal,
       body: JSON.stringify({
         source_revision: sourceRevision, scene_id: sceneId, timestamp_ms: timestampMs,
-        resource, proposed_draft: proposedDraft, pixel_limit: 4096,
+        resource, proposed_draft: proposedDraft, pixel_limit: pixelLimit,
+      }),
+    },
+    true,
+  );
+}
+
+export async function previewSceneMedia(
+  projectId: string,
+  sourceRevision: number,
+  sceneId: string,
+  timestampMs: number,
+  proposedDraft?: ProjectDraftRecord["draft"],
+  signal?: AbortSignal,
+  maxFrameWidth = 640,
+): Promise<SceneMediaPreview> {
+  return request<SceneMediaPreview>(
+    `/api/gui/v1/projects/${encodeURIComponent(projectId)}/scene-media-preview`,
+    {
+      method: "POST",
+      headers: mutationHeaders(),
+      signal,
+      body: JSON.stringify({
+        source_revision: sourceRevision, scene_id: sceneId, timestamp_ms: timestampMs,
+        proposed_draft: proposedDraft, max_frame_width: maxFrameWidth,
       }),
     },
     true,
@@ -915,8 +989,25 @@ export interface AssetRecord {
     output_id: string | null;
   }[];
   unused: boolean;
+  /** Where the current draft uses this asset (scenes, timeline layers, presets…). */
+  draft_usage: string[];
+  trashed_at: string | null;
+  trashed_by: string | null;
+  /** When the controller deletes a trashed asset permanently unless purge_blockers apply. */
+  purge_after: string | null;
+  /** Live uses that must be removed before the asset can move to the trash. */
+  removal_blockers: string[];
+  /** Reasons a trashed asset is kept, such as a published release kept for rollback. */
+  purge_blockers: string[];
   created_at: string;
   updated_at: string;
+}
+
+export interface AssetPurgeRecord {
+  asset_id: string;
+  name: string;
+  released_objects: number;
+  released_bytes: number;
 }
 
 export interface AssetUploadRecord {
@@ -2460,6 +2551,53 @@ export async function updateAssetMetadata(
       headers: { ...mutationHeaders(), "If-Match": `"${asset.metadata_revision}"` },
       body: JSON.stringify(values),
     },
+  );
+}
+
+export async function getTrashedAssets(projectId: string): Promise<AssetRecord[]> {
+  return request<AssetRecord[]>(
+    `/api/gui/v1/projects/${encodeURIComponent(projectId)}/assets/trash`,
+  );
+}
+
+function assetLifecyclePath(asset: AssetRecord, action: "trash" | "restore" | "purge"): string {
+  return `/api/gui/v1/projects/${encodeURIComponent(asset.project_id)}/assets/${encodeURIComponent(asset.id)}/${action}`;
+}
+
+export async function trashAsset(asset: AssetRecord): Promise<AssetRecord> {
+  return request<AssetRecord>(
+    assetLifecyclePath(asset, "trash"),
+    {
+      method: "POST",
+      headers: { ...mutationHeaders(), "If-Match": `"${asset.metadata_revision}"` },
+    },
+    true,
+  );
+}
+
+export async function restoreAsset(asset: AssetRecord): Promise<AssetRecord> {
+  return request<AssetRecord>(
+    assetLifecyclePath(asset, "restore"),
+    {
+      method: "POST",
+      headers: { ...mutationHeaders(), "If-Match": `"${asset.metadata_revision}"` },
+    },
+    true,
+  );
+}
+
+export async function purgeAsset(
+  asset: AssetRecord,
+  confirmationName: string,
+): Promise<AssetPurgeRecord> {
+  return request<AssetPurgeRecord>(
+    assetLifecyclePath(asset, "purge"),
+    {
+      method: "POST",
+      headers: { ...mutationHeaders(), "If-Match": `"${asset.metadata_revision}"` },
+      body: JSON.stringify({ confirmation_name: confirmationName }),
+    },
+    true,
   );
 }
 

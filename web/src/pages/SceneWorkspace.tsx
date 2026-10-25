@@ -11,6 +11,7 @@ import { AssetPreview, hasAssetArtifact } from "../components/AssetPreview";
 import { ErrorState } from "../components/ui";
 import { SceneAuthoringDialog } from "../components/SceneAuthoringDialog";
 import { SceneOutputActions } from "../components/SceneOutputActions";
+import { SceneMediaOutputs } from "../components/SceneMediaOutputs";
 
 type Document = ProjectDraftRecord["draft"];
 type Scene = Document["scenes"][number];
@@ -74,6 +75,7 @@ export function SceneWorkspace({
   const [saving, setSaving] = useState(false);
   const [authoring, setAuthoring] = useState<"scene" | "output" | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const [pulseTimes, setPulseTimes] = useState<string | null>(null);
   const [targetNames, setTargetNames] = useState<Record<string, string>>({});
   const dirty = useMemo(
@@ -107,6 +109,7 @@ export function SceneWorkspace({
     return () => window.removeEventListener("beforeunload", warn);
   }, [dirty]);
   useEffect(() => setPulseTimes(null), [sceneId, outputIndex, draft.revision]);
+  useEffect(() => setDeleteError(null), [sceneId]);
   const scene = document.scenes.find((candidate) => candidate.id === sceneId);
   const outputs = scene ? lighting(scene) : [];
   const output = outputs[outputIndex];
@@ -238,15 +241,17 @@ export function SceneWorkspace({
   async function removeScene(scene: Scene) {
     if (!window.confirm(`Delete scene "${scene.name}" from the saved show? Its scene-specific editor data will be removed. This does not change live playback.`)) return;
     setSaving(true);
-    setError(null);
+    setDeleteError(null);
     setPlaying(false);
     try {
       await onDelete(sceneId);
     } catch (failure) {
       const message = failure instanceof ApiError && failure.status === 409
         ? "The show changed since you opened it. Reload the saved show before deleting a scene."
-        : failure instanceof Error ? failure.message : "Scene deletion failed";
-      setError(`${message} Nothing was made live.`);
+        : failure instanceof ApiError && failure.status === 422
+          ? failure.message.replace(/^Cueverge API request failed \(422\): /, "")
+          : failure instanceof Error ? failure.message : "Scene deletion failed";
+      setDeleteError(`"${scene.name}" was not deleted. ${message}`);
     } finally {
       setSaving(false);
     }
@@ -307,6 +312,7 @@ export function SceneWorkspace({
             }}>Cancel scene edits</button>
             <button type="button" disabled={dirty || saving || document.scenes.length <= 1}
               onClick={() => void removeScene(scene)}>Delete scene</button>
+            {deleteError && <p role="alert" className="scene-delete-error">{deleteError}</p>}
             {dirty && <small>Save or cancel edits before deleting a scene.</small>}
             {document.scenes.length <= 1 && <small>Keep at least one scene in the show.</small>}
           </div>}
@@ -314,16 +320,21 @@ export function SceneWorkspace({
       </header>
       <div className="scene-editor-grid">
         <div>
-          {outputs.length > 0 ? <>
-          <ScenePreview
+          {(outputs.length > 0 || media.length > 0) && <>
+          {outputs.length > 0 && <ScenePreview
             projectId={draft.project.id} revision={draft.revision} document={document}
-            dirty={dirty} sceneId={sceneId} resource={resource} position={position}
+            dirty={dirty} sceneId={sceneId} resource="" position={position}
             valid={issues.length === 0}
             onTargetNames={setTargetNames}
             onFailure={() => setPlaying(false)}
-          />
+          />}
+          {media.length > 0 && <SceneMediaOutputs
+            projectId={draft.project.id} revision={draft.revision} document={document}
+            dirty={dirty} sceneId={sceneId} position={position} playing={playing}
+            valid={issues.length === 0} assets={assets}
+          />}
           <div className="scene-preview-controls">
-            <button disabled={!resource || issues.length > 0} onClick={() => setPlaying(!playing)}>
+            <button disabled={issues.length > 0} onClick={() => setPlaying(!playing)}>
               {playing ? "Pause scene preview" : "Play scene preview"}
             </button>
             <button onClick={() => { setPlaying(false); setPosition(0); }}>Restart scene preview</button>
@@ -333,6 +344,8 @@ export function SceneWorkspace({
             </label>
             <span>{time(position)} / {time(duration)}</span>
           </div>
+          </>}
+          {outputs.length > 0 ? <>
           <label>Lighting output
             <select value={outputIndex} onChange={(event) => { setOutputIndex(Number(event.target.value)); setEffectId(""); }}>
               {outputs.map((value, index) => (
@@ -372,7 +385,7 @@ export function SceneWorkspace({
             ] }));
             setEffectId(id);
           }}>Add light effect</button>}
-          </> : <p>This is a media-only scene. Preview assigned assets below, or use Add output to include lighting.</p>}
+          </> : <p>This is a media-only scene. Use Add output to include lighting.</p>}
           {advancedContributions > 0 && <div className="scene-advanced">
             <p>This scene also has {advancedContributions} synchronized cues, transform layers, or compositions. They are edited in the timeline editor.</p>
             <button onClick={onOpenTimeline}>Open timeline editor</button>
@@ -558,12 +571,15 @@ export function ScenePreview({ projectId, revision, document, dirty, sceneId, re
       setLoading(false); setError(null);
       return;
     }
-    if (!resource || !valid) {
+    if (!valid) {
       setFrame(null);
       setLoading(false);
-      setError(valid ? null : "Correct the scene fields to preview these edits.");
+      setError("Correct the scene fields to preview these edits.");
       return;
     }
+    const scene = document?.scenes.find((value) => value.id === sceneId);
+    const outputCount = Math.max(1, scene ? lighting(scene).length : 1);
+    const pixelLimit = resource ? 4096 : Math.max(1, Math.floor(4096 / outputCount));
     let current = true;
     let abort = new AbortController();
     let watchdog: number | undefined;
@@ -578,7 +594,7 @@ export function ScenePreview({ projectId, revision, document, dirty, sceneId, re
       setLoading(true);
       setError(null);
       watchdog = window.setTimeout(() => abort.abort(), 8000);
-      previewSceneLighting(projectId, revision, sceneId, requestedPosition, resource, dirty ? document : undefined, abort.signal)
+      previewSceneLighting(projectId, revision, sceneId, requestedPosition, resource || null, dirty ? document : undefined, abort.signal, pixelLimit)
         .then((value) => { if (current) setFrame(value); })
         .catch((failure: unknown) => {
           if (!current) return;
@@ -618,14 +634,27 @@ export function ScenePreview({ projectId, revision, document, dirty, sceneId, re
     return () => { current = false; };
   }, [installationId, retry, onTargetNames]);
   const photo = photos.find((value) => value.id === photoId);
-  const output = frame?.outputs[0];
+  const frameOutputs = frame?.outputs ?? [];
+  const outputsByResource = new Map(frameOutputs.map((value) => [value.resource, value]));
   const photoGeometry = geometryForBackground(geometry, photoId || null)
-    .filter((value) => resources[value.id] === resource);
-  const allocationMismatch = output && photoGeometry.some((value) =>
-    (value.start_index ?? 0) + (value.pixel_count ?? 0) > output.pixel_count);
-  const mapped = (allocationMismatch ? [] : photoGeometry)
-    .flatMap(photoPixelPoints).filter((pixel) => output && pixel.outputIndex >= output.pixel_offset &&
-      pixel.outputIndex < output.pixel_offset + output.colors.length);
+    .filter((value) => resource ? resources[value.id] === resource : outputsByResource.has(resources[value.id]));
+  const allocationMismatch = photoGeometry.some((value) => {
+    const evaluated = outputsByResource.get(resources[value.id]);
+    return evaluated !== undefined &&
+      (value.start_index ?? 0) + (value.pixel_count ?? 0) > evaluated.pixel_count;
+  });
+  const mapped = (allocationMismatch ? [] : photoGeometry).flatMap((value) => {
+    const evaluated = outputsByResource.get(resources[value.id]);
+    if (!evaluated) return [];
+    return photoPixelPoints(value)
+      .filter((pixel) => pixel.outputIndex >= evaluated.pixel_offset &&
+        pixel.outputIndex < evaluated.pixel_offset + evaluated.colors.length)
+      .map((pixel) => ({ ...pixel, color: evaluated.colors[pixel.outputIndex - evaluated.pixel_offset] }));
+  });
+  const sampledCount = frameOutputs.reduce((total, value) => total + value.colors.length, 0);
+  const outputLimitations = frameOutputs.flatMap((value) => value.limitations ?? []);
+  const sceneLimitations = frame && "limitations" in frame && Array.isArray(frame.limitations)
+    ? frame.limitations as string[] : [];
   return <section className="scene-preview" aria-label={intent ? "Controller intended LED output" : "Scene lighting preview"}>
     <header><strong>{intent ? "Last sent LED colors" : "Scene preview"}</strong><span>{intent ? "Read-only observation · not physical feedback" : "Simulation only · no hardware commands"}</span></header>
     {photos.length > 0 && <label>Preview photo<select value={photoId} onChange={(event) => setPhotoId(event.target.value)}>
@@ -640,8 +669,7 @@ export function ScenePreview({ projectId, revision, document, dirty, sceneId, re
           preserveAspectRatio="xMidYMid meet" onError={() => setPhotoFailed(true)} />}
         <g className="scene-led-overlay">
           {mapped.map((pixel, index) => {
-            const raw = output!.colors[pixel.outputIndex - output!.pixel_offset];
-            const display = nightPreviewColor(raw);
+            const display = nightPreviewColor(pixel.color);
             return display === null ? null : <circle className="scene-led" key={index}
               cx={pixel.x * 1000} cy={pixel.y * 600} r="3"
               fill={display} style={{ color: display }} aria-hidden="true" />;
@@ -671,15 +699,15 @@ export function ScenePreview({ projectId, revision, document, dirty, sceneId, re
             )))}
           </div>
         </div>
-        <small>{mapped.length} photo locations · {output?.colors.length ?? 0} sampled LEDs.</small>
-        {intent && output?.limitations?.map((message) => <p role="status" key={message}>{message}</p>)}
+        <small>{mapped.length} photo locations · {sampledCount} sampled LEDs{frameOutputs.length > 1 ? ` across ${frameOutputs.length} outputs` : ""}.</small>
+        {intent && outputLimitations.map((message) => <p role="status" key={message}>{message}</p>)}
       </details>
       <small>
-        {output && output.next_pixel_offset !== null && " Output is paged; only the sampled range is shown."}
-        {mapped.length > 0 && output && new Set(mapped.map((pixel) => pixel.outputIndex)).size < output.colors.length &&
-          " The photo does not cover every sampled LED."}
+        {frameOutputs.some((value) => value.next_pixel_offset !== null) && " Output is paged; only the sampled range is shown."}
+        {mapped.length > 0 && mapped.length < sampledCount && " The photo does not cover every sampled LED."}
       </small>
-      {!intent && output?.limitations?.map((message) => <p role="status" key={message}>{message}</p>)}
+      {!intent && outputLimitations.map((message) => <p role="status" key={message}>{message}</p>)}
+      {sceneLimitations.map((message) => <p role="status" key={message}>{message}</p>)}
     </div>}
   </section>;
 }

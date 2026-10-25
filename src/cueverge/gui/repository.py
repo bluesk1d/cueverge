@@ -1266,6 +1266,28 @@ class GuiRepository:
         self._migrate_optional_geometry_photos()
         self._migrate_stage_reference()
         self._migrate_projector_stage_placement()
+        self._migrate_asset_trash()
+
+    def _migrate_asset_trash(self) -> None:
+        with closing(self._connect()) as connection, connection:
+            asset_columns = {
+                str(row["name"]) for row in connection.execute("PRAGMA table_info(assets)")
+            }
+            for column in ("trashed_at", "trashed_by", "purge_after"):
+                if column not in asset_columns:
+                    connection.execute(f"ALTER TABLE assets ADD COLUMN {column} TEXT")
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_assets_trash ON assets(purge_after) "
+                "WHERE trashed_at IS NOT NULL"
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_asset_revisions_digest "
+                "ON asset_revisions(digest_sha256)"
+            )
+            connection.execute(
+                "INSERT OR IGNORE INTO schema_migrations(version,applied_at) "
+                "VALUES (44,strftime('%Y-%m-%dT%H:%M:%fZ','now'))"
+            )
 
     def _migrate_projector_stage_placement(self) -> None:
         from cueverge.gui.projector_mapping import refresh_surface_placements
@@ -2995,7 +3017,7 @@ class GuiRepository:
                 SELECT id, name, current_revision, owner, license, provenance,
                        review_status, expires_on, folder, tags_json, favorite
                 FROM assets
-                WHERE project_id = ?
+                WHERE project_id = ? AND trashed_at IS NULL
                 ORDER BY created_at, id
                 """,
                 (project_id,),

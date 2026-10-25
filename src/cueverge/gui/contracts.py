@@ -1467,8 +1467,31 @@ class AssetResponse(GuiModel):
     artifact_faults: tuple[str, ...]
     references: tuple[AssetSceneReferenceResponse, ...]
     unused: bool
+    draft_usage: tuple[str, ...] = ()
+    trashed_at: str | None = None
+    trashed_by: str | None = None
+    purge_after: str | None = None
+    removal_blockers: tuple[str, ...] = ()
+    purge_blockers: tuple[str, ...] = ()
     created_at: str
     updated_at: str
+
+
+class AssetRemovalBlockedResponse(GuiModel):
+    code: Literal["asset_in_use"] = "asset_in_use"
+    message: str
+    blockers: tuple[str, ...]
+
+
+class PurgeAssetRequest(GuiModel):
+    confirmation_name: str = Field(min_length=1, max_length=200)
+
+
+class AssetPurgeResponse(GuiModel):
+    asset_id: str
+    name: str
+    released_objects: int = Field(ge=0)
+    released_bytes: int = Field(ge=0)
 
 
 class AssetUploadResponse(GuiModel):
@@ -2573,6 +2596,16 @@ class SceneLightingPreviewRequest(GuiModel):
     resource: str | None = None
     pixel_offset: int = Field(default=0, ge=0)
     pixel_limit: int = Field(default=1000, ge=1, le=4096)
+    proposed_draft: DraftProject | None = None
+
+
+class SceneMediaPreviewRequest(GuiModel):
+    source_revision: int = Field(ge=1)
+    scene_id: str = Field(min_length=1)
+    timestamp_ms: int = Field(ge=0)
+    output_id: str | None = Field(default=None, min_length=1)
+    include_frames: bool = True
+    max_frame_width: int = Field(default=640, ge=64, le=1920)
     proposed_draft: DraftProject | None = None
 
 

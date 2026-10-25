@@ -358,19 +358,22 @@ def delete_scene(draft: DraftProject, scene_id: str) -> DraftProject:
         if scene.id == scene_id:
             continue
         if scene.failure_scene_id == scene_id:
-            references.append(f"fallback for {scene.name} ({scene.id})")
+            references.append(f"failure fallback of scene {scene.name} ({scene.id})")
         if scene.completion.target_scene_id == scene_id:
-            references.append(f"completion transition from {scene.name} ({scene.id})")
+            references.append(f"the ending of scene {scene.name} ({scene.id}), which plays it next")
     if draft.program is not None:
         if draft.program.initial_scene_id == scene_id:
-            references.append("automatic program starting scene")
+            references.append("the starting scene in Show plan (choose another under Starts with)")
         for pool in draft.program.pools:
             if any(entry.scene_id == scene_id for entry in pool.scenes):
-                references.append(f"automatic program pool {pool.id}")
+                references.append(
+                    f"the Show plan shuffle list ({pool.id}); remove it there, adding "
+                    "another scene first if it is the only one"
+                )
     if draft.opportunities is not None:
         for opportunity in draft.opportunities.opportunities:
             if opportunity.scene_id == scene_id:
-                references.append(f"visitor response {opportunity.id}")
+                references.append(f"visitor response {opportunity.id} (Interactions)")
     if draft.encounter is not None:
         if draft.encounter.ambient_scene_id == scene_id:
             references.append("encounter ambient scene")

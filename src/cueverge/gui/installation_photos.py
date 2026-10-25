@@ -70,6 +70,9 @@ class InstallationPhotoService:
                 os.replace(temporary, object_path)
             finally:
                 temporary.unlink(missing_ok=True)
+        else:
+            # A fresh mtime keeps a reused object inside the asset-store cleanup grace period.
+            os.utime(object_path)
         return digest
 
     def create(

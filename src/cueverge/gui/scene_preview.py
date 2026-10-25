@@ -8,8 +8,10 @@ from typing import TYPE_CHECKING
 
 from cueverge.core.loader import load_show_package
 from cueverge.core.models import SceneDefinitionV2
-from cueverge.gui.compiler import DraftCompiler
+from cueverge.gui.compiler import CompilationError, DraftCompiler
 from cueverge.gui.contracts import DraftProject, SceneLightingPreviewRequest
+from cueverge.gui.mapper_export import MapperExportError
+from cueverge.gui.render_jobs import RenderJobError
 from cueverge.lighting.evaluation import evaluate_lighting_output
 
 if TYPE_CHECKING:
@@ -46,6 +48,14 @@ def preview_project_scene(
     ):
         raise ScenePreviewError("preview cannot change the project's installation binding")
     unsaved = draft != stored.draft
+    lighting_artifacts: dict[str, Path] | None = None
+    if not unsaved:
+        try:
+            lighting_artifacts = services.render_jobs.lighting_artifacts(
+                stored.project.id, stored.revision
+            )
+        except (RenderJobError, MapperExportError, ValueError, OSError):
+            lighting_artifacts = None
     return evaluate_scene_lighting(
         project_id=stored.project.id,
         source_revision=stored.revision,
@@ -56,6 +66,7 @@ def preview_project_scene(
         pixel_offset=request.pixel_offset,
         pixel_limit=request.pixel_limit,
         unsaved=unsaved,
+        lighting_artifacts=lighting_artifacts,
     )
 
 
@@ -70,6 +81,7 @@ def evaluate_scene_lighting(
     pixel_offset: int = 0,
     pixel_limit: int = 1000,
     unsaved: bool = False,
+    lighting_artifacts: dict[str, Path] | None = None,
 ) -> dict[str, object]:
     scene = next((candidate for candidate in draft.scenes if candidate.id == scene_id), None)
     if scene is None:
@@ -105,11 +117,21 @@ def evaluate_scene_lighting(
         _preview_slot(),
         tempfile.TemporaryDirectory(prefix="cueverge-scene-preview-") as directory,
     ):
-        compiled = DraftCompiler(Path(directory)).compile(
-            project_id=project_id,
-            revision=source_revision,
-            draft=draft,
-        )
+        compiler = DraftCompiler(Path(directory))
+        try:
+            compiled = compiler.compile(
+                project_id=project_id,
+                revision=source_revision,
+                draft=draft,
+                lighting_artifacts=lighting_artifacts or None,
+            )
+        except CompilationError:
+            if not lighting_artifacts:
+                raise
+            compiled = compiler.compile(
+                project_id=project_id, revision=source_revision, draft=draft
+            )
+        scene_limitations: list[str] = []
         missing = compiled.package_root / "runtime" / "lighting-bake-required.json"
         if missing.exists():
             required = set(json.loads(missing.read_text())["composition_ids"])
@@ -119,10 +141,27 @@ def evaluate_scene_lighting(
             contexts = next(
                 item["contexts"] for item in graph["scenes"] if item["scene_id"] == scene_id
             )
-            if any(context["editing_space_id"] in required for context in contexts):
-                raise ScenePreviewError(
-                    "This scene uses spatial lighting compositions. "
-                    "Use the advanced composition preview; raw-scene preview does not replace it."
+            compositions = draft.editor_metadata.get("compositions")
+            names = sorted(
+                {
+                    _composition_name(compositions, str(context["editing_space_id"]))
+                    for context in contexts
+                    if context["editing_space_id"] in required
+                }
+            )
+            # The preview package is temporary; the marker only blocks runtime playback.
+            missing.unlink()
+            if names:
+                scene_limitations.append(
+                    "LED compositions not shown: "
+                    + ", ".join(names)
+                    + (
+                        ". Save the scene, then bake them (Timeline editor > Bake LED "
+                        "animation) to include them in this preview."
+                        if unsaved
+                        else ". Bake them for this saved revision (Timeline editor > Bake LED "
+                        "animation) to include them in this preview."
+                    )
                 )
         loaded = load_show_package(compiled.package_root).require(scene_id)
         outputs = tuple(
@@ -175,4 +214,11 @@ def evaluate_scene_lighting(
             "evaluation": "production_lighting_renderer",
             "hardware_commands_sent": False,
             "outputs": result,
+            "limitations": scene_limitations,
         }
+
+
+def _composition_name(compositions: object, composition_id: str) -> str:
+    composition = compositions.get(composition_id) if isinstance(compositions, dict) else None
+    name = composition.get("name") if isinstance(composition, dict) else None
+    return name if isinstance(name, str) and name else composition_id

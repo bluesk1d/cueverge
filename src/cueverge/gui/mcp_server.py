@@ -30,7 +30,13 @@ from starlette.responses import JSONResponse, Response
 from cueverge.core.loader import ShowPackageError
 from cueverge.gui.apply import ApplyError, ApplyRequest
 from cueverge.gui.artifact_deployment import ArtifactDeploymentError
-from cueverge.gui.asset_upload import AssetUploadError
+from cueverge.gui.asset_upload import (
+    ASSET_TRASH_RETENTION,
+    AssetMetadataConflictError,
+    AssetRemovalBlockedError,
+    AssetUploadError,
+    StoredAsset,
+)
 from cueverge.gui.authoring_schema import authoring_schema
 from cueverge.gui.compiler import CompilationError
 from cueverge.gui.contracts import (
@@ -51,6 +57,7 @@ from cueverge.gui.contracts import (
     ReplaceInstallationPhotoRequest,
     Role,
     SceneLightingPreviewRequest,
+    SceneMediaPreviewRequest,
     ShowPlanEditRequest,
     StageReferenceRequest,
     UpdateRevisionReleaseRequest,
@@ -95,6 +102,7 @@ from cueverge.gui.scene_authoring import (
     save_scene_output_change,
     scene_authoring_options,
 )
+from cueverge.gui.scene_media_preview import SceneMediaPreviewError, preview_project_scene_media
 from cueverge.gui.scene_preview import ScenePreviewError, preview_project_scene
 from cueverge.gui.service import GuiServices
 from cueverge.gui.show_plan import ShowPlanError, apply_show_plan_edit, describe_show_plan
@@ -552,8 +560,11 @@ def create_mcp_app(services: GuiServices) -> Starlette:
             asset = services.asset_upload.get_asset(parsed.asset_id)
             if asset.project_id != token.project_id:
                 raise ToolError("Replacement asset is outside the token project")
-            if asset.status != "ready":
-                raise ToolError("Replacement asset must be ready and not quarantined or failed")
+            if asset.status != "ready" or asset.trashed_at is not None:
+                raise ToolError(
+                    "Replacement asset must be ready, not in the trash, "
+                    "and not quarantined or failed"
+                )
             if asset.size_bytes is None or not 0 < asset.size_bytes <= MAX_PHOTO_BYTES:
                 raise ToolError("Replacement asset exceeds the 25 MB photo limit")
             if asset.original_filename is None or asset.media_type is None:
@@ -780,7 +791,9 @@ def create_mcp_app(services: GuiServices) -> Starlette:
 
         Saved or unsaved candidates remain isolated. No hardware commands are sent.
         Returns bounded pixel pages, revision, time and explicit coverage. This is
-        not a live monitor. Spatial compositions use preview_composition instead.
+        not a live monitor. Saved revisions include current LED composition bakes;
+        unbaked LED compositions are listed in limitations. Use preview_scene_media
+        for projector/media outputs at the same scene time.
         """
         token = _authorize(services, McpScope.SIMULATION)
         try:
@@ -807,6 +820,69 @@ def create_mcp_app(services: GuiServices) -> Starlette:
             ValidationError,
         ) as error:
             raise ToolError(str(error)) from error
+
+    @tool()
+    def preview_scene_media(
+        scene_id: str,
+        timestamp_ms: int,
+        source_revision: int | None = None,
+        proposed_draft: dict[str, JsonValue] | None = None,
+        output_id: str | None = None,
+        include_frames: bool = True,
+        max_frame_width: int = 640,
+    ) -> CallToolResult:
+        """Preview every media output of a scene at one scene time; requires simulation.
+
+        Mirrors controller media selection: a scene composition targeting the output
+        wins, otherwise the assigned asset plays after start_delay_ms and follows
+        end_behavior (state waiting/playing/looping/holding/stopped/unassigned/error).
+        Returns per-output source, media position, active audio sources and PNG stills
+        (also attached as images). Pair with preview_scene_lighting for LEDs at the
+        same timestamp. No hardware commands are sent.
+        """
+        token = _authorize(services, McpScope.SIMULATION)
+        try:
+            revision = services.repository.get_revision(token.project_id, source_revision)
+            request = SceneMediaPreviewRequest(
+                source_revision=revision.revision,
+                scene_id=scene_id,
+                timestamp_ms=timestamp_ms,
+                output_id=output_id,
+                include_frames=include_frames,
+                max_frame_width=max_frame_width,
+                proposed_draft=(
+                    DraftProject.model_validate(proposed_draft)
+                    if proposed_draft is not None
+                    else None
+                ),
+            )
+            preview = preview_project_scene_media(services, token.project_id, request)
+        except (ProjectNotFoundError, SceneMediaPreviewError, ValidationError) as error:
+            raise ToolError(str(error)) from error
+        images: list[ImageContent] = []
+        for output in cast(list[dict[str, object]], preview["outputs"]):
+            frame = output.get("frame")
+            if isinstance(frame, dict):
+                images.append(
+                    ImageContent(
+                        type="image", mime_type="image/png", data=str(frame["data_base64"])
+                    )
+                )
+                output["frame"] = {
+                    **{key: value for key, value in frame.items() if key != "data_base64"},
+                    "attached_image_index": len(images) - 1,
+                }
+        structured = _bounded_result(preview)
+        result = CallToolResult(
+            content=[TextContent(type="text", text=json.dumps(structured)), *images],
+            structured_content=structured,
+        )
+        if len(result.model_dump_json(by_alias=True).encode()) > MAX_MCP_PAYLOAD_BYTES:
+            raise ToolError(
+                "preview exceeds the MCP payload budget; request one output_id or a smaller "
+                "max_frame_width"
+            )
+        return result
 
     @tool()
     def get_project_draft(revision: int | None = None) -> dict[str, JsonValue]:
@@ -1498,12 +1574,14 @@ def create_mcp_app(services: GuiServices) -> Starlette:
                     "controller_timed_scenes": True,
                     "led_only_scenes": True,
                     "scene_lighting_preview": True,
+                    "scene_media_preview": True,
                     "scene_deletion": True,
                     "scene_creation": True,
                     "scene_output_creation": True,
                     "scene_output_rename": True,
                     "scene_output_removal": True,
                     "media_only_scenes": True,
+                    "asset_trash": True,
                     "geometry_editing": False,
                     "live_media_rendering": False,
                 },
@@ -1541,10 +1619,36 @@ def create_mcp_app(services: GuiServices) -> Starlette:
                     "remove_scene_output": "remove_scene_output",
                     "preview": "preview_composition",
                     "scene_lighting_preview": "preview_scene_lighting",
+                    "scene_media_preview": "preview_scene_media",
                     "bake": "create_render_job",
                     "bake_list": "get_render_jobs",
                     "bake_status": "get_render_job",
                     "bake_cancel": "cancel_render_job",
+                    "list_assets": "list_asset_metadata",
+                    "trash_asset": "trash_asset",
+                    "restore_asset": "restore_asset",
+                    "asset_trash": "list_trashed_assets",
+                },
+                "asset_lifecycle": {
+                    "read_tool": "list_asset_metadata",
+                    "trash_tool": "trash_asset",
+                    "restore_tool": "restore_asset",
+                    "trash_list_tool": "list_trashed_assets",
+                    "edit_scope": "direct_edit",
+                    "revision_argument": "metadata_revision",
+                    "retention_days": ASSET_TRASH_RETENTION.days,
+                    "trash_blocked_by": [
+                        "current draft of any show",
+                        "installation projector review content",
+                        "accepted timing calibration test asset",
+                        "staged or active release",
+                    ],
+                    "historical_revisions_block_trash": False,
+                    "purge_kept_for": "any published release that references the asset",
+                    "shared_file_content": "deleted only when no asset or photo references it",
+                    "permanent_delete": "administrator_gui_only",
+                    "ui_workflow": "Show > Assets > Move to trash; Show > Assets > Trash",
+                    "hardware_commands_sent": False,
                 },
                 "authoring_representations": {
                     "runtime_scene_media": {
@@ -1592,6 +1696,29 @@ def create_mcp_app(services: GuiServices) -> Starlette:
                     "concurrent_evaluations": 2,
                     "spatial_compositions": "use preview_composition",
                     "evaluation": "production_lighting_renderer",
+                    "led_composition_bakes": "included for the saved revision when current",
+                },
+                "scene_media_preview": {
+                    "tool": "preview_scene_media",
+                    "requires_scope": "simulation",
+                    "saved_and_unsaved_candidates": True,
+                    "hardware_commands_sent": False,
+                    "source_precedence": ["scene composition targeting the output", "asset"],
+                    "timing": "scene time minus start_delay_ms, then end_behavior",
+                    "states": [
+                        "unassigned",
+                        "waiting",
+                        "playing",
+                        "looping",
+                        "holding",
+                        "stopped",
+                        "error",
+                    ],
+                    "frames": "PNG stills from the bake compositor, attached as images",
+                    "max_frame_width": 1920,
+                    "concurrent_evaluations": 2,
+                    "pair_with": "preview_scene_lighting at the same timestamp_ms",
+                    "ui_workflow": "Scenes > Scene preview; Show > Preview > Scene preview",
                 },
                 "permissions": {
                     "preview": "simulation",
@@ -2025,12 +2152,15 @@ def create_mcp_app(services: GuiServices) -> Starlette:
                     "id": asset.id,
                     "name": asset.name,
                     "status": asset.status,
+                    "metadata_revision": asset.metadata_revision,
                     "media_type": asset.media_type,
                     "size_bytes": asset.size_bytes,
                     "owner": asset.owner,
                     "license": asset.license,
                     "review_status": asset.review_status,
                     "tags": list(asset.tags),
+                    "draft_usage": list(asset.draft_usage),
+                    "removal_blockers": list(asset.removal_blockers),
                     "metadata": {
                         key: value
                         for key, value in (asset.metadata or {}).items()
@@ -2049,6 +2179,92 @@ def create_mcp_app(services: GuiServices) -> Starlette:
                 for asset in selected
             ],
             "truncated": len(selected) < len(assets),
+        }
+
+    @tool()
+    def list_trashed_assets(limit: int = 50) -> dict[str, JsonValue]:
+        """List this show's asset trash with purge dates and what keeps each file.
+
+        Trashed assets keep their files and IDs; restore_asset brings one back.
+        After purge_after the controller deletes it permanently unless purge_blockers
+        apply. Immediate permanent deletion is administrator GUI-only.
+        """
+        token = _authorize(services, McpScope.READ)
+        safe_limit = max(1, min(limit, MAX_ASSET_RESULTS))
+        assets = services.asset_upload.list_assets(token.project_id, trashed=True)
+        selected = assets[:safe_limit]
+        return {
+            "project_id": token.project_id,
+            "retention_days": ASSET_TRASH_RETENTION.days,
+            "assets": [_trashed_asset_result(asset) for asset in selected],
+            "truncated": len(selected) < len(assets),
+        }
+
+    @tool()
+    def trash_asset(asset_id: str, metadata_revision: int) -> dict[str, JsonValue]:
+        """Move an asset to this show's trash (direct_edit); recoverable for 30 days.
+
+        Pass metadata_revision from list_asset_metadata. Refused while the current
+        draft of any show, installation projector content, a timing calibration, or a
+        staged/active release uses it; the error lists removal_blockers to resolve
+        first (for example remove its media layer). Cancels an unfinished upload.
+        Never deletes files immediately; no publish, apply or hardware commands.
+        """
+        token = _authorize(services, McpScope.DIRECT_EDIT)
+        try:
+            asset = services.asset_upload.trash(
+                project_id=token.project_id,
+                asset_id=asset_id,
+                expected_revision=metadata_revision,
+                actor=token.username,
+                role=_token_role(services, token),
+                occurred_at=_now_iso(),
+            )
+        except AssetUploadError as error:
+            raise ToolError(_asset_lifecycle_message(error)) from error
+        _audit(
+            services,
+            token,
+            "mcp.asset.trash",
+            asset_id,
+            "success",
+            details={"metadata_revision": asset.metadata_revision},
+        )
+        return {**_trashed_asset_result(asset), "hardware_commands_sent": False}
+
+    @tool()
+    def restore_asset(asset_id: str, metadata_revision: int) -> dict[str, JsonValue]:
+        """Restore a trashed asset with its ID, revisions and metadata (direct_edit).
+
+        Pass metadata_revision from list_trashed_assets. Restoring does not re-place it
+        in scenes. No publish, apply or hardware commands.
+        """
+        token = _authorize(services, McpScope.DIRECT_EDIT)
+        try:
+            asset = services.asset_upload.restore(
+                project_id=token.project_id,
+                asset_id=asset_id,
+                expected_revision=metadata_revision,
+                actor=token.username,
+                role=_token_role(services, token),
+                occurred_at=_now_iso(),
+            )
+        except AssetUploadError as error:
+            raise ToolError(_asset_lifecycle_message(error)) from error
+        _audit(
+            services,
+            token,
+            "mcp.asset.restore",
+            asset_id,
+            "success",
+            details={"metadata_revision": asset.metadata_revision},
+        )
+        return {
+            "id": asset.id,
+            "name": asset.name,
+            "status": asset.status,
+            "metadata_revision": asset.metadata_revision,
+            "hardware_commands_sent": False,
         }
 
     @tool()
@@ -2783,6 +2999,32 @@ def _bounded_timeline_items(
             if len(selected) >= 1000:
                 break
     return selected
+
+
+def _trashed_asset_result(asset: StoredAsset) -> dict[str, JsonValue]:
+    return {
+        "id": asset.id,
+        "name": asset.name,
+        "status": asset.status,
+        "metadata_revision": asset.metadata_revision,
+        "media_type": asset.media_type,
+        "size_bytes": asset.size_bytes,
+        "trashed_at": asset.trashed_at,
+        "trashed_by": asset.trashed_by,
+        "purge_after": asset.purge_after,
+        "purge_blockers": list(asset.purge_blockers),
+    }
+
+
+def _asset_lifecycle_message(error: AssetUploadError) -> str:
+    if isinstance(error, AssetRemovalBlockedError):
+        return "Asset is still in use; resolve removal_blockers first: " + " ".join(error.blockers)
+    if isinstance(error, AssetMetadataConflictError):
+        return (
+            f"Asset metadata_revision is stale; current revision is {error.current_revision}. "
+            "Re-read the asset and retry."
+        )
+    return str(error)
 
 
 def _audit(

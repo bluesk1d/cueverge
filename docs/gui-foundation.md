@@ -340,37 +340,46 @@ or rollback release follows the replacement automatically. If the replacement
 fails or is quarantined, the current binding does not move. “Version as new
 asset” instead creates a new UUID and leaves all references unchanged.
 
-Removal is a soft-delete operation. It is rejected while the asset revision is
-referenced by a current draft, retained historical draft, published or rollback
-release, active processing/publication job, or explicit legal/administrative
-hold. Removing the last eligible reference moves the logical asset to
-recoverable trash for **30 days**. Restore preserves UUIDs, revisions,
-governance metadata, and references. Expiration and rejected review status do
-not delete content automatically; they affect validation and operator
-diagnostics.
+Removal is a soft-delete operation. It is rejected while the asset is in live
+use: referenced by the current draft of any project (scenes, timeline layers,
+compositions, presets; stale `asset_bindings` entries excluded), installation
+projector review content, an accepted timing-calibration test asset, or a
+staged/active release. Retained historical drafts do not block removal so that
+media once placed can still be removed; restoring such a revision after the
+asset is purged reports `asset_missing` until it is relinked. Removing the
+asset moves it to recoverable trash for **30 days** and cancels any unfinished
+upload. Restore preserves UUIDs, revisions, governance metadata, and
+references. Trashed assets cannot be placed, edited, or published, but their
+originals stay readable so published and rollback packages keep working.
+Expiration and rejected review status do not delete content automatically;
+they affect validation and operator diagnostics.
 
 Retention and garbage collection use mark-and-sweep:
 
-1. Mark every digest reachable from current and retained historical draft
-   bindings, published/rollback manifests, active jobs and uploads, trash still
-   inside its 30-day window, and explicit holds.
-2. Include all database references to a digest before considering a deduplicated
-   object unreachable.
-3. Produce an audited dry-run manifest containing digest, bytes, reason, and
-   owning asset revisions.
-4. Under the asset-store maintenance lock, re-read reachability and delete only
-   objects still unmarked. A failed or interrupted sweep is safe to repeat.
-5. Derived artifacts are reconstructible caches. They may be evicted before
+1. A trashed asset is purged (its logical record and revisions deleted, with
+   an `asset.purge` audit event) after its 30-day window, unless it is still in
+   live use or referenced by any published release manifest, which keeps it for
+   rollback.
+2. Mark every digest still referenced by any asset revision (any project,
+   including trashed assets) or installation photo before considering a
+   deduplicated object unreachable.
+3. Under the asset-store lock that serializes upload finalization, delete only
+   unmarked originals and their derived artifacts. Objects modified within a
+   10-minute grace period are kept (reused objects have their mtime refreshed),
+   so concurrent photo writes are never removed. A failed or interrupted sweep
+   is safe to repeat.
+4. Derived artifacts are reconstructible caches. They may be evicted before
    originals under quota pressure when no active job or release staging area
    uses them; their metadata is changed to pending so regeneration is explicit.
-6. Temporary uploads and failed-generation temporary files have separate
+5. Temporary uploads and failed-generation temporary files have separate
    bounded cleanup and are never treated as accepted originals.
 
-Automatic sweeping may reclaim only items whose 30-day trash period has
-elapsed. Immediate permanent purge requires administrator authorization,
-impact disclosure, typed confirmation, and an audit event. Garbage collection
-never runs concurrently with publication promotion, backup snapshot creation,
-or asset replacement.
+The controller sweeps at startup and hourly. Automatic sweeping reclaims only
+items whose 30-day trash period has elapsed, plus unreferenced objects.
+Immediate permanent purge requires project administrator authorization,
+typed confirmation of the asset name, the current metadata revision, and an
+audit event; it is GUI/HTTP-only and not exposed over MCP. Garbage collection
+never runs concurrently with upload finalization.
 
 An asset backup is a consistent pair of:
 

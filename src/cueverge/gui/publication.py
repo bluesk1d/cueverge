@@ -180,7 +180,7 @@ class PublicationService:
             for scene in draft.scenes
             for reference in _scene_asset_ids(scene.model_dump(mode="json"))
         }
-        assets = {asset.id: asset for asset in self.assets.list_assets(project_id)}
+        assets = {asset.id: asset for asset in self.assets.list_assets(project_id, trashed=None)}
         for asset_id in sorted(referenced_assets):
             asset = assets.get(asset_id)
             if asset is None:
@@ -188,6 +188,12 @@ class PublicationService:
                     "asset_missing",
                     f"Referenced asset {asset_id} is not in the project. "
                     "Relink the reference or import the asset before publishing.",
+                )
+            elif asset.trashed_at is not None:
+                add(
+                    "asset_trashed",
+                    f"Asset {asset.name} is in the trash. "
+                    "Restore it from the asset trash or replace the reference before publishing.",
                 )
             elif asset.status == "quarantined":
                 add(

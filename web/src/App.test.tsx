@@ -121,8 +121,57 @@ test("shows the authenticated shell and truthful overview", async () => {
 });
 
 test("navigates across the exact top-level workspaces", async () => {
-  vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+  const lifecycleCalls: { path: string; ifMatch: string | null; body: unknown }[] = [];
+  vi.spyOn(window, "confirm").mockReturnValue(true);
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
     const path = String(input);
+    if (/\/assets\/asset-\d\/(trash|restore|purge)$/.test(path)) {
+      lifecycleCalls.push({
+        path,
+        ifMatch: new Headers(init?.headers).get("If-Match"),
+        body: init?.body ? JSON.parse(String(init.body)) : null,
+      });
+      return jsonResponse({});
+    }
+    if (path.endsWith("/projects/project-1/assets/trash")) {
+      return jsonResponse([
+        {
+          id: "asset-3",
+          project_id: "project-1",
+          name: "Old intro",
+          status: "ready",
+          current_revision: 1,
+          metadata_revision: 4,
+          owner: null,
+          license: null,
+          provenance: null,
+          review_status: "unreviewed",
+          expires_on: null,
+          folder: null,
+          tags: [],
+          favorite: false,
+          error: null,
+          digest_sha256: "c".repeat(64),
+          size_bytes: 4096,
+          media_type: "video/mp4",
+          original_filename: "old-intro.mp4",
+          scan_status: "unavailable",
+          metadata: { status: "ready" },
+          original_file_status: "available",
+          artifact_faults: [],
+          references: [],
+          unused: true,
+          draft_usage: [],
+          trashed_at: "2026-10-20T12:00:00Z",
+          trashed_by: "designer",
+          purge_after: "2026-11-19T12:00:00Z",
+          removal_blockers: [],
+          purge_blockers: [],
+          created_at: "2026-10-13T06:00:00Z",
+          updated_at: "2026-10-20T12:00:00Z",
+        },
+      ]);
+    }
     if (path.endsWith("/auth/session")) {
       return jsonResponse({ username: "operator", role: "administrator" });
     }
@@ -263,6 +312,14 @@ test("navigates across the exact top-level workspaces", async () => {
             },
           ],
           unused: false,
+          draft_usage: ['scene "Ambient"'],
+          trashed_at: null,
+          trashed_by: null,
+          purge_after: null,
+          removal_blockers: [
+            "Used in this show's current draft: scene \"Ambient\". Remove it there first.",
+          ],
+          purge_blockers: [],
           created_at: "2026-10-13T06:00:00Z",
           updated_at: "2026-10-13T06:01:00Z",
         },
@@ -292,6 +349,12 @@ test("navigates across the exact top-level workspaces", async () => {
           artifact_faults: ["review: missing"],
           references: [],
           unused: true,
+          draft_usage: [],
+          trashed_at: null,
+          trashed_by: null,
+          purge_after: null,
+          removal_blockers: [],
+          purge_blockers: [],
           created_at: "2026-10-13T06:02:00Z",
           updated_at: "2026-10-13T06:02:00Z",
         },
@@ -409,7 +472,44 @@ test("navigates across the exact top-level workspaces", async () => {
   expect(screen.getByText(/-18.2 LUFS/)).toBeInTheDocument();
   expect(screen.queryByText(/Malware scan/i)).not.toBeInTheDocument();
   expect(screen.getByText("Original file: available")).toBeInTheDocument();
-  expect(screen.getByText("Used by Ambient (left-window)")).toBeInTheDocument();
+  expect(screen.getByText('Used by scene "Ambient"')).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Move Window loop to trash" })).toBeDisabled();
+  expect(screen.getByText(/Remove it there first/)).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Move Missing loop to trash" }));
+  await waitFor(() =>
+    expect(lifecycleCalls).toContainEqual({
+      path: "/api/gui/v1/projects/project-1/assets/asset-2/trash",
+      ifMatch: '"1"',
+      body: null,
+    }),
+  );
+  fireEvent.click(screen.getByText("Trash (1)", { selector: "summary" }));
+  const trashList = screen.getByRole("list", { name: "Trashed assets" });
+  expect(within(trashList).getAllByText("Old intro")).toHaveLength(2);
+  expect(screen.getByText(/Moved to trash by designer/)).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Restore Old intro" }));
+  await waitFor(() =>
+    expect(lifecycleCalls).toContainEqual({
+      path: "/api/gui/v1/projects/project-1/assets/asset-3/restore",
+      ifMatch: '"4"',
+      body: null,
+    }),
+  );
+  const purgeButton = screen.getByRole("button", { name: "Delete Old intro permanently" });
+  expect(purgeButton).toBeDisabled();
+  fireEvent.change(
+    screen.getByRole("textbox", { name: "Confirm permanent deletion of Old intro" }),
+    { target: { value: "Old intro" } },
+  );
+  await waitFor(() => expect(purgeButton).toBeEnabled());
+  fireEvent.click(purgeButton);
+  await waitFor(() =>
+    expect(lifecycleCalls).toContainEqual({
+      path: "/api/gui/v1/projects/project-1/assets/asset-3/purge",
+      ifMatch: '"4"',
+      body: { confirmation_name: "Old intro" },
+    }),
+  );
   expect(screen.getByText("Original file: missing")).toBeInTheDocument();
   expect(screen.getByText("Artifact review: missing")).toBeInTheDocument();
   expect(screen.getByText("Unused in the current draft")).toBeInTheDocument();

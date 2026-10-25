@@ -7,8 +7,9 @@ import sqlite3
 import subprocess
 import sys
 import threading
-from dataclasses import dataclass, replace
-from datetime import UTC, datetime
+import time
+from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePath
 from typing import Literal, cast
 from uuid import uuid4
@@ -39,6 +40,25 @@ THUMBNAIL_ARTIFACT_TYPE = ("image/jpeg", ".jpg")
 WAVEFORM_ARTIFACT_TYPE = ("image/png", ".png")
 DERIVATIVE_PROFILE = "review-v1"
 MEDIA_TOOL_MODULE = "cueverge.gui.media_tools"
+ASSET_TRASH_RETENTION = timedelta(days=30)
+OBJECT_CLEANUP_GRACE_SECONDS = 600.0
+TRASH_SWEEP_ACTOR = "system:asset_trash"
+_ASSET_COLUMNS = """
+    a.id, a.project_id, a.name, a.status, a.current_revision,
+    a.metadata_revision, a.owner, a.license, a.provenance,
+    a.review_status, a.expires_on, a.folder, a.tags_json,
+    a.favorite, a.trashed_at, a.trashed_by, a.purge_after,
+    a.error, a.created_at, a.updated_at,
+    r.digest_sha256, r.size_bytes, r.media_type,
+    r.original_filename, r.scan_status, r.metadata_json
+"""
+_EDITOR_USAGE_LABELS = {
+    "timeline_transform_layers": "timeline media layers",
+    "lighting_author_layers": "lighting layers",
+    "compositions": "compositions",
+    "composition_instances": "composition instances",
+    "scene_presets": "scene presets",
+}
 
 
 class AssetUploadError(RuntimeError):
@@ -59,6 +79,20 @@ class AssetMetadataConflictError(AssetUploadError):
 
 class AssetMetadataLockedError(AssetUploadError):
     pass
+
+
+class AssetTrashStateError(AssetUploadError):
+    pass
+
+
+class AssetPurgeConfirmationError(AssetUploadError):
+    pass
+
+
+class AssetRemovalBlockedError(AssetUploadError):
+    def __init__(self, blockers: tuple[str, ...]) -> None:
+        super().__init__("asset is still in use: " + " ".join(blockers))
+        self.blockers = blockers
 
 
 @dataclass(frozen=True)
@@ -97,6 +131,86 @@ class StoredAsset:
     artifact_faults: tuple[str, ...] = ()
     references: tuple[AssetSceneReference, ...] = ()
     unused: bool = True
+    trashed_at: str | None = None
+    trashed_by: str | None = None
+    purge_after: str | None = None
+    draft_usage: tuple[str, ...] = ()
+    removal_blockers: tuple[str, ...] = ()
+    purge_blockers: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class AssetPurgeResult:
+    asset_id: str
+    name: str
+    released_objects: int
+    released_bytes: int
+
+
+@dataclass(frozen=True)
+class AssetTrashSweepResult:
+    purged_asset_ids: tuple[str, ...]
+    retained: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    released_objects: int = 0
+    released_bytes: int = 0
+
+
+@dataclass(frozen=True)
+class _AssetUsage:
+    """Live references that keep an asset out of the trash or block permanent deletion."""
+
+    drafts: dict[str, tuple[str, str]]
+    projector_content: dict[str, tuple[str, ...]]
+    calibration_assets: frozenset[str]
+    packages: tuple[tuple[str, int, str, str], ...]
+    _parsed: dict[str, object] = field(default_factory=dict)
+
+    def draft_usage(self, project_id: str, asset_id: str) -> tuple[str, ...]:
+        entry = self.drafts.get(project_id)
+        if entry is None or f'"{asset_id}"' not in entry[1]:
+            return ()
+        if project_id not in self._parsed:
+            self._parsed[project_id] = json.loads(entry[1])
+        return _draft_usage(self._parsed[project_id], asset_id)
+
+    def removal_blockers(self, asset_id: str, project_id: str) -> tuple[str, ...]:
+        blockers: list[str] = []
+        own_usage = self.draft_usage(project_id, asset_id)
+        if own_usage:
+            blockers.append(
+                f"Used in this show's current draft: {', '.join(own_usage)}. Remove it there first."
+            )
+        for other_id, (name, _) in sorted(self.drafts.items(), key=lambda item: item[1][0]):
+            if other_id == project_id:
+                continue
+            usage = self.draft_usage(other_id, asset_id)
+            if usage:
+                blockers.append(f'Used in the current draft of show "{name}": {", ".join(usage)}.')
+        for surface in self.projector_content.get(asset_id, ()):
+            blockers.append(f'Used as projector review content for surface "{surface}".')
+        if asset_id in self.calibration_assets:
+            blockers.append("Used as the test asset of an accepted timing calibration.")
+        for package_project, revision, state, manifest in self.packages:
+            if state in {"staged", "active"} and f'"{asset_id}"' in manifest:
+                blockers.append(
+                    f"Part of the {state} release of show "
+                    f'"{self._project_name(package_project)}" (revision {revision}).'
+                )
+        return tuple(blockers)
+
+    def purge_blockers(self, asset_id: str, project_id: str) -> tuple[str, ...]:
+        blockers = list(self.removal_blockers(asset_id, project_id))
+        for package_project, revision, state, manifest in self.packages:
+            if state not in {"staged", "active"} and f'"{asset_id}"' in manifest:
+                blockers.append(
+                    "Kept for rollback: published release of show "
+                    f'"{self._project_name(package_project)}" (revision {revision}).'
+                )
+        return tuple(dict.fromkeys(blockers))
+
+    def _project_name(self, project_id: str) -> str:
+        entry = self.drafts.get(project_id)
+        return entry[0] if entry is not None else project_id
 
 
 @dataclass(frozen=True)
@@ -119,6 +233,7 @@ class AssetUploadService:
         self.artifact_root = self.root / "derived"
         self._lock = threading.Lock()
         self._processing_lock = threading.Lock()
+        self.object_cleanup_grace_seconds = OBJECT_CLEANUP_GRACE_SECONDS
         for path in (self.root, self.upload_root, self.object_root, self.artifact_root):
             path.mkdir(parents=True, exist_ok=True, mode=0o700)
 
@@ -319,14 +434,8 @@ class AssetUploadService:
     def get_asset(self, asset_id: str) -> StoredAsset:
         with self._connect() as connection:
             row = connection.execute(
-                """
-                SELECT a.id, a.project_id, a.name, a.status, a.current_revision,
-                       a.metadata_revision, a.owner, a.license, a.provenance,
-                       a.review_status, a.expires_on, a.folder, a.tags_json,
-                       a.favorite,
-                       a.error, a.created_at, a.updated_at,
-                       r.digest_sha256, r.size_bytes, r.media_type,
-                       r.original_filename, r.scan_status, r.metadata_json
+                f"""
+                SELECT {_ASSET_COLUMNS}
                 FROM assets AS a
                 LEFT JOIN asset_revisions AS r
                   ON r.asset_id = a.id AND r.revision = a.current_revision
@@ -334,11 +443,23 @@ class AssetUploadService:
                 """,
                 (asset_id,),
             ).fetchone()
-        if row is None:
-            raise AssetUploadError("asset does not exist")
-        return self._with_diagnostics(_stored_asset(row))
+            if row is None:
+                raise AssetUploadError("asset does not exist")
+            usage = _load_usage(connection)
+        return self._with_diagnostics(_stored_asset(row), usage=usage)
 
-    def list_assets(self, project_id: str) -> tuple[StoredAsset, ...]:
+    def list_assets(
+        self,
+        project_id: str,
+        *,
+        trashed: bool | None = False,
+    ) -> tuple[StoredAsset, ...]:
+        """List project assets; trashed=False (default) active, True trash only, None all."""
+        trash_filter = {
+            False: "AND a.trashed_at IS NULL",
+            True: "AND a.trashed_at IS NOT NULL",
+            None: "",
+        }[trashed]
         with self._connect() as connection:
             if (
                 connection.execute(
@@ -349,24 +470,21 @@ class AssetUploadService:
             ):
                 raise AssetUploadError("project does not exist")
             rows = connection.execute(
-                """
-                SELECT a.id, a.project_id, a.name, a.status, a.current_revision,
-                       a.metadata_revision, a.owner, a.license, a.provenance,
-                       a.review_status, a.expires_on, a.folder, a.tags_json,
-                       a.favorite,
-                       a.error, a.created_at, a.updated_at,
-                       r.digest_sha256, r.size_bytes, r.media_type,
-                       r.original_filename, r.scan_status, r.metadata_json
+                f"""
+                SELECT {_ASSET_COLUMNS}
                 FROM assets AS a
                 LEFT JOIN asset_revisions AS r
                   ON r.asset_id = a.id AND r.revision = a.current_revision
-                WHERE a.project_id = ?
+                WHERE a.project_id = ? {trash_filter}
                 ORDER BY a.updated_at DESC, a.id
                 """,
                 (project_id,),
             ).fetchall()
+            usage = _load_usage(connection)
         draft = self.repository.get_revision(project_id).draft
-        return tuple(self._with_diagnostics(_stored_asset(row), draft=draft) for row in rows)
+        return tuple(
+            self._with_diagnostics(_stored_asset(row), draft=draft, usage=usage) for row in rows
+        )
 
     def update_metadata(
         self,
@@ -389,7 +507,7 @@ class AssetUploadService:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
                 """
-                SELECT a.metadata_revision, p.archived_at
+                SELECT a.metadata_revision, a.trashed_at, p.archived_at
                 FROM assets AS a
                 JOIN projects AS p ON p.id = a.project_id
                 WHERE a.id = ?
@@ -400,6 +518,8 @@ class AssetUploadService:
                 raise AssetUploadError("asset does not exist")
             if row["archived_at"] is not None:
                 raise AssetMetadataLockedError("archived project assets cannot be edited")
+            if row["trashed_at"] is not None:
+                raise AssetMetadataLockedError("restore the asset from the trash before editing it")
             current_revision = int(row["metadata_revision"])
             if current_revision != expected_revision:
                 raise AssetMetadataConflictError(current_revision)
@@ -452,6 +572,321 @@ class AssetUploadService:
             connection.commit()
         return self.get_asset(asset_id)
 
+    def trash(
+        self,
+        *,
+        project_id: str,
+        asset_id: str,
+        expected_revision: int,
+        actor: str,
+        role: Role,
+        occurred_at: str,
+    ) -> StoredAsset:
+        """Soft-delete an asset unless live work still uses it; files are kept for restore."""
+        purge_after = _format_timestamp(_parse_timestamp(occurred_at) + ASSET_TRASH_RETENTION)
+        with self._lock:
+            with self._connect() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                row = _lifecycle_row(connection, asset_id, project_id)
+                if row["archived_at"] is not None:
+                    raise AssetMetadataLockedError("archived project assets cannot be edited")
+                if row["trashed_at"] is not None:
+                    raise AssetTrashStateError("asset is already in the trash")
+                current_revision = int(row["metadata_revision"])
+                if current_revision != expected_revision:
+                    raise AssetMetadataConflictError(current_revision)
+                blockers = _load_usage(connection).removal_blockers(asset_id, project_id)
+                if blockers:
+                    raise AssetRemovalBlockedError(blockers)
+                canceled_uploads = connection.execute(
+                    "SELECT id, temp_name FROM asset_uploads "
+                    "WHERE asset_id = ? AND state = 'active'",
+                    (asset_id,),
+                ).fetchall()
+                cancel_message = "upload canceled because the asset was moved to the trash"
+                if canceled_uploads:
+                    connection.execute(
+                        """
+                        UPDATE asset_uploads SET state = 'failed', error = ?, updated_at = ?
+                        WHERE asset_id = ? AND state = 'active'
+                        """,
+                        (cancel_message, occurred_at, asset_id),
+                    )
+                    if row["current_revision"] is None:
+                        connection.execute(
+                            "UPDATE assets SET status = 'failed', error = ? WHERE id = ?",
+                            (cancel_message, asset_id),
+                        )
+                connection.execute(
+                    """
+                    UPDATE assets
+                    SET trashed_at = ?, trashed_by = ?, purge_after = ?,
+                        metadata_revision = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (occurred_at, actor, purge_after, current_revision + 1, occurred_at, asset_id),
+                )
+                _insert_audit(
+                    connection,
+                    actor=actor,
+                    action="asset.trash",
+                    target=asset_id,
+                    occurred_at=occurred_at,
+                    context={
+                        "role": role.value,
+                        "project_id": project_id,
+                        "previous_metadata_revision": current_revision,
+                        "purge_after": purge_after,
+                        "canceled_uploads": [str(item["id"]) for item in canceled_uploads],
+                    },
+                )
+                connection.commit()
+            for item in canceled_uploads:
+                (self.upload_root / str(item["temp_name"])).unlink(missing_ok=True)
+        return self.get_asset(asset_id)
+
+    def restore(
+        self,
+        *,
+        project_id: str,
+        asset_id: str,
+        expected_revision: int,
+        actor: str,
+        role: Role,
+        occurred_at: str,
+    ) -> StoredAsset:
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = _lifecycle_row(connection, asset_id, project_id)
+            if row["archived_at"] is not None:
+                raise AssetMetadataLockedError("archived project assets cannot be edited")
+            if row["trashed_at"] is None:
+                raise AssetTrashStateError("asset is not in the trash")
+            current_revision = int(row["metadata_revision"])
+            if current_revision != expected_revision:
+                raise AssetMetadataConflictError(current_revision)
+            connection.execute(
+                """
+                UPDATE assets
+                SET trashed_at = NULL, trashed_by = NULL, purge_after = NULL,
+                    metadata_revision = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (current_revision + 1, occurred_at, asset_id),
+            )
+            _insert_audit(
+                connection,
+                actor=actor,
+                action="asset.restore",
+                target=asset_id,
+                occurred_at=occurred_at,
+                context={
+                    "role": role.value,
+                    "project_id": project_id,
+                    "previous_metadata_revision": current_revision,
+                },
+            )
+            connection.commit()
+        return self.get_asset(asset_id)
+
+    def purge(
+        self,
+        *,
+        project_id: str,
+        asset_id: str,
+        expected_revision: int,
+        confirmation_name: str,
+        actor: str,
+        role: Role,
+        occurred_at: str,
+    ) -> AssetPurgeResult:
+        """Permanently delete a trashed asset now; shared file content stays while referenced."""
+        with self._lock:
+            with self._connect() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                row = _lifecycle_row(connection, asset_id, project_id)
+                if row["trashed_at"] is None:
+                    raise AssetTrashStateError(
+                        "move the asset to the trash before deleting it permanently"
+                    )
+                if confirmation_name != str(row["name"]):
+                    raise AssetPurgeConfirmationError(
+                        "type the asset name exactly to confirm permanent deletion"
+                    )
+                current_revision = int(row["metadata_revision"])
+                if current_revision != expected_revision:
+                    raise AssetMetadataConflictError(current_revision)
+                digests, temp_names = self._delete_trashed(
+                    connection,
+                    row,
+                    actor=actor,
+                    occurred_at=occurred_at,
+                    context={"role": role.value, "trigger": "administrator"},
+                )
+                connection.commit()
+            released_objects, released_bytes = self._release_storage(digests, temp_names)
+        return AssetPurgeResult(
+            asset_id=asset_id,
+            name=str(row["name"]),
+            released_objects=released_objects,
+            released_bytes=released_bytes,
+        )
+
+    def sweep_trash(self, *, occurred_at: str | None = None) -> AssetTrashSweepResult:
+        """Purge trash past its retention window, then reclaim unreferenced stored files."""
+        now_text = occurred_at or _now_iso()
+        now = _parse_timestamp(now_text)
+        purged: list[str] = []
+        retained: dict[str, tuple[str, ...]] = {}
+        with self._lock:
+            with self._connect() as connection:
+                candidates = [
+                    str(row["id"])
+                    for row in connection.execute(
+                        "SELECT id, purge_after FROM assets WHERE trashed_at IS NOT NULL"
+                    ).fetchall()
+                    if row["purge_after"] is not None
+                    and _parse_timestamp(str(row["purge_after"])) <= now
+                ]
+            for asset_id in candidates:
+                with self._connect() as connection:
+                    connection.execute("BEGIN IMMEDIATE")
+                    try:
+                        row = _lifecycle_row(connection, asset_id, None)
+                    except AssetUploadError:
+                        connection.execute("ROLLBACK")
+                        continue
+                    if (
+                        row["trashed_at"] is None
+                        or row["purge_after"] is None
+                        or _parse_timestamp(str(row["purge_after"])) > now
+                    ):
+                        connection.execute("ROLLBACK")
+                        continue
+                    try:
+                        _, temp_names = self._delete_trashed(
+                            connection,
+                            row,
+                            actor=TRASH_SWEEP_ACTOR,
+                            occurred_at=now_text,
+                            context={"trigger": "trash_retention_expired"},
+                        )
+                    except AssetRemovalBlockedError as error:
+                        connection.execute("ROLLBACK")
+                        retained[asset_id] = error.blockers
+                        continue
+                    connection.commit()
+                for name in temp_names:
+                    (self.upload_root / name).unlink(missing_ok=True)
+                purged.append(asset_id)
+            released_objects, released_bytes = self._collect_garbage(None)
+        return AssetTrashSweepResult(
+            purged_asset_ids=tuple(purged),
+            retained=retained,
+            released_objects=released_objects,
+            released_bytes=released_bytes,
+        )
+
+    def _delete_trashed(
+        self,
+        connection: sqlite3.Connection,
+        row: sqlite3.Row,
+        *,
+        actor: str,
+        occurred_at: str,
+        context: dict[str, object],
+    ) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        asset_id = str(row["id"])
+        blockers = _load_usage(connection).purge_blockers(asset_id, str(row["project_id"]))
+        if blockers:
+            raise AssetRemovalBlockedError(blockers)
+        revisions = connection.execute(
+            "SELECT digest_sha256, size_bytes FROM asset_revisions WHERE asset_id = ?",
+            (asset_id,),
+        ).fetchall()
+        temp_names = tuple(
+            str(item["temp_name"])
+            for item in connection.execute(
+                "SELECT temp_name FROM asset_uploads WHERE asset_id = ?",
+                (asset_id,),
+            ).fetchall()
+        )
+        connection.execute("DELETE FROM assets WHERE id = ?", (asset_id,))
+        digests = tuple(sorted({str(item["digest_sha256"]) for item in revisions}))
+        _insert_audit(
+            connection,
+            actor=actor,
+            action="asset.purge",
+            target=asset_id,
+            occurred_at=occurred_at,
+            context={
+                **context,
+                "project_id": str(row["project_id"]),
+                "name": str(row["name"]),
+                "trashed_at": str(row["trashed_at"]),
+                "digests": list(digests),
+                "revision_bytes": sum(int(item["size_bytes"]) for item in revisions),
+            },
+        )
+        return digests, temp_names
+
+    def _release_storage(
+        self,
+        digests: tuple[str, ...],
+        temp_names: tuple[str, ...],
+    ) -> tuple[int, int]:
+        for name in temp_names:
+            (self.upload_root / name).unlink(missing_ok=True)
+        return self._collect_garbage(digests)
+
+    def _collect_garbage(self, candidates: tuple[str, ...] | None) -> tuple[int, int]:
+        """Delete stored originals/derivatives no asset revision or photo references.
+
+        Callers hold self._lock, which serializes upload finalization. Files modified
+        within the grace period are kept so concurrent photo writes are never removed.
+        """
+        with self._connect() as connection:
+            referenced = {
+                str(row[0])
+                for row in connection.execute(
+                    "SELECT digest_sha256 FROM asset_revisions "
+                    "UNION SELECT digest_sha256 FROM installation_photos"
+                ).fetchall()
+            }
+        if candidates is None:
+            found: set[str] = set()
+            for root in (self.object_root, self.artifact_root):
+                for prefix in root.iterdir():
+                    if not prefix.is_dir() or len(prefix.name) != 2:
+                        continue
+                    found.update(
+                        entry.name
+                        for entry in prefix.iterdir()
+                        if _is_digest(entry.name) and entry.name.startswith(prefix.name)
+                    )
+            candidates = tuple(sorted(found))
+        cutoff = time.time() - self.object_cleanup_grace_seconds
+        released_objects = 0
+        released_bytes = 0
+        for digest in candidates:
+            if digest in referenced or not _is_digest(digest):
+                continue
+            object_path = self.object_root / digest[:2] / digest
+            derived_path = self.artifact_root / digest[:2] / digest
+            if object_path.is_file():
+                stat = object_path.stat()
+                if stat.st_mtime > cutoff:
+                    continue
+                object_path.unlink(missing_ok=True)
+                released_objects += 1
+                released_bytes += stat.st_size
+            if derived_path.is_dir():
+                released_bytes += sum(
+                    item.stat().st_size for item in derived_path.rglob("*") if item.is_file()
+                )
+                shutil.rmtree(derived_path, ignore_errors=True)
+        return released_objects, released_bytes
+
     def get_upload(self, upload_id: str) -> StoredAssetUpload:
         with self._connect() as connection:
             row = connection.execute(
@@ -501,6 +936,7 @@ class AssetUploadService:
             if object_path.stat().st_size != int(row["total_bytes"]):
                 raise AssetUploadError("existing content-addressed object size is inconsistent")
             temp_path.unlink()
+            os.utime(object_path)
         else:
             os.replace(temp_path, object_path)
             object_path.chmod(0o600)
@@ -814,6 +1250,7 @@ class AssetUploadService:
         asset: StoredAsset,
         *,
         draft: DraftProject | None = None,
+        usage: _AssetUsage | None = None,
     ) -> StoredAsset:
         original_file_status: Literal["pending", "available", "missing", "size_mismatch"]
         if asset.digest_sha256 is None:
@@ -850,12 +1287,20 @@ class AssetUploadService:
                     artifact_faults.append(f"{kind}: size mismatch")
         current_draft = draft or self.repository.get_revision(asset.project_id).draft
         references = _asset_references(current_draft, asset.id)
+        if usage is None:
+            with self._connect() as connection:
+                usage = _load_usage(connection)
+        draft_usage = usage.draft_usage(asset.project_id, asset.id)
+        trashed = asset.trashed_at is not None
         return replace(
             asset,
             original_file_status=original_file_status,
             artifact_faults=tuple(artifact_faults),
             references=references,
-            unused=not references,
+            unused=not references and not draft_usage,
+            draft_usage=draft_usage,
+            removal_blockers=() if trashed else usage.removal_blockers(asset.id, asset.project_id),
+            purge_blockers=usage.purge_blockers(asset.id, asset.project_id) if trashed else (),
         )
 
     def _artifact_path(self, digest: str, kind: str, media_type: str) -> Path:
@@ -1087,4 +1532,149 @@ def _stored_asset(row: sqlite3.Row) -> StoredAsset:
         metadata=metadata,
         created_at=str(row["created_at"]),
         updated_at=str(row["updated_at"]),
+        trashed_at=str(row["trashed_at"]) if row["trashed_at"] is not None else None,
+        trashed_by=str(row["trashed_by"]) if row["trashed_by"] is not None else None,
+        purge_after=str(row["purge_after"]) if row["purge_after"] is not None else None,
     )
+
+
+def _lifecycle_row(
+    connection: sqlite3.Connection,
+    asset_id: str,
+    project_id: str | None,
+) -> sqlite3.Row:
+    row = connection.execute(
+        """
+        SELECT a.id, a.project_id, a.name, a.status, a.current_revision,
+               a.metadata_revision, a.trashed_at, a.purge_after, p.archived_at
+        FROM assets AS a
+        JOIN projects AS p ON p.id = a.project_id
+        WHERE a.id = ?
+        """,
+        (asset_id,),
+    ).fetchone()
+    if row is None or (project_id is not None and str(row["project_id"]) != project_id):
+        raise AssetUploadError("asset does not exist")
+    return cast(sqlite3.Row, row)
+
+
+def _load_usage(connection: sqlite3.Connection) -> _AssetUsage:
+    tables = {
+        str(row[0])
+        for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+    }
+    drafts = {
+        str(row["id"]): (str(row["name"]), str(row["content_json"]))
+        for row in connection.execute(
+            """
+            SELECT p.id, p.name, r.content_json
+            FROM projects AS p
+            JOIN revisions AS r ON r.project_id = p.id AND r.revision = p.head_revision
+            """
+        ).fetchall()
+    }
+    projector_content: dict[str, list[str]] = {}
+    for row in connection.execute(
+        """
+        SELECT s.content_asset_id, g.name
+        FROM projector_surface_mappings AS s
+        JOIN installation_geometry AS g ON g.id = s.geometry_id
+        WHERE s.content_asset_id IS NOT NULL
+        ORDER BY g.name
+        """
+    ).fetchall():
+        projector_content.setdefault(str(row["content_asset_id"]), []).append(str(row["name"]))
+    calibration_assets = frozenset(
+        str(row[0])
+        for row in connection.execute(
+            "SELECT test_asset_id FROM accepted_calibrations WHERE test_asset_id IS NOT NULL"
+        ).fetchall()
+    )
+    packages: tuple[tuple[str, int, str, str], ...] = ()
+    if "published_packages" in tables:
+        packages = tuple(
+            (str(row[0]), int(row[1]), str(row[2]), str(row[3]))
+            for row in connection.execute(
+                "SELECT project_id, revision, state, manifest_json FROM published_packages "
+                "ORDER BY created_at, id"
+            ).fetchall()
+        )
+    return _AssetUsage(
+        drafts=drafts,
+        projector_content={key: tuple(value) for key, value in projector_content.items()},
+        calibration_assets=calibration_assets,
+        packages=packages,
+    )
+
+
+def _draft_usage(document: object, asset_id: str) -> tuple[str, ...]:
+    """Describe where a draft uses an asset; stale editor asset_bindings are not uses."""
+    if not isinstance(document, dict):
+        return ()
+    locations: list[str] = []
+    scenes = document.get("scenes")
+    if isinstance(scenes, list):
+        for scene in scenes:
+            if _mentions(scene, asset_id):
+                label = scene.get("name") or scene.get("id") if isinstance(scene, dict) else None
+                locations.append(f'scene "{label}"' if label else "a scene")
+    for key, value in document.items():
+        if key == "scenes":
+            continue
+        if key == "editor_metadata" and isinstance(value, dict):
+            for metadata_key, metadata_value in sorted(value.items()):
+                if metadata_key != "asset_bindings" and _mentions(metadata_value, asset_id):
+                    locations.append(
+                        _EDITOR_USAGE_LABELS.get(metadata_key, metadata_key.replace("_", " "))
+                    )
+        elif _mentions(value, asset_id):
+            locations.append(str(key).replace("_", " "))
+    return tuple(dict.fromkeys(locations))
+
+
+def _mentions(value: object, asset_id: str) -> bool:
+    if isinstance(value, str):
+        return value == asset_id
+    if isinstance(value, dict):
+        return any(key == asset_id or _mentions(item, asset_id) for key, item in value.items())
+    if isinstance(value, list):
+        return any(_mentions(item, asset_id) for item in value)
+    return False
+
+
+def _insert_audit(
+    connection: sqlite3.Connection,
+    *,
+    actor: str,
+    action: str,
+    target: str,
+    occurred_at: str,
+    context: dict[str, object],
+) -> None:
+    connection.execute(
+        """
+        INSERT INTO audit_events(
+            actor, action, target, result, occurred_at, authorization_context_json
+        ) VALUES (?, ?, ?, 'success', ?, ?)
+        """,
+        (
+            actor,
+            action,
+            target,
+            occurred_at,
+            json.dumps(context, sort_keys=True, separators=(",", ":")),
+        ),
+    )
+
+
+def _parse_timestamp(value: str) -> datetime:
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
+
+
+def _format_timestamp(value: datetime) -> str:
+    return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
+
+
+def _is_digest(value: str) -> bool:
+    return len(value) == 64 and all(character in "0123456789abcdef" for character in value)

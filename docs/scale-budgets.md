@@ -51,9 +51,15 @@ offline compilation/publication or advanced composition budgets above:
   requests return 429; MCP reports a tool error rather than queueing unbounded work.
 - The browser samples up to four times/second and serializes slow requests;
   reported frame time, not speculative browser color rendering, is authoritative.
-- Temporary compilation is cleaned up. Spatial composition/bake previews retain
-  the existing advanced renderer; missing/unsupported contributions are not
-  replaced with a partial successful frame.
+- Temporary compilation is cleaned up. Saved revisions include current LED
+  composition bakes; unbaked or unsaved LED compositions are listed in the
+  frame's `limitations` rather than silently mixed into a successful-looking
+  frame.
+- Scene media preview (projector/media outputs) is a separate budget: two
+  nonblocking concurrent evaluations per process, stills at most 1920 px wide
+  (browser default 640), the existing 256 MiB decoded-frame bound per media
+  source, and the MCP payload bound. The browser serializes requests at up to
+  four per second alongside the LED preview.
 
 These bounds are reported through MCP capability discovery and covered by
 preview tests. The 56-cue/605-pixel local demo is qualified through real

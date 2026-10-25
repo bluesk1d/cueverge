@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  InteractionEdit, InteractionPreview, previewInteractions, ProjectDraftRecord, SimulationStep,
+  AssetRecord, InteractionEdit, InteractionPreview, previewInteractions, ProjectDraftRecord, SimulationStep,
 } from "../api";
 import { ScenePreview } from "./SceneWorkspace";
+import { SceneMediaOutputs } from "../components/SceneMediaOutputs";
 import { ErrorState } from "../components/ui";
 
 const reasonNames: Record<string, string> = {
@@ -33,8 +34,9 @@ function lightingResources(scene: ProjectDraftRecord["draft"]["scenes"][number])
   return outputs.filter(isObject).flatMap((value) => typeof value.resource === "string" ? [value.resource] : []);
 }
 
-export function ShowPreviewWorkspace({ draft, candidateEdit, visitorOnly = false, canTestVisitors = true, startWithVisitors = false }: {
+export function ShowPreviewWorkspace({ draft, candidateEdit, visitorOnly = false, canTestVisitors = true, startWithVisitors = false, assets = [] }: {
   draft: ProjectDraftRecord; candidateEdit?: InteractionEdit; visitorOnly?: boolean; canTestVisitors?: boolean; startWithVisitors?: boolean;
+  assets?: AssetRecord[];
 }) {
   const [mode, setMode] = useState<"scene" | "visitors">(visitorOnly || startWithVisitors ? "visitors" : "scene");
   const [sceneId, setSceneId] = useState(draft.draft.scenes[0].id);
@@ -99,7 +101,8 @@ export function ShowPreviewWorkspace({ draft, candidateEdit, visitorOnly = false
   }, [playing, mode, duration]);
   const onFrameFailure = useCallback(() => setPlaying(false), []);
   const sceneOutputs = lightingResources(scene);
-  const sceneResource = sceneOutputs.includes(resource) ? resource : sceneOutputs[0] ?? "";
+  const sceneResource = sceneOutputs.includes(resource) ? resource : "";
+  const mediaCount = Array.isArray(scene.media) ? scene.media.length : scene.media ? 1 : 0;
   const checkpoint = result?.trace[result.selected_index];
   const frame = result?.frame ?? null;
   function add(step: SimulationStep) {
@@ -119,23 +122,27 @@ export function ShowPreviewWorkspace({ draft, candidateEdit, visitorOnly = false
     {(mode !== "scene" || sceneOutputs.length > 0) && <label>Preview output<select
       value={mode === "scene" && !sceneOutputs.includes(resource) ? "" : resource}
       onChange={(event) => setResource(event.target.value)}>
-      <option value="">Scene outputs</option>
+      <option value="">{mode === "scene" ? "All LED outputs" : "Scene outputs"}</option>
       {(mode === "scene" ? sceneOutputs : resourceOptions).map((value) => <option key={value}>{value}</option>)}
     </select></label>}
     {mode === "scene" ? <>
       <label>Preview scene<select value={scene.id} onChange={(event) => { setSceneId(event.target.value); setPosition(0); setPlaying(false); }}>
         {draft.draft.scenes.map((value) => <option key={value.id} value={value.id}>{value.name}</option>)}
       </select></label>
-      {sceneResource ? <><ScenePreview projectId={draft.project.id} revision={draft.revision} document={draft.draft}
+      {sceneOutputs.length > 0 || mediaCount > 0 ? <>
+      {sceneOutputs.length > 0 && <ScenePreview projectId={draft.project.id} revision={draft.revision} document={draft.draft}
         dirty={false} sceneId={scene.id} resource={sceneResource} position={position}
-        valid={durationValid} onFailure={onFrameFailure} onTargetNames={noNames} />
+        valid={durationValid} onFailure={onFrameFailure} onTargetNames={noNames} />}
+      {mediaCount > 0 && <SceneMediaOutputs projectId={draft.project.id} revision={draft.revision} document={draft.draft}
+        dirty={false} sceneId={scene.id} position={position} playing={playing}
+        valid={durationValid} assets={assets} />}
       {!durationValid && <ErrorState title="Scene duration unavailable" description="Reopen the saved show before previewing this scene." />}
       <div className="scene-preview-controls">
-        <button disabled={!durationValid || !sceneResource} onClick={() => setPlaying(!playing)}>{playing ? "Pause preview" : "Play preview"}</button>
+        <button disabled={!durationValid} onClick={() => setPlaying(!playing)}>{playing ? "Pause preview" : "Play preview"}</button>
         <label>Scene preview position<input disabled={!durationValid} type="range" min="0" max={duration - 1} step={1} value={position} onChange={(event) => { setPosition(event.target.valueAsNumber); setPlaying(false); }} /></label>
         <span>{clock(position)}</span>
       </div>
-      </> : <p role="status">This scene has only media outputs. Preview assigned assets in Scenes; visitor tests simulate media rather than streaming it.</p>}
+      </> : <p role="status">This scene has no LED or media outputs to preview.</p>}
     </> : <>
       <div className="visitor-test-controls">
         <label>Test camera<input value={camera} onChange={(event) => setCamera(event.target.value)} /></label>

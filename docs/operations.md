@@ -889,6 +889,52 @@ membership.
 `starting_scene_id`. It returns the decision trace with no sampled LED frame
 and an explicit explanation that media is simulated rather than streamed.
 
+### Asset trash over MCP
+
+`get_capabilities` reports `features.asset_trash` and an `asset_lifecycle`
+block (tools, scope, `retention_days`, blocker rules). The workflow is:
+
+1. `list_asset_metadata` (read) returns each asset's `metadata_revision`,
+   `draft_usage`, and `removal_blockers`.
+2. Remove the asset's live uses with the normal draft tools (for example delete
+   its media layer with `update_project_draft`). Assets are blocked while the
+   current draft of any show, installation projector review content, an accepted
+   timing-calibration test asset, or a staged/active release uses them.
+   Historical revisions and stale `editor_metadata.asset_bindings` entries do
+   not block.
+3. `trash_asset(asset_id, metadata_revision)` (`direct_edit`) soft-deletes the
+   asset, cancels an unfinished upload, and returns `purge_after`. A blocked
+   or stale call fails with the blockers or current revision; nothing changes.
+4. `list_trashed_assets` (read) shows trash with `purge_after` and
+   `purge_blockers`; `restore_asset(asset_id, metadata_revision)`
+   (`direct_edit`) restores the same ID, revisions, and metadata.
+
+Calls are audited (`mcp.asset.trash`/`mcp.asset.restore` plus the service
+`asset.trash`/`asset.restore`) and send no hardware commands. Immediate
+permanent deletion is intentionally **administrator GUI-only** (typed name
+confirmation) and is not exposed over MCP. The UI equivalent is
+**Assets > Move to trash** and **Assets > Trash** (Restore, Delete
+permanently).
+
+HTTP equivalents: project-reader `GET .../projects/{project_id}/assets/trash`;
+designer-authorized, CSRF-protected `POST .../projects/{project_id}/assets/{asset_id}/trash`
+and `.../restore`; project-administrator `POST .../assets/{asset_id}/purge` with body
+`{"confirmation_name": "<exact asset name>"}`. All three writes require
+`If-Match` with the asset `metadata_revision` and bump it. Errors are
+`409 asset_in_use` (with `blockers`), `409 asset_metadata_conflict`,
+`409 asset_trash_state`, `409 asset_metadata_locked` (archived show or trashed
+asset metadata edit), `422 asset_purge_confirmation_mismatch`, and `404`.
+Placing a trashed asset returns `409 asset_trashed`; publication validation
+reports `asset_trashed` for references to it.
+
+The controller purges trash older than 30 days at startup and hourly, skipping
+assets that any published release still references (kept for rollback). Each
+purge is audited as `asset.purge` with the released digests. Stored originals
+and review artifacts are content-addressed and shared across assets, shows,
+and installation photos; a file is deleted only when no asset revision or photo
+references it, and files modified within the last 10 minutes are kept until a
+later sweep. Exports omit trashed assets.
+
 ### Scene-native LED preview
 
 `get_capabilities.scene_lighting_preview` discovers `preview_scene_lighting`
@@ -929,9 +975,13 @@ is needed for this presentation-only fix.
 Compilation/validation occurs in cleaned-up temporary storage. No controller
 instance, media client, broker, hardware adapter, render job or live transport
 is opened. Preview cannot publish or activate. Invalid candidates/dependencies
-fail explicitly; they are not rendered as partial success. Spatial lighting
-compositions retain `preview_composition`/advanced composition preview, not this
-raw-scene endpoint. Legacy effects retain their existing runtime behavior;
+fail explicitly; they are not rendered as partial success. For the saved
+revision, LED compositions (`lighting_surface`, or `stage` with
+`stage_lighting_surfaces`) are compiled in from their current bakes exactly as
+Apply would. Unsaved candidates and compositions without a current bake are
+omitted, and the top-level `limitations` list names them instead of failing the
+preview; `preview_composition` still previews an individual composition before
+baking. Legacy effects retain their existing runtime behavior;
 an unapplied legacy brightness limit is explicitly reported.
 
 Limits: at most 4096 returned samples, 65536 installation pixels, 2000000 estimated
@@ -942,7 +992,43 @@ workflows should use advanced/offline rendering.
 The browser samples scene frames up to four times/second, serializes slow
 requests to prevent overlap/starvation, and labels the actual evaluated time.
 This cadence does not change the runtime renderer or prove real-time media/
-hardware synchronization.
+hardware synchronization. Omitting `resource` evaluates every lighting output of
+the scene; the browser does this by default and splits the 4096-sample budget
+evenly across outputs.
+
+### Scene media preview
+
+`get_capabilities.scene_media_preview` discovers `preview_scene_media`
+(`simulation` scope). Browser clients use authenticated, CSRF-protected
+`POST /api/gui/v1/projects/{project_id}/scene-media-preview` with the shared
+`SceneMediaPreviewRequest`: `source_revision`, `scene_id`, `timestamp_ms`,
+optional `output_id`, `include_frames` (default true), `max_frame_width`
+(64-1920, default 640) and optional unsaved `proposed_draft`. Use the same
+`timestamp_ms` as `preview_scene_lighting` to see LEDs and media together.
+
+For each media output it mirrors controller media selection: a root or instance
+composition of the scene that targets the output (a `projector_native`
+composition whose `target_id` is the resource, or a `stage` composition that
+includes the projector) takes precedence; otherwise the assigned asset plays.
+Media position is scene time minus `start_delay_ms`, then `end_behavior`
+(`loop`, `hold_last_frame`, `stop`) applies after the media duration. Each output
+reports `source`, `state` (`unassigned`, `waiting`, `playing`, `looping`,
+`holding`, `stopped`, `error`), `media_position_ms`, `media_duration_ms`, active
+`audio` sources with their source position, gain and mute, and a PNG `frame`
+rendered by the bake compositor (`preview_projector_composition` /
+`preview_stage_composition_member`, or the asset's own frame). Several
+compositions targeting one output return `state: "error"`, matching Apply. REST
+embeds frames as base64; MCP strips the base64 from structured content and
+attaches each frame as an image (`frame.attached_image_index`). Payloads over the
+MCP budget fail; request one `output_id` or a smaller `max_frame_width`.
+
+Nothing is sent to devices, and frames are stills: device decode timing, codecs
+and projector calibration on site can differ. Two evaluations run concurrently
+per controller process; busy REST calls return 429
+(`scene_media_preview_busy`), invalid requests 422
+(`scene_media_preview_invalid`). The UI equivalent is **Projectors and media** in
+**Scenes** scene preview and **Preview > Scene preview**, which can also play
+audio sources through asset review proxies with approximate browser timing.
 
 For geometry-aware LED authoring, MCP also provides:
 
@@ -981,6 +1067,8 @@ For installation-wide image/video/GIF overlays:
 
 1. Read the layout, draft, schema, and `list_asset_metadata`. Asset metadata
    includes available source dimensions and duration, but not storage paths.
+   It also lists each asset's `metadata_revision`, `draft_usage`, and
+   `removal_blockers`; see [asset trash over MCP](#asset-trash-over-mcp).
 2. Author media layers in a shared-stage composition sized to the layout's
    `stage.width`/`stage.height`, select mapped LED semantic IDs in
    `stage_lighting_surfaces`, optionally restrict projectors with

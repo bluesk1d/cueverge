@@ -178,6 +178,9 @@ export function ShowPlan({ draft, canEdit, onUpdated, onOpenScene, onVisitorResp
                 <button disabled={!editable || plan.shuffle_list.scenes.length < 2}
                   onClick={() => saveShuffle(currentShuffle.filter((_, itemIndex) => itemIndex !== index))}
                   aria-label={`Remove ${entry.name} from the shuffle list`}>Remove</button>
+                {plan.shuffle_list.scenes.length < 2 && <small>
+                  The shuffle list needs at least one scene. Add another scene before removing this one.
+                </small>}
               </div>)}
           </li>)}
         </ul>

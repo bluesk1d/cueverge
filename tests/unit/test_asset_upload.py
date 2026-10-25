@@ -1,5 +1,6 @@
 import hashlib
 import json
+import sqlite3
 import subprocess
 import sys
 import wave
@@ -16,6 +17,11 @@ import cueverge.gui.asset_upload as asset_upload_module
 from cueverge.core.loader import load_show_package
 from cueverge.gui import media_tools
 from cueverge.gui.asset_upload import (
+    AssetMetadataConflictError,
+    AssetMetadataLockedError,
+    AssetPurgeConfirmationError,
+    AssetRemovalBlockedError,
+    AssetTrashStateError,
     AssetUploadConflictError,
     AssetUploadError,
     AssetUploadService,
@@ -568,3 +574,333 @@ def _service(
         occurred_at="2026-10-14T00:00:00Z",
     )
     return repository, AssetUploadService(config, repository), revision.project.id
+
+
+def test_trash_restore_and_purge_keep_shared_content_until_last_reference(
+    tmp_path: Path,
+) -> None:
+    repository, service, project_id = _service(tmp_path)
+    service.object_cleanup_grace_seconds = 0
+    first_id = _completed_asset(service, project_id)
+    second_id = _completed_asset(service, project_id)
+    first = service.get_asset(first_id)
+    assert first.digest_sha256 is not None
+    object_path = service.object_root / first.digest_sha256[:2] / first.digest_sha256
+    assert first.unused and first.removal_blockers == ()
+
+    trashed = service.trash(
+        project_id=project_id,
+        asset_id=first_id,
+        expected_revision=first.metadata_revision,
+        actor="designer",
+        role=Role.DESIGNER,
+        occurred_at="2026-10-20T12:00:00Z",
+    )
+    assert trashed.trashed_at == "2026-10-20T12:00:00Z"
+    assert trashed.trashed_by == "designer"
+    assert trashed.purge_after == "2026-11-19T12:00:00Z"
+    assert [item.id for item in service.list_assets(project_id)] == [second_id]
+    assert [item.id for item in service.list_assets(project_id, trashed=True)] == [first_id]
+    assert {item.id for item in service.list_assets(project_id, trashed=None)} == {
+        first_id,
+        second_id,
+    }
+    with pytest.raises(AssetMetadataLockedError):
+        service.update_metadata(
+            asset_id=first_id,
+            expected_revision=trashed.metadata_revision,
+            owner=None,
+            license_name=None,
+            provenance=None,
+            review_status="unreviewed",
+            expires_on=None,
+            folder=None,
+            tags=(),
+            favorite=False,
+            actor="designer",
+            role=Role.DESIGNER,
+            occurred_at="2026-10-20T12:01:00Z",
+        )
+    with pytest.raises(AssetTrashStateError):
+        service.trash(
+            project_id=project_id,
+            asset_id=first_id,
+            expected_revision=trashed.metadata_revision,
+            actor="designer",
+            role=Role.DESIGNER,
+            occurred_at="2026-10-20T12:02:00Z",
+        )
+    with pytest.raises(AssetUploadError):
+        service.restore(
+            project_id="another-project",
+            asset_id=first_id,
+            expected_revision=trashed.metadata_revision,
+            actor="designer",
+            role=Role.DESIGNER,
+            occurred_at="2026-10-20T12:03:00Z",
+        )
+
+    restored = service.restore(
+        project_id=project_id,
+        asset_id=first_id,
+        expected_revision=trashed.metadata_revision,
+        actor="designer",
+        role=Role.DESIGNER,
+        occurred_at="2026-10-20T12:04:00Z",
+    )
+    assert restored.trashed_at is None and restored.purge_after is None
+    assert restored.digest_sha256 == first.digest_sha256
+    with pytest.raises(AssetMetadataConflictError):
+        service.trash(
+            project_id=project_id,
+            asset_id=first_id,
+            expected_revision=trashed.metadata_revision,
+            actor="designer",
+            role=Role.DESIGNER,
+            occurred_at="2026-10-20T12:05:00Z",
+        )
+    trashed = service.trash(
+        project_id=project_id,
+        asset_id=first_id,
+        expected_revision=restored.metadata_revision,
+        actor="designer",
+        role=Role.DESIGNER,
+        occurred_at="2026-10-20T12:06:00Z",
+    )
+    with pytest.raises(AssetPurgeConfirmationError):
+        service.purge(
+            project_id=project_id,
+            asset_id=first_id,
+            expected_revision=trashed.metadata_revision,
+            confirmation_name="wrong name",
+            actor="admin",
+            role=Role.ADMINISTRATOR,
+            occurred_at="2026-10-20T12:07:00Z",
+        )
+    purged = service.purge(
+        project_id=project_id,
+        asset_id=first_id,
+        expected_revision=trashed.metadata_revision,
+        confirmation_name="Synthetic media",
+        actor="admin",
+        role=Role.ADMINISTRATOR,
+        occurred_at="2026-10-20T12:08:00Z",
+    )
+    assert purged.released_objects == 0
+    assert object_path.is_file()
+    with pytest.raises(AssetUploadError):
+        service.get_asset(first_id)
+
+    second = service.get_asset(second_id)
+    second_trashed = service.trash(
+        project_id=project_id,
+        asset_id=second_id,
+        expected_revision=second.metadata_revision,
+        actor="designer",
+        role=Role.DESIGNER,
+        occurred_at="2026-10-20T12:09:00Z",
+    )
+    purged = service.purge(
+        project_id=project_id,
+        asset_id=second_id,
+        expected_revision=second_trashed.metadata_revision,
+        confirmation_name="Synthetic media",
+        actor="admin",
+        role=Role.ADMINISTRATOR,
+        occurred_at="2026-10-20T12:10:00Z",
+    )
+    assert purged.released_objects == 1
+    assert purged.released_bytes == len(b"synthetic-media")
+    assert not object_path.exists()
+    actions = [event.action for event in repository.list_audit_events()]
+    assert {"asset.trash", "asset.restore", "asset.purge"}.issubset(actions)
+
+
+def test_trash_is_blocked_by_live_draft_use_but_not_revision_history(tmp_path: Path) -> None:
+    repository, service, project_id = _service(tmp_path)
+    asset_id = _completed_asset(service, project_id)
+    head = repository.get_revision(project_id)
+    bindings_only = repository.update_draft(
+        project_id=project_id,
+        expected_revision=head.revision,
+        draft=head.draft.model_copy(
+            update={"editor_metadata": {"asset_bindings": {asset_id: 1}}},
+        ),
+        actor="designer",
+        role=Role.DESIGNER,
+        occurred_at="2026-10-20T12:00:00Z",
+    )
+    assert service.get_asset(asset_id).unused is True
+    used = repository.update_draft(
+        project_id=project_id,
+        expected_revision=bindings_only.revision,
+        draft=bindings_only.draft.model_copy(
+            update={
+                "editor_metadata": {
+                    "asset_bindings": {asset_id: 1},
+                    "scene_presets": {
+                        "preset": {
+                            "id": "preset",
+                            "name": "Window preset",
+                            "template": {"media": {"asset": asset_id}},
+                        }
+                    },
+                }
+            },
+        ),
+        actor="designer",
+        role=Role.DESIGNER,
+        occurred_at="2026-10-20T12:01:00Z",
+    )
+    asset = service.get_asset(asset_id)
+    assert asset.unused is False
+    assert asset.references == ()
+    assert asset.draft_usage == ("scene presets",)
+    assert "scene presets" in asset.removal_blockers[0]
+    with pytest.raises(AssetRemovalBlockedError) as blocked:
+        service.trash(
+            project_id=project_id,
+            asset_id=asset_id,
+            expected_revision=asset.metadata_revision,
+            actor="designer",
+            role=Role.DESIGNER,
+            occurred_at="2026-10-20T12:02:00Z",
+        )
+    assert blocked.value.blockers == asset.removal_blockers
+
+    repository.update_draft(
+        project_id=project_id,
+        expected_revision=used.revision,
+        draft=used.draft.model_copy(update={"editor_metadata": {}}),
+        actor="designer",
+        role=Role.DESIGNER,
+        occurred_at="2026-10-20T12:03:00Z",
+    )
+    trashed = service.trash(
+        project_id=project_id,
+        asset_id=asset_id,
+        expected_revision=asset.metadata_revision,
+        actor="designer",
+        role=Role.DESIGNER,
+        occurred_at="2026-10-20T12:04:00Z",
+    )
+    assert trashed.trashed_at is not None
+    assert trashed.purge_blockers == ()
+
+
+def test_trash_sweep_purges_expired_assets_and_retains_published_releases(
+    tmp_path: Path,
+) -> None:
+    repository, service, project_id = _service(tmp_path)
+    service.object_cleanup_grace_seconds = 0
+    asset_id = _completed_asset(service, project_id)
+    asset = service.get_asset(asset_id)
+    assert asset.digest_sha256 is not None
+    object_path = service.object_root / asset.digest_sha256[:2] / asset.digest_sha256
+    stray_digest = hashlib.sha256(b"orphan").hexdigest()
+    stray_path = service.object_root / stray_digest[:2] / stray_digest
+    stray_path.parent.mkdir(parents=True, exist_ok=True)
+    stray_path.write_bytes(b"orphan")
+    with sqlite3.connect(repository.database_path) as connection:
+        connection.execute(
+            """
+            CREATE TABLE published_packages (
+                id TEXT PRIMARY KEY, project_id TEXT, revision INTEGER, state TEXT,
+                manifest_json TEXT, created_at TEXT
+            )
+            """
+        )
+        connection.execute(
+            "INSERT INTO published_packages VALUES ('package', ?, 1, 'inactive', ?, 'now')",
+            (project_id, json.dumps({"assets": [{"id": asset_id}]})),
+        )
+    trashed = service.trash(
+        project_id=project_id,
+        asset_id=asset_id,
+        expected_revision=asset.metadata_revision,
+        actor="designer",
+        role=Role.DESIGNER,
+        occurred_at="2026-10-01T00:00:00Z",
+    )
+    assert trashed.removal_blockers == ()
+    assert "Kept for rollback" in trashed.purge_blockers[0]
+
+    early = service.sweep_trash(occurred_at="2026-10-30T00:00:00Z")
+    assert early.purged_asset_ids == ()
+    assert early.retained == {}
+    assert early.released_objects == 1
+    assert not stray_path.exists()
+
+    retained = service.sweep_trash(occurred_at="2026-11-01T00:00:00Z")
+    assert retained.purged_asset_ids == ()
+    assert "Kept for rollback" in retained.retained[asset_id][0]
+    assert object_path.is_file()
+
+    with sqlite3.connect(repository.database_path) as connection:
+        connection.execute("DELETE FROM published_packages")
+    swept = service.sweep_trash(occurred_at="2026-11-01T00:00:00Z")
+    assert swept.purged_asset_ids == (asset_id,)
+    assert swept.released_objects == 1
+    assert not object_path.exists()
+    with pytest.raises(AssetUploadError):
+        service.get_asset(asset_id)
+
+
+def test_trash_cancels_an_unfinished_upload(tmp_path: Path) -> None:
+    _, service, project_id = _service(tmp_path)
+    content = b"partial-upload"
+    asset, upload = service.begin(
+        project_id=project_id,
+        name="Abandoned",
+        original_filename="clip.mp4",
+        media_type="video/mp4",
+        total_bytes=len(content),
+        expected_sha256=None,
+        actor="admin",
+        role=Role.ADMINISTRATOR,
+        occurred_at="2026-10-14T01:00:00Z",
+    )
+    service.append(
+        upload_id=upload.id,
+        offset=0,
+        chunk=content[:4],
+        actor="admin",
+        role=Role.ADMINISTRATOR,
+        occurred_at="2026-10-14T01:01:00Z",
+    )
+    assert len(list(service.upload_root.iterdir())) == 1
+    trashed = service.trash(
+        project_id=project_id,
+        asset_id=asset.id,
+        expected_revision=asset.metadata_revision,
+        actor="admin",
+        role=Role.ADMINISTRATOR,
+        occurred_at="2026-10-14T01:02:00Z",
+    )
+    assert trashed.status == "failed"
+    assert service.get_upload(upload.id).state == "failed"
+    assert list(service.upload_root.iterdir()) == []
+    with pytest.raises(AssetUploadError):
+        service.append(
+            upload_id=upload.id,
+            offset=4,
+            chunk=content[4:],
+            actor="admin",
+            role=Role.ADMINISTRATOR,
+            occurred_at="2026-10-14T01:03:00Z",
+        )
+
+
+def test_draft_usage_reports_scenes_and_editor_data_but_not_stale_bindings() -> None:
+    document = {
+        "scenes": [{"id": "ambient", "name": "Ambient", "media": [{"asset": "asset-1"}]}],
+        "editor_metadata": {
+            "asset_bindings": {"asset-1": 1, "asset-2": 1},
+            "timeline_transform_layers": {"stage": [{"source_id": "asset-1"}]},
+        },
+    }
+    assert asset_upload_module._draft_usage(document, "asset-1") == (
+        'scene "Ambient"',
+        "timeline media layers",
+    )
+    assert asset_upload_module._draft_usage(document, "asset-2") == ()

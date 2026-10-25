@@ -33,6 +33,9 @@ from cueverge.gui.artifact_preview import (
 from cueverge.gui.asset_upload import (
     AssetMetadataConflictError,
     AssetMetadataLockedError,
+    AssetPurgeConfirmationError,
+    AssetRemovalBlockedError,
+    AssetTrashStateError,
     AssetUploadConflictError,
     AssetUploadError,
     StoredAsset,
@@ -51,6 +54,8 @@ from cueverge.gui.contracts import (
     ApplyScenePresetRequest,
     ArtifactDeploymentResponse,
     AssetMetadataConflictResponse,
+    AssetPurgeResponse,
+    AssetRemovalBlockedResponse,
     AssetResponse,
     AssetSceneReferenceResponse,
     AssetUploadResponse,
@@ -144,6 +149,7 @@ from cueverge.gui.contracts import (
     PublicationDiagnosticResponse,
     PublicationValidationResponse,
     PublishedPackageResponse,
+    PurgeAssetRequest,
     RecordSyncRehearsalRequest,
     RemoveSceneOutputRequest,
     RenameSceneOutputBody,
@@ -164,6 +170,7 @@ from cueverge.gui.contracts import (
     SaveSimulationScenarioRequest,
     SceneAuthoringOptions,
     SceneLightingPreviewRequest,
+    SceneMediaPreviewRequest,
     SessionResponse,
     SetDeviceConnectionPolicyRequest,
     SetDeviceEnrollmentStateRequest,
@@ -291,6 +298,11 @@ from cueverge.gui.scene_authoring import (
     save_scene_edit,
     save_scene_output_change,
     scene_authoring_options,
+)
+from cueverge.gui.scene_media_preview import (
+    SceneMediaPreviewBusyError,
+    SceneMediaPreviewError,
+    preview_project_scene_media,
 )
 from cueverge.gui.scene_preview import (
     ScenePreviewBusyError,
@@ -1898,6 +1910,14 @@ def create_gui_router(services: GuiServices) -> APIRouter:
                 status_code=409,
                 detail={"code": "project_archived"},
             )
+        if asset.trashed_at is not None:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "asset_trashed",
+                    "message": "Restore the asset from the trash before placing it.",
+                },
+            )
         if asset.status != "ready" or asset.original_file_status != "available":
             raise HTTPException(
                 status_code=409,
@@ -1940,6 +1960,104 @@ def create_gui_router(services: GuiServices) -> APIRouter:
             )
         response.headers["ETag"] = _etag(updated.revision)
         return _project_draft(updated)
+
+    @router.get(
+        "/projects/{project_id}/assets/trash",
+        response_model=list[AssetResponse],
+        dependencies=[project_reader],
+    )
+    def asset_trash(project_id: str) -> list[AssetResponse]:
+        try:
+            stored = services.asset_upload.list_assets(project_id, trashed=True)
+        except AssetUploadError as error:
+            raise HTTPException(
+                status_code=404,
+                detail={"code": "project_not_found"},
+            ) from error
+        return [_asset_response(asset) for asset in stored]
+
+    @router.post(
+        "/projects/{project_id}/assets/{asset_id}/trash",
+        response_model=AssetResponse,
+    )
+    def trash_asset(
+        project_id: str,
+        asset_id: str,
+        response: Response,
+        identity: Annotated[AuthenticatedSession, project_designer],
+        if_match: Annotated[str | None, Header(alias="If-Match")] = None,
+    ) -> AssetResponse | JSONResponse:
+        expected_revision = _parse_if_match(if_match)
+        try:
+            asset = services.asset_upload.trash(
+                project_id=project_id,
+                asset_id=asset_id,
+                expected_revision=expected_revision,
+                actor=identity.username,
+                role=identity.role,
+                occurred_at=_now_iso(),
+            )
+        except AssetUploadError as error:
+            return _asset_lifecycle_error(error, expected_revision)
+        response.headers["ETag"] = _etag(asset.metadata_revision)
+        return _asset_response(asset)
+
+    @router.post(
+        "/projects/{project_id}/assets/{asset_id}/restore",
+        response_model=AssetResponse,
+    )
+    def restore_asset(
+        project_id: str,
+        asset_id: str,
+        response: Response,
+        identity: Annotated[AuthenticatedSession, project_designer],
+        if_match: Annotated[str | None, Header(alias="If-Match")] = None,
+    ) -> AssetResponse | JSONResponse:
+        expected_revision = _parse_if_match(if_match)
+        try:
+            asset = services.asset_upload.restore(
+                project_id=project_id,
+                asset_id=asset_id,
+                expected_revision=expected_revision,
+                actor=identity.username,
+                role=identity.role,
+                occurred_at=_now_iso(),
+            )
+        except AssetUploadError as error:
+            return _asset_lifecycle_error(error, expected_revision)
+        response.headers["ETag"] = _etag(asset.metadata_revision)
+        return _asset_response(asset)
+
+    @router.post(
+        "/projects/{project_id}/assets/{asset_id}/purge",
+        response_model=AssetPurgeResponse,
+    )
+    def purge_asset(
+        project_id: str,
+        asset_id: str,
+        body: PurgeAssetRequest,
+        identity: Annotated[AuthenticatedSession, project_administrator],
+        if_match: Annotated[str | None, Header(alias="If-Match")] = None,
+    ) -> AssetPurgeResponse | JSONResponse:
+        expected_revision = _parse_if_match(if_match)
+        try:
+            result = services.asset_upload.purge(
+                project_id=project_id,
+                asset_id=asset_id,
+                expected_revision=expected_revision,
+                confirmation_name=body.confirmation_name,
+                actor=identity.username,
+                role=identity.role,
+                occurred_at=_now_iso(),
+            )
+        except AssetUploadError as error:
+            return _asset_lifecycle_error(error, expected_revision)
+        return AssetPurgeResponse(
+            asset_id=result.asset_id,
+            name=result.name,
+            released_objects=result.released_objects,
+            released_bytes=result.released_bytes,
+        )
 
     @router.post(
         "/projects/{project_id}/assets/uploads",
@@ -2718,6 +2836,29 @@ def create_gui_router(services: GuiServices) -> APIRouter:
         except (ScenePreviewError, CompilationError, ShowPackageError) as error:
             raise HTTPException(
                 status_code=422, detail={"code": "scene_preview_invalid", "message": str(error)}
+            ) from error
+
+    @router.post("/projects/{project_id}/scene-media-preview")
+    def scene_media_preview(
+        project_id: str,
+        body: SceneMediaPreviewRequest,
+        identity: Annotated[AuthenticatedSession, project_commenter],
+    ) -> dict[str, object]:
+        try:
+            return preview_project_scene_media(services, project_id, body)
+        except SceneMediaPreviewBusyError as error:
+            raise HTTPException(
+                status_code=429,
+                detail={"code": "scene_media_preview_busy", "message": str(error)},
+            ) from error
+        except ProjectNotFoundError as error:
+            raise HTTPException(
+                status_code=404, detail={"code": "project_or_revision_not_found"}
+            ) from error
+        except SceneMediaPreviewError as error:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "scene_media_preview_invalid", "message": str(error)},
             ) from error
 
     @router.post(
@@ -6140,9 +6281,45 @@ def _asset_response(asset: StoredAsset) -> AssetResponse:
             for reference in asset.references
         ),
         unused=asset.unused,
+        draft_usage=asset.draft_usage,
+        trashed_at=asset.trashed_at,
+        trashed_by=asset.trashed_by,
+        purge_after=asset.purge_after,
+        removal_blockers=asset.removal_blockers,
+        purge_blockers=asset.purge_blockers,
         created_at=asset.created_at,
         updated_at=asset.updated_at,
     )
+
+
+def _asset_lifecycle_error(error: AssetUploadError, requested_revision: int) -> JSONResponse:
+    if isinstance(error, AssetMetadataConflictError):
+        return JSONResponse(
+            status_code=409,
+            content=AssetMetadataConflictResponse(
+                requested_revision=requested_revision,
+                current_revision=error.current_revision,
+            ).model_dump(mode="json"),
+        )
+    if isinstance(error, AssetRemovalBlockedError):
+        detail: dict[str, object] = AssetRemovalBlockedResponse(
+            message="The asset is still in use. " + " ".join(error.blockers),
+            blockers=error.blockers,
+        ).model_dump(mode="json")
+        status_code = 409
+    elif isinstance(error, AssetMetadataLockedError):
+        detail = {"code": "asset_metadata_locked", "message": str(error)}
+        status_code = 409
+    elif isinstance(error, AssetTrashStateError):
+        detail = {"code": "asset_trash_state", "message": str(error)}
+        status_code = 409
+    elif isinstance(error, AssetPurgeConfirmationError):
+        detail = {"code": "asset_purge_confirmation_mismatch", "message": str(error)}
+        status_code = 422
+    else:
+        detail = {"code": "asset_not_found"}
+        status_code = 404
+    raise HTTPException(status_code=status_code, detail=detail) from error
 
 
 def _asset_upload_response(

@@ -257,7 +257,7 @@ class ProjectorMappingService:
             if content_asset_id is not None:
                 asset = connection.execute(
                     """
-                    SELECT a.status, r.media_type
+                    SELECT a.status, a.trashed_at, r.media_type
                     FROM assets AS a
                     JOIN asset_revisions AS r
                       ON r.asset_id = a.id AND r.revision = a.current_revision
@@ -269,9 +269,11 @@ class ProjectorMappingService:
                     asset is None
                     or str(asset["status"]) != "ready"
                     or not str(asset["media_type"]).startswith("image/")
+                    or asset["trashed_at"] is not None
                 ):
                     raise ProjectorMappingError(
-                        "mapping content asset must be a ready managed image"
+                        "mapping content asset must be a ready managed image "
+                        "that is not in the trash"
                     )
             if mask_semantic_ids:
                 masks = connection.execute(

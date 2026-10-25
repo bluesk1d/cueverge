@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import AsyncExitStack, asynccontextmanager
 from typing import Protocol
@@ -26,6 +27,9 @@ from cueverge.protocol.device_v2 import (
     ControllerDiscoveryDocument,
     DiscoveryProtocolRange,
 )
+
+LOGGER = logging.getLogger(__name__)
+ASSET_TRASH_SWEEP_INTERVAL_SECONDS = 3600
 
 
 class EventIngress(Protocol):
@@ -80,6 +84,11 @@ def create_app(
             if configured_gui is not None
             else None
         )
+        asset_trash_sweeper = (
+            asyncio.create_task(_sweep_asset_trash(configured_gui))
+            if configured_gui is not None
+            else None
+        )
         try:
             async with AsyncExitStack() as stack:
                 if mcp_app is not None:
@@ -90,6 +99,9 @@ def create_app(
                 if configured_gui.home_assistant is not None:
                     await configured_gui.home_assistant.stop()
                 await configured_gui.apply.stop()
+            if asset_trash_sweeper is not None:
+                asset_trash_sweeper.cancel()
+                await asyncio.gather(asset_trash_sweeper, return_exceptions=True)
             if asset_recovery is not None:
                 await asset_recovery
             if device_listener is not None:
@@ -154,6 +166,16 @@ def create_app(
         )
 
     return app
+
+
+async def _sweep_asset_trash(services: GuiServices) -> None:
+    """Purge expired asset trash and unreferenced stored files at startup, then hourly."""
+    while True:
+        try:
+            await asyncio.to_thread(services.asset_upload.sweep_trash)
+        except Exception:
+            LOGGER.exception("asset trash sweep failed")
+        await asyncio.sleep(ASSET_TRASH_SWEEP_INTERVAL_SECONDS)
 
 
 def _configured_components() -> tuple[ControllerRuntime, EventIngress | None]:
