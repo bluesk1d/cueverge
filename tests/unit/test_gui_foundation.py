@@ -4315,7 +4315,8 @@ def test_mcp_spatial_context_proposal_and_image_preview_are_isolated(
     assert unbaked["outputs"]
     assert unbaked["limitations"] == [
         "LED compositions not shown: Front of house. Bake them for this saved revision "
-        "(Timeline editor > Bake LED animation) to include them in this preview."
+        "(Timeline editor > Bake LED animation, or Render & bake > Bake LED overlay) to "
+        "include them in this preview."
     ]
     mapper: dict[str, Any] = {
         "lighting_surfaces": [

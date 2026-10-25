@@ -383,6 +383,7 @@ export function TimelineEditor({
 }) {
   const [toolTab, setToolTab] = useState<TimelineToolTab>("layers");
   const [sceneSettingsOpen, setSceneSettingsOpen] = useState(false);
+  const [compositionSettingsOpen, setCompositionSettingsOpen] = useState(false);
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const [sceneId, setSceneId] = useState(draft.draft.scenes[0]?.id ?? "");
   const scene =
@@ -509,6 +510,11 @@ export function TimelineEditor({
   const [dropTargetId, setDropTargetId] = useState<string | null>(null);
   const [presetDialogOpen, setPresetDialogOpen] = useState(false);
   const [preset, setPreset] = useState<CompositionPreset>("stage");
+  const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
+  const sceneNames = useMemo(
+    () => Object.fromEntries(draft.draft.scenes.map((candidate) => [candidate.id, candidate.name])),
+    [draft.draft.scenes],
+  );
   const [presetTarget, setPresetTarget] = useState("");
   const [presetName, setPresetName] = useState("");
   const [presetDuration, setPresetDuration] = useState(0);
@@ -814,7 +820,6 @@ export function TimelineEditor({
     setIsPreviewPlaying(false);
   }, [
     composition?.id,
-    composition?.duration_ms,
     editingSpaceId,
     scene?.id,
     scene?.duration_ms,
@@ -1336,6 +1341,31 @@ export function TimelineEditor({
         ]),
       ),
     );
+    setTransformLayers((current) =>
+      Object.fromEntries(
+        Object.entries(current)
+          .filter(([spaceId]) => spaceId !== compositionId)
+          .map(([spaceId, layers]) => [
+            spaceId,
+            layers.flatMap((layer) =>
+              layer.kind === "composition" && layer.source_id === compositionId
+                ? replacementId
+                  ? [{ ...layer, source_id: replacementId }]
+                  : []
+                : [layer],
+            ),
+          ]),
+      ),
+    );
+    const withoutSpace = <T,>(current: Record<string, T>) => {
+      const updated = { ...current };
+      delete updated[compositionId];
+      return updated;
+    };
+    setSyncMarkers(withoutSpace);
+    setSyncCues(withoutSpace);
+    setLightingAuthorLayers(withoutSpace);
+    delete stashedTracksRef.current[compositionId];
     if (activeCompositionId === compositionId) {
       setActiveCompositionId(replacementId ?? "");
     }
@@ -1344,6 +1374,26 @@ export function TimelineEditor({
       delete updated[compositionId];
       return updated;
     });
+  }
+
+  function removeCompositionFromScene(compositionId: string) {
+    if (!scene) return;
+    setSceneCompositions((current) => ({
+      ...current,
+      [scene.id]: (current[scene.id] ?? []).filter((id) => id !== compositionId),
+    }));
+    setCompositionInstances((current) => ({
+      ...current,
+      [scene.id]: (current[scene.id] ?? []).filter(
+        (instance) => instance.composition_id !== compositionId,
+      ),
+    }));
+    setTransformLayers((current) => ({
+      ...current,
+      [scene.id]: (current[scene.id] ?? []).filter(
+        (layer) => !(layer.kind === "composition" && layer.source_id === compositionId),
+      ),
+    }));
   }
 
   function startPlayheadDrag(event: ReactPointerEvent<HTMLElement>) {
@@ -1578,6 +1628,19 @@ export function TimelineEditor({
       : type.startsWith("video/") || type === "image/gif"
         ? "video"
         : "image";
+  }
+
+  function setCompositionDuration(compositionId: string, next: number) {
+    if (!Number.isInteger(next) || next <= 0) return;
+    setCompositions((current) =>
+      current[compositionId]
+        ? { ...current, [compositionId]: { ...current[compositionId], duration_ms: next } }
+        : current,
+    );
+    if (compositionId === activeCompositionId) {
+      setLoopEnd((end) => (end >= duration ? next : Math.min(end, next)));
+      setLoopStart((loopStartMs) => Math.min(loopStartMs, Math.max(0, next - 1)));
+    }
   }
 
   function setSceneDuration(next: number) {
@@ -1948,6 +2011,11 @@ export function TimelineEditor({
               Scene settings
             </button>
           )}
+          {composition && (
+            <button type="button" onClick={() => setCompositionSettingsOpen(true)}>
+              Composition settings
+            </button>
+          )}
           {canEdit && (
             <>
               <button
@@ -2123,6 +2191,15 @@ export function TimelineEditor({
             onClick={openPresetDialog}
           >
             + New composition
+          </button>
+        )}
+        {canEdit && composition && (
+          <button
+            type="button"
+            className="timeline-composition-tabs__delete danger-button"
+            onClick={() => setPendingDeleteId(composition.id)}
+          >
+            Delete composition…
           </button>
         )}
       </div>
@@ -2485,6 +2562,60 @@ export function TimelineEditor({
                     </select>
                   </label>
                 )}
+                {selectedTransformLayer.kind === "video" &&
+                  selectedTransformLayer.playback === "loop" &&
+                  (() => {
+                    const sourceMs = numberValue(
+                      assets.find((asset) => asset.id === selectedTransformLayer.source_id)?.metadata
+                        ?.duration_ms,
+                      0,
+                    );
+                    if (sourceMs <= 0) return null;
+                    const exact =
+                      (selectedTransformLayer.duration_ms + selectedTransformLayer.in_point_ms) /
+                      sourceMs;
+                    return (
+                      <label>
+                        Plays
+                        <input
+                          aria-label="Layer plays"
+                          disabled={!canEdit}
+                          min="1"
+                          max="10000"
+                          step="1"
+                          type="number"
+                          value={Number.isInteger(exact) ? exact : ""}
+                          placeholder={exact.toFixed(2)}
+                          onChange={(event) => {
+                            const plays = Math.floor(Number(event.target.value));
+                            if (!Number.isFinite(plays) || plays < 1) return;
+                            const nextDuration = plays * sourceMs - selectedTransformLayer.in_point_ms;
+                            if (nextDuration <= 0) return;
+                            const end = selectedTransformLayer.start_ms + nextDuration;
+                            if (end > duration) {
+                              if (composition) setCompositionDuration(composition.id, end);
+                              else setSceneDuration(end);
+                            }
+                            updateTransformLayer(selectedTransformLayer.id, (layer) => ({
+                              ...layer,
+                              duration_ms: nextDuration,
+                              out_point_ms: layer.in_point_ms + nextDuration,
+                              keyframes: layer.keyframes.map((keyframe) => ({
+                                ...keyframe,
+                                time_ms: Math.min(keyframe.time_ms, nextDuration),
+                              })),
+                            }));
+                          }}
+                        />
+                        <small>
+                          Sets the layer to exactly this many back-to-back plays of the{" "}
+                          {formatTimecode(sourceMs)} source
+                          {Number.isInteger(exact) ? "" : "; the current length is not a whole number of plays"}
+                          . Extends the {composition ? "composition" : "scene"} if needed.
+                        </small>
+                      </label>
+                    );
+                  })()}
                 {selectedTransformLayer.kind !== "audio" &&
                   composition?.space_kind === "stage" && (
                     <StageLayerShape
@@ -5116,8 +5247,18 @@ export function TimelineEditor({
                     compositions,
                     sceneCompositions,
                     compositionInstances,
+                    transformLayers,
+                    sceneNames,
                     candidate.id,
                   );
+                  const inThisScene =
+                    (sceneCompositions[scene.id] ?? []).includes(candidate.id) ||
+                    (compositionInstances[scene.id] ?? []).some(
+                      (instance) => instance.composition_id === candidate.id,
+                    ) ||
+                    (transformLayers[scene.id] ?? []).some(
+                      (layer) => layer.kind === "composition" && layer.source_id === candidate.id,
+                    );
                   return (
                     <li key={candidate.id}>
                       <span>
@@ -5143,12 +5284,18 @@ export function TimelineEditor({
                       <button onClick={() => setActiveCompositionId(candidate.id)}>
                         Open timeline
                       </button>
-                      {canEdit && usage.length === 0 && (
+                      {canEdit && inThisScene && (
+                        <button onClick={() => removeCompositionFromScene(candidate.id)}>
+                          Remove from this scene
+                        </button>
+                      )}
+                      {canEdit && (
                         <button
+                          aria-label={`Delete composition ${candidate.name}`}
                           className="danger-button"
-                          onClick={() => removeComposition(candidate.id)}
+                          onClick={() => setPendingDeleteId(candidate.id)}
                         >
-                          Delete unused
+                          Delete…
                         </button>
                       )}
                       {canEdit && usage.length > 0 && (
@@ -5213,6 +5360,21 @@ export function TimelineEditor({
                 <small>
                   Overrides: {JSON.stringify(instance.parameter_overrides)}
                 </small>
+                {canEdit && (
+                  <button
+                    aria-label={`Remove instance ${instance.id}`}
+                    onClick={() =>
+                      setCompositionInstances((current) => ({
+                        ...current,
+                        [scene.id]: (current[scene.id] ?? []).filter(
+                          (candidate) => candidate.id !== instance.id,
+                        ),
+                      }))
+                    }
+                  >
+                    Remove instance
+                  </button>
+                )}
               </div>
             ))}
             {canEdit && (
@@ -5779,18 +5941,34 @@ export function TimelineEditor({
                       .hardware_decoder_compatibility
                   }
                 </small>
-                <ol className="timeline-render-pipeline" aria-label="Render pipeline order">
-                  <li>Decode and conform sources</li>
-                  <li>Logical transforms, masks, and alpha composition</li>
-                  <li>Physical-object mapping and occlusion</li>
-                  <li>Projector-native warp, crop, and orientation</li>
-                  <li>Overlap and edge blending</li>
-                  <li>Projector brightness, black level, and color correction</li>
-                  <li>Audio mix, encode, and mux</li>
-                </ol>
+                {lightsOnlyStage ? (
+                  <>
+                    <ol className="timeline-render-pipeline" aria-label="Render pipeline order">
+                      <li>Decode and conform sources</li>
+                      <li>Logical transforms, masks, and alpha composition</li>
+                      <li>Sample each mapped LED at its stage position</li>
+                      <li>LED brightness limits, then controller LED sequences</li>
+                    </ol>
+                    <small>
+                      Lights only: render size and frame rate apply; video encoder, bitrate,
+                      loudness and media end settings are not used because no projector video is
+                      made.
+                    </small>
+                  </>
+                ) : (
+                  <ol className="timeline-render-pipeline" aria-label="Render pipeline order">
+                    <li>Decode and conform sources</li>
+                    <li>Logical transforms, masks, and alpha composition</li>
+                    <li>Physical-object mapping and occlusion</li>
+                    <li>Projector-native warp, crop, and orientation</li>
+                    <li>Overlap and edge blending</li>
+                    <li>Projector brightness, black level, and color correction</li>
+                    <li>Audio mix, encode, and mux</li>
+                  </ol>
+                )}
                 <div className="timeline-render-jobs">
                   <strong>Controller render jobs</strong>
-                  {composition.space_kind === "stage" && (
+                  {composition.space_kind === "stage" && !lightsOnlyStage && (
                     <div className="timeline-sync-rehearsal">
                       <strong>Cross-projector rehearsal evidence</strong>
                       <small>
@@ -5980,6 +6158,13 @@ export function TimelineEditor({
                     ))}
                   {renderJobError && <small role="alert">{renderJobError}</small>}
                 </div>
+                {lightsOnlyStage && (
+                  <p className="timeline-viewer__hint">
+                    Lights only: there are no projector frames to inspect. Check the sampled LED
+                    colors in House view.
+                  </p>
+                )}
+                {!lightsOnlyStage && (
                 <div
                   className="timeline-preview-inspection"
                   aria-label="Controller preview inspection"
@@ -6030,6 +6215,7 @@ export function TimelineEditor({
                     mask, and audio-mix pipeline semantics.
                   </small>
                 </div>
+                )}
                 {composition.space_kind === "projector_native" && (
                   <CompositionPreviewInspection
                     bakedUrl={
@@ -6057,12 +6243,7 @@ export function TimelineEditor({
                   />
                 )}
                 {composition.space_kind === "stage" &&
-                  mapperExport?.projectors.map((projectorValue) => {
-                    const projector = metadataRecord(projectorValue);
-                    const resource =
-                      typeof projector.resource === "string"
-                        ? projector.resource
-                        : "";
+                  stageProjectorResources.map((resource) => {
                     return resource ? (
                       <CompositionPreviewInspection
                         bakedUrl={
@@ -6176,6 +6357,56 @@ export function TimelineEditor({
           </>
         )}
       </div>
+      {pendingDeleteId && compositions[pendingDeleteId] && (() => {
+        const target = compositions[pendingDeleteId];
+        const usage = compositionUsage(
+          compositions,
+          sceneCompositions,
+          compositionInstances,
+          transformLayers,
+          sceneNames,
+          target.id,
+        );
+        return (
+          <DetailsDialog
+            title={`Delete ${target.name}?`}
+            onClose={() => setPendingDeleteId(null)}
+          >
+            {usage.length ? (
+              <>
+                <p>It will be removed from:</p>
+                <ul aria-label="Composition usage">
+                  {usage.map((item) => (
+                    <li key={item}>{item}</li>
+                  ))}
+                </ul>
+              </>
+            ) : (
+              <p>It is not used by any scene or composition.</p>
+            )}
+            <p>
+              Its media layers, tracks, markers, cues and LED effect layers are deleted with it,
+              and its bakes are no longer published. Media assets are kept. Undo restores it;
+              nothing changes until you choose Save timeline.
+            </p>
+            <div className="timeline-dialog-actions">
+              <button type="button" onClick={() => setPendingDeleteId(null)}>
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="danger-button"
+                onClick={() => {
+                  removeComposition(target.id);
+                  setPendingDeleteId(null);
+                }}
+              >
+                Delete composition
+              </button>
+            </div>
+          </DetailsDialog>
+        );
+      })()}
       {presetDialogOpen && (
         <DetailsDialog title="New composition" onClose={() => setPresetDialogOpen(false)}>
           <div className="composition-presets" role="radiogroup" aria-label="Composition type">
@@ -6313,6 +6544,71 @@ export function TimelineEditor({
           </button>
         </DetailsDialog>
       )}
+      {compositionSettingsOpen && composition && (() => {
+        const layersEnd = Math.max(
+          0,
+          ...(transformLayers[composition.id] ?? []).map((layer) => layer.start_ms + layer.duration_ms),
+        );
+        return (
+          <DetailsDialog
+            title={`Composition settings · ${composition.name}`}
+            onClose={() => setCompositionSettingsOpen(false)}
+          >
+            <p className="timeline-dialog-note">Changes are kept with this timeline and saved by Save timeline.</p>
+            <section className="timeline-scene-policy">
+              <label>
+                Composition name
+                <input
+                  aria-label="Composition name"
+                  disabled={!canEdit}
+                  value={composition.name}
+                  onChange={(event) =>
+                    setCompositions((current) => ({
+                      ...current,
+                      [composition.id]: { ...current[composition.id], name: event.target.value },
+                    }))
+                  }
+                />
+              </label>
+              <label>
+                Composition duration (seconds)
+                <input
+                  aria-label="Composition duration (seconds)"
+                  disabled={!canEdit}
+                  min="0.001"
+                  step="0.001"
+                  type="number"
+                  value={composition.duration_ms / 1000}
+                  onChange={(event) =>
+                    setCompositionDuration(composition.id, Math.round(Number(event.target.value) * 1000))
+                  }
+                />
+                <small>
+                  Layers, cues and markers are not trimmed automatically; anything past the new end
+                  is reported as an issue. LED bakes cover this whole length, so it must fit in
+                  every scene that uses the composition.
+                </small>
+              </label>
+              <div className="timeline-dialog-actions">
+                <button
+                  type="button"
+                  disabled={!canEdit || layersEnd <= 0 || layersEnd === composition.duration_ms}
+                  onClick={() => setCompositionDuration(composition.id, layersEnd)}
+                >
+                  Fit to layers ({formatTimecode(layersEnd)})
+                </button>
+                <button
+                  type="button"
+                  disabled={!canEdit || scenePolicy.duration_ms === composition.duration_ms}
+                  onClick={() => setCompositionDuration(composition.id, scenePolicy.duration_ms)}
+                >
+                  Match scene length ({formatTimecode(scenePolicy.duration_ms)})
+                </button>
+              </div>
+            </section>
+          </DetailsDialog>
+        );
+      })()}
       {sceneSettingsOpen && !composition && (
         <DetailsDialog title={`Scene settings · ${scene.name}`} onClose={() => setSceneSettingsOpen(false)}>
           <p className="timeline-dialog-note">Changes are kept with this timeline and saved by Save timeline.</p>
@@ -8966,6 +9262,7 @@ function StageCompositionPreview({
 }) {
   const [showRenderedFrame, setShowRenderedFrame] = useState(true);
   const [showCoverage, setShowCoverage] = useState(true);
+  const [showLedNumbers, setShowLedNumbers] = useState(false);
   const [draggingCorner, setDraggingCorner] = useState<number | null>(null);
   const svgRef = useRef<SVGSVGElement>(null);
   const [lightingPreviews, setLightingPreviews] = useState<
@@ -9192,6 +9489,14 @@ function StageCompositionPreview({
           />
           Show projector coverage
         </label>
+        <label>
+          <input
+            type="checkbox"
+            checked={showLedNumbers}
+            onChange={(event) => setShowLedNumbers(event.target.checked)}
+          />
+          Show LED numbers
+        </label>
         {stage && (
           <small>
             Stage {roundStage(stage.width)} × {roundStage(stage.height)} {stage.unit}
@@ -9347,13 +9652,15 @@ function StageCompositionPreview({
                     {color ? ` · RGB ${color.join(", ")}` : ""}
                   </title>
                 </circle>
-                <text
-                  className="stage-composition-output-order"
-                  x={center[0] + 6}
-                  y={center[1] - 6}
-                >
-                  {pixel.output_index}
-                </text>
+                {showLedNumbers && (
+                  <text
+                    className="stage-composition-output-order"
+                    x={center[0] + 6}
+                    y={center[1] - 6}
+                  >
+                    {pixel.output_index}
+                  </text>
+                )}
               </g>
             );
           });
@@ -9453,7 +9760,7 @@ function StageCompositionPreview({
       </svg>
       <small>
         Projector coverage · evaluated lighting canvas samples and footprints ·
-        physical output order · fixtures · paths · audience zones ·
+        LED numbers when shown · fixtures · paths · audience zones ·
         safety/no-output zones
       </small>
       {stageLightingPreview && (
@@ -10733,9 +11040,10 @@ function resolveSyncSchedule(
   };
   for (const scene of scenes) {
     emit(scene.id, scene.id, `scene:${scene.id}`, 0, 1);
+    const placed = new Set((instances[scene.id] ?? []).map((instance) => instance.composition_id));
     for (const rootId of sceneCompositions[scene.id] ?? []) {
       const root = compositions[rootId];
-      if (root) {
+      if (root && !placed.has(rootId)) {
         walk(
           scene.id,
           rootId,
@@ -11089,21 +11397,34 @@ function compositionUsage(
   compositions: Record<string, Composition>,
   scenes: Record<string, string[]>,
   instances: Record<string, CompositionInstance[]>,
+  layers: Record<string, TransformLayer[]>,
+  sceneNames: Record<string, string>,
   compositionId: string,
 ): string[] {
+  const sceneLabel = (sceneId: string) => `scene ${sceneNames[sceneId] ?? sceneId}`;
   const parents = Object.values(compositions)
     .filter((composition) => composition.children.includes(compositionId))
     .map((composition) => `composition ${composition.name}`);
   const sceneUsage = Object.entries(scenes)
     .filter(([, ids]) => ids.includes(compositionId))
-    .map(([sceneId]) => `scene ${sceneId}`);
+    .map(([sceneId]) => sceneLabel(sceneId));
   const instanceUsage = Object.entries(instances).flatMap(
     ([sceneId, sceneInstances]) =>
       sceneInstances
         .filter((instance) => instance.composition_id === compositionId)
-        .map((instance) => `scene ${sceneId} instance ${instance.id}`),
+        .map((instance) => `${sceneLabel(sceneId)} instance ${instance.id}`),
   );
-  return [...new Set([...parents, ...sceneUsage, ...instanceUsage])];
+  const layerUsage = Object.entries(layers).flatMap(([spaceId, spaceLayers]) =>
+    spaceLayers
+      .filter((layer) => layer.kind === "composition" && layer.source_id === compositionId)
+      .map((layer) => {
+        const owner = sceneNames[spaceId] !== undefined
+          ? sceneLabel(spaceId)
+          : `composition ${compositions[spaceId]?.name ?? spaceId}`;
+        return `${owner} media layer ${layer.name}`;
+      }),
+  );
+  return [...new Set([...parents, ...sceneUsage, ...instanceUsage, ...layerUsage])];
 }
 
 function wouldCreateCycle(

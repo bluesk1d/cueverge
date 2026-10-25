@@ -275,6 +275,17 @@ def authoring_schema() -> dict[str, Any]:
         "retains_reusable_compositions_presets_and_assets": True,
         "publishes_or_changes_live_output": False,
     }
+    schema["x-composition-deletion"] = {
+        "usage_tool": "get_composition_usage",
+        "delete_tool": "delete_composition",
+        "remove_from_scene_tool": "remove_composition_from_scene",
+        "scope": "direct_edit",
+        "requires_base_revision": True,
+        "removes_scene_roots_instances_parent_children_and_nested_layers": True,
+        "removes_composition_owned_timeline_metadata": True,
+        "retains_media_assets_and_revision_history": True,
+        "publishes_or_changes_live_output": False,
+    }
     schema["x-runtime-workflows"] = {
         "apply": {
             "tool": "apply_saved_show",

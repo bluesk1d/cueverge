@@ -1,9 +1,13 @@
 import { expect, test, type Page } from "@playwright/test";
-import { openTimelineEditor, openComposition, openTimelineTool } from "./show-workspace";
+import { mockReadyAsset, openTimelineEditor, openComposition, openTimelineTool } from "./show-workspace";
 
 const installationId = "demo-installation";
 
-async function mockStageApi(page: Page, document: Record<string, unknown>) {
+async function mockStageApi(
+  page: Page,
+  document: Record<string, unknown>,
+  assets: Record<string, unknown>[] = [],
+) {
   const state: { saved: Record<string, unknown> | null } = { saved: null };
   await page.route("**/api/gui/v1/**", async (route) => {
     const request = route.request();
@@ -86,7 +90,8 @@ async function mockStageApi(page: Page, document: Record<string, unknown>) {
         body: '<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="600"><rect width="1000" height="600" fill="#203040"/></svg>',
       });
     }
-    if (pathname.endsWith("/render-jobs") || pathname.endsWith("/geometry") || pathname.endsWith("/assets")) {
+    if (pathname.endsWith("/assets")) return route.fulfill({ json: assets });
+    if (pathname.endsWith("/render-jobs") || pathname.endsWith("/geometry")) {
       return route.fulfill({ json: [] });
     }
     if (pathname.endsWith("/lighting-preview")) {
@@ -193,6 +198,9 @@ test("a lights-only house effect drops every projector and shows the house in La
 
   await openTimelineTool(page, "Render & bake");
   await expect(page.getByRole("button", { name: "Bake LED overlay", exact: true })).toBeEnabled();
+  await expect(page.getByAltText(/Controller render preview/)).toHaveCount(0);
+  await expect(page.getByText("Cross-projector rehearsal evidence")).toHaveCount(0);
+  await expect(page.getByText(/no projector frames to inspect/)).toBeVisible();
 
   await page.getByRole("button", { name: "Save timeline" }).click();
   await expect.poll(() => state.saved).not.toBeNull();
@@ -283,3 +291,54 @@ function draft() {
     }],
   };
 }
+
+test("looping layers set exact plays and compositions can be resized to fit", async ({ page }) => {
+  const stripes = {
+    ...mockReadyAsset("flag-gif", "Stripes", "video/mp4"),
+    metadata: { width: 640, height: 360, duration_ms: 1735 },
+  };
+  const document = draft();
+  const layer = (document.editor_metadata.timeline_transform_layers.flag as Record<string, unknown>[])[0];
+  Object.assign(layer, { duration_ms: 1735, in_point_ms: 0, out_point_ms: 1735, playback: "loop" });
+  const state = await mockStageApi(page, document, [stripes]);
+  await page.goto("/demo.html");
+  await page.getByRole("button", { name: "Shows", exact: true }).click();
+  await openTimelineEditor(page);
+  await openComposition(page, "flag");
+
+  await page.getByRole("button", { name: "Media layer Flag", exact: true }).click();
+  const plays = page.getByLabel("Layer plays");
+  await expect(plays).toHaveValue("1");
+  await plays.fill("2");
+  await expect(page.getByLabel("Media layer duration", { exact: true })).toHaveValue("3470");
+
+  await page.getByRole("button", { name: "Composition settings" }).click();
+  const settings = page.getByRole("dialog", { name: "Composition settings · Rippling flag" });
+  const length = settings.getByLabel("Composition duration (seconds)");
+  await expect(length).toHaveValue("5");
+  await settings.getByRole("button", { name: /Fit to layers/ }).click();
+  await expect(length).toHaveValue("3.47");
+  await settings.getByRole("button", { name: "Close" }).click();
+
+  await plays.fill("3");
+  await expect(page.getByLabel("Media layer duration", { exact: true })).toHaveValue("5205");
+  await page.getByRole("button", { name: "Composition settings" }).click();
+  await expect(length).toHaveValue("5.205");
+  await settings.getByRole("button", { name: "Close" }).click();
+
+  await page.getByRole("button", { name: "Save timeline" }).click();
+  await expect.poll(() => state.saved).not.toBeNull();
+  const metadata = (state.saved as unknown as {
+    editor_metadata: {
+      compositions: Record<string, Record<string, unknown>>;
+      timeline_transform_layers: Record<string, Record<string, unknown>[]>;
+    };
+  }).editor_metadata;
+  expect(metadata.compositions.flag.duration_ms).toBe(5205);
+  expect(metadata.timeline_transform_layers.flag[0]).toMatchObject({
+    duration_ms: 5205,
+    in_point_ms: 0,
+    out_point_ms: 5205,
+    playback: "loop",
+  });
+});

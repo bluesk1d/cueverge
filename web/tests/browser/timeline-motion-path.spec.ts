@@ -172,6 +172,8 @@ test("stage motion paths expose handles ghosts snapping and coverage warnings", 
     "fill: rgb(102, 51, 0);",
   );
   await expect(overlay.locator(".stage-composition-pixel-footprint")).toHaveCount(2);
+  await expect(overlay.locator(".stage-composition-output-order")).toHaveCount(0);
+  await page.getByText("Show LED numbers").click();
   await expect(overlay.locator(".stage-composition-output-order")).toHaveText([
     "7",
     "8",

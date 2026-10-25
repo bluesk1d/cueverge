@@ -118,6 +118,7 @@ def evaluate_scene_lighting(
         tempfile.TemporaryDirectory(prefix="cueverge-scene-preview-") as directory,
     ):
         compiler = DraftCompiler(Path(directory))
+        bake_error: str | None = None
         try:
             compiled = compiler.compile(
                 project_id=project_id,
@@ -125,13 +126,16 @@ def evaluate_scene_lighting(
                 draft=draft,
                 lighting_artifacts=lighting_artifacts or None,
             )
-        except CompilationError:
+        except CompilationError as error:
             if not lighting_artifacts:
                 raise
+            bake_error = str(error)
             compiled = compiler.compile(
                 project_id=project_id, revision=source_revision, draft=draft
             )
         scene_limitations: list[str] = []
+        if bake_error is not None:
+            scene_limitations.append(f"Baked LED compositions could not be used: {bake_error}.")
         missing = compiled.package_root / "runtime" / "lighting-bake-required.json"
         if missing.exists():
             required = set(json.loads(missing.read_text())["composition_ids"])
@@ -151,16 +155,18 @@ def evaluate_scene_lighting(
             )
             # The preview package is temporary; the marker only blocks runtime playback.
             missing.unlink()
-            if names:
+            if names and bake_error is None:
                 scene_limitations.append(
                     "LED compositions not shown: "
                     + ", ".join(names)
                     + (
                         ". Save the scene, then bake them (Timeline editor > Bake LED "
-                        "animation) to include them in this preview."
+                        "animation, or Render & bake > Bake LED overlay) to include them in "
+                        "this preview."
                         if unsaved
                         else ". Bake them for this saved revision (Timeline editor > Bake LED "
-                        "animation) to include them in this preview."
+                        "animation, or Render & bake > Bake LED overlay) to include them in "
+                        "this preview."
                     )
                 )
         loaded = load_show_package(compiled.package_root).require(scene_id)

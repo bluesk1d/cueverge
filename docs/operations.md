@@ -1347,6 +1347,31 @@ with its normal author session, CSRF protection and `If-Match` revision header.
 It returns the updated draft and ETag, or explicit validation/conflict errors.
 Publication and apply remain separate, authorized operations.
 
+## Deleting compositions
+
+Use `get_composition_usage(composition_id)` (read scope) to list the scenes,
+parent compositions, scene instances and nested-composition media layers that
+use a composition. Then, with a project-bound `direct_edit` token and the
+current saved revision:
+
+- `delete_composition(composition_id, base_revision)` deletes the composition
+  and removes it from every use listed above. Its own layers, tracks, markers,
+  cues and lighting author layers are discarded, and its bakes are no longer
+  published. Media assets and historical revisions are kept.
+- `remove_composition_from_scene(scene_id, composition_id, base_revision)`
+  takes it out of one scene (root entry, instances and nested layers in that
+  scene) and keeps the composition for reuse. It fails when the scene does not
+  use the composition directly.
+
+Both validate the resulting draft like any other save, fail on stale
+revisions without overwriting newer edits, and return the new `revision`,
+`requires_human_approval: false` and `hardware_commands_sent: false`. They save
+a working revision only; publication and apply stay separate. Capability
+discovery advertises `composition_deletion`, and `get_authoring_schema`
+describes the tools under `x-composition-deletion`. The timeline editor offers
+the same actions: **Delete…** with a confirmation that lists every use, and
+**Remove from this scene**.
+
 ## Accelerated simulation
 
 `cueverge.simulation.ShowSimulation` runs a loaded `SceneCatalog` with:

@@ -772,15 +772,28 @@ instance UUIDs, referenced composition IDs, nonnegative scene start offsets,
 positive time scale up to 16×, JSON parameter overrides, and explicit x/y
 placement in the target composition space. Server validation rejects duplicate
 IDs, unknown compositions/scenes, invalid rates/offsets, non-object overrides,
-or incomplete placement. Hierarchy usage and instance properties remain
+or incomplete placement. A scene root that also has instances in that scene is
+placed only by those instances; a root without instances is placed once at its
+local offset. Overlapping placements of the same baked LED composition in one
+scene fail compilation with a diagnostic naming the composition, and scene
+preview reports that reason instead of a missing bake. Hierarchy usage and
+instance properties remain
 inspectable independently from the reusable composition definition.
 
-Composition dependency controls report parent-composition and scene usage.
-Unused definitions may be deleted directly. Used definitions require an
-explicit replacement; replacement rewrites parent children, scene roots, and
-stable scene-instance references, rejects cycle-producing choices, removes the
-old definition, and cleans orphaned timeline-view/track metadata. The server's
-reference and cycle validation remains the final write boundary.
+Composition dependency controls report parent-composition, scene, instance and
+nested-composition media layer usage. **Delete…** (in the Compositions tool tab,
+or **Delete composition…** beside the open composition tabs) asks for
+confirmation, lists every use, then removes the definition from all of them in
+one undoable edit: parent children, scene roots, scene instances and nested
+composition media layers, plus the composition's own layers, tracks, markers,
+cues and lighting author layers. **Remove from this scene** removes only the
+current scene's root, instances and nested layers for it, keeping the reusable
+definition. **Replace and delete** remains available: replacement rewrites
+parent children, scene roots, stable scene-instance references and nested
+composition layers, rejects cycle-producing choices, removes the old
+definition, and cleans orphaned timeline metadata. The server's reference and
+cycle validation remains the final write boundary; MCP clients use the same
+cascade through `delete_composition` and `remove_composition_from_scene`.
 
 Named synchronization markers are separate from scheduling safe points. Each
 marker has a globally stable ID, a name unique within its editing space, and a

@@ -53,6 +53,7 @@ def media_members(
             if not isinstance(identifier, str):
                 raise ArtifactDeploymentError("Composition instances require an identifier")
             root_ids.append(identifier)
+        root_ids = list(dict.fromkeys(root_ids))
         outputs = scene.media if isinstance(scene.media, tuple) else (scene.media,)
         for output in outputs:
             output_id = getattr(output, "id", "media")

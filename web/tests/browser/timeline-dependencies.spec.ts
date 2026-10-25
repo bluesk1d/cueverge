@@ -1,9 +1,11 @@
 import { expect, test } from "@playwright/test";
-import { openAdvancedShowWorkspace, openTimelineEditor, openTimelineTool } from "./show-workspace";
+import type { Page } from "@playwright/test";
+import { openTimelineEditor, openTimelineTool, openComposition } from "./show-workspace";
 
 let savedDraft: Record<string, unknown> | null = null;
 
-test("composition replacement prevents orphaned dependencies", async ({ page }) => {
+async function mockDraftApi(page: Page) {
+  savedDraft = null;
   await page.route("**/api/gui/v1/**", async (route) => {
     const request = route.request();
     const url = new URL(request.url());
@@ -25,7 +27,10 @@ test("composition replacement prevents orphaned dependencies", async ({ page }) 
     }
     return route.fulfill({ status: 404, json: { detail: "fixture route missing" } });
   });
+}
 
+test("composition replacement prevents orphaned dependencies", async ({ page }) => {
+  await mockDraftApi(page);
   await page.goto("/demo.html");
   await page.getByRole("button", { name: "Shows", exact: true }).click();
   await openTimelineEditor(page);
@@ -36,13 +41,16 @@ test("composition replacement prevents orphaned dependencies", async ({ page }) 
   const child = hierarchy.locator("li").nth(1);
   const unused = hierarchy.locator("li").last();
 
-  await expect(parent.getByText("Used by scene ambient")).toBeVisible();
+  await expect(parent.getByText("Used by scene Ambient")).toBeVisible();
   await expect(
     child.getByText(
-      "Used by composition Parent, scene ambient instance instance-child",
+      "Used by composition Parent, scene Ambient instance instance-child",
     ),
   ).toBeVisible();
-  await unused.getByRole("button", { name: "Delete unused" }).click();
+  await unused.getByRole("button", { name: "Delete composition Unused" }).click();
+  const confirm = page.getByRole("dialog", { name: "Delete Unused?" });
+  await expect(confirm).toContainText("not used by any scene or composition");
+  await confirm.getByRole("button", { name: "Delete composition", exact: true }).click();
   await expect(
     hierarchy.locator("li > span > strong").filter({ hasText: "Unused" }),
   ).toHaveCount(0);
@@ -77,6 +85,53 @@ test("composition replacement prevents orphaned dependencies", async ({ page }) 
   expect(
     Object.keys(metadata.timeline_tracks as Record<string, unknown>).sort(),
   ).toEqual(["ambient", "parent", "replacement"]);
+});
+
+test("used compositions can be removed from a scene or deleted everywhere after confirmation", async ({ page }) => {
+  await mockDraftApi(page);
+  await page.goto("/demo.html");
+  await page.getByRole("button", { name: "Shows", exact: true }).click();
+  await openTimelineEditor(page);
+  await openTimelineTool(page, "Compositions");
+  const hierarchy = page.locator(".composition-hierarchy");
+  const parent = hierarchy.locator("li").nth(0);
+  const child = hierarchy.locator("li").nth(1);
+
+  await child.getByRole("button", { name: "Remove from this scene" }).click();
+  await expect(child.getByText("Used by composition Parent")).toBeVisible();
+  await expect(child.getByRole("button", { name: "Remove from this scene" })).toHaveCount(0);
+
+  await openComposition(page, "parent");
+  await page.getByRole("button", { name: "Delete composition…" }).click();
+  const confirm = page.getByRole("dialog", { name: "Delete Parent?" });
+  await expect(confirm.getByRole("list", { name: "Composition usage" })).toContainText("scene Ambient");
+  await confirm.getByRole("button", { name: "Cancel" }).click();
+  await expect(page.locator('[role="tab"][data-composition-id="parent"]')).toHaveCount(1);
+
+  await page.getByRole("button", { name: "Delete composition…" }).click();
+  await page
+    .getByRole("dialog", { name: "Delete Parent?" })
+    .getByRole("button", { name: "Delete composition", exact: true })
+    .click();
+  await expect(page.locator('[role="tab"][data-composition-id="parent"]')).toHaveCount(0);
+  await expect(page.getByRole("tab", { name: "Whole scene" })).toHaveAttribute("aria-selected", "true");
+  await expect(parent.getByText("Parent", { exact: true })).toHaveCount(0);
+  await page.getByRole("button", { name: "Undo" }).click();
+  await expect(page.locator('[role="tab"][data-composition-id="parent"]')).toHaveCount(1);
+  await page.getByRole("button", { name: "Redo" }).click();
+  await expect(page.locator('[role="tab"][data-composition-id="parent"]')).toHaveCount(0);
+
+  await page.getByRole("button", { name: "Save timeline" }).click();
+  await expect.poll(() => savedDraft).not.toBeNull();
+  const metadata = (savedDraft as { editor_metadata: Record<string, unknown> }).editor_metadata;
+  expect(Object.keys(metadata.compositions as Record<string, unknown>).sort()).toEqual([
+    "child",
+    "replacement",
+    "unused",
+  ]);
+  expect(metadata.scene_compositions).toEqual({ ambient: [] });
+  expect(metadata.composition_instances).toEqual({ ambient: [] });
+  expect(Object.keys(metadata.timeline_tracks as Record<string, unknown>)).not.toContain("parent");
 });
 
 function response(revision: number, draft: Record<string, unknown>) {
@@ -174,3 +229,20 @@ function document() {
     ],
   };
 }
+
+test("a single scene instance can be removed without touching other placements", async ({ page }) => {
+  await mockDraftApi(page);
+  await page.goto("/demo.html");
+  await page.getByRole("button", { name: "Shows", exact: true }).click();
+  await openTimelineEditor(page);
+  await openTimelineTool(page, "Compositions");
+  const hierarchy = page.locator(".composition-hierarchy");
+  await hierarchy.getByRole("button", { name: "Remove instance instance-child" }).click();
+  await expect(hierarchy.locator(".composition-instance")).toHaveCount(0);
+  await expect(hierarchy.locator("li").nth(1).getByText("Used by composition Parent")).toBeVisible();
+  await page.getByRole("button", { name: "Save timeline" }).click();
+  await expect.poll(() => savedDraft).not.toBeNull();
+  const metadata = (savedDraft as { editor_metadata: Record<string, unknown> }).editor_metadata;
+  expect(metadata.composition_instances).toEqual({ ambient: [] });
+  expect(metadata.scene_compositions).toEqual({ ambient: ["parent"] });
+});

@@ -166,6 +166,7 @@ def _install_lighting_sequences(
 
     references: list[dict[str, object]] = []
     attached: set[str] = set()
+    placements: dict[tuple[str, str], list[tuple[float, float]]] = {}
     for scene in _list_items(graph.get("scenes")):
         record = _object(scene)
         for raw_context in _list_items(record.get("contexts")):
@@ -186,6 +187,18 @@ def _install_lighting_sequences(
                 raise CompilationError("lighting bake belongs to a different draft revision")
             if manifest.get("composition_id") != composition_id:
                 raise CompilationError("lighting bake belongs to a different composition")
+            start = _number(context.get("offset_ms"), 0)
+            end = start + _number(manifest.get("duration_ms"), 0) * _number(
+                context.get("time_scale"), 1
+            )
+            placed = placements.setdefault((str(record.get("scene_id")), composition_id), [])
+            if any(start < other_end and other_start < end for other_start, other_end in placed):
+                raise CompilationError(
+                    f"LED composition {composition_id} is placed more than once at overlapping "
+                    f"times in scene {record.get('scene_id')}; remove the extra instance "
+                    "(Timeline editor > Compositions)"
+                )
+            placed.append((start, end))
             sequences = (
                 manifest["lighting_sequences"]
                 if manifest_path.name == "render-manifest.json"
@@ -263,9 +276,13 @@ def _compile_composition_graph(draft: DraftProject) -> dict[str, object]:
             placement={"x": 0.0, "y": 0.0},
             parameter_overrides={},
         )
+        placed = {
+            str(_object(value).get("composition_id")) for value in instances.get(scene.id, [])
+        }
         for root_id in _string_items(scene_roots.get(scene.id)):
             root = compositions.get(root_id)
-            if root is not None:
+            # A root with instances is placed by those instances, not a second time here.
+            if root is not None and root_id not in placed:
                 _walk_composition_contexts(
                     contexts,
                     compositions,

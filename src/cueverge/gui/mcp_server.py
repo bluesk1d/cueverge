@@ -40,6 +40,11 @@ from cueverge.gui.asset_upload import (
 )
 from cueverge.gui.authoring_schema import authoring_schema
 from cueverge.gui.compiler import CompilationError
+from cueverge.gui.composition_authoring import composition_usage as draft_composition_usage
+from cueverge.gui.composition_authoring import delete_composition as delete_draft_composition
+from cueverge.gui.composition_authoring import (
+    remove_composition_from_scene as remove_draft_composition_from_scene,
+)
 from cueverge.gui.contracts import (
     AddSceneOutputRequest,
     ConfigureInputSourceRequest,
@@ -1175,6 +1180,99 @@ def create_mcp_app(services: GuiServices) -> Starlette:
         }
 
     @tool()
+    def delete_composition(composition_id: str, base_revision: int) -> dict[str, JsonValue]:
+        """Delete a composition and remove it from everywhere it is used (direct_edit).
+
+        Removes it from scene roots and instances, parent compositions' children and
+        nested composition media layers, and discards its own layers, tracks, markers,
+        cues and LED effect layers. Call get_composition_usage first to confirm what
+        will change. Keeps media assets and revision history. Its bakes are no longer
+        published. Does not publish or change live output.
+        """
+        return _change_composition(
+            base_revision,
+            composition_id,
+            "mcp.composition.delete",
+            lambda draft: delete_draft_composition(draft, composition_id),
+        )
+
+    @tool()
+    def remove_composition_from_scene(
+        scene_id: str, composition_id: str, base_revision: int
+    ) -> dict[str, JsonValue]:
+        """Take a composition out of one scene but keep it for reuse (direct_edit).
+
+        Removes the scene's root entry, instances and nested composition media layers
+        for it. Other scenes and the composition's own content are unchanged.
+        Does not publish or change live output.
+        """
+        return _change_composition(
+            base_revision,
+            composition_id,
+            "mcp.composition.remove_from_scene",
+            lambda draft: remove_draft_composition_from_scene(draft, scene_id, composition_id),
+            scene_id=scene_id,
+        )
+
+    @tool()
+    def get_composition_usage(composition_id: str) -> dict[str, JsonValue]:
+        """List the scenes, compositions and media layers that use a composition (read)."""
+        token = _authorize(services, McpScope.READ)
+        try:
+            revision = services.repository.get_revision(token.project_id)
+            usage = draft_composition_usage(revision.draft, composition_id)
+        except (ProjectNotFoundError, ValueError) as error:
+            raise ToolError(str(error)) from error
+        return {
+            "project_id": token.project_id,
+            "composition_id": composition_id,
+            "revision": revision.revision,
+            "used_by": cast(list[JsonValue], usage),
+        }
+
+    def _change_composition(
+        base_revision: int,
+        composition_id: str,
+        action: str,
+        change: Callable[[DraftProject], DraftProject],
+        *,
+        scene_id: str | None = None,
+    ) -> dict[str, JsonValue]:
+        token = _authorize(services, McpScope.DIRECT_EDIT)
+        try:
+            if base_revision < 1 or not composition_id:
+                raise ValueError("composition_id and a positive base_revision are required")
+            stored = services.repository.get_revision(token.project_id, base_revision)
+            if stored.project.archived_at is not None:
+                raise ValueError("Archived shows cannot be edited.")
+            candidate = change(stored.draft)
+            updated = services.mcp_authoring.update_project_draft(
+                project_id=token.project_id,
+                base_revision=base_revision,
+                proposed_document=candidate.model_dump(mode="json"),
+                username=token.username,
+                role=_token_role(services, token),
+            )
+        except (ProjectNotFoundError, ValueError, McpAuthoringError) as error:
+            raise ToolError(str(error)) from error
+        details: dict[str, JsonValue] = {
+            "base_revision": base_revision,
+            "created_revision": updated.revision,
+        }
+        if scene_id is not None:
+            details["scene_id"] = scene_id
+        _audit(services, token, action, composition_id, "success", details=details)
+        return {
+            "project_id": token.project_id,
+            "composition_id": composition_id,
+            **({"scene_id": scene_id} if scene_id is not None else {}),
+            "base_revision": base_revision,
+            "revision": updated.revision,
+            "hardware_commands_sent": False,
+            "requires_human_approval": False,
+        }
+
+    @tool()
     def update_project_draft(
         base_revision: int,
         draft: dict[str, JsonValue],
@@ -1579,6 +1677,7 @@ def create_mcp_app(services: GuiServices) -> Starlette:
                     "media_repeat_count": True,
                     "seamless_scene_transitions": True,
                     "scene_deletion": True,
+                    "composition_deletion": True,
                     "scene_creation": True,
                     "scene_output_creation": True,
                     "scene_output_rename": True,
@@ -1615,6 +1714,9 @@ def create_mcp_app(services: GuiServices) -> Starlette:
                     "propose": "propose_project_revision",
                     "direct_edit": "update_project_draft",
                     "delete_scene": "delete_scene",
+                    "composition_usage": "get_composition_usage",
+                    "delete_composition": "delete_composition",
+                    "remove_composition_from_scene": "remove_composition_from_scene",
                     "scene_authoring_options": "get_scene_authoring_options",
                     "create_scene": "create_scene",
                     "add_scene_output": "add_scene_output",

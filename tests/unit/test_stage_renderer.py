@@ -17,7 +17,7 @@ from cueverge.controller.runtime import ControllerRuntime
 from cueverge.core.loader import ShowPackageError, load_show_package
 from cueverge.gui.artifact_deployment import ArtifactDeploymentService
 from cueverge.gui.asset_upload import AssetUploadService
-from cueverge.gui.compiler import DraftCompiler
+from cueverge.gui.compiler import CompilationError, DraftCompiler
 from cueverge.gui.contracts import DraftProject, Role
 from cueverge.gui.frame_compositor import compose_visual_frame
 from cueverge.gui.projector_overlap import StoredProjectorOverlap
@@ -488,6 +488,27 @@ def test_lights_only_overlay_bakes_led_sequences_without_projector_video(
         sample = cast(list[dict[str, object]], sampled["samples"])[0]
         assert list(rendered[cast(int, sample["output_index"])]) == sample["color"]
     assert rendered[2] != rendered[8]
+    duplicated = copy.deepcopy(document)
+    duplicated["editor_metadata"]["composition_instances"] = {
+        "ambient": [
+            {
+                "id": f"copy-{index}",
+                "composition_id": "stage-composition",
+                "start_offset_ms": 0,
+                "time_scale": 1,
+                "parameter_overrides": {},
+                "placement": {"x": 0, "y": 0},
+            }
+            for index in range(2)
+        ]
+    }
+    with pytest.raises(CompilationError, match="placed more than once"):
+        DraftCompiler(tmp_path / "duplicate").compile(
+            project_id="demo-project",
+            revision=2,
+            draft=DraftProject.model_validate(duplicated),
+            lighting_artifacts={"stage-composition": artifact},
+        )
 
     repository = GuiRepository(tmp_path / "publication.sqlite3")
     repository.migrate()

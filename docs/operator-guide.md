@@ -882,6 +882,13 @@ unavailable; save or cancel first. Stale saves retain edits and report conflict.
      with **Save timeline**. Clips, cues, markers and regions are never trimmed
      automatically: anything that now runs past the end is reported as a
      timeline issue and blocks saving until you fix it.
+   - Inside a composition, **Composition settings** (beside **Undo**) edits
+     its name and length, with **Fit to layers** and **Match scene length**
+     shortcuts. LED bakes cover the whole composition length, so a
+     composition must fit within every scene that places it.
+   - For a video layer set to **Loop source**, **Plays** sets the layer to
+     exactly that many back-to-back plays of the source (for example 3 × a
+     1.735 s clip = 5.205 s), extending the composition or scene if needed.
    - Adding a clip whose natural length runs past the scene end offers
      **Extend scene to …** (lengthens the scene so the whole clip fits),
      **Trim clip to fit** (ends the clip at the scene end) or **Cancel**.
@@ -912,6 +919,17 @@ unavailable; save or cancel first. Stale saves retain edits and report conflict.
    - **Tracks**: add audio-reference, fixture, group, or path tracks (bindings
      suggest installation fixtures, paths, and audio assets).
    - **Compositions**: create, open, nest, and add compositions to the scene.
+     Each listed scene instance plays the composition once at its start
+     offset; **Remove instance** deletes one placement. A composition placed
+     twice at overlapping times cannot bake into the same LEDs, so remove the
+     extra instance if publishing or scene preview reports it.
+     **Remove from this scene** takes a composition out of the current scene
+     but keeps it for reuse. **Delete…** (also **Delete composition…** next to
+     the composition tabs above the viewer) lists everywhere the composition is
+     used and, once confirmed, removes it from all of them and deletes it with
+     its layers, tracks, markers and cues. **Replace and delete** swaps another
+     composition into every place it was used instead. Undo restores a
+     deletion; nothing changes until **Save timeline**.
    - **Render & bake**: render settings, controller render and bake jobs,
      rehearsal evidence, and rendered-frame inspection for projector and whole
      display overlay compositions.
@@ -996,7 +1014,9 @@ under **Outputs in this effect** once at least one LED output is selected.
    sampling the edge.
 3. The stage preview shows the stage-view photo in true proportions, the
    rendered frame at the playhead (**Show rendered frame**), projector
-   coverage, LED pixels, and the composition boundary.
+   coverage, LED pixels, and the composition boundary. LED numbers (physical
+   output order) are hidden by default; turn on **Show LED numbers** to check
+   wiring order, or hover a dot to see its number.
    **Layout** draws the same house photo, projector outlines and mapped LED
    dots underneath its move/resize/rotate handles (**Show house and LEDs**,
    on by default), so you can place media against the physical house without
@@ -1020,7 +1040,10 @@ composition's frame rate (up to 60 fps for mixed output, including fractional
 rates such as 30000/1001). Projector warps, masks, and overlap corrections
 apply only to projector video; LEDs sample the stage before those corrections,
 with each lighting surface's brightness limit applied. A lights-only bake
-contains only the RGB sequences.
+contains only the RGB sequences; **Render & bake** then hides projector
+rehearsal and frame inspection (check sampled colors in **House view**), and
+only render size and frame rate apply. Frame inspection lists only the
+projectors selected for the effect.
 
 A mixed stage can use one projector or a synchronized projector group.
 Multiple projectors retain their existing synchronization-rehearsal gate;
