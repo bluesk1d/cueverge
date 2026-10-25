@@ -211,14 +211,18 @@ def _validate_composition_graph(
         if stage_projectors is not None:
             if (
                 not isinstance(stage_projectors, list)
-                or not stage_projectors
                 or not all(isinstance(item, str) and item for item in stage_projectors)
                 or len(stage_projectors) != len(set(stage_projectors))
                 or len(stage_projectors) > 32
             ):
-                raise ValueError("stage projectors must be 1 to 32 unique resource names")
+                raise ValueError("stage projectors must be up to 32 unique resource names")
             if value.get("space_kind") != "stage":
                 raise ValueError("only stage compositions can select stage projectors")
+            if not stage_projectors and not stage_surfaces:
+                raise ValueError(
+                    "a lights-only stage composition (no projectors) must select "
+                    "at least one stage lighting surface"
+                )
         if not isinstance(value.get("target_id"), str) or not value["target_id"]:
             raise ValueError("composition editing space requires a target ID")
         for dimension in ("width", "height"):

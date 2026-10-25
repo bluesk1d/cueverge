@@ -188,44 +188,17 @@ def encode_output_set(
                 for member in encoded
             ],
         }
-        sequences: list[dict[str, object]] = []
-        for index, lighting in enumerate(lighting_members):
-            filename = f"lighting-{index + 1:04d}.rgb"
-            reference = LightingSequenceReference(
-                scene_id="bake",
-                resource=lighting.resource,
-                output_indices=lighting.output_indices,
-                path=filename,
-                digest_sha256=hashlib.sha256(lighting.data).hexdigest(),
-                frame_rate=frame_rate_numerator,
-                frame_rate_denominator=frame_rate_denominator,
-                frame_count=len(members[audio_owner]),
-                duration_ms=duration_ms,
-            )
-            expected_size = reference.frame_count * len(reference.output_indices) * 3
-            if len(lighting.data) != expected_size:
-                raise RenderEncodingError("stage lighting data does not match frame count")
-            (temporary_directory / filename).write_bytes(lighting.data)
-            sequences.append(
-                {
-                    **reference.model_dump(
-                        mode="json", exclude={"scene_id", "offset_ms", "time_scale"}
-                    ),
-                    "mapping_digest": lighting.mapping_digest,
-                }
-            )
+        sequences = _write_lighting_sequences(
+            temporary_directory,
+            lighting_members,
+            frame_count=len(members[audio_owner]),
+            frame_rate_numerator=frame_rate_numerator,
+            frame_rate_denominator=frame_rate_denominator,
+            duration_ms=duration_ms,
+        )
         if sequences:
             manifest["lighting_sequences"] = sequences
-        manifest_path = temporary_directory / "render-manifest.json"
-        manifest_path.write_text(
-            json.dumps(manifest, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
-        manifest["manifest_digest_sha256"] = _sha256(manifest_path)
-        manifest_path.write_text(
-            json.dumps(manifest, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
+        _write_manifest(temporary_directory, manifest)
         destination = output_directory / activation_identity
         os.replace(temporary_directory, destination)
         return manifest
@@ -235,6 +208,126 @@ def encode_output_set(
                 path.unlink()
             temporary_directory.rmdir()
         raise
+
+
+def encode_lighting_sequence_set(
+    *,
+    output_directory: Path,
+    frame_rate_numerator: int,
+    frame_rate_denominator: int,
+    duration_ms: int,
+    source_revision: int,
+    composition_id: str,
+    composition_digest: str,
+    source_checksums: dict[str, str],
+    media_end_behavior: str,
+    lighting_members: tuple[LightingMember, ...],
+) -> dict[str, object]:
+    """Write a lights-only stage bake: LED sequences and no media-agent members."""
+    if not lighting_members:
+        raise RenderEncodingError("lights-only output set requires LED sequences")
+    if media_end_behavior not in {"stop", "hold_last_frame", "loop"}:
+        raise RenderEncodingError("media end behavior is invalid")
+    if sum(len(member.data) for member in lighting_members) > MAX_SEQUENCE_BYTES:
+        raise RenderEncodingError("stage lighting exceeds the 256 MiB sequence budget")
+    first = lighting_members[0]
+    if not first.output_indices:
+        raise RenderEncodingError("stage lighting member has no output indices")
+    frame_count = len(first.data) // (len(first.output_indices) * 3)
+    output_directory.mkdir(parents=True, exist_ok=True)
+    activation_identity = str(uuid4())
+    temporary_directory = Path(tempfile.mkdtemp(prefix=".render-set-", dir=output_directory))
+    try:
+        manifest: dict[str, object] = {
+            "schema_version": 1,
+            "activation_identity": activation_identity,
+            "source_revision": source_revision,
+            "composition_id": composition_id,
+            "composition_digest": composition_digest,
+            "source_checksums": source_checksums,
+            "duration_ms": duration_ms,
+            "frame_rate": {
+                "numerator": frame_rate_numerator,
+                "denominator": frame_rate_denominator,
+            },
+            "frame_time_origin_ms": 0,
+            "render_pipeline_revision": RENDER_PIPELINE_REVISION,
+            "verification_policy_revision": VERIFICATION_POLICY_REVISION,
+            "lights_only": True,
+            "audio_owner": None,
+            "media_end_behavior": media_end_behavior,
+            "hold_last_frame": media_end_behavior == "hold_last_frame",
+            "calibration_revisions": {},
+            "members": [],
+        }
+        manifest["lighting_sequences"] = _write_lighting_sequences(
+            temporary_directory,
+            lighting_members,
+            frame_count=frame_count,
+            frame_rate_numerator=frame_rate_numerator,
+            frame_rate_denominator=frame_rate_denominator,
+            duration_ms=duration_ms,
+        )
+        _write_manifest(temporary_directory, manifest)
+        os.replace(temporary_directory, output_directory / activation_identity)
+        return manifest
+    except Exception:
+        if temporary_directory.exists():
+            for path in temporary_directory.iterdir():
+                path.unlink()
+            temporary_directory.rmdir()
+        raise
+
+
+def _write_lighting_sequences(
+    directory: Path,
+    lighting_members: tuple[LightingMember, ...],
+    *,
+    frame_count: int,
+    frame_rate_numerator: int,
+    frame_rate_denominator: int,
+    duration_ms: int,
+) -> list[dict[str, object]]:
+    sequences: list[dict[str, object]] = []
+    for index, lighting in enumerate(lighting_members):
+        filename = f"lighting-{index + 1:04d}.rgb"
+        reference = LightingSequenceReference(
+            scene_id="bake",
+            resource=lighting.resource,
+            output_indices=lighting.output_indices,
+            path=filename,
+            digest_sha256=hashlib.sha256(lighting.data).hexdigest(),
+            frame_rate=frame_rate_numerator,
+            frame_rate_denominator=frame_rate_denominator,
+            frame_count=frame_count,
+            duration_ms=duration_ms,
+        )
+        expected_size = reference.frame_count * len(reference.output_indices) * 3
+        if len(lighting.data) != expected_size:
+            raise RenderEncodingError("stage lighting data does not match frame count")
+        (directory / filename).write_bytes(lighting.data)
+        sequences.append(
+            {
+                **reference.model_dump(
+                    mode="json", exclude={"scene_id", "offset_ms", "time_scale"}
+                ),
+                "mapping_digest": lighting.mapping_digest,
+            }
+        )
+    return sequences
+
+
+def _write_manifest(directory: Path, manifest: dict[str, object]) -> None:
+    manifest_path = directory / "render-manifest.json"
+    manifest_path.write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    manifest["manifest_digest_sha256"] = _sha256(manifest_path)
+    manifest_path.write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
 
 
 def encode_mp4(

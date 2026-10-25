@@ -793,9 +793,12 @@ unavailable; save or cancel first. Stale saves retain edits and report conflict.
    Its **Scene** selection stays synchronized with the main scene workspace.
 2. Use the tabs above the viewer to switch between **Whole scene** and each
    composition. **+ New composition** opens presets: **Whole display
-   overlay** (sized to the installation stage, output `shared-stage`), **One
-   projector** (sized to the chosen projector's native pixels), or **One LED
-   surface**. **Add to this scene at 0:00** (on by default) also places the new
+   overlay** (sized to the installation stage, output `shared-stage`),
+   **Whole house lights** (the same stage overlay with every mapped LED
+   output and no projectors), **One projector** (sized to the chosen
+   projector's native pixels), or **One LED surface** (one mapped LED segment,
+   listed by segment name, controller output and LED range). **Add to this
+   scene at 0:00** (on by default) also places the new
    composition in the scene.
 3. Use the transport bar: stop, frame steps, play/pause, the playhead
    timecode (composition time, plus scene time inside a composition), **Go to
@@ -838,7 +841,11 @@ unavailable; save or cancel first. Stale saves retain edits and report conflict.
    drag a corner to resize it (proportions locked; hold **Shift** for free
    resizing), and drag the knob above it to rotate (**Shift** snaps to 15°).
    Content outside the frame stays visible, dimmed, so handles are always
-   reachable. These edit the selected keyframe; each drag is one undo step.
+   reachable. For stage and LED surface compositions, **Show house and LEDs**
+   (on by default) draws the installation underneath: the stage photo and
+   projector outlines for stage compositions, and the mapped LED dots for
+   both, so you can position media against the house without switching to
+   **House view**. These edit the selected keyframe; each drag is one undo step.
    Corner-pinned layers show their pinned outline; edit those corners in
    **House view**. New media added to a composition starts centered and
    scaled to fit; new compositions get a **Media** track automatically.
@@ -967,9 +974,22 @@ the image, video, or GIF from the **Media** bin onto the Viewer or a track.
 (The **Compositions** tab still offers the full form: **Covers → Whole display
 overlay**.)
 
+For a lights-only effect across several LED surfaces, such as stripes
+sweeping along every roofline segment, choose **Whole house lights** instead.
+It is the same shared-stage composition with no projectors and every mapped
+LED output selected. The bake (**Bake LED overlay**) produces LED sequences
+for the controller only: no projector video is rendered, audio layers are
+rejected, and no projector synchronization rehearsal is needed. You can also
+turn an existing overlay into a lights-only one by clearing every projector
+under **Outputs in this effect** once at least one LED output is selected.
+
 1. In the Viewer, under **Outputs in this effect**, choose which projectors and
-   LED outputs take part. All mapped projectors are included by default; at least one is
-   required. Unselected LED outputs keep their existing lighting behavior.
+   LED outputs take part. All mapped projectors are included by default. Clear
+   every projector for a lights-only effect; an effect then needs at least one
+   LED output. **Include all LED outputs** selects every mapped surface. LED
+   outputs are listed by installation segment name, controller output and LED
+   range (for example `porch-eave · wled-001 · LEDs 288–376`). Unselected LED
+   outputs keep their existing lighting behavior.
 2. If the composition size differs from the installation stage, choose
    **Match installation stage**. LED stage coordinates must fall within the
    composition; out-of-bounds samples fail the bake rather than silently
@@ -977,6 +997,11 @@ overlay**.)
 3. The stage preview shows the stage-view photo in true proportions, the
    rendered frame at the playhead (**Show rendered frame**), projector
    coverage, LED pixels, and the composition boundary.
+   **Layout** draws the same house photo, projector outlines and mapped LED
+   dots underneath its move/resize/rotate handles (**Show house and LEDs**,
+   on by default), so you can place media against the physical house without
+   switching views. LEDs outside the effect are faded; each LED takes the color
+   beneath its dot. Use **House view** to see the sampled colors.
 4. Select the media layer on the timeline; its properties open in the
    Inspector. Under **Shape on stage**, choose **Stretch to four
    corners** or **Fit to selected outputs**, then drag the four corner handles
@@ -989,15 +1014,17 @@ overlay**.)
    **Show outside the mask instead** to invert it.
 
 Save the timeline, open **Render & bake**, and choose **Bake installation
-overlay**. One job creates
+overlay** (**Bake LED overlay** for a lights-only effect). One job creates
 the projector videos and RGB sequences from the same stage frames, at the
 composition's frame rate (up to 60 fps for mixed output, including fractional
 rates such as 30000/1001). Projector warps, masks, and overlap corrections
 apply only to projector video; LEDs sample the stage before those corrections,
-with each lighting surface's brightness limit applied.
+with each lighting surface's brightness limit applied. A lights-only bake
+contains only the RGB sequences.
 
 A mixed stage can use one projector or a synchronized projector group.
-Multiple projectors retain their existing synchronization-rehearsal gate.
+Multiple projectors retain their existing synchronization-rehearsal gate;
+lights-only effects have no projector gate.
 Do not also target the same LED indices with an overlapping lighting-surface
 composition: publication rejects competing spatial sequences.
 
@@ -1015,7 +1042,14 @@ an automatic reconstruction of the house's depth.
 
 #### Spatial LED media overlays
 
-Open a mapped **One LED surface** composition. On **Media layers**, add an
+Open a mapped **One LED surface** composition. A surface is one mapped LED
+segment (for example a single roofline segment), identified in pickers by
+segment name, controller output and LED range; one controller output may be
+split into several surfaces. Its coordinates are the surface's own units, not
+the house stage. To cover several segments with one video, use a
+**Whole house lights** composition instead (see
+[Shared-stage effects across projectors and LEDs](#shared-stage-effects-across-projectors-and-leds)).
+On **Media layers**, add an
 image, video, or GIF by choosing it under **Source** (the picker lists ready
 uploads and sets the layer type).
 GIF assets use timed frames rather than a still image. Newly added video/GIF
@@ -1025,7 +1059,8 @@ long it contributes to the composition.
 
 Use position, scale, rotation, opacity, crop and transform keyframes to place
 and animate the source. Clicking the logical lighting canvas positions the
-selected media keyframe. Save the timeline to refresh backend evaluation.
+selected media keyframe. **Layout** draws the surface's mapped LED dots under
+the layer handles. Save the timeline to refresh backend evaluation.
 The logical canvas shows the composed content, while installation-photo
 previews show both a translucent source reference on four-corner surfaces and
 the resulting sampled LED colors. The translucent reference is not a claim

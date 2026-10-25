@@ -5,6 +5,7 @@ import {
   cornerHomography,
   formatTimecode,
   homographyMatrix3d,
+  lightingSurfaceLabel,
   mediaOutputSourceMs,
   sceneMediaOutputs,
   stackLayerRows,
@@ -112,5 +113,24 @@ describe("homographies", () => {
     expect(homographyMatrix3d([1, 2, 3, 4, 5, 6, 7, 8, 9], 10, 100)).toBe(
       "matrix3d(10,400,0,7,20,500,0,8,0,0,1,0,30,600,0,9)",
     );
+  });
+});
+
+describe("lightingSurfaceLabel", () => {
+  it("distinguishes segments that share one controller output", () => {
+    const pixels = (from: number, to: number) =>
+      Array.from({ length: to - from + 1 }, (_, index) => ({ output_index: from + index }));
+    expect(
+      lightingSurfaceLabel({ semantic_id: "a", name: "porch-eave", resource: "wled-001", pixels: pixels(288, 376) }),
+    ).toBe("porch-eave · wled-001 · LEDs 288–376");
+    expect(
+      lightingSurfaceLabel({ semantic_id: "b", name: "garage-eave", resource: "wled-001", pixels: pixels(0, 161) }),
+    ).toBe("garage-eave · wled-001 · LEDs 0–161");
+  });
+
+  it("falls back to the semantic ID and omits missing pixel ranges", () => {
+    expect(lightingSurfaceLabel({ semantic_id: "roof", resource: "wled-001" })).toBe("roof · wled-001");
+    expect(lightingSurfaceLabel({ semantic_id: "x", name: "wled-001", resource: "wled-001", pixels: [{ output_index: 4 }] }))
+      .toBe("wled-001 · LED 4");
   });
 });

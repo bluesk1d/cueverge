@@ -39,6 +39,7 @@ import { SceneHouseView } from "../components/SceneHouseView";
 import { SceneOutputActions } from "../components/SceneOutputActions";
 import {
   formatTimecode,
+  lightingSurfaceLabel,
   mediaOutputSourceMs,
   sceneMediaOutputs,
   stackLayerRows,
@@ -507,7 +508,7 @@ export function TimelineEditor({
   } | null>(null);
   const [dropTargetId, setDropTargetId] = useState<string | null>(null);
   const [presetDialogOpen, setPresetDialogOpen] = useState(false);
-  const [preset, setPreset] = useState<"stage" | "projector_native" | "lighting_surface">("stage");
+  const [preset, setPreset] = useState<CompositionPreset>("stage");
   const [presetTarget, setPresetTarget] = useState("");
   const [presetName, setPresetName] = useState("");
   const [presetDuration, setPresetDuration] = useState(0);
@@ -604,6 +605,8 @@ export function TimelineEditor({
           composition.stage_projector_resources?.includes(resource),
         )
       : mappedProjectorResources;
+  const lightsOnlyStage =
+    composition?.space_kind === "stage" && composition.stage_projector_resources?.length === 0;
   const completedRenderJobs = renderJobs.filter(
     (job) =>
       job.composition_id === composition?.id &&
@@ -716,6 +719,24 @@ export function TimelineEditor({
   }, [projectId, hasPendingRenderJobs]);
 
   useEffect(() => {
+    if (lightsOnlyStage) {
+      setSyncAdmission(
+        (composition?.stage_lighting_surfaces.length ?? 0) > 0
+          ? {
+              allowed: true,
+              code: "lights_only_stage",
+              message: "No projector output is baked. Rehearse LED timing before live use.",
+              rehearsal: null,
+            }
+          : {
+              allowed: false,
+              code: "lights_only_stage_without_leds",
+              message: "Choose at least one LED output for a lights-only overlay.",
+              rehearsal: null,
+            },
+      );
+      return;
+    }
     if (
       composition?.space_kind === "stage" &&
       stageProjectorResources.length === 1 &&
@@ -757,7 +778,7 @@ export function TimelineEditor({
       active = false;
     };
   }, [
-    composition?.id, composition?.space_kind,
+    composition?.id, composition?.space_kind, lightsOnlyStage,
     composition?.stage_lighting_surfaces.length, stageProjectorResources.join("|"),
   ]);
 
@@ -1367,6 +1388,7 @@ export function TimelineEditor({
     width: number;
     height: number;
     offsetMs: number;
+    stageOutputs?: Pick<Composition, "stage_projector_resources" | "stage_lighting_surfaces">;
   }): string {
     const id = crypto.randomUUID();
     setCompositions((current) => ({
@@ -1384,6 +1406,7 @@ export function TimelineEditor({
         safe_points_ms: [],
         protected_intervals: [],
         stage_lighting_surfaces: [],
+        ...spec.stageOutputs,
         render_settings: defaultRenderSettings(
           spec.space === "projector_native"
             ? [spec.width, spec.height]
@@ -1730,10 +1753,15 @@ export function TimelineEditor({
   }
 
   function presetSpec() {
-    if (preset === "stage") {
+    if (preset === "stage" || preset === "stage_lights") {
       const width = mapperExport?.stage ? roundStage(mapperExport.stage.width) : 10;
       const height = mapperExport?.stage ? roundStage(mapperExport.stage.height) : 6;
-      return { target: "shared-stage", width, height, label: "Whole display overlay" };
+      return {
+        target: "shared-stage",
+        width,
+        height,
+        label: preset === "stage" ? "Whole display overlay" : "Whole house lights",
+      };
     }
     if (preset === "projector_native") {
       const projector = (mapperExport?.projectors ?? [])
@@ -1753,7 +1781,7 @@ export function TimelineEditor({
       target: presetTarget,
       width: surface?.local_width ?? 1,
       height: surface?.local_height ?? 1,
-      label: surface?.resource ?? (presetTarget || "LED surface"),
+      label: surface?.name || surface?.resource || presetTarget || "LED surface",
     };
   }
 
@@ -1763,11 +1791,20 @@ export function TimelineEditor({
     const id = createComposition({
       name,
       durationMs: presetDuration,
-      space: preset,
+      space: preset === "stage_lights" ? "stage" : preset,
       target: spec.target,
       width: spec.width,
       height: spec.height,
       offsetMs: 0,
+      stageOutputs:
+        preset === "stage_lights"
+          ? {
+              stage_projector_resources: [],
+              stage_lighting_surfaces: (mapperExport?.lighting_surfaces ?? []).map(
+                (surface) => surface.semantic_id,
+              ),
+            }
+          : undefined,
     });
     if (presetAddToScene && scene) {
       setSceneCompositions((current) => ({
@@ -2336,6 +2373,8 @@ export function TimelineEditor({
                 canEdit={canEdit}
                 composition={composition}
                 compositions={compositions}
+                installationId={installationId}
+                mapperExport={mapperExport}
                 layers={spaceTransformLayers}
                 playheadMs={localPlayhead}
                 selectedKeyframeId={selectedTransformKeyframeId}
@@ -5867,9 +5906,11 @@ export function TimelineEditor({
                       }
                     }}
                   >
-                    {composition.stage_lighting_surfaces.length > 0
-                      ? "Bake installation overlay"
-                      : "Start controller render"}
+                    {lightsOnlyStage
+                      ? "Bake LED overlay"
+                      : composition.stage_lighting_surfaces.length > 0
+                        ? "Bake installation overlay"
+                        : "Start controller render"}
                   </button>
                   {renderJobs
                     .filter((job) => job.composition_id === composition.id)
@@ -5884,7 +5925,10 @@ export function TimelineEditor({
                         {job.artifact_id && (
                           <small>Artifact set {job.artifact_id}</small>
                         )}
-                        {job.state === "completed" && job.artifact_id && (
+                        {job.state === "completed" && job.artifact_id && lightsOnlyStage && (
+                          <small>LED sequences only · publish the show to send them to the controller.</small>
+                        )}
+                        {job.state === "completed" && job.artifact_id && !lightsOnlyStage && (
                           <button
                             disabled={deployedArtifactId === job.artifact_id}
                             onClick={async () => {
@@ -6137,8 +6181,17 @@ export function TimelineEditor({
           <div className="composition-presets" role="radiogroup" aria-label="Composition type">
             {([
               ["stage", "Whole display overlay", "One image or video placed across projectors and LEDs."],
+              [
+                "stage_lights",
+                "Whole house lights",
+                "One image or video placed on the house photo and sampled by every LED output. No projectors.",
+              ],
               ["projector_native", "One projector", "Content sized to a single projector's native pixels."],
-              ["lighting_surface", "One LED surface", "Content sampled onto one mapped LED surface."],
+              [
+                "lighting_surface",
+                "One LED surface",
+                "Content sampled onto one mapped LED surface, such as a single roofline segment.",
+              ],
             ] as const).map(([value, title, description]) => (
               <label
                 key={value}
@@ -6196,7 +6249,7 @@ export function TimelineEditor({
                 <option value="">Choose an LED surface</option>
                 {(mapperExport?.lighting_surfaces ?? []).map((surface) => (
                   <option key={surface.semantic_id} value={surface.semantic_id}>
-                    {surface.resource}
+                    {lightingSurfaceLabel(surface)}
                   </option>
                 ))}
               </select>
@@ -6231,7 +6284,7 @@ export function TimelineEditor({
           </label>
           <small>
             Size {presetSpec().width} × {presetSpec().height}
-            {preset === "stage"
+            {preset === "stage" || preset === "stage_lights"
               ? mapperExport?.stage
                 ? ` ${mapperExport.stage.unit} (installation stage)`
                 : " units · choose a stage view in Stage map for real-world size"
@@ -6239,10 +6292,21 @@ export function TimelineEditor({
                 ? " pixels"
                 : " surface units"}
           </small>
+          {preset === "stage_lights" && (
+            <small role="note">
+              {(mapperExport?.lighting_surfaces ?? []).length === 0
+                ? "No LED outputs are mapped yet. Map LEDs in Installation first."
+                : `Includes all ${(mapperExport?.lighting_surfaces ?? []).length} mapped LED outputs; adjust them under Outputs in this effect.`}
+            </small>
+          )}
           <button
             type="button"
             className="timeline-primary-action"
-            disabled={presetDuration <= 0 || !presetSpec().target}
+            disabled={
+              presetDuration <= 0 ||
+              !presetSpec().target ||
+              (preset === "stage_lights" && (mapperExport?.lighting_surfaces ?? []).length === 0)
+            }
             onClick={createFromPreset}
           >
             Create and open
@@ -6964,10 +7028,117 @@ function keyframeAtTime(layer: TransformLayer, localMs: number): TransformKeyfra
   return [...sorted].reverse().find((keyframe) => keyframe.time_ms <= localMs) ?? sorted[0];
 }
 
+type CompositionPreset = Composition["space_kind"] | "stage_lights";
+
 type LayoutDrag =
   | { kind: "move"; startPointer: [number, number]; keyframe: TransformKeyframe }
   | { kind: "scale"; corner: [number, number]; keyframe: TransformKeyframe }
   | { kind: "rotate"; startAngle: number; keyframe: TransformKeyframe };
+
+interface LayoutReference {
+  photo: { href: string; width: number; height: number } | null;
+  outlines: { key: string; label: string; points: StagePoint[]; included: boolean }[];
+  boundary: StagePoint[];
+  leds: { key: string; x: number; y: number; included: boolean; title: string }[];
+  summary: string;
+}
+
+/** Physical installation elements expressed in the composition's own coordinates. */
+function useLayoutReference(
+  composition: Composition,
+  mapperExport: InstallationMapperExport | null | undefined,
+  installationId: string | null | undefined,
+): LayoutReference | null {
+  const [photos, setPhotos] = useState<InstallationPhoto[]>([]);
+  const photoId =
+    composition.space_kind === "stage" ? mapperExport?.stage?.reference_photo_id ?? null : null;
+  useEffect(() => {
+    if (!photoId || !installationId) return;
+    let active = true;
+    getInstallationPhotos(installationId)
+      .then((loaded) => {
+        if (active) setPhotos(loaded);
+      })
+      .catch(() => {
+        if (active) setPhotos([]);
+      });
+    return () => {
+      active = false;
+    };
+  }, [installationId, photoId]);
+  return useMemo(() => {
+    if (!mapperExport) return null;
+    if (composition.space_kind === "lighting_surface") {
+      const surface = mapperExport.lighting_surfaces.find(
+        (candidate) =>
+          candidate.semantic_id === composition.target_id ||
+          candidate.resource === composition.target_id,
+      );
+      if (!surface) return null;
+      const scaleX = composition.width / (surface.local_width || composition.width);
+      const scaleY = composition.height / (surface.local_height || composition.height);
+      const label = lightingSurfaceLabel(surface);
+      return {
+        photo: null,
+        outlines: [],
+        boundary: surface.local_points.map(([x, y]) => [x * scaleX, y * scaleY] as StagePoint),
+        leds: (surface.pixels ?? []).map((pixel) => ({
+          key: `${surface.semantic_id}:${pixel.output_index}`,
+          x: pixel.local_x * scaleX,
+          y: pixel.local_y * scaleY,
+          included: true,
+          title: `${label} · LED ${pixel.output_index}`,
+        })),
+        summary: `${(surface.pixels ?? []).length} LEDs on ${label}`,
+      };
+    }
+    if (composition.space_kind !== "stage") return null;
+    const stage = mapperExport.stage ?? null;
+    const photo = stage?.reference_photo_id
+      ? photos.find((candidate) => candidate.id === stage.reference_photo_id)
+      : undefined;
+    const selectedProjectors = composition.stage_projector_resources;
+    const outlines = mapperExport.projectors.flatMap((value) => {
+      const projector = metadataRecord(value);
+      if (typeof projector.resource !== "string") return [];
+      const points = projectorStageFootprint(projector);
+      if (points.length < 3) return [];
+      return [{
+        key: projector.resource,
+        label: projector.resource,
+        points,
+        included: !selectedProjectors || selectedProjectors.includes(projector.resource),
+      }];
+    });
+    const leds = mapperExport.lighting_surfaces.flatMap((surface) => {
+      const included = composition.stage_lighting_surfaces.includes(surface.semantic_id);
+      const label = lightingSurfaceLabel(surface);
+      return (surface.pixels ?? []).map((pixel) => ({
+        key: `${surface.semantic_id}:${pixel.output_index}`,
+        x: pixel.stage_x,
+        y: pixel.stage_y,
+        included,
+        title: `${label} · LED ${pixel.output_index}${included ? "" : " (not in this effect)"}`,
+      }));
+    });
+    const includedLeds = leds.filter((led) => led.included).length;
+    const includedProjectors = outlines.filter((outline) => outline.included).length;
+    return {
+      photo:
+        photo && stage
+          ? {
+              href: installationPhotoUrl(photo.id, photo.revision),
+              width: stage.width,
+              height: stage.height,
+            }
+          : null,
+      outlines,
+      boundary: [],
+      leds,
+      summary: `${includedLeds} LEDs and ${includedProjectors} projector${includedProjectors === 1 ? "" : "s"} in this effect`,
+    };
+  }, [composition, mapperExport, photos]);
+}
 
 /** Composition-space layout with move / scale / rotate handles for the selected layer. */
 function CompositionLayoutCanvas({
@@ -6979,6 +7150,8 @@ function CompositionLayoutCanvas({
   selectedLayerId,
   selectedKeyframeId,
   canEdit,
+  installationId,
+  mapperExport,
   onSelectLayer,
   onChangeKeyframe,
   onGestureStart,
@@ -6992,11 +7165,17 @@ function CompositionLayoutCanvas({
   selectedLayerId: string;
   selectedKeyframeId: string;
   canEdit: boolean;
+  installationId?: string | null;
+  mapperExport?: InstallationMapperExport | null;
   onSelectLayer: (layerId: string) => void;
   onChangeKeyframe: (layerId: string, keyframeId: string, patch: KeyframePatch) => void;
 } & GestureHandlers) {
   const frameRef = useRef<HTMLDivElement | null>(null);
   const dragRef = useRef<LayoutDrag | null>(null);
+  const [showHouse, setShowHouse] = useState(true);
+  const reference = useLayoutReference(composition, mapperExport, installationId);
+  const houseShown = showHouse && reference !== null;
+  const dotRadius = Math.max(composition.width, composition.height) * 0.006;
   const upp = layerUnitsPerSourcePixel(composition);
   const visible = layers
     .filter(
@@ -7083,6 +7262,42 @@ function CompositionLayoutCanvas({
         className="layout-canvas__frame"
         style={{ aspectRatio: `${composition.width} / ${composition.height}` }}
       >
+        {houseShown && (
+          <svg
+            aria-label="Installation reference"
+            className="layout-canvas__reference"
+            role="img"
+            viewBox={`0 0 ${composition.width} ${composition.height}`}
+            preserveAspectRatio="none"
+          >
+            {reference.photo && (
+              <image
+                className="layout-canvas__photo"
+                href={reference.photo.href}
+                width={reference.photo.width}
+                height={reference.photo.height}
+                preserveAspectRatio="xMidYMid meet"
+              />
+            )}
+            {reference.outlines.map((outline) => (
+              <polygon
+                key={outline.key}
+                className={`layout-canvas__projector${outline.included ? "" : " layout-canvas__projector--excluded"}`}
+                points={outline.points.map((point) => point.join(",")).join(" ")}
+              >
+                <title>{outline.label}{outline.included ? "" : " (not in this effect)"}</title>
+              </polygon>
+            ))}
+            {reference.boundary.length >= 2 && (
+              <polyline
+                className="layout-canvas__surface-boundary"
+                points={[...reference.boundary, ...(reference.boundary.length >= 3 ? [reference.boundary[0]] : [])]
+                  .map((point) => point.join(","))
+                  .join(" ")}
+              />
+            )}
+          </svg>
+        )}
         {visible.map((layer) => {
           const selected = layer.id === selectedLayerId;
           const keyframe =
@@ -7125,7 +7340,7 @@ function CompositionLayoutCanvas({
                 height: `${(boxHeight / composition.height) * 100}%`,
                 transformOrigin: `${keyframe.anchor[0] * 100}% ${keyframe.anchor[1] * 100}%`,
                 transform: `rotate(${keyframe.rotation_deg}deg) scale(${Math.sign(keyframe.scale[0]) || 1}, ${Math.sign(keyframe.scale[1]) || 1})`,
-                opacity: Math.max(0.15, keyframe.opacity),
+                opacity: Math.max(0.15, keyframe.opacity) * (houseShown ? 0.8 : 1),
               }}
               onPointerDown={(event) => {
                 onSelectLayer(layer.id);
@@ -7194,15 +7409,50 @@ function CompositionLayoutCanvas({
             </div>
           );
         })}
+        {houseShown && reference.leds.length > 0 && (
+          <svg
+            aria-label="Mapped LED positions"
+            className="layout-canvas__leds"
+            role="img"
+            viewBox={`0 0 ${composition.width} ${composition.height}`}
+            preserveAspectRatio="none"
+          >
+            {reference.leds.map((led) => (
+              <circle
+                key={led.key}
+                className={`layout-canvas__led${led.included ? "" : " layout-canvas__led--excluded"}`}
+                cx={led.x}
+                cy={led.y}
+                r={dotRadius}
+              >
+                <title>{led.title}</title>
+              </circle>
+            ))}
+          </svg>
+        )}
         {!visible.length && (
           <span className="layout-canvas__empty">No visual layer at the playhead</span>
         )}
       </div>
       </div>
+      {reference && (
+        <div className="layout-canvas__toolbar">
+          <label>
+            <input
+              type="checkbox"
+              checked={showHouse}
+              onChange={(event) => setShowHouse(event.target.checked)}
+            />
+            Show house and LEDs
+          </label>
+          {showHouse && <small>{reference.summary}</small>}
+        </div>
+      )}
       <small>
         {canEdit
           ? "Drag a layer to move it, a corner to resize (Shift: free aspect), or the top knob to rotate (Shift: 15° steps). Edits the selected keyframe."
           : "Layout of layers at the playhead."}
+        {houseShown ? " White dots mark mapped LEDs; each LED takes the color beneath it." : ""}
       </small>
     </div>
   );
@@ -8151,8 +8401,12 @@ function LightingSurfaceCompositionPreview({
   return (
     <section className="stage-composition-preview lighting-composition-preview">
       <strong>
-        Lighting surface · {composition.name} · local {width}×{height}
+        LED surface · {lightingSurfaceLabel(surface)}
       </strong>
+      <small>
+        Surface coordinates span {width} × {height} units; dots are the mapped LEDs on this
+        surface only. Use a lights-only whole house overlay to cover several surfaces.
+      </small>
       <svg
         aria-label="Lighting surface local composition canvas"
         role="img"
@@ -8513,6 +8767,8 @@ function StageOutputSelector({
     return typeof projector.resource === "string" ? [projector.resource] : [];
   });
   const selectedProjectors = composition.stage_projector_resources ?? projectors;
+  const lightsOnly = composition.stage_projector_resources?.length === 0;
+  const surfaces = mapperExport?.lighting_surfaces ?? [];
   const stage = mapperExport?.stage ?? null;
   const sizeMismatch =
     stage !== null &&
@@ -8523,7 +8779,8 @@ function StageOutputSelector({
       <legend>Outputs in this effect</legend>
       <small>
         Every selected projector and LED output shows its own part of this one stage
-        animation, in sync. Save the timeline before baking.
+        animation, in sync. Clear every projector for a lights-only effect. Save the
+        timeline before baking.
       </small>
       {stage === null && (
         <small role="note">
@@ -8571,7 +8828,19 @@ function StageOutputSelector({
               <input
                 type="checkbox"
                 aria-label={`Include projector ${resource}`}
-                disabled={!canEdit || (checked && selectedProjectors.length === 1)}
+                disabled={
+                  !canEdit ||
+                  (checked &&
+                    selectedProjectors.length === 1 &&
+                    composition.stage_lighting_surfaces.length === 0)
+                }
+                title={
+                  checked &&
+                  selectedProjectors.length === 1 &&
+                  composition.stage_lighting_surfaces.length === 0
+                    ? "Select an LED output first to make this a lights-only effect."
+                    : undefined
+                }
                 checked={checked}
                 onChange={(event) => {
                   const include = event.target.checked;
@@ -8598,16 +8867,40 @@ function StageOutputSelector({
         aria-label="Installation overlay LED outputs"
       >
         <strong>LED outputs</strong>
-        {(mapperExport?.lighting_surfaces ?? []).length === 0 && <small>No LED outputs are mapped.</small>}
-        {(mapperExport?.lighting_surfaces ?? []).map((surface) => {
-          const label = (surface as { name?: string }).name ?? surface.semantic_id;
+        {surfaces.length === 0 && <small>No LED outputs are mapped.</small>}
+        {surfaces.length > 1 && (
+          <button
+            type="button"
+            disabled={
+              !canEdit || composition.stage_lighting_surfaces.length === surfaces.length
+            }
+            onClick={() =>
+              onChange((current) => ({
+                ...current,
+                stage_lighting_surfaces: surfaces.map((surface) => surface.semantic_id),
+              }))
+            }
+          >
+            Include all LED outputs
+          </button>
+        )}
+        {surfaces.map((surface) => {
+          const label = lightingSurfaceLabel(surface);
+          const checked = composition.stage_lighting_surfaces.includes(surface.semantic_id);
+          const lastLightsOnly =
+            checked && lightsOnly && composition.stage_lighting_surfaces.length === 1;
           return (
             <label key={surface.semantic_id}>
               <input
                 type="checkbox"
                 aria-label={`Include LED surface ${surface.semantic_id}`}
-                disabled={!canEdit}
-                checked={composition.stage_lighting_surfaces.includes(surface.semantic_id)}
+                disabled={!canEdit || lastLightsOnly}
+                title={
+                  lastLightsOnly
+                    ? "A lights-only effect needs at least one LED output."
+                    : undefined
+                }
+                checked={checked}
                 onChange={(event) => {
                   const checked = event.target.checked;
                   onChange((current) => ({
@@ -8618,11 +8911,17 @@ function StageOutputSelector({
                   }));
                 }}
               />
-              {label} · {surface.resource}
+              {label}
             </label>
           );
         })}
-        {composition.stage_lighting_surfaces.length > 0 && (
+        {lightsOnly ? (
+          <small role="status">
+            Lights only: the bake produces LED sequences for the controller and no projector
+            video. Audio layers are not used. Publish the show to send the sequences to the
+            controller.
+          </small>
+        ) : composition.stage_lighting_surfaces.length > 0 && (
           <small role="status">
             Bake produces projector videos and LED sequences together. Publish the package to
             include controller LED playback; client-group activation alone does not install LED
@@ -10494,8 +10793,7 @@ function compositionMap(value: unknown): Record<string, Composition> {
             ),
             children: stringArray(composition.children),
             stage_lighting_surfaces: stringArray(composition.stage_lighting_surfaces),
-            ...(Array.isArray(composition.stage_projector_resources) &&
-            composition.stage_projector_resources.length > 0
+            ...(Array.isArray(composition.stage_projector_resources)
               ? { stage_projector_resources: stringArray(composition.stage_projector_resources) }
               : {}),
             safe_points_ms: numberArray(composition.safe_points_ms),

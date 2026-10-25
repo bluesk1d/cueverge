@@ -775,5 +775,6 @@ def test_layer_geometry_and_projector_selection_validation():
     ) == ({"resource": "projector.right"},)
     with pytest.raises(ProjectorRenderError):
         selected_stage_projectors({"stage_projector_resources": ["missing"]}, mapper)
+    assert selected_stage_projectors({"stage_projector_resources": []}, mapper) == ()
     with pytest.raises(ProjectorRenderError):
-        selected_stage_projectors({"stage_projector_resources": []}, mapper)
+        selected_stage_projectors({"stage_projector_resources": ["projector.left"] * 2}, mapper)

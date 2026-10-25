@@ -93,7 +93,7 @@ test("lighting surface composition edits in logical local space", async ({ page 
     return image.naturalWidth;
   }, photoHref!)).toBe(2);
   await expect(page.getByLabel("Spatial media overlay on installation photo")).toBeVisible();
-  await expect(page.getByText(/local 4×2/)).toBeVisible();
+  await expect(page.getByText(/Surface coordinates span 4 × 2 units/)).toBeVisible();
   await expect(page.getByText(/3 calibrated samples/)).toBeVisible();
   await expect(page.getByText(/physical indices remain installation diagnostics only/)).toBeVisible();
   await expect(page.getByText(/Stage transform: 2, 0, 0, 2, 1, 1/)).toBeVisible();

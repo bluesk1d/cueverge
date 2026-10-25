@@ -10,6 +10,7 @@ from pydantic import AnyUrl, TypeAdapter, ValidationError
 
 from cueverge.gui.artifact_deployment import ArtifactDeploymentError
 from cueverge.gui.contracts import DraftProject
+from cueverge.gui.stage_renderer import bakes_lighting_only
 from cueverge.protocol.device_v2 import DeviceArtifactStageAck, DeviceArtifactStageCommand
 
 if TYPE_CHECKING:
@@ -30,6 +31,12 @@ def media_members(
 ) -> list[dict[str, object]]:
     roots = draft.editor_metadata.get("scene_compositions", {})
     instances = draft.editor_metadata.get("composition_instances", {})
+    compositions = draft.editor_metadata.get("compositions", {})
+    lighting_only = {
+        key
+        for key, value in (compositions.items() if isinstance(compositions, dict) else ())
+        if isinstance(value, dict) and bakes_lighting_only(value)
+    }
     available = jobs.list(project_id)
     assignments = {item.resource: item for item in repository.list_resource_assignments()}
     members: list[dict[str, object]] = []
@@ -51,6 +58,8 @@ def media_members(
             output_id = getattr(output, "id", "media")
             choices: list[dict[str, object]] = []
             for root_id in root_ids:
+                if root_id in lighting_only:
+                    continue
                 job = next(
                     (
                         item

@@ -4,7 +4,7 @@ import json
 import wave
 from pathlib import Path
 from types import SimpleNamespace
-from typing import cast
+from typing import Any, cast
 from unittest.mock import patch
 
 import av
@@ -28,6 +28,7 @@ from cueverge.gui.render_verification import compare_rgb_frames
 from cueverge.gui.repository import GuiRepository
 from cueverge.gui.stage_coverage import StageCoverage, StageRegion
 from cueverge.gui.stage_renderer import (
+    bakes_lighting_only,
     preview_stage_composition_member,
     preview_stage_lighting_samples,
     render_stage_composition,
@@ -376,6 +377,203 @@ def test_installation_overlay_bakes_one_animation_for_projectors_and_leds(
     )
     with pytest.raises(ShowPackageError, match="checksum"):
         load_show_package(compiled.package_root)
+
+
+def test_lights_only_overlay_bakes_led_sequences_without_projector_video(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    image = tmp_path / "stripes.png"
+    pixels = np.zeros((36, 128, 3), dtype=np.uint8)
+    pixels[:, :64] = [255, 0, 0]
+    pixels[:, 64:] = [255, 200, 0]
+    Image.fromarray(pixels).save(image)
+    audio = tmp_path / "audio.wav"
+    _write_wave(audio)
+    assets = cast(
+        AssetUploadService,
+        _FixtureAssets({"ghost": ("image/png", image), "audio": ("audio/wav", audio)}),
+    )
+    document = _draft()
+    document["installation"] = {
+        "schema_version": 1,
+        "resources": [
+            {"resource": name, "kind": "media_agent", "target": name}
+            for name in ("projector.left", "projector.right")
+        ]
+        + [{"resource": "lights", "kind": "pixel_output", "target": "memory", "pixel_count": 10}],
+    }
+    metadata = cast(dict[str, object], document["editor_metadata"])
+    composition = cast(dict[str, dict[str, object]], metadata["compositions"])["stage-composition"]
+    composition["stage_projector_resources"] = []
+    composition["stage_lighting_surfaces"] = []
+    with pytest.raises(ValidationError, match="lights-only"):
+        DraftProject.model_validate(document)
+    composition["stage_lighting_surfaces"] = ["stage-pixels", "right-pixels"]
+    layers = cast(dict[str, list[dict[str, object]]], metadata["timeline_transform_layers"])
+    layers["stage-composition"] = [_visual_layer(), _audio_layer()]
+    metadata["timeline_tracks"] = {
+        "stage-composition": [
+            {
+                "id": "stage-track",
+                "name": "Media",
+                "kind": "group",
+                "resource_binding": "shared-stage",
+            }
+        ]
+    }
+    mapper = _mapper_export()
+    surface = cast(list[dict[str, object]], mapper["lighting_surfaces"])[0]
+    cast(list[dict[str, object]], surface["pixels"])[0].update(
+        {"output_index": 8, "stage_x": 1, "stage_y": 2}
+    )
+    right = copy.deepcopy(surface)
+    right["semantic_id"] = "right-pixels"
+    cast(list[dict[str, object]], right["pixels"])[0].update({"output_index": 2, "stage_x": 7})
+    mapper["lighting_surfaces"] = [surface, right]
+    render = {
+        "project_id": "demo-project",
+        "source_revision": 2,
+        "composition_id": "stage-composition",
+        "assets": assets,
+        "mapper_export": mapper,
+        "coverage": _coverage(),
+        "overlaps": (),
+        "sync_admission": SyncAdmission(True, "lights_only_stage", "test", None),
+        "output_directory": tmp_path / "renders",
+    }
+    with pytest.raises(ProjectorRenderError, match="audio"):
+        render_stage_composition(draft=DraftProject.model_validate(document), **render)
+    layers["stage-composition"] = [{**_visual_layer(), "kind": "image"}]
+    draft = DraftProject.model_validate(document)
+    assert bakes_lighting_only(composition)
+    with patch("cueverge.gui.stage_renderer.render_stage_to_projector") as projector_render:
+        manifest = render_stage_composition(draft=draft, **render)
+    projector_render.assert_not_called()
+    assert manifest["lights_only"] is True
+    assert manifest["members"] == []
+    assert manifest["calibration_revisions"] == {}
+    sequences = cast(list[dict[str, object]], manifest["lighting_sequences"])
+    assert [item["output_indices"] for item in sequences] == [[2, 8]]
+    artifact = tmp_path / "renders" / str(manifest["activation_identity"])
+    assert sorted(path.name for path in artifact.iterdir()) == [
+        "lighting-0001.rgb",
+        "render-manifest.json",
+    ]
+    compiled = DraftCompiler(tmp_path / "compiled").compile(
+        project_id="demo-project",
+        revision=2,
+        draft=draft,
+        lighting_artifacts={"stage-composition": artifact},
+    )
+    catalog = load_show_package(compiled.package_root)
+    output = catalog.require("ambient").lighting_outputs[0]
+    runtime = ControllerRuntime(catalog=catalog)
+    preview = preview_stage_lighting_samples(
+        project_id="demo-project",
+        draft=draft,
+        composition_id="stage-composition",
+        timestamp_ms=0,
+        assets=assets,
+        mapper_export=mapper,
+        device_reported_scales={},
+    )
+    rendered = runtime._render_lighting_output(
+        output,
+        render_position_ms=0,
+        rendered_at=runtime.clock(),
+        duration_ms=1000,
+    )
+    for sampled in cast(list[dict[str, object]], preview["surfaces"]):
+        sample = cast(list[dict[str, object]], sampled["samples"])[0]
+        assert list(rendered[cast(int, sample["output_index"])]) == sample["color"]
+    assert rendered[2] != rendered[8]
+
+    repository = GuiRepository(tmp_path / "publication.sqlite3")
+    repository.migrate()
+    stored = repository.create_project(
+        name="Lights overlay",
+        draft=draft,
+        actor="admin",
+        role=Role.ADMINISTRATOR,
+        occurred_at="2026-10-21T18:00:00Z",
+    )
+    repository.update_draft(
+        project_id=stored.project.id,
+        expected_revision=1,
+        draft=draft,
+        actor="admin",
+        role=Role.ADMINISTRATOR,
+        occurred_at="2026-10-21T18:01:00Z",
+    )
+    jobs = cast(
+        RenderJobService,
+        SimpleNamespace(
+            lighting_artifacts=lambda _project_id, _revision: {"stage-composition": artifact},
+            list=lambda _project_id: [
+                SimpleNamespace(
+                    source_revision=2,
+                    state="completed",
+                    composition_id="stage-composition",
+                    artifact_id=artifact.name,
+                )
+            ],
+        ),
+    )
+    publication = PublicationService(
+        repository=repository,
+        compiler=DraftCompiler(tmp_path / "publication-compiled"),
+        assets=cast(AssetUploadService, SimpleNamespace(list_assets=lambda _: [])),
+        render_jobs=jobs,
+        deployment=cast(ArtifactDeploymentService, object()),
+        output_root=tmp_path / "published",
+    )
+    publication.update_release(
+        project_id=stored.project.id,
+        revision=2,
+        name="Stripes",
+        summary="Lights-only overlay",
+        approval_state="approved",
+        actor="admin",
+        occurred_at="2026-10-21T18:02:00Z",
+    )
+    monkeypatch.setattr(publication, "validate", lambda _project_id, _revision: ())
+    published = publication.publish(
+        project_id=stored.project.id,
+        revision=2,
+        actor="admin",
+        occurred_at="2026-10-21T18:03:00Z",
+    )
+    # LED data travels in the controller package, not the media-agent artifact set.
+    assert published.manifest["render_artifact_ids"] == []
+    assert any(
+        str(item["path"]).startswith("runtime/lighting/")
+        for item in cast(list[dict[str, object]], published.manifest["files"])
+    )
+
+
+def test_lights_only_stage_admission_skips_projector_synchronization(tmp_path: Path) -> None:
+    repository = GuiRepository(tmp_path / "gui.sqlite3")
+    repository.migrate()
+    mapper = _mapper_export()
+    rehearsal = SimpleNamespace(
+        evaluate=lambda **_: pytest.fail("lights-only overlays need no projector rehearsal")
+    )
+    service = RenderJobService(
+        repository,
+        cast(AssetUploadService, _FixtureAssets({})),
+        tmp_path / "renders",
+        mapper_export=cast(Any, SimpleNamespace(export=lambda _: mapper)),
+        stage_coverage=cast(Any, SimpleNamespace(analyze=lambda _: _coverage())),
+        projector_overlap=cast(Any, SimpleNamespace(list=lambda _: ())),
+        sync_rehearsal=cast(Any, rehearsal),
+    )
+    _, _, _, admission = service._stage_inputs(
+        {"installation_id": "demo-installation"},
+        {"space_kind": "stage", "stage_projector_resources": []},
+    )
+    assert admission.allowed
+    assert admission.code == "lights_only_stage"
 
 
 def test_stage_lighting_selection_rejects_missing_duplicate_and_out_of_bounds_surfaces(

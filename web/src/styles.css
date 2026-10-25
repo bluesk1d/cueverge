@@ -7029,6 +7029,69 @@ p {
   vector-effect: non-scaling-stroke;
 }
 
+.layout-canvas__reference,
+.layout-canvas__leds {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.layout-canvas__leds {
+  z-index: 2;
+}
+
+.layout-canvas__photo {
+  opacity: 0.65;
+}
+
+.layout-canvas__projector {
+  fill: color-mix(in srgb, var(--cv-info) 10%, transparent);
+  stroke: var(--cv-info);
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
+}
+
+.layout-canvas__projector--excluded {
+  fill: none;
+  stroke-dasharray: 4 4;
+  opacity: 0.45;
+}
+
+.layout-canvas__surface-boundary {
+  fill: none;
+  stroke: var(--cv-text-faint);
+  stroke-dasharray: 4 3;
+  vector-effect: non-scaling-stroke;
+}
+
+.layout-canvas__led {
+  fill: rgb(255 255 255 / 85%);
+  stroke: rgb(0 0 0 / 70%);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+.layout-canvas__led--excluded {
+  fill: rgb(255 255 255 / 25%);
+  stroke: none;
+}
+
+.layout-canvas__toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+}
+
+.layout-canvas__toolbar label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .layout-layer {
   position: absolute;
   box-sizing: border-box;

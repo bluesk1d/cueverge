@@ -4719,6 +4719,33 @@ def test_mcp_shared_stage_discovery_authoring_preview_and_bake_parity(
         schema = _mcp_tool(client, reader, "get_authoring_schema")["structuredContent"]
         assert "compositions" in schema["properties"]["editor_metadata"]["properties"]
         assert "stage_lighting_surfaces" in schema["$defs"]["Composition"]["properties"]
+        projector_schema = schema["$defs"]["Composition"]["properties"]["stage_projector_resources"]
+        assert "lights-only" in projector_schema["description"]
+        assert "minItems" not in json.dumps(projector_schema)
+        assert any("lights-only" in step for step in capabilities["workflow"])
+        lights_only = copy.deepcopy(document)
+        lights_only["editor_metadata"]["compositions"]["stage"]["stage_projector_resources"] = []
+        accepted = _mcp_tool(
+            client,
+            proposer,
+            "propose_project_revision",
+            base_revision=1,
+            title="Lights-only overlay",
+            kind="timeline_change",
+            proposed_draft=lights_only,
+        )
+        assert accepted["isError"] is False
+        lights_only["editor_metadata"]["compositions"]["stage"]["stage_lighting_surfaces"] = []
+        rejected_lights = _mcp_tool(
+            client,
+            proposer,
+            "propose_project_revision",
+            base_revision=1,
+            title="Lights-only overlay without LEDs",
+            kind="timeline_change",
+            proposed_draft=lights_only,
+        )
+        assert rejected_lights["isError"] is True
         assert (
             schema["$defs"]["RenderSettings"]["properties"]["output_profile"]["discriminator"][
                 "propertyName"

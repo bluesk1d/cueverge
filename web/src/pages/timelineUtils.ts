@@ -145,3 +145,26 @@ export function applyHomography(h: number[], x: number, y: number): { x: number;
   const w = h[6] * x + h[7] * y + h[8];
   return { x: (h[0] * x + h[1] * y + h[2]) / w, y: (h[3] * x + h[4] * y + h[5]) / w };
 }
+
+export interface LightingSurfaceLabelSource {
+  semantic_id: string;
+  name?: string;
+  resource: string;
+  pixels?: { output_index: number }[];
+}
+
+/**
+ * Human label for a mapped LED surface. One controller output is often split into
+ * several surfaces (roofline segments), so the resource alone is ambiguous.
+ */
+export function lightingSurfaceLabel(surface: LightingSurfaceLabelSource): string {
+  const parts = [surface.name?.trim() || surface.semantic_id];
+  if (surface.resource && surface.resource !== parts[0]) parts.push(surface.resource);
+  const indices = (surface.pixels ?? []).map((pixel) => pixel.output_index);
+  if (indices.length > 0) {
+    const first = Math.min(...indices);
+    const last = Math.max(...indices);
+    parts.push(first === last ? `LED ${first}` : `LEDs ${first}–${last}`);
+  }
+  return parts.join(" · ");
+}

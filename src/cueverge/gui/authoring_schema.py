@@ -97,11 +97,11 @@ class Composition(MetadataSchema):
     )
     stage_projector_resources: list[str] | None = Field(
         default=None,
-        min_length=1,
         max_length=32,
         description=(
             "Projector resources taking part in a stage composition; omit to use every "
-            "mapped projector."
+            "mapped projector, or use [] for a lights-only overlay that bakes LED "
+            "sequences for stage_lighting_surfaces and no projector video."
         ),
     )
     render_settings: RenderSettings | None = None

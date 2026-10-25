@@ -19,6 +19,7 @@ from cueverge.gui.mapper_export import MapperExportError
 from cueverge.gui.media_delivery import media_members, stage_media_members
 from cueverge.gui.render_jobs import RenderJobError, RenderJobService
 from cueverge.gui.repository import GuiRepository
+from cueverge.gui.stage_renderer import bakes_lighting_only
 from cueverge.protocol.device_v2 import ArtifactCacheCapability, MediaPlaybackCapability
 
 ApprovalState = Literal["draft", "in_review", "approved", "rejected"]
@@ -264,7 +265,7 @@ class PublicationService:
                     "current_bake_missing",
                     f"Composition {composition_id} has no successful bake for revision {revision}.",
                 )
-            elif _object_map(compositions[composition_id]).get("space_kind") != "lighting_surface":
+            elif not bakes_lighting_only(_object_map(compositions[composition_id])):
                 artifact_ids.add(
                     lighting_artifacts[composition_id].name
                     if composition_id in lighting_artifacts
@@ -471,8 +472,7 @@ class PublicationService:
                     if job.source_revision == revision
                     and job.state == "completed"
                     and job.artifact_id is not None
-                    and _object_map(compositions.get(job.composition_id)).get("space_kind")
-                    != "lighting_surface"
+                    and not bakes_lighting_only(_object_map(compositions.get(job.composition_id)))
                     and (
                         job.composition_id not in lighting_artifacts
                         or job.artifact_id == lighting_artifacts[job.composition_id].name

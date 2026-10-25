@@ -1,25 +1,24 @@
-import { expect, test } from "@playwright/test";
-import { openAdvancedShowWorkspace, openTimelineEditor, openComposition } from "./show-workspace";
+import { expect, test, type Page } from "@playwright/test";
+import { openTimelineEditor, openComposition, openTimelineTool } from "./show-workspace";
 
 const installationId = "demo-installation";
 
-test("a shared stage effect picks outputs, matches the stage and pins media to corners", async ({ page }) => {
-  let saved: Record<string, unknown> | null = null;
-  const document = draft();
+async function mockStageApi(page: Page, document: Record<string, unknown>) {
+  const state: { saved: Record<string, unknown> | null } = { saved: null };
   await page.route("**/api/gui/v1/**", async (route) => {
     const request = route.request();
     const url = new URL(request.url());
     const pathname = url.pathname;
     if (pathname.endsWith("/projects/demo-project/draft")) {
-      if (request.method() === "PUT") saved = request.postDataJSON();
+      if (request.method() === "PUT") state.saved = request.postDataJSON();
       return route.fulfill({ json: {
         project: {
-          id: "demo-project", name: "Home Show", head_revision: saved ? 2 : 1,
+          id: "demo-project", name: "Home Show", head_revision: state.saved ? 2 : 1,
           metadata_revision: 1, archived_at: null,
           created_at: "2026-10-15T12:00:00Z", updated_at: "2026-10-15T12:00:00Z",
         },
-        revision: saved ? 2 : 1,
-        draft: saved ?? document,
+        revision: state.saved ? 2 : 1,
+        draft: state.saved ?? document,
       } });
     }
     if (pathname.endsWith("/mapper-export")) {
@@ -42,6 +41,14 @@ test("a shared stage effect picks outputs, matches the stage and pins media to c
           pixels: [
             pixel(0, 2.5, 1.5),
             pixel(1, 47.5, 1.5),
+          ],
+        }, {
+          semantic_id: "porch", name: "Porch eave", resource: "wled-001",
+          local_width: 1, local_height: 1, stage_matrix: [50, 0, 0, 30, 0, 0],
+          calibration_id: null, mapping_revision: 1, local_points: [],
+          pixels: [
+            pixel(2, 10, 20),
+            pixel(3, 20, 20),
           ],
         }],
       } });
@@ -87,6 +94,11 @@ test("a shared stage effect picks outputs, matches the stage and pins media to c
     }
     return route.fulfill({ status: 404, json: { detail: "fixture route missing" } });
   });
+  return state;
+}
+
+test("a shared stage effect picks outputs, matches the stage and pins media to corners", async ({ page }) => {
+  const state = await mockStageApi(page, draft());
 
   await page.goto("/demo.html");
   await page.getByRole("button", { name: "Shows", exact: true }).click();
@@ -99,7 +111,7 @@ test("a shared stage effect picks outputs, matches the stage and pins media to c
   await outputs.getByLabel("Include projector projector.right").uncheck();
   await expect(outputs.getByLabel("Include projector projector.left")).toBeDisabled();
   await outputs.getByLabel("Include LED surface roofline").check();
-  await expect(outputs.getByText("Roofline · wled-001")).toBeVisible();
+  await expect(outputs.getByText("Roofline · wled-001 · LEDs 0–1")).toBeVisible();
   await expect(outputs.getByRole("alert")).toContainText("installation stage is 50 × 30 ft");
   await outputs.getByRole("button", { name: "Match installation stage" }).click();
   await expect(outputs.getByRole("alert")).toHaveCount(0);
@@ -129,8 +141,8 @@ test("a shared stage effect picks outputs, matches the stage and pins media to c
   await expect(overlay.getByLabel("Layer mask outline")).toHaveCount(1);
 
   await page.getByRole("button", { name: "Save timeline" }).click();
-  await expect.poll(() => saved).not.toBeNull();
-  const metadata = (saved as unknown as {
+  await expect.poll(() => state.saved).not.toBeNull();
+  const metadata = (state.saved as unknown as {
     editor_metadata: {
       compositions: Record<string, Record<string, unknown>>;
       timeline_transform_layers: Record<string, Record<string, unknown>[]>;
@@ -149,6 +161,72 @@ test("a shared stage effect picks outputs, matches the stage and pins media to c
   expect(corners[2][1]).toBeGreaterThan(21);
   expect(layer.mask).toMatchObject({ feather: 1.5, invert: false });
   expect((layer.mask as { points: unknown[] }).points).toHaveLength(48);
+});
+
+test("a lights-only house effect drops every projector and shows the house in Layout", async ({ page }) => {
+  const state = await mockStageApi(page, draft());
+  await page.goto("/demo.html");
+  await page.getByRole("button", { name: "Shows", exact: true }).click();
+  await openTimelineEditor(page);
+  await openComposition(page, "flag");
+
+  const outputs = page.getByRole("group", { name: "Outputs in this effect" });
+  await outputs.getByLabel("Include LED surface roofline").check();
+  await outputs.getByLabel("Include projector projector.right").uncheck();
+  await outputs.getByLabel("Include projector projector.left").uncheck();
+  await expect(outputs.getByLabel("Include projector projector.left")).not.toBeChecked();
+  await expect(outputs.getByLabel("Include LED surface roofline")).toBeDisabled();
+  await expect(outputs.getByRole("status")).toContainText("Lights only");
+
+  await page.getByRole("button", { name: "Layout", exact: true }).click();
+  const layout = page.getByLabel("Composition layout");
+  const house = layout.getByRole("img", { name: "Installation reference" });
+  await expect(house.locator("image.layout-canvas__photo")).toHaveCount(1);
+  await expect(house.locator(".layout-canvas__projector--excluded")).toHaveCount(2);
+  const leds = layout.getByRole("img", { name: "Mapped LED positions" });
+  await expect(leds.locator("circle.layout-canvas__led:not(.layout-canvas__led--excluded)")).toHaveCount(2);
+  await expect(leds.locator("circle.layout-canvas__led--excluded")).toHaveCount(2);
+  await expect(leds.locator("circle").first()).toHaveAttribute("cx", "2.5");
+  await expect(layout.getByLabel("Layout box Flag")).toBeVisible();
+  await layout.getByText("Show house and LEDs").click();
+  await expect(layout.getByRole("img", { name: "Installation reference" })).toHaveCount(0);
+
+  await openTimelineTool(page, "Render & bake");
+  await expect(page.getByRole("button", { name: "Bake LED overlay", exact: true })).toBeEnabled();
+
+  await page.getByRole("button", { name: "Save timeline" }).click();
+  await expect.poll(() => state.saved).not.toBeNull();
+  const composition = (state.saved as unknown as {
+    editor_metadata: { compositions: Record<string, Record<string, unknown>> };
+  }).editor_metadata.compositions.flag;
+  expect(composition.stage_projector_resources).toEqual([]);
+  expect(composition.stage_lighting_surfaces).toEqual(["roofline"]);
+});
+
+test("the whole house lights preset selects every LED surface by its segment name", async ({ page }) => {
+  await mockStageApi(page, draft());
+  await page.goto("/demo.html");
+  await page.getByRole("button", { name: "Shows", exact: true }).click();
+  await openTimelineEditor(page);
+
+  await page.getByRole("button", { name: "+ New composition" }).click();
+  const dialog = page.getByRole("dialog", { name: "New composition" });
+  await dialog.getByText("One LED surface", { exact: true }).click();
+  await expect(dialog.getByLabel("Preset LED surface").locator("option")).toContainText([
+    "Choose an LED surface",
+    "Roofline · wled-001 · LEDs 0–1",
+    "Porch eave · wled-001 · LEDs 2–3",
+  ]);
+  await dialog.getByText("Whole house lights", { exact: true }).click();
+  await expect(dialog.getByRole("note")).toContainText("all 2 mapped LED outputs");
+  await dialog.getByRole("button", { name: "Create and open" }).click();
+
+  const outputs = page.getByRole("group", { name: "Outputs in this effect" });
+  await expect(outputs.getByLabel("Include projector projector.left")).not.toBeChecked();
+  await expect(outputs.getByLabel("Include projector projector.right")).not.toBeChecked();
+  await expect(outputs.getByLabel("Include LED surface roofline")).toBeChecked();
+  await expect(outputs.getByLabel("Include LED surface porch")).toBeChecked();
+  await expect(outputs.getByRole("status")).toContainText("Lights only");
 });
 
 function projector(resource: string, extent: [number, number, number, number]) {

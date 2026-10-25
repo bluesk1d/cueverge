@@ -536,6 +536,8 @@ export interface InstallationMapperExport {
   projectors: Record<string, unknown>[];
   lighting_surfaces: {
     semantic_id: string;
+    /** Installation geometry name, for example a roofline segment. */
+    name?: string;
     resource: string;
     local_width: number;
     local_height: number;

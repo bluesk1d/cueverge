@@ -2,6 +2,7 @@ import base64
 import hashlib
 import json
 import math
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from io import BytesIO
 from pathlib import Path
@@ -28,7 +29,12 @@ from cueverge.gui.projector_renderer import (
     ProjectorRenderError,
     prepare_media_layers,
 )
-from cueverge.gui.render_encoder import EncoderProfile, LightingMember, encode_output_set
+from cueverge.gui.render_encoder import (
+    EncoderProfile,
+    LightingMember,
+    encode_lighting_sequence_set,
+    encode_output_set,
+)
 from cueverge.gui.stage_coverage import StageCoverage
 from cueverge.gui.sync_rehearsal import SyncAdmission
 from cueverge.lighting.sequence import MAX_SEQUENCE_BYTES
@@ -89,6 +95,9 @@ def prepare_stage_composition(
         raw_layers=raw_layers,
         assets=assets,
     )
+    lights_only = is_lights_only_stage(composition)
+    if lights_only and prepared.audio_layers:
+        raise ProjectorRenderError("lights-only installation overlays cannot include audio layers")
     stage_layers = tuple(
         scale_layer_geometry(
             replace(
@@ -119,6 +128,10 @@ def prepare_stage_composition(
         else 0
     )
     lighting_surfaces = selected_stage_lighting_surfaces(composition, mapper_export)
+    if lights_only and not lighting_surfaces:
+        raise ProjectorRenderError(
+            "lights-only installation overlay requires at least one selected LED output"
+        )
     pixel_count = sum(len(_list(surface.get("pixels"))) for surface in lighting_surfaces)
     if pixel_count:
         if frame_rate_numerator > 60 * frame_rate_denominator:
@@ -142,6 +155,34 @@ def prepare_stage_composition(
         logical_width,
         logical_height,
     )
+    output_profile = _mapping(settings.get("output_profile"))
+    profile = EncoderProfile(
+        video_profile=_string(output_profile.get("video_profile")),
+        video_level=_string(output_profile.get("video_level")),
+        pixel_format=_string(output_profile.get("pixel_format")),
+        max_video_bitrate_kbps=_integer(output_profile.get("max_video_bitrate_kbps")),
+        keyframe_interval_frames=_integer(output_profile.get("keyframe_interval_frames")),
+        b_frames=_integer(output_profile.get("b_frames")),
+        loudness_target_lufs=_number(output_profile.get("loudness_target_lufs")),
+    )
+    composition_digest = hashlib.sha256(
+        json.dumps(composition, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    if lights_only:
+        return PreparedStageOutput(
+            members={},
+            audio_owner="",
+            mixed_audio=np.zeros((0, 2), dtype=np.float32),
+            frame_rate_numerator=frame_rate_numerator,
+            frame_rate_denominator=frame_rate_denominator,
+            duration_ms=duration_ms,
+            profile=profile,
+            composition_digest=composition_digest,
+            source_checksums=prepared.source_checksums,
+            calibration_revisions={},
+            media_end_behavior=_string(settings.get("media_end_behavior")),
+            lighting_members=lighting_members,
+        )
     projectors = list(selected_stage_projectors(composition, mapper_export))
     if not projectors or (len(projectors) < 2 and not lighting_members):
         raise ProjectorRenderError(
@@ -250,19 +291,6 @@ def prepare_stage_composition(
         prepared.audio_layers,
         total_samples=duration_ms * 48,
     )
-    output_profile = _mapping(settings.get("output_profile"))
-    profile = EncoderProfile(
-        video_profile=_string(output_profile.get("video_profile")),
-        video_level=_string(output_profile.get("video_level")),
-        pixel_format=_string(output_profile.get("pixel_format")),
-        max_video_bitrate_kbps=_integer(output_profile.get("max_video_bitrate_kbps")),
-        keyframe_interval_frames=_integer(output_profile.get("keyframe_interval_frames")),
-        b_frames=_integer(output_profile.get("b_frames")),
-        loudness_target_lufs=_number(output_profile.get("loudness_target_lufs")),
-    )
-    composition_digest = hashlib.sha256(
-        json.dumps(composition, sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()
     return PreparedStageOutput(
         members=members,
         audio_owner=audio_owner,
@@ -277,6 +305,19 @@ def prepare_stage_composition(
         media_end_behavior=_string(settings.get("media_end_behavior")),
         lighting_members=lighting_members,
     )
+
+
+def is_lights_only_stage(composition: Mapping[str, object]) -> bool:
+    """A stage composition that explicitly selects no projectors bakes only LED sequences."""
+    return (
+        composition.get("space_kind") == "stage"
+        and composition.get("stage_projector_resources") == []
+    )
+
+
+def bakes_lighting_only(composition: Mapping[str, object]) -> bool:
+    """Compositions whose bake contains controller LED data and no media-agent video."""
+    return composition.get("space_kind") == "lighting_surface" or is_lights_only_stage(composition)
 
 
 def selected_stage_lighting_surfaces(
@@ -303,14 +344,17 @@ def selected_stage_projectors(
     composition: dict[str, object],
     mapper_export: dict[str, object],
 ) -> tuple[dict[str, object], ...]:
-    """Projectors taking part in a stage effect; absent selection means all mapped."""
+    """Projectors taking part in a stage effect.
+
+    An absent selection means every mapped projector; an empty list means a
+    lights-only overlay with no projector output.
+    """
     projectors = tuple(_mapping(item) for item in _list(mapper_export.get("projectors")))
     selected = composition.get("stage_projector_resources")
     if selected is None:
         return projectors
     if (
         not isinstance(selected, list)
-        or not selected
         or not all(isinstance(item, str) and item for item in selected)
         or len(selected) != len(set(selected))
     ):
@@ -524,6 +568,19 @@ def render_stage_composition(
         overlaps=overlaps,
         sync_admission=sync_admission,
     )
+    if not prepared.members:
+        return encode_lighting_sequence_set(
+            output_directory=output_directory,
+            frame_rate_numerator=prepared.frame_rate_numerator,
+            frame_rate_denominator=prepared.frame_rate_denominator,
+            duration_ms=prepared.duration_ms,
+            source_revision=source_revision,
+            composition_id=composition_id,
+            composition_digest=prepared.composition_digest,
+            source_checksums=prepared.source_checksums,
+            media_end_behavior=prepared.media_end_behavior,
+            lighting_members=prepared.lighting_members,
+        )
     return encode_output_set(
         output_directory=output_directory,
         members=prepared.members,

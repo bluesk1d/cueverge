@@ -409,10 +409,15 @@ project-bound. See [MCP operations](operations.md#mcp-assisted-authoring).
 
 Stage compositions may opt into mapped LED surfaces with the
 `stage_lighting_surfaces` array of semantic IDs. The default is empty, preserving
-projector-only rendering. An optional `stage_projector_resources` list (1–32
+projector-only rendering. An optional `stage_projector_resources` list (up to 32
 unique mapped resources) restricts which projectors render the stage; omitting
 it keeps every mapped projector, and synchronization admission covers only the
-selected projectors.
+selected projectors. An empty list makes a lights-only overlay: it requires at
+least one `stage_lighting_surfaces` entry, rejects audio layers, skips projector
+synchronization admission, and bakes a render manifest with `lights_only: true`,
+no `members`, and `lighting_sequences` only. Publication installs those
+sequences in the controller package and excludes the artifact from media-agent
+artifact sets, like lighting-surface bakes.
 
 Visual media layers may define a static `corner_pin` (four convex points in
 logical composition coordinates, TL/TR/BR/BL) and a static `mask` polygon

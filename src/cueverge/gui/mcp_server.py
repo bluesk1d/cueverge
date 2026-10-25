@@ -1767,7 +1767,9 @@ def create_mcp_app(services: GuiServices) -> Starlette:
                     "Choose media_synchronized or controller_timed scene time; LED-only "
                     "scenes use schema v2, clock_source controller, media [] and lighting claims.",
                     "Read layout, schema, assets and current draft.",
-                    "Author media once in stage space; stage_lighting_surfaces selects LED IDs.",
+                    "Author media once in stage space; stage_lighting_surfaces selects LED IDs. "
+                    "Set stage_projector_resources to [] for a lights-only overlay that bakes "
+                    "LED sequences without projector video (no audio layers).",
                     "Propose and human-merge changes, or save with explicit direct_edit.",
                     "Preview the saved draft or an isolated proposal without hardware output.",
                     "Queue a bake for the saved revision and poll its job until completed.",

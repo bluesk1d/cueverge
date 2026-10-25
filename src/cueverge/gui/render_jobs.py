@@ -626,7 +626,14 @@ class RenderJobService:
         except ProjectorRenderError as error:
             raise RenderJobError(str(error)) from error
         resources = tuple(sorted(_string(item.get("resource")) for item in participating))
-        if len(resources) == 1:
+        if not resources:
+            admission = SyncAdmission(
+                True,
+                "lights_only_stage",
+                "No projector output is baked. Rehearse LED timing before live use.",
+                None,
+            )
+        elif len(resources) == 1:
             admission = SyncAdmission(
                 True,
                 "single_projector_stage",

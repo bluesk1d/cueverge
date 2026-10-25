@@ -1087,7 +1087,9 @@ For installation-wide image/video/GIF overlays:
 2. Author media layers in a shared-stage composition sized to the layout's
    `stage.width`/`stage.height`, select mapped LED semantic IDs in
    `stage_lighting_surfaces`, optionally restrict projectors with
-   `stage_projector_resources` (omit for all), bind timeline tracks, and attach
+   `stage_projector_resources` (omit for all, or `[]` for a lights-only
+   overlay that bakes LED sequences without projector video or audio), bind
+   timeline tracks, and attach
    the composition to a scene. To place media across separate devices, set the
    layer's `corner_pin` to four convex stage points (TL, TR, BR, BL); position,
    scale, rotation and anchor keyframes are then ignored while opacity and crop
