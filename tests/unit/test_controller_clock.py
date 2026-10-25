@@ -335,3 +335,46 @@ def test_rejects_inconsistent_clock_configuration(tmp_path: Path, mutation: dict
     path.write_text(json.dumps(scene))
     with pytest.raises(ShowPackageError, match="clock_source"):
         load_show_package(root)
+
+
+def test_completion_tick_renders_the_last_frame_instead_of_going_dark(tmp_path: Path) -> None:
+    root = package(tmp_path, policy="loop")
+    scene_path = root / "scenes/preshow.json"
+    scene = json.loads(scene_path.read_text())
+    scene["lighting"] = [
+        {
+            "id": "leds",
+            "resource": "leds",
+            "timeline": [
+                {
+                    "id": "red",
+                    "primitive": "solid",
+                    "start_ms": 0,
+                    "duration_ms": 2000,
+                    "color": "#FF0000",
+                }
+            ],
+        }
+    ]
+    scene_path.write_text(json.dumps(scene))
+
+    async def scenario() -> None:
+        clock = ManualClock()
+        sink = MemoryFrameSink()
+        runtime = ControllerRuntime(catalog=load_show_package(root), clock=clock, sink=sink)
+        try:
+            await runtime.start_scene("preshow")
+            clock.now += 2.5
+            assert runtime.render_frame()
+            completion_frame = sink.frames[-1]
+            assert completion_frame.position_ms == 1999
+            assert set(completion_frame.pixels) == {(255, 0, 0)}
+            await runtime.wait_for_lifecycle_idle()
+            assert runtime.scene_completions == 1
+            assert runtime.render_frame()
+            assert sink.frames[-1].position_ms == 0
+            assert set(sink.frames[-1].pixels) == {(255, 0, 0)}
+        finally:
+            await runtime.shutdown()
+
+    asyncio.run(scenario())

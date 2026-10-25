@@ -2476,6 +2476,48 @@ function OperationalDiagnostics({ runtime }: { runtime: RuntimeStatus }) {
           </div>
         </dl>
       </Panel>
+      {status.event_loop_stalls && (
+        <Panel
+          title="Event-loop stalls"
+          description={`Pauses longer than ${status.event_loop_stalls.threshold_ms} ms in the loop that renders LEDs and serves this page; each one freezes LED output`}
+        >
+          <dl className="diagnostic-counters">
+            <div>
+              <dt>Stalls since start</dt>
+              <dd className={status.event_loop_stalls.stall_count > 0 ? "diagnostic-counter--warning" : ""}>
+                {status.event_loop_stalls.stall_count}
+              </dd>
+            </div>
+            <div>
+              <dt>Longest</dt>
+              <dd>{status.event_loop_stalls.longest_ms} ms</dd>
+            </div>
+          </dl>
+          {status.event_loop_stalls.recent.length ? (
+            <ol className="command-failure-list" aria-label="Recent event-loop stalls">
+              {status.event_loop_stalls.recent.slice(0, 8).map((stall) => (
+                <li key={`${stall.observed_at}-${stall.duration_ms}`}>
+                  <div>
+                    <strong>{stall.duration_ms} ms</strong>{" "}
+                    <small>{new Date(stall.observed_at).toLocaleTimeString()}</small>
+                  </div>
+                  <small>Blocked in {stall.blocked_in.split("/cueverge/").pop()}</small>
+                  {stall.requests.length > 0 && <small>Requests in flight: {stall.requests.join(", ")}</small>}
+                  {stall.other_threads.length > 0 && (
+                    <small>Busy threads: {stall.other_threads.map((item) => item.split("/cueverge/").pop()).join("; ")}</small>
+                  )}
+                  <details>
+                    <summary>Stack</summary>
+                    <pre>{stall.loop_stack.join("\n")}</pre>
+                  </details>
+                </li>
+              ))}
+            </ol>
+          ) : (
+            <EmptyState title="No stalls recorded" description="LED rendering has not been delayed." />
+          )}
+        </Panel>
+      )}
       <Panel
         title="Recent command failures"
         description="Bounded device command errors, timeouts, and disconnect abandonment"

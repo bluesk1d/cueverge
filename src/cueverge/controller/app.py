@@ -9,6 +9,7 @@ from starlette.responses import Response
 from starlette.staticfiles import StaticFiles
 
 from cueverge.config import ControllerConfig
+from cueverge.controller.loop_monitor import LoopStallMonitor, LoopStallRequestMiddleware
 from cueverge.controller.runtime import ControllerRuntime
 from cueverge.core.director import ShowDirector
 from cueverge.core.loader import load_show_package
@@ -66,8 +67,13 @@ def create_app(
         else None
     )
 
+    loop_monitor = LoopStallMonitor.from_environment()
+    controller.loop_monitor = loop_monitor
+
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+        if loop_monitor is not None:
+            await loop_monitor.start()
         if configured_gui is not None:
             await configured_gui.apply.recover()
         controller.start_background_tasks()
@@ -109,9 +115,13 @@ def create_app(
             if ingress is not None:
                 await ingress.stop()
             await controller.shutdown()
+            if loop_monitor is not None:
+                await loop_monitor.stop()
 
     app = FastAPI(title="Cueverge Controller", version="0.1.0", lifespan=lifespan)
     app.state.runtime = controller
+    if loop_monitor is not None:
+        app.add_middleware(LoopStallRequestMiddleware, monitor=loop_monitor)
     if configured_gui is not None:
 
         @app.middleware("http")

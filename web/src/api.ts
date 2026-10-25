@@ -1095,6 +1095,19 @@ export interface RuntimeStatus {
     stale_frames: number;
     skipped_render_deadlines: number;
     mean_render_interval_ms: number | null;
+    event_loop_stalls?: {
+      threshold_ms: number;
+      stall_count: number;
+      longest_ms: number;
+      recent: {
+        observed_at: string;
+        duration_ms: number;
+        blocked_in: string;
+        loop_stack: string[];
+        other_threads: string[];
+        requests: string[];
+      }[];
+    } | null;
     encounter: Record<string, unknown> | null;
     director: Record<string, unknown> | null;
     audience: Record<string, unknown> | null;

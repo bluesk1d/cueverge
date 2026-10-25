@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Literal, Protocol
 from uuid import uuid4
 
+from cueverge.controller.loop_monitor import LoopStallMonitor
 from cueverge.core.arbitration import ArbitrationDecision, ResourceArbiter
 from cueverge.core.director import ShowDirector
 from cueverge.core.encounter import EncounterEngine, EventOutcome, ObservedEventOutcome
@@ -312,6 +313,7 @@ class ControllerRuntime:
         self.render_ticks_without_timecode = 0
         self.stale_frames = 0
         self.skipped_render_deadlines = 0
+        self.loop_monitor: LoopStallMonitor | None = None
         self._last_frame_at: float | None = None
         self._lighting_started_at = self.clock()
         self._render_interval_total_ms = 0.0
@@ -1296,7 +1298,10 @@ class ControllerRuntime:
         if not render_pixels:
             return True
         rendered_at = self.clock()
-        render_position_ms = max(0, estimate.position_ms - self.lighting_delay_ms)
+        # Completion reports the full duration, which is past every cue and baked frame;
+        # render the last valid millisecond so the end-of-scene tick does not go dark.
+        last_ms = max(0, active.definition.duration_ms - 1)
+        render_position_ms = max(0, min(estimate.position_ms, last_ms) - self.lighting_delay_ms)
         for output in active.scene.lighting_outputs:
             output_position_ms = max(
                 0,
@@ -2106,6 +2111,9 @@ class ControllerRuntime:
             "render_ticks_without_timecode": self.render_ticks_without_timecode,
             "stale_frames": self.stale_frames,
             "skipped_render_deadlines": self.skipped_render_deadlines,
+            "event_loop_stalls": (
+                self.loop_monitor.snapshot() if self.loop_monitor is not None else None
+            ),
             "mean_render_interval_ms": mean_interval_ms,
             "encounter": self.encounter.status() if self.encounter is not None else None,
             "director": self.director.status() if self.director is not None else None,

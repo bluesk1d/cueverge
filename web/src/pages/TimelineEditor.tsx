@@ -1461,7 +1461,10 @@ export function TimelineEditor({
           spec.space === "projector_native"
             ? [spec.width, spec.height]
             : spec.space === "stage"
-              ? suggestedStageRenderResolution(mapperExport)
+              ? suggestedStageRenderResolution(
+                  mapperExport,
+                  spec.stageOutputs?.stage_projector_resources?.length === 0,
+                )
               : [1920, 1080],
         ),
         lighting_settings: defaultLightingSettings(),
@@ -5952,8 +5955,35 @@ export function TimelineEditor({
                     <small>
                       Lights only: render size and frame rate apply; video encoder, bitrate,
                       loudness and media end settings are not used because no projector video is
-                      made.
+                      made. Render size only sets how finely the video is sampled at each LED;
+                      about {LIGHTS_ONLY_RENDER_WIDTH} px wide is plenty and bakes much faster than
+                      projector sizes.
                     </small>
+                    {composition.render_settings.render_width > LIGHTS_ONLY_RENDER_WIDTH * 1.5 &&
+                      (() => {
+                        const [width, height] = suggestedStageRenderResolution(mapperExport, true);
+                        return (
+                          <button
+                            type="button"
+                            disabled={!canEdit}
+                            onClick={() =>
+                              setCompositions((current) => ({
+                                ...current,
+                                [composition.id]: {
+                                  ...current[composition.id],
+                                  render_settings: {
+                                    ...current[composition.id].render_settings,
+                                    render_width: width,
+                                    render_height: height,
+                                  },
+                                },
+                              }))
+                            }
+                          >
+                            Use LED bake size ({width} × {height})
+                          </button>
+                        );
+                      })()}
                   </>
                 ) : (
                   <ol className="timeline-render-pipeline" aria-label="Render pipeline order">
@@ -9096,7 +9126,10 @@ function StageOutputSelector({
             disabled={!canEdit}
             onClick={() =>
               onChange((current) => {
-                const [renderWidth, renderHeight] = suggestedStageRenderResolution(mapperExport);
+                const [renderWidth, renderHeight] = suggestedStageRenderResolution(
+                  mapperExport,
+                  current.stage_projector_resources?.length === 0,
+                );
                 return {
                   ...current,
                   width: roundStage(stage.width),
@@ -11162,10 +11195,22 @@ function roundStage(value: number): number {
   return Math.round(value * 1000) / 1000;
 }
 
+/** Lights-only overlays only sample the frame at LED positions, so a modest raster suffices. */
+const LIGHTS_ONLY_RENDER_WIDTH = 1200;
+
 function suggestedStageRenderResolution(
   mapperExport: InstallationMapperExport | null,
+  lightsOnly = false,
 ): [number, number] {
   const stage = mapperExport?.stage;
+  if (lightsOnly) {
+    const aspect = stage && stage.width > 0 ? stage.height / stage.width : 9 / 16;
+    const width = aspect > 1 ? Math.round(LIGHTS_ONLY_RENDER_WIDTH / aspect) : LIGHTS_ONLY_RENDER_WIDTH;
+    return [
+      Math.max(2, 2 * Math.round(width / 2)),
+      Math.max(2, 2 * Math.round((width * aspect) / 2)),
+    ];
+  }
   if (stage) {
     const ppu = Math.max(
       1920 / stage.width,

@@ -528,6 +528,12 @@ telemetry is delivered repeatedly or late. `select_next` requires a configured
 director; without one, the active scene is held and status reports
 `scene_selector_unavailable`.
 
+Lighting is never rendered at the completion position itself (which equals
+`duration_ms` and is past every cue and baked frame). The tick that observes
+completion, and any held frames afterwards, render the last valid millisecond
+(`duration_ms - 1`), so a looping scene shows its final frame and then frame 0
+with no dark frame between passes.
+
 ### Seamless scene changes
 
 For `transition_to`, `loop` and `select_next`, the controller chooses the next

@@ -363,6 +363,8 @@ def create_mcp_app(services: GuiServices) -> Starlette:
         Requires read and a matching installation binding. Controller connectivity
         is not equipment readiness, published is not loaded, and an observation
         is not proof of visible physical output. This does not start playback.
+        status.event_loop_stalls lists recent event-loop pauses (duration, blocking
+        code, requests in flight, busy threads); each one freezes LED rendering.
         """
         input_installation_token(McpScope.READ)
         snapshot = services.runtime_snapshot()

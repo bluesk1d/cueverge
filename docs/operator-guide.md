@@ -1042,7 +1042,11 @@ apply only to projector video; LEDs sample the stage before those corrections,
 with each lighting surface's brightness limit applied. A lights-only bake
 contains only the RGB sequences; **Render & bake** then hides projector
 rehearsal and frame inspection (check sampled colors in **House view**), and
-only render size and frame rate apply. Frame inspection lists only the
+only render size and frame rate apply. Render size only sets how finely the
+video is sampled at each LED, so **Whole house lights** defaults to 1200 px
+wide (stage aspect) and **Use LED bake size** resizes an existing overlay;
+projector-sized rasters bake many times slower for no visible LED benefit.
+Frame inspection lists only the
 projectors selected for the effect.
 
 A mixed stage can use one projector or a synchronized projector group.
@@ -1403,6 +1407,15 @@ Do not treat an enabled Start button as a substitute for the opening
 checklist. On required clock-source loss, time-following freezes and lighting
 rendering is cancelled; another required output's loss marks the scene
 degraded. Inspect and recover rather than repeatedly pressing Start.
+
+If LEDs pause briefly and then continue, open **Command and playback
+diagnostics → Event-loop stalls**. LED rendering shares one event loop with the
+web interface and API; any pause longer than the threshold (default 50 ms) is
+listed with its duration, the code that was blocking (**Blocked in** and the
+**Stack**), HTTP requests in flight, and other busy threads. Each stall freezes
+LED output for its duration. The same data is in the runtime status
+(`event_loop_stalls`) and controller log warnings. Set
+`CUEVERGE_LOOP_STALL_MS` to change the threshold, or `0` to disable the monitor.
 
 ### Controls and operating modes
 

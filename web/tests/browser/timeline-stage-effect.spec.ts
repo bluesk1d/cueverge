@@ -198,6 +198,8 @@ test("a lights-only house effect drops every projector and shows the house in La
 
   await openTimelineTool(page, "Render & bake");
   await expect(page.getByRole("button", { name: "Bake LED overlay", exact: true })).toBeEnabled();
+  await page.getByRole("button", { name: "Use LED bake size (1200 × 720)" }).click();
+  await expect(page.getByLabel("Render width", { exact: true })).toHaveValue("1200");
   await expect(page.getByAltText(/Controller render preview/)).toHaveCount(0);
   await expect(page.getByText("Cross-projector rehearsal evidence")).toHaveCount(0);
   await expect(page.getByText(/no projector frames to inspect/)).toBeVisible();
@@ -235,6 +237,10 @@ test("the whole house lights preset selects every LED surface by its segment nam
   await expect(outputs.getByLabel("Include LED surface roofline")).toBeChecked();
   await expect(outputs.getByLabel("Include LED surface porch")).toBeChecked();
   await expect(outputs.getByRole("status")).toContainText("Lights only");
+  await openTimelineTool(page, "Render & bake");
+  await expect(page.getByLabel("Render width", { exact: true })).toHaveValue("1200");
+  await expect(page.getByLabel("Render height", { exact: true })).toHaveValue("720");
+  await expect(page.getByRole("button", { name: /Use LED bake size/ })).toHaveCount(0);
 });
 
 function projector(resource: string, extent: [number, number, number, number]) {
