@@ -4504,6 +4504,10 @@ def test_mcp_shared_stage_discovery_authoring_preview_and_bake_parity(
         tags=(),
         metadata={"width": 64, "height": 32, "duration_ms": 1000, "private_path": "/not-exposed"},
         metadata_revision=1,
+        current_revision=1,
+        replacement_status=None,
+        replacement_error=None,
+        revisions=(),
         draft_usage=(),
         removal_blockers=(),
     )
@@ -5177,6 +5181,204 @@ def test_asset_trash_rest_and_mcp_share_blockers_revisions_and_purge(tmp_path: P
         assert client.get(f"/api/gui/v1/projects/{project_id}/assets/trash").json() == []
         actions = {event.action for event in services.repository.list_audit_events()}
         assert {"asset.trash", "asset.restore", "asset.purge", "mcp.asset.trash"} <= actions
+
+
+def test_asset_replacement_rest_and_mcp_keep_scene_placement(tmp_path: Path) -> None:
+    runtime = ControllerRuntime()
+    services = _services(tmp_path, runtime)
+    with TestClient(
+        create_app(runtime, gui_services=services), base_url="http://localhost"
+    ) as client:
+        _login(client)
+        project = client.post(
+            "/api/gui/v1/projects/from-active",
+            json={"name": "Replacement fixture"},
+            headers=_mutation_headers(client),
+        ).json()
+        project_id = project["project"]["id"]
+
+        def png(color: tuple[int, int, int]) -> bytes:
+            output = BytesIO()
+            Image.new("RGB", (16, 9), color).save(output, format="PNG")
+            return output.getvalue()
+
+        def send(upload: dict[str, Any], content: bytes) -> dict[str, Any]:
+            response = client.put(
+                f"/api/gui/v1/assets/uploads/{upload['id']}",
+                content=content,
+                headers={
+                    **_mutation_headers(client),
+                    "Content-Type": "application/octet-stream",
+                    "Upload-Offset": "0",
+                },
+            )
+            assert response.status_code == 200, response.text
+            return cast(dict[str, Any], response.json())
+
+        original = png((220, 30, 30))
+        created = client.post(
+            f"/api/gui/v1/projects/{project_id}/assets/uploads",
+            json={
+                "name": "Poster",
+                "original_filename": "poster.png",
+                "media_type": "image/png",
+                "total_bytes": len(original),
+            },
+            headers=_mutation_headers(client),
+        )
+        assert created.status_code == 201
+        send(created.json(), original)
+        asset = client.get(f"/api/gui/v1/projects/{project_id}/assets").json()[0]
+        assert asset["status"] == "ready", asset["error"]
+        assert [item["revision"] for item in asset["revisions"]] == [1]
+        scene = project["draft"]["scenes"][0]
+        output_id = scene["media"][0]["id"] if scene["schema_version"] == 2 else None
+        placed = client.post(
+            f"/api/gui/v1/projects/{project_id}/assets/{asset['id']}/place",
+            json={"scene_id": scene["id"], "output_id": output_id},
+            headers=_mutation_headers(client, if_match='"1"'),
+        )
+        assert placed.status_code == 200
+        draft_before = client.get(f"/api/gui/v1/projects/{project_id}/draft")
+
+        edited = png((30, 220, 30))
+        replacement_path = f"/api/gui/v1/projects/{project_id}/assets/{asset['id']}/replacements"
+        body = {
+            "original_filename": "poster-graded.png",
+            "media_type": "image/png",
+            "total_bytes": len(edited),
+        }
+        stale = client.post(
+            replacement_path, json=body, headers=_mutation_headers(client, if_match='"9"')
+        )
+        assert stale.status_code == 409
+        assert stale.json()["code"] == "asset_metadata_conflict"
+        wrong_kind = client.post(
+            replacement_path,
+            json={**body, "original_filename": "poster.mp4", "media_type": "video/mp4"},
+            headers=_mutation_headers(client, if_match=f'"{asset["metadata_revision"]}"'),
+        )
+        assert wrong_kind.status_code == 422
+        assert wrong_kind.json()["detail"]["code"] == "asset_replacement_rejected"
+        begun = client.post(
+            replacement_path,
+            json=body,
+            headers=_mutation_headers(client, if_match=f'"{asset["metadata_revision"]}"'),
+        )
+        assert begun.status_code == 201, begun.text
+        assert begun.json()["asset_id"] == asset["id"]
+        assert begun.json()["asset"]["replacement_status"] == "uploading"
+        assert begun.json()["asset"]["current_revision"] == 1
+        send(begun.json(), edited)
+
+        replaced = client.get(f"/api/gui/v1/projects/{project_id}/assets").json()[0]
+        assert replaced["id"] == asset["id"]
+        assert replaced["current_revision"] == 2
+        assert replaced["replacement_status"] is None
+        assert replaced["digest_sha256"] == hashlib.sha256(edited).hexdigest()
+        assert replaced["original_filename"] == "poster-graded.png"
+        assert [item["revision"] for item in replaced["revisions"]] == [2, 1]
+        assert [item["scene_id"] for item in replaced["references"]] == [scene["id"]]
+        draft_after = client.get(f"/api/gui/v1/projects/{project_id}/draft")
+        assert draft_after.headers["etag"] == draft_before.headers["etag"]
+        assert draft_after.json() == draft_before.json()
+        artifact = f"/api/gui/v1/assets/{asset['id']}/artifacts/review"
+        assert "immutable" in client.get(f"{artifact}?revision=2").headers["cache-control"]
+        assert client.get(f"{artifact}?revision=1").headers["cache-control"] == "private, no-cache"
+        assert client.get(artifact).headers["cache-control"] == "private, no-cache"
+
+        reader = _mcp_token(services, project_id, (McpScope.READ,))
+        editor = _mcp_token(services, project_id, (McpScope.READ, McpScope.DIRECT_EDIT))
+        capabilities = _mcp_tool(client, reader, "get_capabilities")["structuredContent"]
+        assert capabilities["features"]["asset_replacement"] is True
+        assert capabilities["asset_replacement"]["revert_tool"] == "revert_asset_revision"
+        assert capabilities["asset_replacement"]["file_upload"] == "gui_or_http_only"
+        listed = _mcp_tool(client, reader, "list_asset_metadata")["structuredContent"]["assets"][0]
+        assert listed["current_revision"] == 2
+        assert [(item["revision"], item["current"]) for item in listed["revisions"]] == [
+            (2, True),
+            (1, False),
+        ]
+        denied = _mcp_tool(
+            client,
+            reader,
+            "revert_asset_revision",
+            asset_id=asset["id"],
+            revision=1,
+            metadata_revision=listed["metadata_revision"],
+        )
+        assert denied["isError"] is True
+        assert "direct_edit" in denied["content"][0]["text"]
+        reverted = _mcp_tool(
+            client,
+            editor,
+            "revert_asset_revision",
+            asset_id=asset["id"],
+            revision=1,
+            metadata_revision=listed["metadata_revision"],
+        )
+        assert reverted["isError"] is False, reverted
+        assert reverted["structuredContent"]["current_revision"] == 1
+        assert reverted["structuredContent"]["hardware_commands_sent"] is False
+        stale_revert = _mcp_tool(
+            client,
+            editor,
+            "revert_asset_revision",
+            asset_id=asset["id"],
+            revision=2,
+            metadata_revision=listed["metadata_revision"],
+        )
+        assert stale_revert["isError"] is True
+        assert "metadata_revision is stale" in stale_revert["content"][0]["text"]
+
+        source = png((30, 30, 220))
+        second = client.post(
+            f"/api/gui/v1/projects/{project_id}/assets/uploads",
+            json={
+                "name": "Poster v3",
+                "original_filename": "poster-v3.png",
+                "media_type": "image/png",
+                "total_bytes": len(source),
+            },
+            headers=_mutation_headers(client),
+        ).json()
+        send(second, source)
+        from_asset = _mcp_tool(
+            client,
+            editor,
+            "replace_asset_from_asset",
+            asset_id=asset["id"],
+            source_asset_id=second["asset_id"],
+            metadata_revision=reverted["structuredContent"]["metadata_revision"],
+        )
+        assert from_asset["isError"] is False, from_asset
+        assert from_asset["structuredContent"]["current_revision"] == 3
+        restored = client.post(
+            f"/api/gui/v1/projects/{project_id}/assets/{asset['id']}/revert",
+            json={"revision": 2},
+            headers=_mutation_headers(
+                client, if_match=f'"{from_asset["structuredContent"]["metadata_revision"]}"'
+            ),
+        )
+        assert restored.status_code == 200, restored.text
+        assert restored.json()["current_revision"] == 2
+        assert restored.headers["etag"] == f'"{restored.json()["metadata_revision"]}"'
+        same = client.post(
+            f"/api/gui/v1/projects/{project_id}/assets/{asset['id']}/revert",
+            json={"revision": 2},
+            headers=_mutation_headers(client, if_match=f'"{restored.json()["metadata_revision"]}"'),
+        )
+        assert same.status_code == 409
+        assert same.json()["detail"]["code"] == "asset_replacement_state"
+        actions = {event.action for event in services.repository.list_audit_events()}
+        assert {
+            "asset.replace.begin",
+            "asset.replace.process",
+            "asset.replace",
+            "asset.revert",
+            "mcp.asset.revert",
+            "mcp.asset.replace",
+        } <= actions
 
 
 def test_scene_media_preview_rest_and_mcp_render_assigned_media(tmp_path: Path) -> None:

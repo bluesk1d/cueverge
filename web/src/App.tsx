@@ -50,6 +50,9 @@ import {
   organizeScene,
   placeAsset,
   purgeAsset,
+  replaceAssetFile,
+  replaceAssetFromAsset,
+  revertAssetRevision,
   OperateAction,
   OutputArm,
   ProjectSummary,
@@ -714,7 +717,7 @@ function ProjectCard({
   }, [project.id, session.role, session.username, updatePermissions]);
 
   useEffect(() => {
-    if (!assets?.some((asset) => asset.status === "uploading")) {
+    if (!assets?.some((asset) => asset.status === "uploading" || asset.replacement_status === "processing")) {
       return;
     }
     const timer = window.setTimeout(() => void loadAssets(), 2000);
@@ -1048,6 +1051,12 @@ function ProjectCard({
                       }}
                     />
                   )}
+                  <AssetReplacement
+                    asset={asset}
+                    assets={assets ?? []}
+                    canEdit={canAuthor && !project.archived_at}
+                    onChanged={loadAssets}
+                  />
                   {canAuthor && !project.archived_at && (
                     <AssetRemoval asset={asset} onChanged={loadAssets} />
                   )}
@@ -1565,6 +1574,183 @@ function AssetGovernance({
           </button>
         )}
       </form>
+    </details>
+  );
+}
+
+function mediaKind(mediaType: string | null): string | null {
+  return mediaType ? mediaType.split("/")[0] : null;
+}
+
+function AssetReplacement({
+  asset,
+  assets,
+  canEdit,
+  onChanged,
+}: {
+  asset: AssetRecord;
+  assets: AssetRecord[];
+  canEdit: boolean;
+  onChanged: () => Promise<void>;
+}) {
+  const [progress, setProgress] = useState<number | null>(null);
+  const [working, setWorking] = useState(false);
+  const [sourceId, setSourceId] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const kind = mediaKind(asset.media_type);
+  const revisions = asset.revisions ?? [];
+  const replacing = asset.replacement_status ?? null;
+  const busy = working || asset.status === "uploading" || replacing !== null;
+  const sources = assets.filter(
+    (candidate) =>
+      candidate.id !== asset.id &&
+      candidate.status === "ready" &&
+      candidate.original_file_status === "available" &&
+      !candidate.trashed_at &&
+      (kind === null || mediaKind(candidate.media_type) === kind),
+  );
+  const uses = asset.draft_usage?.length
+    ? asset.draft_usage
+    : asset.references.map((reference) => reference.scene_name);
+  const followers = uses.length
+    ? `${uses.length} ${uses.length === 1 ? "use" : "uses"} in this draft (${uses.join(", ")}) will switch to the new file`
+    : "Nothing in this draft uses it yet";
+
+  async function perform(action: () => Promise<unknown>, failure: string) {
+    setWorking(true);
+    setError(null);
+    try {
+      await action();
+      await onChanged();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : failure);
+    } finally {
+      setWorking(false);
+      setProgress(null);
+    }
+  }
+
+  async function uploadReplacement(file: File) {
+    if (kind && mediaKind(file.type) !== kind) {
+      setError(`Choose ${kind === "image" ? "an" : "a"} ${kind} file to replace this ${kind}.`);
+      return;
+    }
+    setProgress(0);
+    await perform(async () => {
+      const result = await replaceAssetFile(asset, file, (receivedBytes) =>
+        setProgress(Math.round((receivedBytes / file.size) * 100)),
+      );
+      if (result.state === "failed") throw new Error(result.error ?? "Upload verification failed.");
+    }, "The replacement file could not be uploaded.");
+  }
+
+  return (
+    <details className="asset-replacement" open={replacing !== null || undefined}>
+      <summary>
+        Replace file · revision {asset.current_revision ?? "—"}
+        {replacing ? ` · replacement ${replacing}` : ""}
+        {!replacing && asset.replacement_error ? " · last replacement not used" : ""}
+      </summary>
+      <small>
+        Keeps this asset&apos;s name, scene placements, timing and effects. {followers}.
+        Published releases keep the file they were published with.
+      </small>
+      {replacing === "processing" && (
+        <small role="status">
+          Processing the new file. The current file stays in use until it is ready.
+        </small>
+      )}
+      {replacing === "uploading" && !working && (
+        <small role="status">
+          A replacement upload did not finish. Choose the file again to restart it.
+        </small>
+      )}
+      {asset.replacement_error && (
+        <small className="asset-diagnostic asset-diagnostic--warning">
+          Last replacement was not used: {asset.replacement_error}
+        </small>
+      )}
+      {canEdit && (
+        <div className="asset-replacement__actions">
+          <label>
+            Upload edited file
+            <input
+              aria-label={`Replace file for ${asset.name}`}
+              type="file"
+              accept={kind ? `${kind}/*` : undefined}
+              disabled={busy && replacing !== "uploading"}
+              onChange={(event) => {
+                const file = event.currentTarget.files?.[0];
+                event.currentTarget.value = "";
+                if (file) void uploadReplacement(file);
+              }}
+            />
+          </label>
+          {progress !== null && <progress aria-label="Replacement upload progress" max={100} value={progress} />}
+          {sources.length > 0 && (
+            <div className="asset-replacement__source">
+              <label>
+                Or use an uploaded asset
+                <select
+                  aria-label={`Replacement source for ${asset.name}`}
+                  value={sourceId}
+                  disabled={busy}
+                  onChange={(event) => setSourceId(event.target.value)}
+                >
+                  <option value="">Choose an asset…</option>
+                  {sources.map((candidate) => (
+                    <option key={candidate.id} value={candidate.id}>
+                      {candidate.name} ({candidate.original_filename ?? candidate.media_type})
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <button
+                disabled={busy || !sourceId}
+                onClick={() =>
+                  void perform(async () => {
+                    await replaceAssetFromAsset(asset, sourceId);
+                    setSourceId("");
+                  }, "The asset could not be replaced.")
+                }
+              >
+                Use this file
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+      {revisions.length > 0 && (
+        <ol className="asset-replacement__history" aria-label={`File history for ${asset.name}`}>
+          {revisions.map((item) => {
+            const current = item.revision === asset.current_revision;
+            return (
+              <li key={item.revision}>
+                <small>
+                  Revision {item.revision} · {item.original_filename} ·{" "}
+                  {formatAssetBytes(item.size_bytes)} · {new Date(item.created_at).toLocaleString()}
+                  {current ? " · current" : item.status !== "ready" ? ` · ${item.status}` : ""}
+                </small>
+                {canEdit && !current && item.status === "ready" && (
+                  <button
+                    aria-label={`Restore revision ${item.revision} of ${asset.name}`}
+                    disabled={busy}
+                    onClick={() =>
+                      void perform(
+                        () => revertAssetRevision(asset, item.revision),
+                        "The earlier file could not be restored.",
+                      )
+                    }
+                  >
+                    Restore
+                  </button>
+                )}
+              </li>
+            );
+          })}
+        </ol>
+      )}
+      {error && <small role="alert">{error}</small>}
     </details>
   );
 }

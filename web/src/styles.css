@@ -2168,6 +2168,64 @@ p {
   color: var(--cv-text-muted);
 }
 
+.asset-replacement summary {
+  color: var(--cv-text-muted);
+  cursor: pointer;
+}
+
+.asset-replacement > small {
+  display: block;
+  margin-top: 4px;
+}
+
+.asset-replacement .asset-diagnostic--warning {
+  color: var(--cv-warning);
+}
+
+.asset-replacement [role="alert"] {
+  color: var(--cv-danger);
+}
+
+.asset-replacement__actions {
+  display: grid;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.asset-replacement__actions label {
+  display: grid;
+  gap: 3px;
+  color: var(--cv-text-faint);
+  font-size: 12px;
+}
+
+.asset-replacement__source {
+  display: flex;
+  align-items: end;
+  gap: 6px;
+}
+
+.asset-replacement__source label {
+  flex: 1;
+  min-width: 0;
+}
+
+.asset-replacement__source select {
+  width: 100%;
+}
+
+.asset-replacement__history {
+  display: grid;
+  gap: 4px;
+  margin: 6px 0 0;
+  padding-left: 18px;
+  color: var(--cv-text-muted);
+}
+
+.asset-replacement__history li button {
+  margin-left: 6px;
+}
+
 .asset-trash {
   margin-top: 12px;
   border-top: 1px solid var(--cv-border);
@@ -5887,6 +5945,7 @@ p {
 }
 
 .asset-card__details .asset-governance,
+.asset-card__details .asset-replacement,
 .asset-card__details .asset-placement {
   margin-top: 0;
   padding-top: 8px;

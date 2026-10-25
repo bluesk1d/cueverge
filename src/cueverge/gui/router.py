@@ -33,8 +33,10 @@ from cueverge.gui.artifact_preview import (
 from cueverge.gui.asset_upload import (
     AssetMetadataConflictError,
     AssetMetadataLockedError,
+    AssetNotFoundError,
     AssetPurgeConfirmationError,
     AssetRemovalBlockedError,
+    AssetReplacementStateError,
     AssetTrashStateError,
     AssetUploadConflictError,
     AssetUploadError,
@@ -57,9 +59,11 @@ from cueverge.gui.contracts import (
     AssetPurgeResponse,
     AssetRemovalBlockedResponse,
     AssetResponse,
+    AssetRevisionResponse,
     AssetSceneReferenceResponse,
     AssetUploadResponse,
     AuditEventResponse,
+    BeginAssetReplacementRequest,
     BeginAssetUploadRequest,
     BrowserErrorRequest,
     CapabilityReviewIssue,
@@ -155,8 +159,10 @@ from cueverge.gui.contracts import (
     RenameSceneOutputBody,
     RenameSceneOutputRequest,
     RenderJobResponse,
+    ReplaceAssetFromAssetRequest,
     ResourceAssignmentConflictResponse,
     ResourceAssignmentResponse,
+    RevertAssetRevisionRequest,
     ReviewCalibrationContextRequest,
     ReviewLinkRequest,
     ReviewLinkResponse,
@@ -1819,19 +1825,27 @@ def create_gui_router(services: GuiServices) -> APIRouter:
         response_class=FileResponse,
         dependencies=[reader],
     )
-    def asset_artifact(asset_id: str, kind: str) -> FileResponse:
+    def asset_artifact(
+        asset_id: str,
+        kind: str,
+        revision: Annotated[int | None, Query(ge=1)] = None,
+    ) -> FileResponse:
         try:
             path, media_type = services.asset_upload.get_artifact(asset_id, kind)
+            current_revision = services.asset_upload.current_revision(asset_id)
         except AssetUploadError as error:
             raise HTTPException(
                 status_code=404,
                 detail={"code": "asset_artifact_not_found", "message": str(error)},
             ) from error
-        return FileResponse(
-            path,
-            media_type=media_type,
-            headers={"Cache-Control": "private, max-age=31536000, immutable"},
+        # The URL names a logical asset whose file can be replaced, so only a
+        # revision-qualified URL for the current revision is immutable.
+        cache_control = (
+            "private, max-age=31536000, immutable"
+            if revision is not None and revision == current_revision
+            else "private, no-cache"
         )
+        return FileResponse(path, media_type=media_type, headers={"Cache-Control": cache_control})
 
     @router.put("/assets/{asset_id}/metadata", response_model=AssetResponse)
     def update_asset_metadata(
@@ -2060,6 +2074,96 @@ def create_gui_router(services: GuiServices) -> APIRouter:
         )
 
     @router.post(
+        "/projects/{project_id}/assets/{asset_id}/replacements",
+        response_model=AssetUploadResponse,
+        status_code=201,
+    )
+    def begin_asset_replacement(
+        project_id: str,
+        asset_id: str,
+        body: BeginAssetReplacementRequest,
+        identity: Annotated[AuthenticatedSession, project_designer],
+        if_match: Annotated[str | None, Header(alias="If-Match")] = None,
+    ) -> AssetUploadResponse | JSONResponse:
+        expected_revision = _parse_if_match(if_match)
+        try:
+            asset, upload = services.asset_upload.begin_replacement(
+                project_id=project_id,
+                asset_id=asset_id,
+                expected_revision=expected_revision,
+                original_filename=body.original_filename,
+                media_type=body.media_type,
+                total_bytes=body.total_bytes,
+                expected_sha256=body.expected_sha256,
+                actor=identity.username,
+                role=identity.role,
+                occurred_at=_now_iso(),
+            )
+        except AssetUploadError as error:
+            return _asset_lifecycle_error(error, expected_revision)
+        return _asset_upload_response(
+            asset,
+            upload,
+            services.config.asset_chunk_max_bytes,
+        )
+
+    @router.post(
+        "/projects/{project_id}/assets/{asset_id}/replace-from",
+        response_model=AssetResponse,
+    )
+    def replace_asset_from_asset(
+        project_id: str,
+        asset_id: str,
+        body: ReplaceAssetFromAssetRequest,
+        response: Response,
+        identity: Annotated[AuthenticatedSession, project_designer],
+        if_match: Annotated[str | None, Header(alias="If-Match")] = None,
+    ) -> AssetResponse | JSONResponse:
+        expected_revision = _parse_if_match(if_match)
+        try:
+            asset = services.asset_upload.replace_from_asset(
+                project_id=project_id,
+                asset_id=asset_id,
+                source_asset_id=body.source_asset_id,
+                expected_revision=expected_revision,
+                actor=identity.username,
+                role=identity.role,
+                occurred_at=_now_iso(),
+            )
+        except AssetUploadError as error:
+            return _asset_lifecycle_error(error, expected_revision)
+        response.headers["ETag"] = _etag(asset.metadata_revision)
+        return _asset_response(asset)
+
+    @router.post(
+        "/projects/{project_id}/assets/{asset_id}/revert",
+        response_model=AssetResponse,
+    )
+    def revert_asset_revision(
+        project_id: str,
+        asset_id: str,
+        body: RevertAssetRevisionRequest,
+        response: Response,
+        identity: Annotated[AuthenticatedSession, project_designer],
+        if_match: Annotated[str | None, Header(alias="If-Match")] = None,
+    ) -> AssetResponse | JSONResponse:
+        expected_revision = _parse_if_match(if_match)
+        try:
+            asset = services.asset_upload.revert_revision(
+                project_id=project_id,
+                asset_id=asset_id,
+                revision=body.revision,
+                expected_revision=expected_revision,
+                actor=identity.username,
+                role=identity.role,
+                occurred_at=_now_iso(),
+            )
+        except AssetUploadError as error:
+            return _asset_lifecycle_error(error, expected_revision)
+        response.headers["ETag"] = _etag(asset.metadata_revision)
+        return _asset_response(asset)
+
+    @router.post(
         "/projects/{project_id}/assets/uploads",
         response_model=AssetUploadResponse,
         status_code=201,
@@ -2153,7 +2257,9 @@ def create_gui_router(services: GuiServices) -> APIRouter:
                 status_code=422,
                 detail={"code": "asset_upload_rejected", "message": str(error)},
             ) from error
-        if upload.state == "completed" and asset.status == "uploading":
+        if upload.state == "completed" and (
+            asset.status == "uploading" or asset.replacement_status == "processing"
+        ):
             background_tasks.add_task(
                 services.asset_upload.process_asset,
                 asset.id,
@@ -6287,6 +6393,21 @@ def _asset_response(asset: StoredAsset) -> AssetResponse:
         purge_after=asset.purge_after,
         removal_blockers=asset.removal_blockers,
         purge_blockers=asset.purge_blockers,
+        pending_revision=asset.pending_revision,
+        replacement_status=asset.replacement_status,
+        replacement_error=asset.replacement_error,
+        revisions=tuple(
+            AssetRevisionResponse(
+                revision=item.revision,
+                digest_sha256=item.digest_sha256,
+                size_bytes=item.size_bytes,
+                media_type=item.media_type,
+                original_filename=item.original_filename,
+                status=item.status,
+                created_at=item.created_at,
+            )
+            for item in asset.revisions
+        ),
         created_at=asset.created_at,
         updated_at=asset.updated_at,
     )
@@ -6315,6 +6436,12 @@ def _asset_lifecycle_error(error: AssetUploadError, requested_revision: int) -> 
         status_code = 409
     elif isinstance(error, AssetPurgeConfirmationError):
         detail = {"code": "asset_purge_confirmation_mismatch", "message": str(error)}
+        status_code = 422
+    elif isinstance(error, AssetReplacementStateError):
+        detail = {"code": "asset_replacement_state", "message": str(error)}
+        status_code = 409
+    elif not isinstance(error, AssetNotFoundError):
+        detail = {"code": "asset_replacement_rejected", "message": str(error)}
         status_code = 422
     else:
         detail = {"code": "asset_not_found"}

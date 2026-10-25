@@ -314,7 +314,7 @@ function HouseSurfaceMedia({
 }) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const { asset, output } = placement;
-  const reviewUrl = asset && hasAssetArtifact(asset, "review") ? assetArtifactUrl(asset.id, "review") : null;
+  const reviewUrl = asset && hasAssetArtifact(asset, "review") ? assetArtifactUrl(asset.id, "review", asset.current_revision) : null;
   const isVideo = Boolean(asset && (asset.media_type?.startsWith("video/") || asset.media_type === "image/gif"));
   const sourceMs = mediaOutputSourceMs(
     playheadMs,

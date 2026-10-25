@@ -49,6 +49,7 @@ _ASSET_COLUMNS = """
     a.review_status, a.expires_on, a.folder, a.tags_json,
     a.favorite, a.trashed_at, a.trashed_by, a.purge_after,
     a.error, a.created_at, a.updated_at,
+    a.pending_revision, a.replacement_error,
     r.digest_sha256, r.size_bytes, r.media_type,
     r.original_filename, r.scan_status, r.metadata_json
 """
@@ -63,6 +64,14 @@ _EDITOR_USAGE_LABELS = {
 
 class AssetUploadError(RuntimeError):
     pass
+
+
+class AssetNotFoundError(AssetUploadError):
+    pass
+
+
+class AssetReplacementStateError(AssetUploadError):
+    """The asset cannot take a replacement or revert in its current state."""
 
 
 class AssetUploadConflictError(AssetUploadError):
@@ -103,6 +112,17 @@ class AssetSceneReference:
 
 
 @dataclass(frozen=True)
+class AssetRevisionSummary:
+    revision: int
+    digest_sha256: str
+    size_bytes: int
+    media_type: str
+    original_filename: str
+    status: Literal["ready", "processing", "failed", "quarantined"]
+    created_at: str
+
+
+@dataclass(frozen=True)
 class StoredAsset:
     id: str
     project_id: str
@@ -137,6 +157,17 @@ class StoredAsset:
     draft_usage: tuple[str, ...] = ()
     removal_blockers: tuple[str, ...] = ()
     purge_blockers: tuple[str, ...] = ()
+    pending_revision: int | None = None
+    replacement_error: str | None = None
+    revisions: tuple[AssetRevisionSummary, ...] = ()
+
+    @property
+    def replacement_status(self) -> Literal["uploading", "processing"] | None:
+        if self.pending_revision is None:
+            return None
+        if any(item.revision == self.pending_revision for item in self.revisions):
+            return "processing"
+        return "uploading"
 
 
 @dataclass(frozen=True)
@@ -250,29 +281,10 @@ class AssetUploadService:
         role: Role,
         occurred_at: str,
     ) -> tuple[StoredAsset, StoredAssetUpload]:
-        _validate_filename(original_filename)
-        if media_type not in ALLOWED_MEDIA_TYPES:
-            raise AssetUploadError(f"media type is not allowed: {media_type}")
-        guessed_type, _ = mimetypes.guess_type(original_filename)
-        if guessed_type is not None and guessed_type != media_type:
-            raise AssetUploadError(
-                f"declared media type {media_type} does not match filename type {guessed_type}"
-            )
-        if total_bytes <= 0 or total_bytes > self.config.asset_max_bytes:
-            raise AssetUploadError(
-                f"asset size must be between 1 and {self.config.asset_max_bytes} bytes"
-            )
-        if expected_sha256 is not None and (
-            len(expected_sha256) != 64
-            or any(character not in "0123456789abcdef" for character in expected_sha256)
-        ):
-            raise AssetUploadError("expected SHA-256 must be 64 lowercase hexadecimal characters")
+        self._validate_upload(original_filename, media_type, total_bytes, expected_sha256)
         asset_id = str(uuid4())
         upload_id = str(uuid4())
-        temp_name = f"{upload_id}.part"
-        temp_path = self.upload_root / temp_name
-        descriptor = os.open(temp_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        os.close(descriptor)
+        temp_path = self._reserve_temp(upload_id)
         try:
             with self._connect() as connection:
                 connection.execute("BEGIN IMMEDIATE")
@@ -284,32 +296,7 @@ class AssetUploadService:
                     raise AssetUploadError("project does not exist")
                 if project["archived_at"] is not None:
                     raise AssetUploadError("archived projects cannot accept assets")
-                used_bytes = int(
-                    connection.execute(
-                        """
-                        SELECT COALESCE(SUM(size_bytes), 0)
-                        FROM (
-                            SELECT digest_sha256, MAX(size_bytes) AS size_bytes
-                            FROM asset_revisions
-                            GROUP BY digest_sha256
-                        )
-                        """
-                    ).fetchone()[0]
-                )
-                reserved_bytes = int(
-                    connection.execute(
-                        """
-                        SELECT COALESCE(SUM(total_bytes), 0)
-                        FROM asset_uploads
-                        WHERE state = 'active'
-                        """
-                    ).fetchone()[0]
-                )
-                if (
-                    used_bytes + self._derived_bytes() + reserved_bytes + total_bytes
-                    > self.config.asset_store_quota_bytes
-                ):
-                    raise AssetUploadError("managed asset-store quota would be exceeded")
+                self._check_quota(connection, total_bytes)
                 connection.execute(
                     """
                     INSERT INTO assets(
@@ -319,25 +306,16 @@ class AssetUploadService:
                     """,
                     (asset_id, project_id, name, occurred_at, occurred_at),
                 )
-                connection.execute(
-                    """
-                    INSERT INTO asset_uploads(
-                        id, asset_id, original_filename, media_type, total_bytes,
-                        expected_sha256, received_bytes, temp_name, state,
-                        error, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, 0, ?, 'active', NULL, ?, ?)
-                    """,
-                    (
-                        upload_id,
-                        asset_id,
-                        original_filename,
-                        media_type,
-                        total_bytes,
-                        expected_sha256,
-                        temp_name,
-                        occurred_at,
-                        occurred_at,
-                    ),
+                _insert_upload(
+                    connection,
+                    upload_id=upload_id,
+                    asset_id=asset_id,
+                    original_filename=original_filename,
+                    media_type=media_type,
+                    total_bytes=total_bytes,
+                    expected_sha256=expected_sha256,
+                    temp_name=temp_path.name,
+                    occurred_at=occurred_at,
                 )
             connection.commit()
         except BaseException:
@@ -357,6 +335,340 @@ class AssetUploadService:
             },
         )
         return self.get_asset(asset_id), self.get_upload(upload_id)
+
+    def begin_replacement(
+        self,
+        *,
+        project_id: str,
+        asset_id: str,
+        expected_revision: int,
+        original_filename: str,
+        media_type: str,
+        total_bytes: int,
+        expected_sha256: str | None,
+        actor: str,
+        role: Role,
+        occurred_at: str,
+    ) -> tuple[StoredAsset, StoredAssetUpload]:
+        """Start uploading a new file revision for an existing asset.
+
+        The asset keeps its ID, so every scene placement, timeline layer and
+        composition that references it picks up the new file once processing
+        succeeds. Until then the current revision stays in use; a failed or
+        quarantined replacement never becomes current.
+        """
+        self._validate_upload(original_filename, media_type, total_bytes, expected_sha256)
+        upload_id = str(uuid4())
+        temp_path = self._reserve_temp(upload_id)
+        superseded: list[str] = []
+        try:
+            with self._lock, self._connect() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                row = _lifecycle_row(connection, asset_id, project_id)
+                current_metadata_revision = _check_editable(row, expected_revision)
+                if str(row["status"]) == "uploading":
+                    raise AssetReplacementStateError(
+                        "wait for the asset to finish processing before replacing it"
+                    )
+                _require_same_kind(connection, row, media_type)
+                pending = row["pending_revision"]
+                if pending is not None:
+                    if _revision_exists(connection, asset_id, int(pending)):
+                        raise AssetReplacementStateError(
+                            "a replacement for this asset is still processing"
+                        )
+                    superseded = [
+                        str(item["temp_name"])
+                        for item in connection.execute(
+                            "SELECT temp_name FROM asset_uploads "
+                            "WHERE asset_id = ? AND state = 'active'",
+                            (asset_id,),
+                        ).fetchall()
+                    ]
+                    connection.execute(
+                        """
+                        UPDATE asset_uploads SET state = 'failed', error = ?, updated_at = ?
+                        WHERE asset_id = ? AND state = 'active'
+                        """,
+                        ("superseded by a newer replacement upload", occurred_at, asset_id),
+                    )
+                self._check_quota(connection, total_bytes)
+                next_revision = _next_revision(connection, asset_id)
+                connection.execute(
+                    """
+                    UPDATE assets
+                    SET pending_revision = ?, replacement_error = NULL,
+                        metadata_revision = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (next_revision, current_metadata_revision + 1, occurred_at, asset_id),
+                )
+                _insert_upload(
+                    connection,
+                    upload_id=upload_id,
+                    asset_id=asset_id,
+                    original_filename=original_filename,
+                    media_type=media_type,
+                    total_bytes=total_bytes,
+                    expected_sha256=expected_sha256,
+                    temp_name=temp_path.name,
+                    occurred_at=occurred_at,
+                )
+                _insert_audit(
+                    connection,
+                    actor=actor,
+                    action="asset.replace.begin",
+                    target=asset_id,
+                    occurred_at=occurred_at,
+                    context={
+                        "role": role.value,
+                        "project_id": project_id,
+                        "upload_id": upload_id,
+                        "pending_revision": next_revision,
+                        "current_revision": row["current_revision"],
+                        "previous_metadata_revision": current_metadata_revision,
+                        "total_bytes": total_bytes,
+                        "media_type": media_type,
+                    },
+                )
+                connection.commit()
+        except BaseException:
+            temp_path.unlink(missing_ok=True)
+            raise
+        for name in superseded:
+            (self.upload_root / name).unlink(missing_ok=True)
+        return self.get_asset(asset_id), self.get_upload(upload_id)
+
+    def replace_from_asset(
+        self,
+        *,
+        project_id: str,
+        asset_id: str,
+        source_asset_id: str,
+        expected_revision: int,
+        actor: str,
+        role: Role,
+        occurred_at: str,
+    ) -> StoredAsset:
+        """Make another ready asset's current file the next revision of this asset.
+
+        Content is deduplicated by digest, so no bytes are copied and the
+        processed metadata and review artifacts are reused. The source asset is
+        left unchanged; trash it afterwards if it is no longer needed.
+        """
+        if source_asset_id == asset_id:
+            raise AssetReplacementStateError("choose a different asset as the replacement source")
+        with self._lock, self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = _lifecycle_row(connection, asset_id, project_id)
+            current_metadata_revision = _check_editable(row, expected_revision)
+            if str(row["status"]) == "uploading" or row["pending_revision"] is not None:
+                raise AssetReplacementStateError(
+                    "wait for the current upload or replacement to finish first"
+                )
+            try:
+                source_row = _lifecycle_row(connection, source_asset_id, project_id)
+            except AssetNotFoundError as error:
+                raise AssetNotFoundError("replacement source asset does not exist") from error
+            if source_row["trashed_at"] is not None:
+                raise AssetReplacementStateError("the replacement source asset is in the trash")
+            if str(source_row["status"]) != "ready" or source_row["current_revision"] is None:
+                raise AssetReplacementStateError(
+                    "the replacement source asset has not finished processing"
+                )
+            source = connection.execute(
+                """
+                SELECT digest_sha256, size_bytes, media_type, original_filename,
+                       scan_status, metadata_json
+                FROM asset_revisions
+                WHERE asset_id = ? AND revision = ?
+                """,
+                (source_asset_id, int(source_row["current_revision"])),
+            ).fetchone()
+            if source is None:
+                raise AssetReplacementStateError("the replacement source asset has no file")
+            source_digest = str(source["digest_sha256"])
+            original = self.object_root / source_digest[:2] / source_digest
+            if not original.is_file():
+                raise AssetReplacementStateError(
+                    "the replacement source asset's original file is missing"
+                )
+            _require_same_kind(connection, row, str(source["media_type"]))
+            next_revision = _next_revision(connection, asset_id)
+            connection.execute(
+                """
+                INSERT INTO asset_revisions(
+                    asset_id, revision, digest_sha256, size_bytes, media_type,
+                    original_filename, scan_status, metadata_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    asset_id,
+                    next_revision,
+                    str(source["digest_sha256"]),
+                    int(source["size_bytes"]),
+                    str(source["media_type"]),
+                    str(source["original_filename"]),
+                    str(source["scan_status"]),
+                    str(source["metadata_json"]),
+                    occurred_at,
+                ),
+            )
+            connection.execute(
+                """
+                UPDATE assets
+                SET current_revision = ?, status = 'ready', error = NULL,
+                    replacement_error = NULL, metadata_revision = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (next_revision, current_metadata_revision + 1, occurred_at, asset_id),
+            )
+            _insert_audit(
+                connection,
+                actor=actor,
+                action="asset.replace",
+                target=asset_id,
+                occurred_at=occurred_at,
+                context={
+                    "role": role.value,
+                    "project_id": project_id,
+                    "source_asset_id": source_asset_id,
+                    "previous_revision": row["current_revision"],
+                    "created_revision": next_revision,
+                    "digest_sha256": str(source["digest_sha256"]),
+                    "previous_metadata_revision": current_metadata_revision,
+                },
+            )
+            connection.commit()
+        return self.get_asset(asset_id)
+
+    def revert_revision(
+        self,
+        *,
+        project_id: str,
+        asset_id: str,
+        revision: int,
+        expected_revision: int,
+        actor: str,
+        role: Role,
+        occurred_at: str,
+    ) -> StoredAsset:
+        """Make an earlier, successfully processed file revision current again."""
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = _lifecycle_row(connection, asset_id, project_id)
+            current_metadata_revision = _check_editable(row, expected_revision)
+            if row["pending_revision"] is not None:
+                raise AssetReplacementStateError(
+                    "wait for the replacement in progress to finish first"
+                )
+            if row["current_revision"] is not None and int(row["current_revision"]) == revision:
+                raise AssetReplacementStateError(f"revision {revision} is already current")
+            target = connection.execute(
+                """
+                SELECT digest_sha256, size_bytes, scan_status,
+                       json_extract(metadata_json, '$.status') AS processing_status
+                FROM asset_revisions
+                WHERE asset_id = ? AND revision = ?
+                """,
+                (asset_id, revision),
+            ).fetchone()
+            if target is None:
+                raise AssetReplacementStateError(f"revision {revision} does not exist")
+            if target["processing_status"] != "ready" or target["scan_status"] == "quarantined":
+                raise AssetReplacementStateError(
+                    f"revision {revision} was not processed successfully and cannot be restored"
+                )
+            digest = str(target["digest_sha256"])
+            original = self.object_root / digest[:2] / digest
+            if not original.is_file() or original.stat().st_size != int(target["size_bytes"]):
+                raise AssetReplacementStateError(
+                    f"the original file of revision {revision} is missing"
+                )
+            connection.execute(
+                """
+                UPDATE assets
+                SET current_revision = ?, status = 'ready', error = NULL,
+                    replacement_error = NULL, metadata_revision = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (revision, current_metadata_revision + 1, occurred_at, asset_id),
+            )
+            _insert_audit(
+                connection,
+                actor=actor,
+                action="asset.revert",
+                target=asset_id,
+                occurred_at=occurred_at,
+                context={
+                    "role": role.value,
+                    "project_id": project_id,
+                    "previous_revision": row["current_revision"],
+                    "restored_revision": revision,
+                    "previous_metadata_revision": current_metadata_revision,
+                },
+            )
+            connection.commit()
+        return self.get_asset(asset_id)
+
+    def _validate_upload(
+        self,
+        original_filename: str,
+        media_type: str,
+        total_bytes: int,
+        expected_sha256: str | None,
+    ) -> None:
+        _validate_filename(original_filename)
+        if media_type not in ALLOWED_MEDIA_TYPES:
+            raise AssetUploadError(f"media type is not allowed: {media_type}")
+        guessed_type, _ = mimetypes.guess_type(original_filename)
+        if guessed_type is not None and guessed_type != media_type:
+            raise AssetUploadError(
+                f"declared media type {media_type} does not match filename type {guessed_type}"
+            )
+        if total_bytes <= 0 or total_bytes > self.config.asset_max_bytes:
+            raise AssetUploadError(
+                f"asset size must be between 1 and {self.config.asset_max_bytes} bytes"
+            )
+        if expected_sha256 is not None and (
+            len(expected_sha256) != 64
+            or any(character not in "0123456789abcdef" for character in expected_sha256)
+        ):
+            raise AssetUploadError("expected SHA-256 must be 64 lowercase hexadecimal characters")
+
+    def _reserve_temp(self, upload_id: str) -> Path:
+        temp_path = self.upload_root / f"{upload_id}.part"
+        descriptor = os.open(temp_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        os.close(descriptor)
+        return temp_path
+
+    def _check_quota(self, connection: sqlite3.Connection, total_bytes: int) -> None:
+        used_bytes = int(
+            connection.execute(
+                """
+                SELECT COALESCE(SUM(size_bytes), 0)
+                FROM (
+                    SELECT digest_sha256, MAX(size_bytes) AS size_bytes
+                    FROM asset_revisions
+                    GROUP BY digest_sha256
+                )
+                """
+            ).fetchone()[0]
+        )
+        reserved_bytes = int(
+            connection.execute(
+                """
+                SELECT COALESCE(SUM(total_bytes), 0)
+                FROM asset_uploads
+                WHERE state = 'active'
+                """
+            ).fetchone()[0]
+        )
+        if (
+            used_bytes + self._derived_bytes() + reserved_bytes + total_bytes
+            > self.config.asset_store_quota_bytes
+        ):
+            raise AssetUploadError("managed asset-store quota would be exceeded")
 
     def append(
         self,
@@ -444,9 +756,13 @@ class AssetUploadService:
                 (asset_id,),
             ).fetchone()
             if row is None:
-                raise AssetUploadError("asset does not exist")
+                raise AssetNotFoundError("asset does not exist")
             usage = _load_usage(connection)
-        return self._with_diagnostics(_stored_asset(row), usage=usage)
+            revisions = _revision_summaries(connection, "r.asset_id = ?", (asset_id,))
+        return self._with_diagnostics(
+            replace(_stored_asset(row), revisions=revisions.get(asset_id, ())),
+            usage=usage,
+        )
 
     def list_assets(
         self,
@@ -481,9 +797,15 @@ class AssetUploadService:
                 (project_id,),
             ).fetchall()
             usage = _load_usage(connection)
+            revisions = _revision_summaries(connection, "a.project_id = ?", (project_id,))
         draft = self.repository.get_revision(project_id).draft
         return tuple(
-            self._with_diagnostics(_stored_asset(row), draft=draft, usage=usage) for row in rows
+            self._with_diagnostics(
+                replace(_stored_asset(row), revisions=revisions.get(str(row["id"]), ())),
+                draft=draft,
+                usage=usage,
+            )
+            for row in rows
         )
 
     def update_metadata(
@@ -617,6 +939,14 @@ class AssetUploadService:
                             "UPDATE assets SET status = 'failed', error = ? WHERE id = ?",
                             (cancel_message, asset_id),
                         )
+                if row["pending_revision"] is not None and not _revision_exists(
+                    connection, asset_id, int(row["pending_revision"])
+                ):
+                    connection.execute(
+                        "UPDATE assets SET pending_revision = NULL, replacement_error = ? "
+                        "WHERE id = ?",
+                        (cancel_message, asset_id),
+                    )
                 connection.execute(
                     """
                     UPDATE assets
@@ -918,16 +1248,36 @@ class AssetUploadService:
     ) -> None:
         digest = _sha256_file(temp_path)
         expected = row["expected_sha256"]
+        asset_id = str(row["asset_id"])
+        pending = connection.execute(
+            "SELECT pending_revision FROM assets WHERE id = ?",
+            (asset_id,),
+        ).fetchone()
+        pending_revision = (
+            int(pending["pending_revision"])
+            if pending is not None and pending["pending_revision"] is not None
+            else None
+        )
         if expected is not None and str(expected) != digest:
             error = "uploaded content SHA-256 does not match expected digest"
             connection.execute(
                 "UPDATE asset_uploads SET state = 'failed', error = ? WHERE id = ?",
                 (error, upload_id),
             )
-            connection.execute(
-                "UPDATE assets SET status = 'failed', error = ?, updated_at = ? WHERE id = ?",
-                (error, occurred_at, str(row["asset_id"])),
-            )
+            if pending_revision is not None:
+                connection.execute(
+                    """
+                    UPDATE assets
+                    SET pending_revision = NULL, replacement_error = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (error, occurred_at, asset_id),
+                )
+            else:
+                connection.execute(
+                    "UPDATE assets SET status = 'failed', error = ?, updated_at = ? WHERE id = ?",
+                    (error, occurred_at, asset_id),
+                )
             temp_path.unlink(missing_ok=True)
             return
         object_path = self.object_root / digest[:2] / digest
@@ -944,15 +1294,17 @@ class AssetUploadService:
             "status": "unavailable",
             "reason": "media processing has not completed",
         }
+        revision = pending_revision if pending_revision is not None else 1
         connection.execute(
             """
             INSERT INTO asset_revisions(
                 asset_id, revision, digest_sha256, size_bytes, media_type,
                 original_filename, scan_status, metadata_json, created_at
-            ) VALUES (?, 1, ?, ?, ?, ?, 'unavailable', ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, 'unavailable', ?, ?)
             """,
             (
-                str(row["asset_id"]),
+                asset_id,
+                revision,
                 digest,
                 int(row["total_bytes"]),
                 str(row["media_type"]),
@@ -961,14 +1313,20 @@ class AssetUploadService:
                 occurred_at,
             ),
         )
-        connection.execute(
-            """
-            UPDATE assets
-            SET status = 'uploading', current_revision = 1, error = NULL, updated_at = ?
-            WHERE id = ?
-            """,
-            (occurred_at, str(row["asset_id"])),
-        )
+        if pending_revision is None:
+            connection.execute(
+                """
+                UPDATE assets
+                SET status = 'uploading', current_revision = 1, error = NULL, updated_at = ?
+                WHERE id = ?
+                """,
+                (occurred_at, asset_id),
+            )
+        else:
+            connection.execute(
+                "UPDATE assets SET updated_at = ? WHERE id = ?",
+                (occurred_at, asset_id),
+            )
         connection.execute(
             """
             UPDATE asset_uploads
@@ -983,10 +1341,8 @@ class AssetUploadService:
             self._process_asset(asset_id, occurred_at=occurred_at)
 
     def _process_asset(self, asset_id: str, *, occurred_at: str) -> None:
-        asset = self.get_asset(asset_id)
-        if asset.digest_sha256 is None:
-            raise AssetUploadError("asset has no finalized content")
-        object_path = self.object_root / asset.digest_sha256[:2] / asset.digest_sha256
+        revision, digest, media_type, replacement = self._processing_target(asset_id)
+        object_path = self.object_root / digest[:2] / digest
         scan_status = "unavailable"
         clamscan = shutil.which("clamscan")
         if clamscan is not None:
@@ -1001,6 +1357,8 @@ class AssetUploadService:
             except (OSError, subprocess.TimeoutExpired) as error:
                 self._finish_processing(
                     asset_id=asset_id,
+                    revision=revision,
+                    replacement=replacement,
                     status="failed",
                     scan_status="unavailable",
                     metadata={"status": "failed"},
@@ -1013,6 +1371,8 @@ class AssetUploadService:
             elif scan.returncode == 1:
                 self._finish_processing(
                     asset_id=asset_id,
+                    revision=revision,
+                    replacement=replacement,
                     status="quarantined",
                     scan_status="quarantined",
                     metadata={"status": "quarantined"},
@@ -1024,6 +1384,8 @@ class AssetUploadService:
                 diagnostic = _last_diagnostic(scan.stderr or scan.stdout)
                 self._finish_processing(
                     asset_id=asset_id,
+                    revision=revision,
+                    replacement=replacement,
                     status="failed",
                     scan_status="unavailable",
                     metadata={"status": "failed"},
@@ -1045,8 +1407,8 @@ class AssetUploadService:
                 metadata["loudness_status"] = "not_applicable"
             metadata["artifacts"] = self._generate_artifacts(
                 source=object_path,
-                digest=asset.digest_sha256,
-                media_type=asset.media_type,
+                digest=digest,
+                media_type=media_type,
                 has_audio=bool(metadata["audio_codecs"]),
             )
             metadata["status"] = "ready"
@@ -1058,6 +1420,8 @@ class AssetUploadService:
         ) as error:
             self._finish_processing(
                 asset_id=asset_id,
+                revision=revision,
+                replacement=replacement,
                 status="failed",
                 scan_status=scan_status,
                 metadata={"status": "failed"},
@@ -1067,6 +1431,8 @@ class AssetUploadService:
             return
         self._finish_processing(
             asset_id=asset_id,
+            revision=revision,
+            replacement=replacement,
             status="ready",
             scan_status=scan_status,
             metadata=metadata,
@@ -1097,6 +1463,16 @@ class AssetUploadService:
             raise AssetUploadError("asset artifact file size is inconsistent")
         return path, media_type
 
+    def current_revision(self, asset_id: str) -> int | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT current_revision FROM assets WHERE id = ?",
+                (asset_id,),
+            ).fetchone()
+        if row is None:
+            raise AssetNotFoundError("asset does not exist")
+        return int(row["current_revision"]) if row["current_revision"] is not None else None
+
     def get_original(self, asset_id: str) -> tuple[StoredAsset, Path]:
         asset = self.get_asset(asset_id)
         if (
@@ -1117,10 +1493,14 @@ class AssetUploadService:
         with self._connect() as connection:
             rows = connection.execute(
                 """
-                SELECT id
-                FROM assets
-                WHERE status = 'uploading' AND current_revision IS NOT NULL
-                ORDER BY created_at, id
+                SELECT a.id
+                FROM assets AS a
+                WHERE (a.status = 'uploading' AND a.current_revision IS NOT NULL)
+                   OR EXISTS (
+                       SELECT 1 FROM asset_revisions AS r
+                       WHERE r.asset_id = a.id AND r.revision = a.pending_revision
+                   )
+                ORDER BY a.created_at, a.id
                 """
             ).fetchall()
         asset_ids = tuple(str(row["id"]) for row in rows)
@@ -1128,52 +1508,125 @@ class AssetUploadService:
             self.process_asset(asset_id, occurred_at=_now_iso())
         return asset_ids
 
+    def _processing_target(self, asset_id: str) -> tuple[int, str, str, bool]:
+        """Return the revision to process: an uploaded replacement first, else the current one."""
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT current_revision, pending_revision FROM assets WHERE id = ?",
+                (asset_id,),
+            ).fetchone()
+            if row is None:
+                raise AssetNotFoundError("asset does not exist")
+            candidates: list[tuple[int, bool]] = []
+            if row["pending_revision"] is not None:
+                candidates.append((int(row["pending_revision"]), True))
+            if row["current_revision"] is not None:
+                candidates.append((int(row["current_revision"]), False))
+            for revision, replacement in candidates:
+                target = connection.execute(
+                    "SELECT digest_sha256, media_type FROM asset_revisions "
+                    "WHERE asset_id = ? AND revision = ?",
+                    (asset_id, revision),
+                ).fetchone()
+                if target is not None:
+                    return (
+                        revision,
+                        str(target["digest_sha256"]),
+                        str(target["media_type"]),
+                        replacement,
+                    )
+        raise AssetUploadError("asset has no finalized content")
+
     def _finish_processing(
         self,
         *,
         asset_id: str,
+        revision: int,
+        replacement: bool,
         status: str,
         scan_status: str,
         metadata: dict[str, object],
         error: str | None,
         occurred_at: str,
     ) -> None:
+        promoted = False
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
+            if replacement:
+                pending = connection.execute(
+                    "SELECT pending_revision, metadata_revision, current_revision "
+                    "FROM assets WHERE id = ?",
+                    (asset_id,),
+                ).fetchone()
+                if pending is None or pending["pending_revision"] != revision:
+                    connection.execute("ROLLBACK")
+                    return
             cursor = connection.execute(
                 """
                 UPDATE asset_revisions
                 SET scan_status = ?, metadata_json = ?
-                WHERE asset_id = ?
-                  AND revision = (
-                      SELECT current_revision FROM assets WHERE id = ?
-                  )
+                WHERE asset_id = ? AND revision = ?
                 """,
                 (
                     scan_status,
                     json.dumps(metadata, separators=(",", ":")),
                     asset_id,
-                    asset_id,
+                    revision,
                 ),
             )
             if cursor.rowcount == 0:
                 raise AssetUploadError("asset revision does not exist")
-            connection.execute(
-                """
-                UPDATE assets
-                SET status = ?, error = ?, updated_at = ?
-                WHERE id = ?
-                """,
-                (status, error, occurred_at, asset_id),
-            )
+            if not replacement:
+                connection.execute(
+                    """
+                    UPDATE assets
+                    SET status = ?, error = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (status, error, occurred_at, asset_id),
+                )
+            elif status == "ready":
+                promoted = True
+                connection.execute(
+                    """
+                    UPDATE assets
+                    SET current_revision = ?, pending_revision = NULL, status = 'ready',
+                        error = NULL, replacement_error = NULL,
+                        metadata_revision = metadata_revision + 1, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (revision, occurred_at, asset_id),
+                )
+            else:
+                # The rejected file never becomes current; drop its revision so it
+                # cannot be restored, and let garbage collection reclaim the bytes.
+                connection.execute(
+                    "DELETE FROM asset_revisions WHERE asset_id = ? AND revision = ?",
+                    (asset_id, revision),
+                )
+                connection.execute(
+                    """
+                    UPDATE assets
+                    SET pending_revision = NULL, replacement_error = ?,
+                        metadata_revision = metadata_revision + 1, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        f"Replacement {status}: {error}" if error else f"Replacement {status}",
+                        occurred_at,
+                        asset_id,
+                    ),
+                )
             connection.commit()
         self.repository.append_audit(
             actor="system:asset_processor",
-            action="asset.process",
+            action="asset.replace.process" if replacement else "asset.process",
             target=asset_id,
             result=status,
             occurred_at=occurred_at,
             authorization_context={
+                "revision": revision,
+                "promoted": promoted,
                 "scan_status": scan_status,
                 "metadata_status": str(metadata.get("status", "unknown")),
             },
@@ -1535,6 +1988,12 @@ def _stored_asset(row: sqlite3.Row) -> StoredAsset:
         trashed_at=str(row["trashed_at"]) if row["trashed_at"] is not None else None,
         trashed_by=str(row["trashed_by"]) if row["trashed_by"] is not None else None,
         purge_after=str(row["purge_after"]) if row["purge_after"] is not None else None,
+        pending_revision=(
+            int(row["pending_revision"]) if row["pending_revision"] is not None else None
+        ),
+        replacement_error=(
+            str(row["replacement_error"]) if row["replacement_error"] is not None else None
+        ),
     )
 
 
@@ -1546,7 +2005,8 @@ def _lifecycle_row(
     row = connection.execute(
         """
         SELECT a.id, a.project_id, a.name, a.status, a.current_revision,
-               a.metadata_revision, a.trashed_at, a.purge_after, p.archived_at
+               a.metadata_revision, a.trashed_at, a.purge_after, a.pending_revision,
+               p.archived_at
         FROM assets AS a
         JOIN projects AS p ON p.id = a.project_id
         WHERE a.id = ?
@@ -1554,8 +2014,144 @@ def _lifecycle_row(
         (asset_id,),
     ).fetchone()
     if row is None or (project_id is not None and str(row["project_id"]) != project_id):
-        raise AssetUploadError("asset does not exist")
+        raise AssetNotFoundError("asset does not exist")
     return cast(sqlite3.Row, row)
+
+
+def _check_editable(row: sqlite3.Row, expected_revision: int) -> int:
+    """Validate that an asset's file can change; return its current metadata revision."""
+    if row["archived_at"] is not None:
+        raise AssetMetadataLockedError("archived project assets cannot be edited")
+    if row["trashed_at"] is not None:
+        raise AssetTrashStateError("restore the asset from the trash before replacing its file")
+    current = int(row["metadata_revision"])
+    if current != expected_revision:
+        raise AssetMetadataConflictError(current)
+    return current
+
+
+def _media_kind(media_type: str) -> str:
+    return media_type.split("/", 1)[0]
+
+
+def _require_same_kind(
+    connection: sqlite3.Connection,
+    row: sqlite3.Row,
+    media_type: str,
+) -> None:
+    """Scenes treat images, video and audio differently, so a replacement keeps its kind."""
+    if row["current_revision"] is None:
+        return
+    current = connection.execute(
+        "SELECT media_type FROM asset_revisions WHERE asset_id = ? AND revision = ?",
+        (str(row["id"]), int(row["current_revision"])),
+    ).fetchone()
+    if current is None:
+        return
+    current_kind = _media_kind(str(current["media_type"]))
+    if _media_kind(media_type) != current_kind:
+        raise AssetUploadError(
+            f"replacement must be {current_kind} media like the current file; "
+            f"{media_type} is a different kind"
+        )
+
+
+def _revision_exists(connection: sqlite3.Connection, asset_id: str, revision: int) -> bool:
+    return (
+        connection.execute(
+            "SELECT 1 FROM asset_revisions WHERE asset_id = ? AND revision = ?",
+            (asset_id, revision),
+        ).fetchone()
+        is not None
+    )
+
+
+def _next_revision(connection: sqlite3.Connection, asset_id: str) -> int:
+    return (
+        int(
+            connection.execute(
+                "SELECT COALESCE(MAX(revision), 0) FROM asset_revisions WHERE asset_id = ?",
+                (asset_id,),
+            ).fetchone()[0]
+        )
+        + 1
+    )
+
+
+def _insert_upload(
+    connection: sqlite3.Connection,
+    *,
+    upload_id: str,
+    asset_id: str,
+    original_filename: str,
+    media_type: str,
+    total_bytes: int,
+    expected_sha256: str | None,
+    temp_name: str,
+    occurred_at: str,
+) -> None:
+    connection.execute(
+        """
+        INSERT INTO asset_uploads(
+            id, asset_id, original_filename, media_type, total_bytes,
+            expected_sha256, received_bytes, temp_name, state,
+            error, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, 0, ?, 'active', NULL, ?, ?)
+        """,
+        (
+            upload_id,
+            asset_id,
+            original_filename,
+            media_type,
+            total_bytes,
+            expected_sha256,
+            temp_name,
+            occurred_at,
+            occurred_at,
+        ),
+    )
+
+
+def _revision_summaries(
+    connection: sqlite3.Connection,
+    where: str,
+    parameters: tuple[str, ...],
+) -> dict[str, tuple[AssetRevisionSummary, ...]]:
+    rows = connection.execute(
+        f"""
+        SELECT r.asset_id, r.revision, r.digest_sha256, r.size_bytes, r.media_type,
+               r.original_filename, r.scan_status, r.created_at,
+               json_extract(r.metadata_json, '$.status') AS processing_status
+        FROM asset_revisions AS r
+        JOIN assets AS a ON a.id = r.asset_id
+        WHERE {where}
+        ORDER BY r.asset_id, r.revision DESC
+        """,
+        parameters,
+    ).fetchall()
+    grouped: dict[str, list[AssetRevisionSummary]] = {}
+    for row in rows:
+        status: Literal["ready", "processing", "failed", "quarantined"]
+        if row["scan_status"] == "quarantined" or row["processing_status"] == "quarantined":
+            status = "quarantined"
+        elif row["processing_status"] == "ready":
+            status = "ready"
+        elif row["processing_status"] == "failed":
+            status = "failed"
+        else:
+            status = "processing"
+        grouped.setdefault(str(row["asset_id"]), []).append(
+            AssetRevisionSummary(
+                revision=int(row["revision"]),
+                digest_sha256=str(row["digest_sha256"]),
+                size_bytes=int(row["size_bytes"]),
+                media_type=str(row["media_type"]),
+                original_filename=str(row["original_filename"]),
+                status=status,
+                created_at=str(row["created_at"]),
+            )
+        )
+    return {key: tuple(value) for key, value in grouped.items()}
 
 
 def _load_usage(connection: sqlite3.Connection) -> _AssetUsage:

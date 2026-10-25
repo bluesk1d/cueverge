@@ -1004,8 +1004,25 @@ export interface AssetRecord {
   removal_blockers: string[];
   /** Reasons a trashed asset is kept, such as a published release kept for rollback. */
   purge_blockers: string[];
+  /** File revision reserved by a replacement that has not become current yet. */
+  pending_revision: number | null;
+  replacement_status: "uploading" | "processing" | null;
+  /** Why the most recent replacement was discarded; the current file stayed in use. */
+  replacement_error: string | null;
+  /** File history, newest first. */
+  revisions: AssetRevisionRecord[];
   created_at: string;
   updated_at: string;
+}
+
+export interface AssetRevisionRecord {
+  revision: number;
+  digest_sha256: string;
+  size_bytes: number;
+  media_type: string;
+  original_filename: string;
+  status: "ready" | "processing" | "failed" | "quarantined";
+  created_at: string;
 }
 
 export interface AssetPurgeRecord {
@@ -2548,11 +2565,17 @@ export async function getImageAssetLibrary(): Promise<AssetRecord[]> {
   return request<AssetRecord[]>("/api/gui/v1/assets/image-library");
 }
 
+/**
+ * Pass the asset's current revision whenever it is known: replacing an asset's
+ * file keeps its ID, and only revision-qualified URLs are cached as immutable.
+ */
 export function assetArtifactUrl(
   assetId: string,
   kind: "review" | "thumbnail" | "waveform",
+  revision?: number | null,
 ): string {
-  return `/api/gui/v1/assets/${encodeURIComponent(assetId)}/artifacts/${kind}`;
+  const base = `/api/gui/v1/assets/${encodeURIComponent(assetId)}/artifacts/${kind}`;
+  return revision ? `${base}?revision=${revision}` : base;
 }
 
 export async function updateAssetMetadata(
@@ -2585,7 +2608,10 @@ export async function getTrashedAssets(projectId: string): Promise<AssetRecord[]
   );
 }
 
-function assetLifecyclePath(asset: AssetRecord, action: "trash" | "restore" | "purge"): string {
+function assetLifecyclePath(
+  asset: AssetRecord,
+  action: "trash" | "restore" | "purge" | "replacements" | "replace-from" | "revert",
+): string {
   return `/api/gui/v1/projects/${encodeURIComponent(asset.project_id)}/assets/${encodeURIComponent(asset.id)}/${action}`;
 }
 
@@ -2626,6 +2652,59 @@ export async function purgeAsset(
   );
 }
 
+export async function revertAssetRevision(
+  asset: AssetRecord,
+  revision: number,
+): Promise<AssetRecord> {
+  return request<AssetRecord>(
+    assetLifecyclePath(asset, "revert"),
+    {
+      method: "POST",
+      headers: { ...mutationHeaders(), "If-Match": `"${asset.metadata_revision}"` },
+      body: JSON.stringify({ revision }),
+    },
+    true,
+  );
+}
+
+export async function replaceAssetFromAsset(
+  asset: AssetRecord,
+  sourceAssetId: string,
+): Promise<AssetRecord> {
+  return request<AssetRecord>(
+    assetLifecyclePath(asset, "replace-from"),
+    {
+      method: "POST",
+      headers: { ...mutationHeaders(), "If-Match": `"${asset.metadata_revision}"` },
+      body: JSON.stringify({ source_asset_id: sourceAssetId }),
+    },
+    true,
+  );
+}
+
+/** Upload a new file for an existing asset; scenes keep their placement and follow it. */
+export async function replaceAssetFile(
+  asset: AssetRecord,
+  file: File,
+  onProgress: (receivedBytes: number) => void,
+): Promise<AssetUploadRecord> {
+  const upload = await request<AssetUploadRecord>(
+    assetLifecyclePath(asset, "replacements"),
+    {
+      method: "POST",
+      headers: { ...mutationHeaders(), "If-Match": `"${asset.metadata_revision}"` },
+      body: JSON.stringify({
+        original_filename: file.name,
+        media_type: file.type || "application/octet-stream",
+        total_bytes: file.size,
+        expected_sha256: null,
+      }),
+    },
+    true,
+  );
+  return sendAssetChunks(upload, file, onProgress);
+}
+
 export async function placeAsset(
   projectId: string,
   projectRevision: number,
@@ -2648,7 +2727,7 @@ export async function uploadAsset(
   file: File,
   onProgress: (receivedBytes: number) => void,
 ): Promise<AssetUploadRecord> {
-  let upload = await request<AssetUploadRecord>(
+  const upload = await request<AssetUploadRecord>(
     `/api/gui/v1/projects/${encodeURIComponent(projectId)}/assets/uploads`,
     {
       method: "POST",
@@ -2662,6 +2741,15 @@ export async function uploadAsset(
       }),
     },
   );
+  return sendAssetChunks(upload, file, onProgress);
+}
+
+async function sendAssetChunks(
+  initial: AssetUploadRecord,
+  file: File,
+  onProgress: (receivedBytes: number) => void,
+): Promise<AssetUploadRecord> {
+  let upload = initial;
   while (upload.received_bytes < file.size) {
     const chunk = file.slice(
       upload.received_bytes,

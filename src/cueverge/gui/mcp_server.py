@@ -90,6 +90,7 @@ from cueverge.gui.lighting_preview import (
 from cueverge.gui.mapper_export import MapperExportError
 from cueverge.gui.mcp_authoring import (
     MAX_ASSET_RESULTS,
+    MAX_ASSET_REVISION_RESULTS,
     MAX_MCP_PAYLOAD_BYTES,
     MAX_TIMELINE_RANGE_MS,
     McpAuthoringError,
@@ -1686,6 +1687,7 @@ def create_mcp_app(services: GuiServices) -> Starlette:
                     "scene_output_removal": True,
                     "media_only_scenes": True,
                     "asset_trash": True,
+                    "asset_replacement": True,
                     "geometry_editing": False,
                     "live_media_rendering": False,
                 },
@@ -1735,6 +1737,34 @@ def create_mcp_app(services: GuiServices) -> Starlette:
                     "trash_asset": "trash_asset",
                     "restore_asset": "restore_asset",
                     "asset_trash": "list_trashed_assets",
+                    "replace_asset_from_asset": "replace_asset_from_asset",
+                    "revert_asset_revision": "revert_asset_revision",
+                },
+                "asset_replacement": {
+                    "read_tool": "list_asset_metadata",
+                    "replace_from_asset_tool": "replace_asset_from_asset",
+                    "revert_tool": "revert_asset_revision",
+                    "edit_scope": "direct_edit",
+                    "revision_argument": "metadata_revision",
+                    "keeps": [
+                        "asset ID",
+                        "scene media placements",
+                        "timeline layers and compositions",
+                        "name and governance metadata",
+                    ],
+                    "follows_replacement": [
+                        "current draft",
+                        "previews and bakes",
+                        "next publication",
+                    ],
+                    "unchanged_by_replacement": "already published and rollback releases",
+                    "same_media_kind_required": True,
+                    "file_upload": "gui_or_http_only",
+                    "http_upload": "POST /api/gui/v1/projects/{project_id}/assets/"
+                    "{asset_id}/replacements, then PUT /api/gui/v1/assets/uploads/{upload_id}",
+                    "failed_replacement": "discarded; the current revision stays in use",
+                    "ui_workflow": "Show > Assets > Replace file; Show > Assets > File history",
+                    "hardware_commands_sent": False,
                 },
                 "asset_lifecycle": {
                     "read_tool": "list_asset_metadata",
@@ -2294,6 +2324,10 @@ def create_mcp_app(services: GuiServices) -> Starlette:
                     "name": asset.name,
                     "status": asset.status,
                     "metadata_revision": asset.metadata_revision,
+                    "current_revision": asset.current_revision,
+                    "replacement_status": asset.replacement_status,
+                    "replacement_error": asset.replacement_error,
+                    "revisions": _asset_revisions_result(asset),
                     "media_type": asset.media_type,
                     "size_bytes": asset.size_bytes,
                     "owner": asset.owner,
@@ -2407,6 +2441,87 @@ def create_mcp_app(services: GuiServices) -> Starlette:
             "metadata_revision": asset.metadata_revision,
             "hardware_commands_sent": False,
         }
+
+    @tool()
+    def replace_asset_from_asset(
+        asset_id: str,
+        source_asset_id: str,
+        metadata_revision: int,
+    ) -> dict[str, JsonValue]:
+        """Replace an asset's file with another ready asset's file (direct_edit).
+
+        Use when an edited version was uploaded as a separate asset. The target
+        keeps its ID, name and metadata, so every scene placement, timeline layer
+        and composition that uses it switches to the new file; already published
+        releases do not change. Both assets must be the same media kind. The
+        source asset is unchanged (trash it afterwards if unused). Pass
+        metadata_revision of the target from list_asset_metadata. File uploads
+        themselves are GUI/HTTP-only. No publish, apply or hardware commands.
+        """
+        token = _authorize(services, McpScope.DIRECT_EDIT)
+        try:
+            asset = services.asset_upload.replace_from_asset(
+                project_id=token.project_id,
+                asset_id=asset_id,
+                source_asset_id=source_asset_id,
+                expected_revision=metadata_revision,
+                actor=token.username,
+                role=_token_role(services, token),
+                occurred_at=_now_iso(),
+            )
+        except AssetUploadError as error:
+            raise ToolError(_asset_lifecycle_message(error)) from error
+        _audit(
+            services,
+            token,
+            "mcp.asset.replace",
+            asset_id,
+            "success",
+            details={
+                "source_asset_id": source_asset_id,
+                "current_revision": asset.current_revision,
+                "metadata_revision": asset.metadata_revision,
+            },
+        )
+        return _replaced_asset_result(asset)
+
+    @tool()
+    def revert_asset_revision(
+        asset_id: str,
+        revision: int,
+        metadata_revision: int,
+    ) -> dict[str, JsonValue]:
+        """Make an earlier file revision of an asset current again (direct_edit).
+
+        Choose a ready entry from list_asset_metadata revisions; every scene that
+        uses the asset switches back to that file. Refused while a replacement is
+        uploading or processing. No publish, apply or hardware commands.
+        """
+        token = _authorize(services, McpScope.DIRECT_EDIT)
+        try:
+            asset = services.asset_upload.revert_revision(
+                project_id=token.project_id,
+                asset_id=asset_id,
+                revision=revision,
+                expected_revision=metadata_revision,
+                actor=token.username,
+                role=_token_role(services, token),
+                occurred_at=_now_iso(),
+            )
+        except AssetUploadError as error:
+            raise ToolError(_asset_lifecycle_message(error)) from error
+        _audit(
+            services,
+            token,
+            "mcp.asset.revert",
+            asset_id,
+            "success",
+            details={
+                "current_revision": asset.current_revision,
+                "metadata_revision": asset.metadata_revision,
+            },
+        )
+        return _replaced_asset_result(asset)
 
     @tool()
     def get_timeline_range(
@@ -3154,6 +3269,37 @@ def _trashed_asset_result(asset: StoredAsset) -> dict[str, JsonValue]:
         "trashed_by": asset.trashed_by,
         "purge_after": asset.purge_after,
         "purge_blockers": list(asset.purge_blockers),
+    }
+
+
+def _asset_revisions_result(asset: StoredAsset) -> list[JsonValue]:
+    return [
+        {
+            "revision": item.revision,
+            "current": item.revision == asset.current_revision,
+            "status": item.status,
+            "original_filename": item.original_filename,
+            "media_type": item.media_type,
+            "size_bytes": item.size_bytes,
+            "created_at": item.created_at,
+        }
+        for item in asset.revisions[:MAX_ASSET_REVISION_RESULTS]
+    ]
+
+
+def _replaced_asset_result(asset: StoredAsset) -> dict[str, JsonValue]:
+    return {
+        "id": asset.id,
+        "name": asset.name,
+        "status": asset.status,
+        "current_revision": asset.current_revision,
+        "metadata_revision": asset.metadata_revision,
+        "original_filename": asset.original_filename,
+        "media_type": asset.media_type,
+        "size_bytes": asset.size_bytes,
+        "draft_usage": list(asset.draft_usage),
+        "revisions": _asset_revisions_result(asset),
+        "hardware_commands_sent": False,
     }
 
 

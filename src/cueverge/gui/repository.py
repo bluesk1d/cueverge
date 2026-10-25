@@ -1267,6 +1267,21 @@ class GuiRepository:
         self._migrate_stage_reference()
         self._migrate_projector_stage_placement()
         self._migrate_asset_trash()
+        self._migrate_asset_replacement()
+
+    def _migrate_asset_replacement(self) -> None:
+        with closing(self._connect()) as connection, connection:
+            asset_columns = {
+                str(row["name"]) for row in connection.execute("PRAGMA table_info(assets)")
+            }
+            if "pending_revision" not in asset_columns:
+                connection.execute("ALTER TABLE assets ADD COLUMN pending_revision INTEGER")
+            if "replacement_error" not in asset_columns:
+                connection.execute("ALTER TABLE assets ADD COLUMN replacement_error TEXT")
+            connection.execute(
+                "INSERT OR IGNORE INTO schema_migrations(version,applied_at) "
+                "VALUES (45,strftime('%Y-%m-%dT%H:%M:%fZ','now'))"
+            )
 
     def _migrate_asset_trash(self) -> None:
         with closing(self._connect()) as connection, connection:
@@ -3030,9 +3045,10 @@ class GuiRepository:
                            original_filename, scan_status, metadata_json, created_at
                     FROM asset_revisions
                     WHERE asset_id = ?
+                      AND revision IS NOT (SELECT pending_revision FROM assets WHERE id = ?)
                     ORDER BY revision
                     """,
-                    (str(asset_row["id"]),),
+                    (str(asset_row["id"]), str(asset_row["id"])),
                 ).fetchall()
                 assets.append(
                     PortableAsset(

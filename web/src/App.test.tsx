@@ -125,7 +125,41 @@ test("navigates across the exact top-level workspaces", async () => {
   vi.spyOn(window, "confirm").mockReturnValue(true);
   vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
     const path = String(input);
-    if (/\/assets\/asset-\d\/(trash|restore|purge)$/.test(path)) {
+    if (path.endsWith("/assets/uploads/upload-replacement")) {
+      lifecycleCalls.push({
+        path,
+        ifMatch: new Headers(init?.headers).get("Upload-Offset"),
+        body: null,
+      });
+      return jsonResponse({
+        id: "upload-replacement",
+        asset_id: "asset-1",
+        total_bytes: 11,
+        received_bytes: 11,
+        state: "completed",
+        error: null,
+        chunk_max_bytes: 1024,
+        asset: {},
+      });
+    }
+    if (/\/assets\/asset-\d\/replacements$/.test(path)) {
+      lifecycleCalls.push({
+        path,
+        ifMatch: new Headers(init?.headers).get("If-Match"),
+        body: init?.body ? JSON.parse(String(init.body)) : null,
+      });
+      return jsonResponse({
+        id: "upload-replacement",
+        asset_id: "asset-1",
+        total_bytes: 11,
+        received_bytes: 0,
+        state: "active",
+        error: null,
+        chunk_max_bytes: 1024,
+        asset: {},
+      });
+    }
+    if (/\/assets\/asset-\d\/(trash|restore|purge|revert)$/.test(path)) {
       lifecycleCalls.push({
         path,
         ifMatch: new Headers(init?.headers).get("If-Match"),
@@ -269,7 +303,7 @@ test("navigates across the exact top-level workspaces", async () => {
           project_id: "project-1",
           name: "Window loop",
           status: "ready",
-          current_revision: 1,
+          current_revision: 2,
           metadata_revision: 2,
           owner: "Projection team",
           license: "Original production",
@@ -320,6 +354,29 @@ test("navigates across the exact top-level workspaces", async () => {
             "Used in this show's current draft: scene \"Ambient\". Remove it there first.",
           ],
           purge_blockers: [],
+          pending_revision: null,
+          replacement_status: null,
+          replacement_error: "Replacement quarantined",
+          revisions: [
+            {
+              revision: 2,
+              digest_sha256: "a".repeat(64),
+              size_bytes: 1048576,
+              media_type: "video/mp4",
+              original_filename: "window-loop.mp4",
+              status: "ready",
+              created_at: "2026-10-14T06:01:00Z",
+            },
+            {
+              revision: 1,
+              digest_sha256: "d".repeat(64),
+              size_bytes: 1000000,
+              media_type: "video/mp4",
+              original_filename: "window-loop-draft.mp4",
+              status: "ready",
+              created_at: "2026-10-13T06:01:00Z",
+            },
+          ],
           created_at: "2026-10-13T06:00:00Z",
           updated_at: "2026-10-13T06:01:00Z",
         },
@@ -533,11 +590,52 @@ test("navigates across the exact top-level workspaces", async () => {
   expect(assetQueries.queryByText("Missing loop")).not.toBeInTheDocument();
   expect(assetQueries.getByText(/Review proxy playback/).closest("video")).toHaveAttribute(
     "src",
-    "/api/gui/v1/assets/asset-1/artifacts/review",
+    "/api/gui/v1/assets/asset-1/artifacts/review?revision=2",
   );
   expect(assetQueries.getByAltText("Waveform for Window loop")).toHaveAttribute(
     "src",
-    "/api/gui/v1/assets/asset-1/artifacts/waveform",
+    "/api/gui/v1/assets/asset-1/artifacts/waveform?revision=2",
+  );
+  fireEvent.click(assetQueries.getByText(/Replace file · revision 2/));
+  expect(assetQueries.getByText(/1 use in this draft \(scene "Ambient"\) will switch/)).toBeInTheDocument();
+  expect(assetQueries.getByText("Last replacement was not used: Replacement quarantined")).toBeInTheDocument();
+  const history = assetQueries.getByRole("list", { name: "File history for Window loop" });
+  expect(within(history).getByText(/Revision 2 · window-loop.mp4 .* · current/)).toBeInTheDocument();
+  fireEvent.click(within(history).getByRole("button", { name: "Restore revision 1 of Window loop" }));
+  await waitFor(() =>
+    expect(lifecycleCalls).toContainEqual({
+      path: "/api/gui/v1/projects/project-1/assets/asset-1/revert",
+      ifMatch: '"2"',
+      body: { revision: 1 },
+    }),
+  );
+  const replaceInput = assetQueries.getByLabelText("Replace file for Window loop");
+  expect(replaceInput).toHaveAttribute("accept", "video/*");
+  fireEvent.change(replaceInput, {
+    target: { files: [new File(["still"], "still.png", { type: "image/png" })] },
+  });
+  expect(await assetQueries.findByText("Choose a video file to replace this video.")).toBeInTheDocument();
+  fireEvent.change(replaceInput, {
+    target: { files: [new File(["graded clip"], "window-graded.mp4", { type: "video/mp4" })] },
+  });
+  await waitFor(() =>
+    expect(lifecycleCalls).toContainEqual({
+      path: "/api/gui/v1/projects/project-1/assets/asset-1/replacements",
+      ifMatch: '"2"',
+      body: {
+        original_filename: "window-graded.mp4",
+        media_type: "video/mp4",
+        total_bytes: 11,
+        expected_sha256: null,
+      },
+    }),
+  );
+  await waitFor(() =>
+    expect(lifecycleCalls).toContainEqual({
+      path: "/api/gui/v1/assets/uploads/upload-replacement",
+      ifMatch: "0",
+      body: null,
+    }),
   );
 
   fireEvent.click(screen.getByRole("button", { name: "Operate" }));

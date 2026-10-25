@@ -2225,7 +2225,7 @@ export function TimelineEditor({
                   name: asset.name,
                   kind: assetKindLabel(asset),
                   thumbnail: hasAssetArtifact(asset, "thumbnail")
-                    ? assetArtifactUrl(asset.id, "thumbnail")
+                    ? assetArtifactUrl(asset.id, "thumbnail", asset.current_revision)
                     : null,
                 })),
               ...Object.values(compositions)
@@ -3469,7 +3469,7 @@ export function TimelineEditor({
                       <img
                         alt={`Timeline waveform for ${asset.name}`}
                         className="timeline-track-reference__waveform"
-                        src={assetArtifactUrl(asset.id, "waveform")}
+                        src={assetArtifactUrl(asset.id, "waveform", asset.current_revision)}
                         style={clipEndPercent === null ? undefined : { width: `${clipEndPercent}%` }}
                       />
                     )}
@@ -3477,7 +3477,7 @@ export function TimelineEditor({
                       <img
                         alt={`Head frame of ${asset.name}`}
                         className="timeline-track-reference__thumbnail"
-                        src={assetArtifactUrl(asset.id, "thumbnail")}
+                        src={assetArtifactUrl(asset.id, "thumbnail", asset.current_revision)}
                       />
                     )}
                     {asset && track.kind === "media_output" && (
@@ -7649,9 +7649,9 @@ function CompositionLayoutCanvas({
           const asset = assets.find((candidate) => candidate.id === layer.source_id);
           const image =
             asset && asset.media_type?.startsWith("image/") && hasAssetArtifact(asset, "review")
-              ? assetArtifactUrl(asset.id, "review")
+              ? assetArtifactUrl(asset.id, "review", asset.current_revision)
               : asset && hasAssetArtifact(asset, "thumbnail")
-                ? assetArtifactUrl(asset.id, "thumbnail")
+                ? assetArtifactUrl(asset.id, "thumbnail", asset.current_revision)
                 : null;
           const [left, top, right, bottom] = keyframe.crop;
           return (
@@ -7825,7 +7825,7 @@ function SceneProgramMonitor({
   const fallback = top ? undefined : activeOutputs[0];
   const asset = top ? assets.find((candidate) => candidate.id === top.source_id) : fallback?.asset;
   const name = top?.name ?? (fallback ? `${fallback.asset.name} (${fallback.output.resource ?? fallback.output.id})` : "");
-  const reviewUrl = asset && hasAssetArtifact(asset, "review") ? assetArtifactUrl(asset.id, "review") : null;
+  const reviewUrl = asset && hasAssetArtifact(asset, "review") ? assetArtifactUrl(asset.id, "review", asset.current_revision) : null;
   const isVideo = Boolean(asset && (asset.media_type?.startsWith("video/") || asset.media_type === "image/gif"));
   const sourceSeconds = top
     ? (top.in_point_ms + playheadMs - top.start_ms) / 1000
@@ -7873,7 +7873,7 @@ function SceneProgramMonitor({
             aria-label={`Program monitor showing ${name}`}
             muted
             playsInline
-            poster={asset && hasAssetArtifact(asset, "thumbnail") ? assetArtifactUrl(asset.id, "thumbnail") : undefined}
+            poster={asset && hasAssetArtifact(asset, "thumbnail") ? assetArtifactUrl(asset.id, "thumbnail", asset.current_revision) : undefined}
             preload="auto"
             src={reviewUrl}
           />
@@ -8132,7 +8132,7 @@ function EditorialAudioChannel({
         aria-label={`Editorial audio proxy for ${source.name}`}
         preload="auto"
         ref={audioRef}
-        src={assetArtifactUrl(source.asset.id, "review")}
+        src={assetArtifactUrl(source.asset.id, "review", source.asset.current_revision)}
       />
       <div>
         <strong>{source.name}</strong>
@@ -8145,7 +8145,7 @@ function EditorialAudioChannel({
         {hasAssetArtifact(source.asset, "waveform") ? (
           <img
             alt={`Editorial waveform for ${source.asset.name}`}
-            src={assetArtifactUrl(source.asset.id, "waveform")}
+            src={assetArtifactUrl(source.asset.id, "waveform", source.asset.current_revision)}
           />
         ) : (
           <small>Waveform unavailable</small>

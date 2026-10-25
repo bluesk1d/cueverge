@@ -556,6 +556,31 @@ actual render/playback output. Package-relative media used outside the managed
 artifact workflow must also exist beneath the media agent's private asset
 root; importing a project JSON file does not copy those files.
 
+#### Replace an asset's file
+
+After seeing how a clip or image renders, you often need to edit the source
+file (color grade, crop, retime) and swap it in. Replacing keeps the asset's
+ID, so you do not redo placement, timing, effects, timeline layers, or
+compositions:
+
+1. Edit the file in your media tool and save it as a new file of the same kind
+   (image for image, video for video, audio for audio).
+2. On the asset card open **Replace file** and choose **Upload edited file**
+   (designer, publisher, or administrator). The panel lists every use in the
+   current draft that will switch to the new file.
+3. Wait for processing. The current file stays in use until the new one is
+   scanned and processed. If processing fails or the file is quarantined, the
+   replacement is discarded, the card says why, and nothing changes.
+4. When it is ready, every scene, preview, and bake that uses the asset shows
+   the new file, and so does the next publication. Releases that are already
+   published or kept for rollback keep the exact file they were published with.
+
+If you already uploaded the edited file as its own asset, choose it under **Or
+use an uploaded asset** and select **Use this file**. No bytes are copied, and
+you can move the extra asset to the trash afterwards. **File history** lists
+every revision; **Restore** makes an earlier revision current again. Choosing a
+new file while an earlier replacement upload never finished restarts it.
+
 #### Remove assets
 
 Each asset card shows where the current draft uses it (scenes, timeline media

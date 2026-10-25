@@ -318,10 +318,10 @@ Managed asset identity and binary revision are separate:
   revision containing its digest, size, media type, original filename, scan
   result, extracted metadata, and derived-artifact profile.
 - A project draft records `asset_bindings` in editor metadata from each asset
-  UUID to the selected asset revision. Compilers and publishers resolve that
-  binding, never whichever revision happens to be current later. Historical
-  drafts therefore remain reproducible, while runtime documents receive only
-  staged package-relative media paths.
+  UUID to the revision that was current when it was placed. This is a
+  placement record only: drafts, previews, bakes, and new publications resolve
+  the asset's **current** revision, so replacing a file updates every use
+  without editing the draft.
 - Published and rollback releases pin exact asset revision and digest pairs.
   Replacing an authoring asset never mutates an existing release.
 
@@ -333,12 +333,14 @@ the relink is audited. A candidate with different bytes is not a relink and
 must enter the replacement workflow. Browser-supplied paths are never stored.
 
 Replace creates and processes a new immutable revision under the same asset
-UUID. The prior revision remains addressable. After processing succeeds, the
-user may explicitly update the current project draft's binding in the same
-authoring transaction. No other project, historical draft, published release,
-or rollback release follows the replacement automatically. If the replacement
-fails or is quarantined, the current binding does not move. “Version as new
-asset” instead creates a new UUID and leaves all references unchanged.
+UUID, uploaded directly or taken from another ready asset of the same media
+kind. The prior revision stays current until processing succeeds, and then the
+new revision becomes current atomically. Every use in the draft follows without
+editing it. Published and rollback releases do not change. If the replacement
+fails or is quarantined, its revision is discarded and the current revision
+does not move. Any earlier processed revision can be made current again
+(revert). “Version as new asset” instead creates a new UUID and leaves all
+references unchanged.
 
 Removal is a soft-delete operation. It is rejected while the asset is in live
 use: referenced by the current draft of any project (scenes, timeline layers,

@@ -1380,6 +1380,34 @@ class AssetSceneReferenceResponse(GuiModel):
     output_id: str | None
 
 
+class BeginAssetReplacementRequest(GuiModel):
+    original_filename: str = Field(min_length=1, max_length=255)
+    media_type: str = Field(min_length=1, max_length=200)
+    total_bytes: int = Field(gt=0)
+    expected_sha256: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+    )
+
+
+class ReplaceAssetFromAssetRequest(GuiModel):
+    source_asset_id: str = Field(min_length=1)
+
+
+class RevertAssetRevisionRequest(GuiModel):
+    revision: int = Field(ge=1)
+
+
+class AssetRevisionResponse(GuiModel):
+    revision: int = Field(ge=1)
+    digest_sha256: str
+    size_bytes: int = Field(ge=0)
+    media_type: str
+    original_filename: str
+    status: Literal["ready", "processing", "failed", "quarantined"]
+    created_at: str
+
+
 class UpdateAssetMetadataRequest(GuiModel):
     owner: str | None = Field(default=None, max_length=200)
     license: str | None = Field(default=None, max_length=500)
@@ -1477,6 +1505,10 @@ class AssetResponse(GuiModel):
     purge_after: str | None = None
     removal_blockers: tuple[str, ...] = ()
     purge_blockers: tuple[str, ...] = ()
+    pending_revision: int | None = None
+    replacement_status: Literal["uploading", "processing"] | None = None
+    replacement_error: str | None = None
+    revisions: tuple[AssetRevisionResponse, ...] = ()
     created_at: str
     updated_at: str
 

@@ -904,3 +904,309 @@ def test_draft_usage_reports_scenes_and_editor_data_but_not_stale_bindings() -> 
         "timeline media layers",
     )
     assert asset_upload_module._draft_usage(document, "asset-2") == ()
+
+
+def _png(color: tuple[int, int, int], size: tuple[int, int] = (8, 6)) -> bytes:
+    output = BytesIO()
+    Image.new("RGB", size, color).save(output, format="PNG")
+    return output.getvalue()
+
+
+def _ready_png(
+    service: AssetUploadService,
+    project_id: str,
+    name: str,
+    content: bytes,
+) -> str:
+    asset, upload = service.begin(
+        project_id=project_id,
+        name=name,
+        original_filename=f"{name}.png",
+        media_type="image/png",
+        total_bytes=len(content),
+        expected_sha256=None,
+        actor="admin",
+        role=Role.ADMINISTRATOR,
+        occurred_at="2026-10-25T10:00:00Z",
+    )
+    service.append(
+        upload_id=upload.id,
+        offset=0,
+        chunk=content,
+        actor="admin",
+        role=Role.ADMINISTRATOR,
+        occurred_at="2026-10-25T10:00:01Z",
+    )
+    service.process_asset(asset.id, occurred_at="2026-10-25T10:00:02Z")
+    ready = service.get_asset(asset.id)
+    assert ready.status == "ready", ready.error
+    return asset.id
+
+
+def _upload_replacement(
+    service: AssetUploadService,
+    project_id: str,
+    asset_id: str,
+    content: bytes,
+    *,
+    filename: str = "edited.png",
+    media_type: str = "image/png",
+) -> None:
+    asset = service.get_asset(asset_id)
+    _, upload = service.begin_replacement(
+        project_id=project_id,
+        asset_id=asset_id,
+        expected_revision=asset.metadata_revision,
+        original_filename=filename,
+        media_type=media_type,
+        total_bytes=len(content),
+        expected_sha256=None,
+        actor="designer",
+        role=Role.DESIGNER,
+        occurred_at="2026-10-25T11:00:00Z",
+    )
+    service.append(
+        upload_id=upload.id,
+        offset=0,
+        chunk=content,
+        actor="designer",
+        role=Role.DESIGNER,
+        occurred_at="2026-10-25T11:00:01Z",
+    )
+
+
+def test_replacement_keeps_asset_id_and_promotes_only_after_processing(tmp_path: Path) -> None:
+    repository, service, project_id = _service(
+        tmp_path, asset_max_bytes=64 * 1024, asset_store_quota_bytes=4 * 1024 * 1024
+    )
+    original = _png((200, 20, 20))
+    edited = _png((20, 200, 20))
+    asset_id = _ready_png(service, project_id, "poster", original)
+    before = service.get_asset(asset_id)
+
+    _upload_replacement(service, project_id, asset_id, edited)
+
+    pending = service.get_asset(asset_id)
+    assert pending.id == asset_id
+    assert pending.status == "ready"
+    assert pending.current_revision == 1
+    assert pending.digest_sha256 == before.digest_sha256
+    assert pending.pending_revision == 2
+    assert pending.replacement_status == "processing"
+    assert pending.metadata_revision == before.metadata_revision + 1
+    with pytest.raises(AssetUploadError, match="still processing"):
+        _upload_replacement(service, project_id, asset_id, _png((1, 2, 3)))
+
+    service.process_asset(asset_id, occurred_at="2026-10-25T11:00:02Z")
+
+    replaced = service.get_asset(asset_id)
+    assert replaced.status == "ready", replaced.error
+    assert replaced.current_revision == 2
+    assert replaced.pending_revision is None
+    assert replaced.replacement_status is None
+    assert replaced.name == "poster"
+    assert replaced.original_filename == "edited.png"
+    assert replaced.digest_sha256 == hashlib.sha256(edited).hexdigest()
+    assert [(item.revision, item.status) for item in replaced.revisions] == [
+        (2, "ready"),
+        (1, "ready"),
+    ]
+    path, _ = service.get_artifact(asset_id, "review")
+    assert hashlib.sha256(edited).hexdigest() in str(path)
+
+    with pytest.raises(AssetMetadataConflictError):
+        service.revert_revision(
+            project_id=project_id,
+            asset_id=asset_id,
+            revision=1,
+            expected_revision=before.metadata_revision,
+            actor="designer",
+            role=Role.DESIGNER,
+            occurred_at="2026-10-25T12:00:00Z",
+        )
+    reverted = service.revert_revision(
+        project_id=project_id,
+        asset_id=asset_id,
+        revision=1,
+        expected_revision=replaced.metadata_revision,
+        actor="designer",
+        role=Role.DESIGNER,
+        occurred_at="2026-10-25T12:00:00Z",
+    )
+    assert reverted.current_revision == 1
+    assert reverted.digest_sha256 == before.digest_sha256
+    actions = [event.action for event in repository.list_audit_events()]
+    assert {"asset.replace.begin", "asset.replace.process", "asset.revert"} <= set(actions)
+
+
+def test_replacement_requires_same_media_kind_and_supersedes_unfinished_upload(
+    tmp_path: Path,
+) -> None:
+    _, service, project_id = _service(
+        tmp_path, asset_max_bytes=64 * 1024, asset_store_quota_bytes=4 * 1024 * 1024
+    )
+    asset_id = _ready_png(service, project_id, "poster", _png((200, 20, 20)))
+    asset = service.get_asset(asset_id)
+    with pytest.raises(AssetUploadError, match="must be image media"):
+        service.begin_replacement(
+            project_id=project_id,
+            asset_id=asset_id,
+            expected_revision=asset.metadata_revision,
+            original_filename="clip.mp4",
+            media_type="video/mp4",
+            total_bytes=10,
+            expected_sha256=None,
+            actor="designer",
+            role=Role.DESIGNER,
+            occurred_at="2026-10-25T11:00:00Z",
+        )
+    _, abandoned = service.begin_replacement(
+        project_id=project_id,
+        asset_id=asset_id,
+        expected_revision=asset.metadata_revision,
+        original_filename="first.jpg",
+        media_type="image/jpeg",
+        total_bytes=10,
+        expected_sha256=None,
+        actor="designer",
+        role=Role.DESIGNER,
+        occurred_at="2026-10-25T11:00:00Z",
+    )
+    assert service.get_asset(asset_id).replacement_status == "uploading"
+
+    edited = _png((20, 20, 200))
+    _upload_replacement(service, project_id, asset_id, edited)
+
+    assert service.get_upload(abandoned.id).state == "failed"
+    assert not (service.upload_root / f"{abandoned.id}.part").exists()
+    service.process_asset(asset_id, occurred_at="2026-10-25T11:00:02Z")
+    replaced = service.get_asset(asset_id)
+    assert replaced.current_revision == 2
+    assert replaced.digest_sha256 == hashlib.sha256(edited).hexdigest()
+
+
+def test_failed_replacement_is_discarded_and_current_file_stays(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, service, project_id = _service(
+        tmp_path, asset_max_bytes=64 * 1024, asset_store_quota_bytes=4 * 1024 * 1024
+    )
+    asset_id = _ready_png(service, project_id, "poster", _png((200, 20, 20)))
+    before = service.get_asset(asset_id)
+    _upload_replacement(service, project_id, asset_id, b"not really a png")
+
+    service.process_asset(asset_id, occurred_at="2026-10-25T11:00:02Z")
+
+    after = service.get_asset(asset_id)
+    assert after.status == "ready"
+    assert after.current_revision == 1
+    assert after.digest_sha256 == before.digest_sha256
+    assert after.pending_revision is None
+    assert after.replacement_error is not None
+    assert after.replacement_error.startswith("Replacement failed")
+    assert [item.revision for item in after.revisions] == [1]
+    with pytest.raises(AssetUploadError, match="does not exist"):
+        service.revert_revision(
+            project_id=project_id,
+            asset_id=asset_id,
+            revision=2,
+            expected_revision=after.metadata_revision,
+            actor="designer",
+            role=Role.DESIGNER,
+            occurred_at="2026-10-25T12:00:00Z",
+        )
+
+    edited = _png((20, 200, 20))
+    _upload_replacement(service, project_id, asset_id, edited)
+    service.process_asset(asset_id, occurred_at="2026-10-25T12:00:02Z")
+    retried = service.get_asset(asset_id)
+    assert retried.current_revision == 2
+    assert retried.replacement_error is None
+    assert retried.digest_sha256 == hashlib.sha256(edited).hexdigest()
+
+
+def test_replace_from_asset_reuses_processed_file_without_copying(tmp_path: Path) -> None:
+    _, service, project_id = _service(
+        tmp_path, asset_max_bytes=64 * 1024, asset_store_quota_bytes=4 * 1024 * 1024
+    )
+    target_id = _ready_png(service, project_id, "poster", _png((200, 20, 20)))
+    edited = _png((20, 200, 20))
+    source_id = _ready_png(service, project_id, "poster-edit", edited)
+    target = service.get_asset(target_id)
+    objects_before = sorted(path.name for path in service.object_root.rglob("*") if path.is_file())
+
+    replaced = service.replace_from_asset(
+        project_id=project_id,
+        asset_id=target_id,
+        source_asset_id=source_id,
+        expected_revision=target.metadata_revision,
+        actor="designer",
+        role=Role.DESIGNER,
+        occurred_at="2026-10-25T11:00:00Z",
+    )
+
+    assert replaced.id == target_id
+    assert replaced.name == "poster"
+    assert replaced.status == "ready"
+    assert replaced.current_revision == 2
+    assert replaced.digest_sha256 == hashlib.sha256(edited).hexdigest()
+    assert replaced.metadata is not None and replaced.metadata["status"] == "ready"
+    service.get_artifact(target_id, "review")
+    assert service.get_asset(source_id).current_revision == 1
+    objects_after = sorted(path.name for path in service.object_root.rglob("*") if path.is_file())
+    assert objects_after == objects_before
+    with pytest.raises(AssetUploadError, match="different asset"):
+        service.replace_from_asset(
+            project_id=project_id,
+            asset_id=target_id,
+            source_asset_id=target_id,
+            expected_revision=replaced.metadata_revision,
+            actor="designer",
+            role=Role.DESIGNER,
+            occurred_at="2026-10-25T11:00:00Z",
+        )
+
+
+def test_trash_releases_unfinished_replacement_and_blocks_new_ones(tmp_path: Path) -> None:
+    _, service, project_id = _service(
+        tmp_path, asset_max_bytes=64 * 1024, asset_store_quota_bytes=4 * 1024 * 1024
+    )
+    asset_id = _ready_png(service, project_id, "poster", _png((200, 20, 20)))
+    asset = service.get_asset(asset_id)
+    _, upload = service.begin_replacement(
+        project_id=project_id,
+        asset_id=asset_id,
+        expected_revision=asset.metadata_revision,
+        original_filename="edited.png",
+        media_type="image/png",
+        total_bytes=10,
+        expected_sha256=None,
+        actor="designer",
+        role=Role.DESIGNER,
+        occurred_at="2026-10-25T11:00:00Z",
+    )
+    trashed = service.trash(
+        project_id=project_id,
+        asset_id=asset_id,
+        expected_revision=asset.metadata_revision + 1,
+        actor="designer",
+        role=Role.DESIGNER,
+        occurred_at="2026-10-25T11:01:00Z",
+    )
+    assert trashed.pending_revision is None
+    assert trashed.current_revision == 1
+    assert service.get_upload(upload.id).state == "failed"
+    with pytest.raises(AssetTrashStateError):
+        service.begin_replacement(
+            project_id=project_id,
+            asset_id=asset_id,
+            expected_revision=trashed.metadata_revision,
+            original_filename="edited.png",
+            media_type="image/png",
+            total_bytes=10,
+            expected_sha256=None,
+            actor="designer",
+            role=Role.DESIGNER,
+            occurred_at="2026-10-25T11:02:00Z",
+        )

@@ -935,6 +935,62 @@ and installation photos; a file is deleted only when no asset revision or photo
 references it, and files modified within the last 10 minutes are kept until a
 later sweep. Exports omit trashed assets.
 
+### Asset file replacement over MCP and HTTP
+
+Replacing an asset's file adds a new file revision under the **same asset ID**,
+so scene media outputs, timeline layers, compositions, and presets keep their
+placement and switch to the new file. Drafts, previews, bakes, and the next
+publication use the asset's current revision; already published and rollback
+releases keep the digest they were published with. A replacement must be the
+same media kind (image, video, or audio) as the current file.
+
+`get_capabilities` reports `features.asset_replacement` and an
+`asset_replacement` block (tools, scope, rules, HTTP upload path). Over MCP:
+
+1. `list_asset_metadata` (read) returns `current_revision`,
+   `replacement_status` (`uploading`, `processing`, or null),
+   `replacement_error`, and up to 20 `revisions` (newest first, each with
+   `revision`, `current`, `status`, filename, type, size, and `created_at`).
+2. `replace_asset_from_asset(asset_id, source_asset_id, metadata_revision)`
+   (`direct_edit`) makes another ready asset's current file the next revision of
+   `asset_id`, reusing its processed metadata and review artifacts without
+   copying bytes. The source asset is unchanged.
+3. `revert_asset_revision(asset_id, revision, metadata_revision)`
+   (`direct_edit`) makes an earlier successfully processed revision current.
+
+MCP cannot transfer file bytes. Uploading an edited file uses the GUI
+(**Assets > Replace file**) or HTTP:
+
+- `POST /api/gui/v1/projects/{project_id}/assets/{asset_id}/replacements` with
+  `{"original_filename", "media_type", "total_bytes", "expected_sha256"?}`
+  reserves the next revision and returns an upload. Send chunks with the normal
+  `PUT /api/gui/v1/assets/uploads/{upload_id}` (`Upload-Offset`). After the last
+  chunk the controller scans and processes the file in the background. The
+  revision becomes current only when processing succeeds. A failed or
+  quarantined replacement is discarded and recorded in `replacement_error`.
+  Starting a new replacement cancels an unfinished one; it is refused while a
+  replacement is processing.
+- `POST .../assets/{asset_id}/replace-from` with `{"source_asset_id"}` and
+  `POST .../assets/{asset_id}/revert` with `{"revision"}` mirror the MCP tools.
+
+All three writes are designer-authorized and CSRF-protected, and they require
+`If-Match` with the asset `metadata_revision`. Each one bumps that revision, and
+so does finishing (or discarding) a replacement upload. Errors are
+`409 asset_metadata_conflict`, `409 asset_replacement_state` (busy, already
+current, unprocessed, or missing revision), `409 asset_trash_state`,
+`409 asset_metadata_locked` (archived show), `422 asset_replacement_rejected`
+(different media kind, disallowed type, size, or quota), and `404`. Calls are
+audited as `asset.replace.begin`, `asset.replace.process`, `asset.replace`,
+and `asset.revert`, plus `mcp.asset.replace`/`mcp.asset.revert`. None of them
+sends hardware commands. Trashing an asset cancels an unfinished replacement
+upload. Earlier revisions stay stored until the asset is permanently deleted.
+Exports include completed revisions but not a pending replacement.
+
+Review artifacts (`GET /api/gui/v1/assets/{asset_id}/artifacts/{kind}`) are
+served as immutable only when the request carries `?revision=` equal to the
+current revision; otherwise they are `no-cache`, so browsers never keep showing
+a replaced file.
+
 ### Scene-native LED preview
 
 `get_capabilities.scene_lighting_preview` discovers `preview_scene_lighting`
