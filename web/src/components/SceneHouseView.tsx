@@ -1,47 +1,23 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useState } from "react";
+import { installationPhotoUrl } from "../api";
+import type { AssetRecord } from "../api";
 import {
-  assetArtifactUrl,
-  getInstallationGeometry,
-  getInstallationPhotos,
-  getProjectorMapping,
-  installationPhotoUrl,
-} from "../api";
-import type {
-  AssetRecord,
-  InstallationGeometry,
-  InstallationPhoto,
-  ProjectorMapping,
-} from "../api";
-import { hasAssetArtifact } from "./AssetPreview";
-import {
-  cornerHomography,
-  formatTimecode,
-  homographyMatrix3d,
-  mediaOutputSourceMs,
-} from "../pages/timelineUtils";
+  PHOTO_HEIGHT,
+  PHOTO_WIDTH,
+  SyncedReviewMedia,
+  useFrameWidth,
+  useProjectorSurfaces,
+  WarpedSurface,
+} from "./ProjectorSurfaces";
+import type { ProjectorSurface } from "./ProjectorSurfaces";
+import { formatTimecode, mediaOutputSourceMs } from "../pages/timelineUtils";
 import type { SceneMediaOutputRef } from "../pages/timelineUtils";
 
-const PHOTO_WIDTH = 1000;
-const PHOTO_HEIGHT = 600;
-
-interface SurfacePlacement {
-  key: string;
+interface SurfacePlacement extends ProjectorSurface {
+  placementKey: string;
   output: SceneMediaOutputRef;
   asset: AssetRecord | undefined;
-  surfaceName: string;
-  photoId: string;
-  corners: { x: number; y: number }[];
-  /** Surface-shaped raster the media is fitted into before the corner warp. */
-  rasterWidth: number;
-  rasterHeight: number;
-  homography: number[];
-  nativeWidth: number;
-  nativeHeight: number;
-  orientationDegrees: ProjectorMapping["orientation_degrees"];
-  fitMode: ProjectorMapping["fit_mode"];
 }
-
-const SURFACE_RASTER_WIDTH = 1000;
 
 /** Whole-scene house view: each scene media output's review proxy warped onto its projector surface. */
 export function SceneHouseView({
@@ -57,94 +33,20 @@ export function SceneHouseView({
   playheadMs: number;
   isPlaying: boolean;
 }) {
-  const [photos, setPhotos] = useState<InstallationPhoto[]>([]);
-  const [geometry, setGeometry] = useState<InstallationGeometry[]>([]);
-  const [mappings, setMappings] = useState<Map<string, ProjectorMapping>>(new Map());
-  const [loadError, setLoadError] = useState<string | null>(null);
-  const [loaded, setLoaded] = useState(false);
+  const { photos, geometry, surfaces, loaded, loadError } = useProjectorSurfaces(installationId);
   const [selectedPhotoId, setSelectedPhotoId] = useState<string | null>(null);
-  const [frameWidth, setFrameWidth] = useState(0);
-  const frameRef = useRef<HTMLDivElement | null>(null);
+  const [frameRef, frameWidth] = useFrameWidth<HTMLDivElement>(`${loaded}:${photos.length}`);
 
-  useEffect(() => {
-    let active = true;
-    setLoaded(false);
-    Promise.all([getInstallationPhotos(installationId), getInstallationGeometry(installationId)])
-      .then(async ([photoResult, geometryResult]) => {
-        const surfaces = geometryResult.filter((item) => item.kind === "projector_surface");
-        const results = await Promise.allSettled(surfaces.map((item) => getProjectorMapping(item.id)));
-        if (!active) return;
-        const byGeometry = new Map<string, ProjectorMapping>();
-        results.forEach((result, index) => {
-          if (result.status === "fulfilled") byGeometry.set(surfaces[index].id, result.value);
-        });
-        setPhotos(photoResult);
-        setGeometry(geometryResult);
-        setMappings(byGeometry);
-        setLoadError(null);
-        setLoaded(true);
-      })
-      .catch((error: unknown) => {
-        if (!active) return;
-        setLoadError(error instanceof Error ? error.message : "House view failed to load.");
-        setLoaded(true);
-      });
-    return () => {
-      active = false;
-    };
-  }, [installationId]);
-
-  useEffect(() => {
-    const frame = frameRef.current;
-    if (!frame) return;
-    const observer = new ResizeObserver(([entry]) => setFrameWidth(entry.contentRect.width));
-    observer.observe(frame);
-    setFrameWidth(frame.getBoundingClientRect().width);
-    return () => observer.disconnect();
-  }, [loaded, photos.length]);
-
-  const placements = useMemo(() => {
-    const result: SurfacePlacement[] = [];
-    const seen = new Set<string>();
-    for (const [geometryId, mapping] of mappings) {
-      const output = outputs.find((candidate) => candidate.resource === mapping.resource);
-      if (!output) continue;
-      const surface = geometry.find((item) => item.id === geometryId);
-      const views = mapping.photo_views.length
-        ? mapping.photo_views
-        : surface
-          ? [{ geometry_id: surface.id, photo_id: surface.photo_id, points: surface.points, homography: null }]
-          : [];
-      for (const view of views) {
-        if (!view.photo_id || view.points.length !== 4) continue;
-        const key = `${output.id}:${view.photo_id}:${view.geometry_id}`;
-        if (seen.has(key)) continue;
-        // The drawn surface is the content area: fit media to its apparent shape, then corner-pin it.
-        const rasterWidth = SURFACE_RASTER_WIDTH;
-        const rasterHeight = SURFACE_RASTER_WIDTH / surfaceAspect(view.points);
-        const homography = cornerHomography(rasterWidth, rasterHeight, view.points);
-        if (!homography) continue;
-        seen.add(key);
-        result.push({
-          key,
-          output,
-          asset: output.asset ? assets.find((candidate) => candidate.id === output.asset) : undefined,
-          surfaceName:
-            geometry.find((item) => item.id === view.geometry_id)?.name ?? surface?.name ?? mapping.resource,
-          photoId: view.photo_id,
-          corners: view.points,
-          rasterWidth,
-          rasterHeight,
-          homography,
-          nativeWidth: mapping.native_width,
-          nativeHeight: mapping.native_height,
-          orientationDegrees: mapping.orientation_degrees,
-          fitMode: mapping.fit_mode,
-        });
-      }
-    }
-    return result;
-  }, [assets, geometry, mappings, outputs]);
+  const placements: SurfacePlacement[] = surfaces.flatMap((surface) => {
+    const output = outputs.find((candidate) => candidate.resource === surface.resource);
+    if (!output) return [];
+    return [{
+      ...surface,
+      placementKey: `${output.id}:${surface.photoId}:${surface.geometryId}`,
+      output,
+      asset: output.asset ? assets.find((candidate) => candidate.id === output.asset) : undefined,
+    }];
+  });
 
   const photoId =
     (selectedPhotoId && photos.some((photo) => photo.id === selectedPhotoId) ? selectedPhotoId : null) ??
@@ -161,12 +63,11 @@ export function SceneHouseView({
       item.photo_id === photoId &&
       item.kind === "projector_surface" &&
       !item.hidden &&
-      !visible.some((placement) => placement.key.endsWith(`:${item.id}`)),
+      !visible.some((placement) => placement.geometryId === item.id),
   );
   const unplaced = outputs.filter(
     (output) => output.asset && !placements.some((placement) => placement.output.id === output.id),
   );
-  const frameHeight = (frameWidth * PHOTO_HEIGHT) / PHOTO_WIDTH;
 
   if (!loaded) {
     return <div className="timeline-viewer__empty"><p>Loading installation photos…</p></div>;
@@ -205,19 +106,36 @@ export function SceneHouseView({
       >
         <img alt={`Installation photo ${photo.name}`} src={installationPhotoUrl(photo.id, photo.revision)} />
         {frameWidth > 0 &&
-          visible.map((placement) => (
-            <HouseSurfaceMedia
-              key={placement.key}
-              placement={placement}
-              transform={homographyMatrix3d(placement.homography, frameWidth, frameHeight)}
-              playheadMs={playheadMs}
-              isPlaying={isPlaying}
-            />
-          ))}
+          visible.map((placement) => {
+            const sourceMs = mediaOutputSourceMs(
+              playheadMs,
+              placement.output.startDelayMs,
+              assetDurationMs(placement.asset),
+              placement.output.endBehavior,
+              placement.output.repeatCount,
+            );
+            const label = `${placement.asset?.name ?? placement.output.id} on ${placement.surfaceName}`;
+            return (
+              <WarpedSurface
+                key={placement.placementKey}
+                surface={placement}
+                frameWidth={frameWidth}
+                label={label}
+                hidden={sourceMs === null}
+              >
+                <SyncedReviewMedia
+                  asset={placement.asset}
+                  sourceMs={sourceMs}
+                  playing={isPlaying}
+                  label={label}
+                />
+              </WarpedSurface>
+            );
+          })}
         <svg viewBox={`0 0 ${PHOTO_WIDTH} ${PHOTO_HEIGHT}`} preserveAspectRatio="none" aria-hidden="true">
           {visible.map((placement) => (
             <polygon
-              key={placement.key}
+              key={placement.placementKey}
               className="scene-house-view__outline"
               points={placement.corners.map((point) => `${point.x * PHOTO_WIDTH},${point.y * PHOTO_HEIGHT}`).join(" ")}
             />
@@ -243,7 +161,7 @@ export function SceneHouseView({
                 placement.output.repeatCount,
               );
               return (
-                <span key={placement.key}>
+                <span key={placement.placementKey}>
                   {placement.surfaceName} ← {placement.asset?.name ?? "No media"}
                   {sourceMs === null ? " · not playing yet" : ` · source ${formatTimecode(sourceMs)}`}
                 </span>
@@ -252,7 +170,7 @@ export function SceneHouseView({
           : <span>No scene media is assigned to a projector surface on this photo.</span>}
         {visible.map((placement) => {
           const warning = playbackAspectWarning(placement);
-          return warning ? <small key={`${placement.key}:aspect`} role="note">{warning}</small> : null;
+          return warning ? <small key={`${placement.placementKey}:aspect`} role="note">{warning}</small> : null;
         })}
         {unplaced.length > 0 && (
           <small>
@@ -267,16 +185,6 @@ export function SceneHouseView({
       </figcaption>
     </figure>
   );
-}
-
-/** Apparent width/height of a drawn quad on the 1000×600 photo frame (mean of opposite edges). */
-function surfaceAspect(points: { x: number; y: number }[]): number {
-  const length = (a: { x: number; y: number }, b: { x: number; y: number }) =>
-    Math.hypot((b.x - a.x) * PHOTO_WIDTH, (b.y - a.y) * PHOTO_HEIGHT);
-  const [topLeft, topRight, bottomRight, bottomLeft] = points;
-  const width = (length(topLeft, topRight) + length(bottomLeft, bottomRight)) / 2;
-  const height = (length(topLeft, bottomLeft) + length(topRight, bottomRight)) / 2;
-  return width > 0 && height > 0 ? width / height : 16 / 9;
 }
 
 function playbackAspectWarning(placement: SurfacePlacement): string | null {
@@ -299,73 +207,4 @@ function playbackAspectWarning(placement: SurfacePlacement): string | null {
 function assetDurationMs(asset: AssetRecord | undefined): number {
   const value = asset?.metadata?.duration_ms;
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
-}
-
-function HouseSurfaceMedia({
-  placement,
-  transform,
-  playheadMs,
-  isPlaying,
-}: {
-  placement: SurfacePlacement;
-  transform: string;
-  playheadMs: number;
-  isPlaying: boolean;
-}) {
-  const videoRef = useRef<HTMLVideoElement | null>(null);
-  const { asset, output } = placement;
-  const reviewUrl = asset && hasAssetArtifact(asset, "review") ? assetArtifactUrl(asset.id, "review", asset.current_revision) : null;
-  const isVideo = Boolean(asset && (asset.media_type?.startsWith("video/") || asset.media_type === "image/gif"));
-  const sourceMs = mediaOutputSourceMs(
-    playheadMs,
-    output.startDelayMs,
-    assetDurationMs(asset),
-    output.endBehavior,
-    output.repeatCount,
-  );
-  const sourceSeconds = (sourceMs ?? 0) / 1000;
-  const playing = isPlaying && sourceMs !== null;
-
-  useEffect(() => {
-    const video = videoRef.current;
-    if (!video || !isVideo) return;
-    if (Math.abs(video.currentTime - sourceSeconds) > (playing ? 0.35 : 0.04)) {
-      video.currentTime = sourceSeconds;
-    }
-    if (playing && video.paused) {
-      void video.play().catch(() => undefined);
-    } else if (!playing && !video.paused) {
-      video.pause();
-    }
-  }, [isVideo, playing, sourceSeconds, reviewUrl]);
-
-  const label = `${asset?.name ?? output.id} on ${placement.surfaceName}`;
-  return (
-    <div
-      className={`scene-house-view__surface scene-house-view__surface--${placement.fitMode}`}
-      aria-label={label}
-      style={{
-        width: `${placement.rasterWidth}px`,
-        height: `${placement.rasterHeight}px`,
-        transform,
-        visibility: sourceMs === null ? "hidden" : "visible",
-      }}
-    >
-      {!reviewUrl ? (
-        <span>{asset ? `${asset.name}: no review proxy yet` : "No media assigned"}</span>
-      ) : isVideo ? (
-        <video
-          key={reviewUrl}
-          ref={videoRef}
-          aria-label={label}
-          muted
-          playsInline
-          preload="auto"
-          src={reviewUrl}
-        />
-      ) : (
-        <img alt={label} src={reviewUrl} />
-      )}
-    </div>
-  );
 }

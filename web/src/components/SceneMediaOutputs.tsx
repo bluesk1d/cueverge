@@ -1,16 +1,15 @@
 import { useEffect, useRef, useState } from "react";
 
 import {
-  ApiError,
   assetArtifactUrl,
   AssetRecord,
-  previewSceneMedia,
   ProjectDraftRecord,
-  SceneMediaPreview,
   SceneMediaPreviewOutput,
 } from "../api";
 import { hasAssetArtifact } from "./AssetPreview";
 import { ErrorState } from "./ui";
+import { useSceneMediaPreview } from "./useSceneMediaPreview";
+import type { SceneMediaPreviewState } from "./useSceneMediaPreview";
 
 type Document = ProjectDraftRecord["draft"];
 
@@ -34,63 +33,18 @@ function clock(value: number): string {
  * controller's bake compositor; optional audio uses review proxies in the browser.
  */
 export function SceneMediaOutputs({
-  projectId, revision, document, dirty, sceneId, position, playing, valid, assets,
+  projectId, revision, document, dirty, sceneId, position, playing, valid, assets, state,
 }: {
   projectId: string; revision: number; document?: Document; dirty: boolean; sceneId: string;
   position: number; playing: boolean; valid: boolean; assets: AssetRecord[];
+  /** Shared preview from a parent that also draws these frames on the house photo. */
+  state?: SceneMediaPreviewState;
 }) {
-  const [preview, setPreview] = useState<SceneMediaPreview | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [retry, setRetry] = useState(0);
+  const own = useSceneMediaPreview({
+    projectId, revision, document, dirty, sceneId, position, valid, enabled: !state,
+  });
+  const { preview, error, loading, retry } = state ?? own;
   const [audioEnabled, setAudioEnabled] = useState(false);
-  const latestPosition = useRef(position);
-  latestPosition.current = position;
-
-  useEffect(() => { setPreview(null); }, [sceneId, document]);
-  useEffect(() => {
-    if (!valid) {
-      setPreview(null); setLoading(false);
-      setError("Correct the scene fields to preview media.");
-      return;
-    }
-    let current = true;
-    let pending = false;
-    let previousPosition: number | null = null;
-    let abort = new AbortController();
-    let watchdog: number | undefined;
-    const evaluate = () => {
-      if (!current || pending || previousPosition === latestPosition.current) return;
-      pending = true;
-      const requested = latestPosition.current;
-      previousPosition = requested;
-      abort = new AbortController();
-      setLoading(true);
-      watchdog = window.setTimeout(() => abort.abort(), 15000);
-      previewSceneMedia(projectId, revision, sceneId, requested, dirty ? document : undefined, abort.signal)
-        .then((value) => { if (current) { setPreview(value); setError(null); } })
-        .catch((failure: unknown) => {
-          if (!current) return;
-          if (failure instanceof ApiError && failure.status === 429) {
-            previousPosition = null;
-            return;
-          }
-          setError(abort.signal.aborted ? "Media preview timed out. Try again after checking the controller."
-            : failure instanceof Error ? failure.message : "Media preview failed.");
-        })
-        .finally(() => {
-          window.clearTimeout(watchdog);
-          pending = false;
-          if (current) setLoading(false);
-        });
-    };
-    const timer = window.setTimeout(evaluate, 120);
-    const poll = window.setInterval(evaluate, 250);
-    return () => {
-      current = false; window.clearTimeout(timer); window.clearInterval(poll);
-      window.clearTimeout(watchdog); abort.abort();
-    };
-  }, [projectId, revision, sceneId, document, dirty, valid, retry]);
 
   const outputs = preview?.outputs ?? [];
   const hasAudio = outputs.some((value) => value.audio.length > 0);
@@ -100,7 +54,7 @@ export function SceneMediaOutputs({
       <span>Rendered stills on the scene clock · no device commands</span>
     </header>
     {error && <ErrorState title="Media preview unavailable" description={error} />}
-    {error && <button onClick={() => setRetry((value) => value + 1)}>Retry media preview</button>}
+    {error && <button onClick={retry}>Retry media preview</button>}
     <div className="scene-media-outputs__grid">
       {outputs.map((output) => <MediaOutputCard key={output.output_id} output={output} />)}
     </div>
@@ -132,7 +86,8 @@ function MediaOutputCard({ output }: { output: SceneMediaPreviewOutput }) {
       <strong>{output.output_id}</strong>
       <small>{output.resource}{output.required ? "" : " · optional"}</small>
     </header>
-    <div className="scene-media-output__frame" data-state={output.state}>
+    <div className="scene-media-output__frame" data-state={output.state}
+      style={output.frame ? { aspectRatio: `${output.frame.width} / ${output.frame.height}` } : undefined}>
       {output.frame
         ? <img alt={`${output.output_id} at the preview time`}
           src={`data:${output.frame.media_type};base64,${output.frame.data_base64}`}

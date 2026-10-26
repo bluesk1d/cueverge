@@ -709,3 +709,108 @@ test("a failed preview photo keeps raw frames available and can be retried", asy
   await expect(preview.getByText("Photo unavailable", { exact: true })).toHaveCount(0);
   expect(state.saves).toHaveLength(0);
 });
+
+test("portrait projector frames are shown whole instead of cropped to their top", async ({ page }) => {
+  const state = await sceneRoutes(page);
+  state.document.scenes[0].media = [{ id: "left-window", resource: "projector.demo", asset: null }] as never;
+  const portrait =
+    "iVBORw0KGgoAAAANSUhEUgAAACgAAABICAIAAAALaCBgAAAASUlEQVR4nO3QQREAIAwEMYqa868CEYjBQz99kDWQma2TrIn2iAoGg8FgMBgMBoPBYDAYDAaDwWAwGAwGg5tVckfg/1aDwWBwuweLawLTgm/t9AAAAABJRU5ErkJggg==";
+  await page.route("**/scene-media-preview", (route) => {
+    const body = route.request().postDataJSON();
+    return route.fulfill({ json: {
+      project_id: "demo-project", source_revision: body.source_revision, scene_id: body.scene_id,
+      timestamp_ms: body.timestamp_ms, unsaved: false, hardware_commands_sent: false, limitations: [],
+      outputs: [{
+        output_id: "left-window", resource: "projector.demo", required: true, start_delay_ms: 0,
+        end_behavior: "hold_last_frame", source: null, state: "playing",
+        media_position_ms: 0, media_duration_ms: 1000, audio: [], message: null,
+        frame: { media_type: "image/png", width: 40, height: 72, native_width: 40, native_height: 72, data_base64: portrait },
+      }],
+    } });
+  });
+  await openScenes(page);
+  const frame = page.locator(".scene-media-output__frame").first();
+  const image = frame.getByRole("img", { name: "left-window at the preview time" });
+  await expect(image).toHaveJSProperty("complete", true);
+  const [frameBox, imageBox] = await Promise.all([frame.boundingBox(), image.boundingBox()]);
+  expect(frameBox!.height).toBeGreaterThan(frameBox!.width);
+  expect(imageBox!.y).toBeGreaterThanOrEqual(frameBox!.y - 1);
+  expect(imageBox!.y + imageBox!.height).toBeLessThanOrEqual(frameBox!.y + frameBox!.height + 1);
+  const bottom = await image.evaluate((element) => {
+    const img = element as HTMLImageElement;
+    const rect = img.getBoundingClientRect();
+    const scale = Math.min(rect.width / img.naturalWidth, rect.height / img.naturalHeight);
+    const drawnBottom = rect.top + (rect.height + img.naturalHeight * scale) / 2;
+    return drawnBottom <= img.parentElement!.getBoundingClientRect().bottom + 1;
+  });
+  expect(bottom).toBe(true);
+});
+
+test("the scene preview draws projector frames on their surfaces under the LEDs", async ({ page }) => {
+  const state = await mappedPhotoRoutes(page, 800, 600);
+  state.document.scenes[0].media = [{ id: "left-window", resource: "projector.demo", asset: null }] as never;
+  const corners = [{ x: 0.5, y: 0.3 }, { x: 0.7, y: 0.3 }, { x: 0.7, y: 0.6 }, { x: 0.5, y: 0.6 }];
+  const frame =
+    "iVBORw0KGgoAAAANSUhEUgAAACgAAABICAIAAAALaCBgAAAASUlEQVR4nO3QQREAIAwEMYqa868CEYjBQz99kDWQma2TrIn2iAoGg8FgMBgMBoPBYDAYDAaDwWAwGAwGg5tVckfg/1aDwWBwuweLawLTgm/t9AAAAABJRU5ErkJggg==";
+  await page.route("**/api/gui/v1/**", async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path.endsWith("/geometry")) return route.fulfill({ json: [
+      {
+        id: "aligned-segment", semantic_id: "aligned-segment", photo_id: "alignment-photo",
+        kind: "pixel_segment", name: "Mapped LEDs",
+        points: [{ x: 0.2, y: 0.15 }, { x: 0.3, y: 0.25 }],
+        start_index: 0, pixel_count: 3, direction: "forward", hidden: false,
+      },
+      {
+        id: "front-window", semantic_id: "front-window", photo_id: "alignment-photo",
+        kind: "projector_surface", name: "Front window", points: corners, hidden: false,
+      },
+    ] });
+    if (path.endsWith("/front-window/projector-mapping")) return route.fulfill({ json: {
+      geometry_id: "front-window", resource: "projector.demo", native_width: 1920, native_height: 1080,
+      fit_mode: "stretch", orientation_degrees: 0, photo_views: [],
+    } });
+    if (path.endsWith("/scene-media-preview")) {
+      const body = route.request().postDataJSON();
+      return route.fulfill({ json: {
+        project_id: "demo-project", source_revision: 1, scene_id: body.scene_id,
+        timestamp_ms: body.timestamp_ms, unsaved: false, hardware_commands_sent: false, limitations: [],
+        outputs: [{
+          output_id: "left-window", resource: "projector.demo", required: true, start_delay_ms: 0,
+          end_behavior: "hold_last_frame", state: "playing", media_position_ms: body.timestamp_ms,
+          media_duration_ms: 5000, audio: [], message: null,
+          source: { kind: "composition", composition_id: "overlay", name: "Window overlay", space_kind: "projector_native" },
+          frame: { media_type: "image/png", width: 40, height: 72, native_width: 40, native_height: 72, data_base64: frame },
+        }],
+      } });
+    }
+    return route.fallback();
+  });
+  await page.goto("/");
+  await page.getByRole("button", { name: "Shows", exact: true }).click();
+  await openShowScenes(page);
+
+  const photo = page.locator(".scene-photo");
+  const projected = photo.getByRole("img", { name: "Window overlay on Front window" });
+  await expect(projected).toBeVisible();
+  await expect(photo.locator("circle")).toHaveCount(3);
+  await expect(page.getByText("Projectors: Front window ← Window overlay.")).toBeVisible();
+  // The rendered frame is corner-pinned onto the drawn surface, not drawn as a flat card.
+  const [photoBox, projectedBox] = await Promise.all([
+    photo.locator(".scene-photo__base").boundingBox(),
+    projected.boundingBox(),
+  ]);
+  const expected = {
+    x: photoBox!.x + 0.5 * photoBox!.width, y: photoBox!.y + 0.3 * photoBox!.height,
+    width: 0.2 * photoBox!.width, height: 0.3 * photoBox!.height,
+  };
+  expect(Math.abs(projectedBox!.x - expected.x)).toBeLessThan(2);
+  expect(Math.abs(projectedBox!.y - expected.y)).toBeLessThan(2);
+  expect(Math.abs(projectedBox!.width - expected.width)).toBeLessThan(2);
+  expect(Math.abs(projectedBox!.height - expected.height)).toBeLessThan(2);
+  // Layering: photo, then projector light, then LEDs on top.
+  const order = await photo.evaluate((element) => Array.from(element.children).map((child) => child.getAttribute("class")));
+  expect(order).toEqual(["scene-photo__base", "scene-photo__projectors", "scene-photo__leds"]);
+  await expect(page.getByRole("article", { name: "Media output left-window" })).toBeVisible();
+  expect(state.saves).toHaveLength(0);
+});

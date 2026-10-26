@@ -741,9 +741,22 @@ cannot be saved. Shortening a scene does not automatically delete or trim effect
 markers, or protected intervals.
 
 **Play scene preview** and the seconds scrubber drive one preview of every scene
-output: all LED outputs together and every projector/media output. The Show's
+output: all LED outputs together and every projector/media output, drawn as one
+picture on the installation photo. The Show's
 **Preview** tab uses the same combined preview, with **Preview output** narrowing
 the LED view to one output.
+
+On the photo, each projector's content is corner-pinned onto the projector
+surface drawn for it in Installation, using that surface's **Content fit**, with
+the LEDs on top. Projected light is screen-blended like the LED glow, so unlit
+(black) content leaves the house visible. When paused or scrubbing, the content
+is the frame rendered by the controller's bake compositor, so compositions and
+assets show exactly what the controller would play. While the preview plays,
+outputs that play a video asset directly switch to its review proxy for smooth
+motion; compositions keep the rendered frames. A note under the photo lists
+each surface and its source, and names outputs with no surface on the selected
+photo (pick another **Preview photo** or draw the surface in Installation).
+Media-only scenes show this picture when the show is linked to an installation.
 
 LED frames come from the same lighting evaluator used by the controller.
 Frames include declared output timing offsets. Looping scenes wrap to the start
@@ -766,8 +779,11 @@ brightness or device output. Collapsed **LED output details** retains the
 unmodified sampled RGB values. Scene, visitor Preview and Operate's intended
 output monitor share this photo presentation; it is not photometric calibration.
 
-**Projectors and media** shows one card per media output with a still rendered
-by the same compositor used for bakes. As on the controller, a scene composition
+**Projectors and media** below the photo shows the per-output details: one card
+per media output with the still rendered
+by the same compositor used for bakes. Each card takes the shape of the
+projector's output (portrait projectors get tall cards) and always shows the
+whole frame. As on the controller, a scene composition
 that targets the output (projector-only or whole-display overlay) takes
 precedence over the output's assigned asset. Media starts after the output's
 start delay and then follows its end behavior, so each card reports **Waiting
@@ -871,7 +887,11 @@ unavailable; save or cancel first. Stale saves retain edits and report conflict.
 
    **Layout** (always shown for projector compositions; a toggle beside
    **House view** otherwise) draws the composition frame and the layers at the
-   playhead exactly where the renderer places them. Drag a layer to move it,
+   playhead exactly where the renderer places them. Video layers show the
+   review proxy's frame at the playhead (honouring the layer's in point and
+   **Media playback**: looping wraps, play-once shows "finished" after the
+   clip ends, hold freezes on the last frame), so scrub or play to check
+   placement across the whole clip. Drag a layer to move it,
    drag a corner to resize it (proportions locked; hold **Shift** for free
    resizing), and drag the knob above it to rotate (**Shift** snaps to 15°).
    Content outside the frame stays visible, dimmed, so handles are always

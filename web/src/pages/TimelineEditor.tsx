@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { PointerEvent as ReactPointerEvent } from "react";
+import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
 
 import {
   assetArtifactUrl,
@@ -2515,6 +2515,7 @@ export function TimelineEditor({
                 mapperExport={mapperExport}
                 layers={spaceTransformLayers}
                 playheadMs={localPlayhead}
+                isPlaying={isPreviewPlaying}
                 selectedKeyframeId={selectedTransformKeyframeId}
                 selectedLayerId={inspectorTarget === "layer" ? selectedTransformLayerId : ""}
                 onGestureStart={beginGesture}
@@ -7447,6 +7448,75 @@ function keyframeAtTime(layer: TransformLayer, localMs: number): TransformKeyfra
   return [...sorted].reverse().find((keyframe) => keyframe.time_ms <= localMs) ?? sorted[0];
 }
 
+/**
+ * Source time shown for a layer at a composition-local time, mirroring the renderer:
+ * in point plus elapsed time; loop wraps by the source length, once ends after it,
+ * hold freezes on the last frame. Outside the layer's span the nearest end is shown.
+ */
+function layerSourceMs(
+  layer: TransformLayer,
+  localMs: number,
+  sourceDurationMs: number,
+): number | null {
+  const elapsed = Math.min(Math.max(0, localMs - layer.start_ms), Math.max(0, layer.duration_ms - 1));
+  const sourceMs = layer.in_point_ms + elapsed;
+  if (sourceDurationMs <= 0) return sourceMs;
+  if (layer.playback === "loop") return sourceMs % sourceDurationMs;
+  if (layer.playback === "once" && sourceMs >= sourceDurationMs) return null;
+  return Math.min(sourceMs, sourceDurationMs - 1);
+}
+
+/** Review proxy seeked to the layer's frame at the playhead, so placement can be checked by scrubbing. */
+function LayoutVideoFrame({
+  label,
+  src,
+  poster,
+  sourceMs,
+  isPlaying,
+  style,
+}: {
+  label: string;
+  src: string;
+  poster?: string;
+  sourceMs: number | null;
+  isPlaying: boolean;
+  style: CSSProperties;
+}) {
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  useEffect(() => {
+    const element = videoRef.current;
+    if (!element || sourceMs === null) return;
+    const target = sourceMs / 1000;
+    if (Math.abs(element.currentTime - target) > (isPlaying ? 0.35 : 0.02)) {
+      element.currentTime = target;
+    }
+    if (isPlaying && element.paused) {
+      void element.play().catch(() => undefined);
+    } else if (!isPlaying && !element.paused) {
+      element.pause();
+    }
+  }, [isPlaying, sourceMs, src]);
+  if (sourceMs === null) {
+    return <span className="layout-layer__placeholder">{label} · finished (plays once)</span>;
+  }
+  return (
+    <video
+      ref={videoRef}
+      aria-label={`${label} frame at ${formatTimecode(sourceMs)}`}
+      draggable={false}
+      muted
+      playsInline
+      poster={poster}
+      preload="auto"
+      src={src}
+      style={style}
+      onLoadedMetadata={(event) => {
+        event.currentTarget.currentTime = sourceMs / 1000;
+      }}
+    />
+  );
+}
+
 type CompositionPreset = Composition["space_kind"] | "stage_lights";
 
 type LayoutDrag =
@@ -7566,6 +7636,7 @@ function CompositionLayoutCanvas({
   layers,
   assets,
   playheadMs,
+  isPlaying = false,
   selectedLayerId,
   selectedKeyframeId,
   canEdit,
@@ -7581,6 +7652,7 @@ function CompositionLayoutCanvas({
   layers: TransformLayer[];
   assets: AssetRecord[];
   playheadMs: number;
+  isPlaying?: boolean;
   selectedLayerId: string;
   selectedKeyframeId: string;
   canEdit: boolean;
@@ -7740,6 +7812,21 @@ function CompositionLayoutCanvas({
           const boxWidth = width * Math.abs(keyframe.scale[0]) * upp;
           const boxHeight = height * Math.abs(keyframe.scale[1]) * upp;
           const asset = assets.find((candidate) => candidate.id === layer.source_id);
+          const video =
+            asset && layer.kind === "video" && asset.media_type?.startsWith("video/") &&
+            hasAssetArtifact(asset, "review")
+              ? {
+                  src: assetArtifactUrl(asset.id, "review", asset.current_revision),
+                  poster: hasAssetArtifact(asset, "thumbnail")
+                    ? assetArtifactUrl(asset.id, "thumbnail", asset.current_revision)
+                    : undefined,
+                  sourceMs: layerSourceMs(
+                    layer,
+                    playheadMs,
+                    numberValue(asset.metadata?.duration_ms, 0),
+                  ),
+                }
+              : null;
           const image =
             asset && asset.media_type?.startsWith("image/") && hasAssetArtifact(asset, "review")
               ? assetArtifactUrl(asset.id, "review", asset.current_revision)
@@ -7747,6 +7834,7 @@ function CompositionLayoutCanvas({
                 ? assetArtifactUrl(asset.id, "thumbnail", asset.current_revision)
                 : null;
           const [left, top, right, bottom] = keyframe.crop;
+          const cropStyle = { clipPath: `inset(${top * 100}% ${right * 100}% ${bottom * 100}% ${left * 100}%)` };
           return (
             <div
               key={layer.id}
@@ -7770,12 +7858,21 @@ function CompositionLayoutCanvas({
               onPointerUp={finish}
               onPointerCancel={finish}
             >
-              {image ? (
+              {video ? (
+                <LayoutVideoFrame
+                  label={layer.name}
+                  poster={video.poster}
+                  sourceMs={video.sourceMs}
+                  isPlaying={isPlaying}
+                  src={video.src}
+                  style={cropStyle}
+                />
+              ) : image ? (
                 <img
                   alt=""
                   draggable={false}
                   src={image}
-                  style={{ clipPath: `inset(${top * 100}% ${right * 100}% ${bottom * 100}% ${left * 100}%)` }}
+                  style={cropStyle}
                 />
               ) : (
                 <span className="layout-layer__placeholder">{layer.name}</span>

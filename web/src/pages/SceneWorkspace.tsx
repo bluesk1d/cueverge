@@ -4,6 +4,7 @@ import {
   ApiError, AssetRecord, getInstallationGeometry, getInstallationPhotos,
   getLightingSurface, InstallationGeometry, InstallationPhoto, installationPhotoUrl,
   previewSceneLighting, ProjectDraftRecord, SceneLightingPreview, LightingFrameView,
+  SceneMediaPreviewOutput,
 } from "../api";
 import { geometryForBackground, photoPixelPoints } from "../components/pixel-traversal";
 import { nightPreviewColor } from "../components/led-preview";
@@ -12,6 +13,12 @@ import { ErrorState } from "../components/ui";
 import { SceneAuthoringDialog } from "../components/SceneAuthoringDialog";
 import { SceneOutputActions } from "../components/SceneOutputActions";
 import { SceneMediaOutputs } from "../components/SceneMediaOutputs";
+import { useSceneMediaPreview } from "../components/useSceneMediaPreview";
+import type { SceneMediaPreviewState } from "../components/useSceneMediaPreview";
+import { SyncedReviewMedia, useFrameWidth, useProjectorSurfaces, WarpedSurface } from "../components/ProjectorSurfaces";
+import type { ProjectorSurface } from "../components/ProjectorSurfaces";
+import { mediaOutputSourceMs, sceneMediaOutputs } from "./timelineUtils";
+import type { SceneMediaOutputRef } from "./timelineUtils";
 
 type Document = ProjectDraftRecord["draft"];
 type Scene = Document["scenes"][number];
@@ -321,18 +328,14 @@ export function SceneWorkspace({
       <div className="scene-editor-grid">
         <div>
           {(outputs.length > 0 || media.length > 0) && <>
-          {outputs.length > 0 && <ScenePreview
+          <ScenePreviewPanel
             projectId={draft.project.id} revision={draft.revision} document={document}
-            dirty={dirty} sceneId={sceneId} resource="" position={position}
-            valid={issues.length === 0}
+            dirty={dirty} sceneId={sceneId} resource="" position={position} playing={playing}
+            valid={issues.length === 0} assets={assets}
+            hasLighting={outputs.length > 0} hasMedia={media.length > 0}
             onTargetNames={setTargetNames}
             onFailure={() => setPlaying(false)}
-          />}
-          {media.length > 0 && <SceneMediaOutputs
-            projectId={draft.project.id} revision={draft.revision} document={document}
-            dirty={dirty} sceneId={sceneId} position={position} playing={playing}
-            valid={issues.length === 0} assets={assets}
-          />}
+          />
           <div className="scene-preview-controls">
             <button disabled={issues.length > 0} onClick={() => setPlaying(!playing)}>
               {playing ? "Pause scene preview" : "Play scene preview"}
@@ -539,13 +542,59 @@ function scaleDecimal(value: number, places: number): number {
   return Number(`${coefficient}e${Number(exponent) + places}`);
 }
 
-export function ScenePreview({ projectId, revision, document, dirty, sceneId, resource, position, onFailure, valid, onTargetNames, external = false, frameOverride = null, intent = false, installationIdOverride }: {
+/** Projector content for the scene preview: controller frames, or review proxies while playing. */
+export interface ScenePreviewMedia {
+  state: SceneMediaPreviewState;
+  outputs: SceneMediaOutputRef[];
+  assets: AssetRecord[];
+  playing: boolean;
+}
+
+/**
+ * One picture of the scene at the preview time: projector content corner-pinned onto its
+ * surfaces and LED colors on top, with per-output media details below.
+ */
+export function ScenePreviewPanel({
+  projectId, revision, document, dirty, sceneId, resource, position, playing, valid, assets,
+  hasLighting, hasMedia, onFailure, onTargetNames,
+}: {
+  projectId: string; revision: number; document: Document; dirty: boolean; sceneId: string;
+  resource: string; position: number; playing: boolean; valid: boolean; assets: AssetRecord[];
+  hasLighting: boolean; hasMedia: boolean; onFailure: () => void;
+  onTargetNames: (names: Record<string, string>) => void;
+}) {
+  const state = useSceneMediaPreview({
+    projectId, revision, document, dirty, sceneId, position, valid, enabled: hasMedia,
+  });
+  const sceneMedia = document.scenes.find((value) => value.id === sceneId)?.media;
+  const mediaOutputs = useMemo(() => sceneMediaOutputs(sceneMedia), [sceneMedia]);
+  if (!hasLighting && !hasMedia) return null;
+  const drawsHouse = hasLighting || typeof document.editor_metadata.installation_id === "string";
+  return <>
+    {drawsHouse && <ScenePreview
+      projectId={projectId} revision={revision} document={document} dirty={dirty}
+      sceneId={sceneId} resource={resource} position={position} valid={valid}
+      lightingEnabled={hasLighting} onFailure={onFailure} onTargetNames={onTargetNames}
+      media={hasMedia ? { state, outputs: mediaOutputs, assets, playing } : undefined}
+    />}
+    {hasMedia && <SceneMediaOutputs
+      projectId={projectId} revision={revision} document={document} dirty={dirty}
+      sceneId={sceneId} position={position} playing={playing} valid={valid} assets={assets}
+      state={state}
+    />}
+  </>;
+}
+
+export function ScenePreview({ projectId, revision, document, dirty, sceneId, resource, position, onFailure, valid, onTargetNames, external = false, frameOverride = null, intent = false, installationIdOverride, lightingEnabled = true, media }: {
   projectId: string; revision: number; document?: Document; dirty: boolean; sceneId: string;
   resource: string; position: number; onFailure: () => void;
   valid: boolean;
   onTargetNames: (names: Record<string, string>) => void;
   external?: boolean; frameOverride?: LightingFrameView | null;
   intent?: boolean; installationIdOverride?: string;
+  /** False for scenes without LED outputs: only projector content is drawn. */
+  lightingEnabled?: boolean;
+  media?: ScenePreviewMedia;
 }) {
   const [requestedFrame, setFrame] = useState<SceneLightingPreview | null>(null);
   const frame = external ? frameOverride : requestedFrame;
@@ -567,7 +616,7 @@ export function ScenePreview({ projectId, revision, document, dirty, sceneId, re
     setLoading(false);
   }, [document, resource, sceneId]);
   useEffect(() => {
-    if (external) {
+    if (external || !lightingEnabled) {
       setLoading(false); setError(null);
       return;
     }
@@ -612,7 +661,7 @@ export function ScenePreview({ projectId, revision, document, dirty, sceneId, re
     const timer = window.setTimeout(evaluate, 120);
     const poll = window.setInterval(evaluate, 250);
     return () => { current = false; window.clearTimeout(timer); window.clearInterval(poll); window.clearTimeout(watchdog); abort.abort(); };
-  }, [projectId, revision, sceneId, resource, document, dirty, valid, retry, external]);
+  }, [projectId, revision, sceneId, resource, document, dirty, valid, retry, external, lightingEnabled]);
   useEffect(() => {
     let current = true;
     setPhotos([]); setGeometry([]); setResources({}); setMapError(null);
@@ -655,18 +704,38 @@ export function ScenePreview({ projectId, revision, document, dirty, sceneId, re
   const outputLimitations = frameOutputs.flatMap((value) => value.limitations ?? []);
   const sceneLimitations = frame && "limitations" in frame && Array.isArray(frame.limitations)
     ? frame.limitations as string[] : [];
-  return <section className="scene-preview" aria-label={intent ? "Controller intended LED output" : "Scene lighting preview"}>
+  const projectorData = useProjectorSurfaces(media && typeof installationId === "string" ? installationId : null);
+  const [photoRef, photoWidth] = useFrameWidth<HTMLDivElement>(`${photoId}:${photoFailed}`);
+  const projected = media ? projectorData.surfaces.flatMap((surface) => {
+    const reference = media.outputs.find((value) => value.resource === surface.resource);
+    if (!reference || surface.photoId !== photoId) return [];
+    const evaluated = media.state.preview?.outputs.find((value) => value.resource === surface.resource);
+    return [{ surface, reference, evaluated }];
+  }) : [];
+  const offPhoto = media ? media.outputs.filter((value) =>
+    !projected.some((item) => item.reference.id === value.id)) : [];
+  return <section className="scene-preview" aria-label={intent ? "Controller intended LED output" : lightingEnabled ? "Scene lighting preview" : "Scene preview"}>
     <header><strong>{intent ? "Last sent LED colors" : "Scene preview"}</strong><span>{intent ? "Read-only observation · not physical feedback" : "Simulation only · no hardware commands"}</span></header>
     {photos.length > 0 && <label>Preview photo<select value={photoId} onChange={(event) => setPhotoId(event.target.value)}>
       <option value="">Installation canvas (no photo)</option>
       {photos.map((value) => <option key={value.id} value={value.id}>{value.name}</option>)}
     </select></label>}
     {photoFailed && <ErrorState title="Photo unavailable" description="The photo could not be loaded; evaluated colors remain available below." />}
-    {(!photoFailed && (photo || mapped.length > 0)) && <div className="scene-photo">
-      <svg viewBox="0 0 1000 600" role="img" aria-label={intent ? "Last sent LED colors on installation photo" : "Evaluated LED colors on installation photo"}>
-        <title>{photo?.name ?? "Installation layout"}</title>
+    {(!photoFailed && (photo || mapped.length > 0)) && <div className="scene-photo" ref={photoRef}>
+      <svg className="scene-photo__base" viewBox="0 0 1000 600" aria-hidden="true">
         {photo && <image href={installationPhotoUrl(photo.id, photo.revision)} width="1000" height="600"
           preserveAspectRatio="xMidYMid meet" onError={() => setPhotoFailed(true)} />}
+      </svg>
+      {projected.length > 0 && photoWidth > 0 && <div className="scene-photo__projectors">
+        {projected.map(({ surface, reference, evaluated }) => (
+          <ProjectedSurfaceContent key={surface.key} surface={surface} reference={reference}
+            evaluated={evaluated} media={media!} position={position} frameWidth={photoWidth} />
+        ))}
+      </div>}
+      <svg className="scene-photo__leds" viewBox="0 0 1000 600" role="img" aria-label={intent ? "Last sent LED colors on installation photo" : lightingEnabled ? "Evaluated LED colors on installation photo" : "Projector content on installation photo"}>
+        <title>{photo?.name ?? "Installation layout"}</title>
+        {projected.map(({ surface }) => <polygon key={surface.key} className="scene-photo__surface-outline"
+          points={surface.corners.map((point) => `${point.x * 1000},${point.y * 600}`).join(" ")} />)}
         <g className="scene-led-overlay">
           {mapped.map((pixel, index) => {
             const display = nightPreviewColor(pixel.color);
@@ -678,15 +747,23 @@ export function ScenePreview({ projectId, revision, document, dirty, sceneId, re
       </svg>
     </div>}
     {!photoFailed && mapped.length > 0 && <small>Nighttime visualization · enhanced LED glow; output brightness is unchanged.</small>}
+    {media && photo && !photoFailed && <small className="scene-photo__projector-note">
+      {projected.length > 0
+        ? `Projectors: ${projected.map(({ surface, evaluated }) =>
+          `${surface.surfaceName} ← ${evaluated?.source?.name ?? "nothing"}${evaluated && evaluated.state !== "playing" && evaluated.state !== "looping" ? ` (${evaluated.state.replaceAll("_", " ")})` : ""}`).join(" · ")}.`
+        : projectorData.loaded ? "No projector surface for this scene is drawn on this photo." : "Loading projector surfaces…"}
+      {offPhoto.length > 0 && projected.length > 0 && ` Not on this photo: ${offPhoto.map((value) => value.resource ?? value.id).join(", ")}.`}
+      {media.playing ? " Assets play from their review proxies; paused frames are rendered by the controller." : ""}
+    </small>}
     {mapError && <p role="status">{mapError}</p>}
     {allocationMismatch && <p role="status">The saved photo uses a different LED allocation. The overlay is withheld; evaluated output colors remain available below.</p>}
     {error && <ErrorState title="Scene preview unavailable" description={error} />}
     {(error || mapError || photoFailed) && <button onClick={() => setRetry((value) => value + 1)}>Retry scene preview</button>}
-    <p className="scene-preview-status" aria-busy={loading}>
+    {lightingEnabled && <p className="scene-preview-status" aria-busy={loading}>
       {frame
         ? <>{intent ? "Last sent position" : "Evaluated"} {time(frame.timestamp_ms)}.{String(frame.timestamp_ms % 1000).padStart(3, "0")}{!intent && <> · {frame.unsaved ? "unsaved edits" : "saved scene"}</>}</>
         : loading ? "Preparing scene preview…" : "No evaluated frame"}
-    </p>
+    </p>}
     {frame && <div>
       {!mapped.length && <p>No matching layout mapping. Map your lights in Installation to preview their placement; a photo is optional.</p>}
       <details>
@@ -710,4 +787,30 @@ export function ScenePreview({ projectId, revision, document, dirty, sceneId, re
       {sceneLimitations.map((message) => <p role="status" key={message}>{message}</p>)}
     </div>}
   </section>;
+}
+
+function ProjectedSurfaceContent({ surface, reference, evaluated, media, position, frameWidth }: {
+  surface: ProjectorSurface; reference: SceneMediaOutputRef;
+  evaluated: SceneMediaPreviewOutput | undefined; media: ScenePreviewMedia;
+  position: number; frameWidth: number;
+}) {
+  const source = evaluated?.source ?? null;
+  const asset = source?.kind === "asset"
+    ? media.assets.find((value) => value.id === source.asset_id) : undefined;
+  const moving = Boolean(asset && (asset.media_type?.startsWith("video/") || asset.media_type === "image/gif"));
+  const live = media.playing && moving && asset !== undefined && hasAssetArtifact(asset, "review");
+  const label = `${source?.name ?? reference.id} on ${surface.surfaceName}`;
+  if (live) {
+    const durationMs = typeof asset.metadata?.duration_ms === "number" ? asset.metadata.duration_ms : 0;
+    const sourceMs = mediaOutputSourceMs(
+      position, reference.startDelayMs, durationMs, reference.endBehavior, reference.repeatCount,
+    );
+    return <WarpedSurface surface={surface} frameWidth={frameWidth} label={label} hidden={sourceMs === null}>
+      <SyncedReviewMedia asset={asset} sourceMs={sourceMs} playing label={label} />
+    </WarpedSurface>;
+  }
+  const frame = evaluated?.frame;
+  return <WarpedSurface surface={surface} frameWidth={frameWidth} label={label} hidden={!frame}>
+    {frame && <img alt={label} src={`data:${frame.media_type};base64,${frame.data_base64}`} />}
+  </WarpedSurface>;
 }

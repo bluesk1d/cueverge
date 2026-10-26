@@ -2,8 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   AssetRecord, InteractionEdit, InteractionPreview, previewInteractions, ProjectDraftRecord, SimulationStep,
 } from "../api";
-import { ScenePreview } from "./SceneWorkspace";
-import { SceneMediaOutputs } from "../components/SceneMediaOutputs";
+import { ScenePreview, ScenePreviewPanel } from "./SceneWorkspace";
 import { ErrorState } from "../components/ui";
 
 const reasonNames: Record<string, string> = {
@@ -130,12 +129,10 @@ export function ShowPreviewWorkspace({ draft, candidateEdit, visitorOnly = false
         {draft.draft.scenes.map((value) => <option key={value.id} value={value.id}>{value.name}</option>)}
       </select></label>
       {sceneOutputs.length > 0 || mediaCount > 0 ? <>
-      {sceneOutputs.length > 0 && <ScenePreview projectId={draft.project.id} revision={draft.revision} document={draft.draft}
-        dirty={false} sceneId={scene.id} resource={sceneResource} position={position}
-        valid={durationValid} onFailure={onFrameFailure} onTargetNames={noNames} />}
-      {mediaCount > 0 && <SceneMediaOutputs projectId={draft.project.id} revision={draft.revision} document={draft.draft}
-        dirty={false} sceneId={scene.id} position={position} playing={playing}
-        valid={durationValid} assets={assets} />}
+      <ScenePreviewPanel projectId={draft.project.id} revision={draft.revision} document={draft.draft}
+        dirty={false} sceneId={scene.id} resource={sceneResource} position={position} playing={playing}
+        valid={durationValid} assets={assets} hasLighting={sceneOutputs.length > 0} hasMedia={mediaCount > 0}
+        onFailure={onFrameFailure} onTargetNames={noNames} />
       {!durationValid && <ErrorState title="Scene duration unavailable" description="Reopen the saved show before previewing this scene." />}
       <div className="scene-preview-controls">
         <button disabled={!durationValid} onClick={() => setPlaying(!playing)}>{playing ? "Pause preview" : "Play preview"}</button>
