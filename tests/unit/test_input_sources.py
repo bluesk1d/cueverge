@@ -25,6 +25,7 @@ from cueverge.gui.contracts import ConfigureInputSourceRequest, DraftProject, Ro
 from cueverge.gui.input_sources import InputSourceError, InputSourceService
 from cueverge.gui.mcp_authoring import McpScope, allowed_mcp_scopes
 from cueverge.gui.passwords import hash_password
+from cueverge.gui.repository import GuiRepository
 from cueverge.gui.service import GuiServices
 from cueverge.integrations.frigate import FrigateEventNormalizer
 from cueverge.integrations.mqtt import (
@@ -106,6 +107,31 @@ def test_input_credentials_are_private_separate_durable_rotatable_and_write_only
         await restored.configure(ConfigureInputSourceRequest(host="other", clear_password=True))
         assert not list(root.glob("credential-*.json"))
         assert restored.snapshot()["credential_present"] is False
+
+    asyncio.run(scenario())
+
+
+def test_fresh_gui_data_root_accepts_protected_input_under_group_writable_umask(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        data_root = tmp_path / "gui"
+        previous_umask = os.umask(0o007)
+        try:
+            GuiRepository(data_root / "gui.sqlite3").migrate()
+            service = InputSourceService(data_root / "input-source", ControllerRuntime())
+            await service.configure(
+                ConfigureInputSourceRequest(
+                    enabled=True,
+                    host="broker.local",
+                    username="mqtt",
+                    password=SecretStr("test-secret"),
+                )
+            )
+        finally:
+            os.umask(previous_umask)
+        assert stat.S_IMODE(data_root.stat().st_mode) == 0o700
+        assert stat.S_IMODE((data_root / "input-source").stat().st_mode) == 0o700
 
     asyncio.run(scenario())
 

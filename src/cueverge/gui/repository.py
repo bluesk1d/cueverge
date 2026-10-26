@@ -261,7 +261,7 @@ class GuiRepository:
         self.database_path = database_path
 
     def migrate(self) -> None:
-        self.database_path.parent.mkdir(parents=True, exist_ok=True)
+        self.database_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         with self._connect() as connection:
             connection.executescript(
                 """

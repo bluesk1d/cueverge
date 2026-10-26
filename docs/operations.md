@@ -621,7 +621,10 @@ not a loaded-show/project identity or an end-to-end readiness certificate.
 `CUEVERGE_GUI_DATA_ROOT/input-source/settings.json`, referencing a separate
 immutable `credential-<id>.json`. The input directory must be controller-owned
 mode 0700, with regular nonsymlink files mode 0600; the controller data parent
-must not be group/world-writable. This implementation enforces POSIX permissions;
+(`CUEVERGE_GUI_DATA_ROOT`) must not be group/world-writable. The controller creates
+that data root as mode 0700 on first start, but an existing bind-mounted folder
+created with a looser mode (for example `770`) must be fixed by the operator, for
+example `chmod 750 <NAS folder>/gui`, before GUI-managed inputs can be saved. This implementation enforces POSIX permissions;
 use environment management on platforms without that protection. Permissions
 are not encryption at rest. Passwords are write-only and absent from readback,
 audit details, MCP results, logs and project exports.
