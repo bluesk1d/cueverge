@@ -471,6 +471,11 @@ underneath`, so a composition only changes the LEDs its media covers.
 The GUI writes `looks.json` from **Show > Ambient lighting**
 (`editor_metadata.ambient_lighting`); see the show-creator guide.
 
+Looks run on the controller clock from when the show package is loaded, not on
+scene time, so a scene that loops (`completion.policy: "loop"`) or hands over to
+another scene never restarts them. Content placed on a scene's own timeline
+(scene cues and attached LED sequences) does restart with the scene.
+
 Version 1 defines one look resource and requires it to appear in every scene.
 Version 2 wraps the same per-resource definition in an `outputs` array:
 

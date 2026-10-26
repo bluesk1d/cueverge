@@ -1040,8 +1040,22 @@ requires a re-bake.
 
 `preview_scene_lighting` includes the ambient beneath scene outputs and reports
 LED resources the scene doesn't light as `ambient:<resource>` outputs (the safe
-state for excluded scenes). Its limitations note that the preview starts the
-ambient at scene time 0. Compilation writes the ambient to `looks.json`
+state for excluded scenes). Live, the ambient runs on the controller clock from
+show load and does not restart when a scene loops or changes. Pass the optional
+`ambient_elapsed_ms` (time since the ambient started, for example
+`loops * duration_ms + timestamp_ms`) to evaluate the ambient there; the scene's
+own lighting still uses `timestamp_ms`. It defaults to `timestamp_ms`, which
+restarts the ambient with the scene, and the response's `limitations` say so.
+The response echoes `ambient_elapsed_ms`, and `ambient:<resource>` outputs
+report their loop position as `output_position_ms` together with `cycle_ms`.
+The Scene workspace preview sends the same value so preview loops stay
+continuous.
+
+An ambient composition that is also placed on an inheriting scene's timeline
+plays on scene time and restarts with that scene. `get_show_plan` lists it in
+`warnings`, and `get_lighting_bake_status` reports those scenes in
+`ambient_scene_timeline_ids`. The UI shows the same warning on the scene's LED
+bake chip and in the Show plan. Compilation writes the ambient to `looks.json`
 (`baseline`, `baseline_sequence`, `excluded_scene_ids`), merged per resource
 over looks preserved from the controller. None of this sends hardware commands.
 

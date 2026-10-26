@@ -800,6 +800,7 @@ def create_mcp_app(services: GuiServices) -> Starlette:
         resource: str | None = None,
         pixel_offset: int = 0,
         pixel_limit: int = 1000,
+        ambient_elapsed_ms: int | None = None,
     ) -> dict[str, JsonValue]:
         """Evaluate raw/compiled scene LEDs with the production renderer; requires simulation.
 
@@ -807,7 +808,10 @@ def create_mcp_app(services: GuiServices) -> Starlette:
         Returns bounded pixel pages, revision, time and explicit coverage. This is
         not a live monitor. Saved revisions include current LED composition bakes;
         unbaked LED compositions are listed in limitations. Use preview_scene_media
-        for projector/media outputs at the same scene time.
+        for projector/media outputs at the same scene time. The show's ambient lighting
+        runs on its own clock live and does not restart when the scene loops; pass
+        ambient_elapsed_ms (time since the ambient started, e.g. loops * duration_ms +
+        timestamp_ms) to evaluate it there. It defaults to timestamp_ms.
         """
         token = _authorize(services, McpScope.SIMULATION)
         try:
@@ -816,6 +820,7 @@ def create_mcp_app(services: GuiServices) -> Starlette:
                 source_revision=revision.revision,
                 scene_id=scene_id,
                 timestamp_ms=timestamp_ms,
+                ambient_elapsed_ms=ambient_elapsed_ms,
                 proposed_draft=(
                     DraftProject.model_validate(proposed_draft)
                     if proposed_draft is not None
@@ -1876,10 +1881,20 @@ def create_mcp_app(services: GuiServices) -> Starlette:
                         "ambient compositions need a current LED bake (create_render_job) "
                         "before publish"
                     ),
-                    "clock": "starts with the loaded show and keeps running across scenes",
+                    "clock": (
+                        "starts with the loaded show and keeps running across scene loops and "
+                        "changes; scene time never restarts it"
+                    ),
                     "preview": (
                         "preview_ambient_lighting shows the ambient alone at a loop time; "
-                        "preview_scene_lighting includes it under a scene from scene time 0"
+                        "preview_scene_lighting includes it under a scene at ambient_elapsed_ms "
+                        "(defaults to the scene timestamp_ms)"
+                    ),
+                    "scene_timeline_placement": (
+                        "an ambient composition also placed on an inheriting scene's timeline "
+                        "plays on scene time and restarts when that scene loops; reported in "
+                        "get_show_plan warnings and get_lighting_bake_status "
+                        "ambient_scene_timeline_ids"
                     ),
                     "preview_tool": "preview_ambient_lighting",
                     "compiled_as": "looks.json per resource (baseline cues, baseline_sequence)",
@@ -1968,7 +1983,11 @@ def create_mcp_app(services: GuiServices) -> Starlette:
                     ),
                     "ambient_lighting": (
                         "included unless the scene is in excluded_scene_ids; ambient-only "
-                        "outputs are reported as ambient:<resource>"
+                        "outputs are reported as ambient:<resource> with their loop position"
+                    ),
+                    "ambient_elapsed_ms": (
+                        "optional time since the ambient started; pass loops * duration_ms + "
+                        "timestamp_ms so a looping scene does not restart the ambient, as live"
                     ),
                 },
                 "scene_transitions": {
@@ -2438,6 +2457,8 @@ def create_mcp_app(services: GuiServices) -> Starlette:
         installation mapping cannot be read). LED-only bakes (lighting surfaces and lights-only
         stage overlays) stay current across revisions that change nothing they draw. Filter by
         scene_id to see what a scene preview needs; queue missing bakes with create_render_job.
+        ambient_scene_timeline_ids lists inheriting scenes that also place an ambient
+        composition on their timeline; that copy restarts with the scene, so remove it there.
         """
         token = _authorize(services, McpScope.READ)
         try:
@@ -2448,7 +2469,11 @@ def create_mcp_app(services: GuiServices) -> Starlette:
         if scene_id is not None and all(scene.id != scene_id for scene in stored.draft.scenes):
             raise ToolError("scene does not exist in this revision")
         compositions = [
-            {**asdict(status), "scene_ids": list(status.scene_ids)}
+            {
+                **asdict(status),
+                "scene_ids": list(status.scene_ids),
+                "ambient_scene_timeline_ids": list(status.ambient_scene_timeline_ids),
+            }
             for status in statuses
             if scene_id is None or scene_id in status.scene_ids
         ]

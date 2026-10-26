@@ -799,9 +799,17 @@ show the safe state.
 In a stage composition's **Render & bake** tab, **Where nothing is drawn, LEDs
 show** chooses **Ambient lighting** (the default with a black final output
 background) or **Final output background**. Re-bake after changing it. LED
-bakes made before ambient lighting existed must be re-baked once. The scene
-preview includes the ambient from its loop start at scene time 0; live, the
-ambient keeps running from when the show was loaded.
+bakes made before ambient lighting existed must be re-baked once. Live, the
+ambient keeps running from when the show was loaded and never restarts when a
+scene repeats or changes. The scene preview matches this: it starts the ambient
+with the preview, keeps it running when a looping scene wraps, and moves it with
+the scene when you drag the preview time. **Restart scene preview** starts both
+again.
+
+If an ambient lighting composition is also placed on a scene's timeline, that
+copy follows scene time and restarts each time the scene repeats. The scene's
+LED bake chip and the Show plan warn about this; remove the extra placement in
+**Edit timeline > Compositions**.
 
 LED frames come from the same lighting evaluator used by the controller.
 Frames include declared output timing offsets. Looping scenes wrap to the start

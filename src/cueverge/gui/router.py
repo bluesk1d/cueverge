@@ -3064,7 +3064,11 @@ def create_gui_router(services: GuiServices) -> APIRouter:
             revision=stored.revision,
             compositions=[
                 LightingBakeStatusResponse.model_validate(
-                    {**asdict(status), "scene_ids": list(status.scene_ids)}
+                    {
+                        **asdict(status),
+                        "scene_ids": list(status.scene_ids),
+                        "ambient_scene_timeline_ids": list(status.ambient_scene_timeline_ids),
+                    }
                 )
                 for status in statuses
             ],

@@ -291,8 +291,12 @@ How scenes override the ambient:
   option existed must be re-baked once.
 - LEDs a scene doesn't light at all keep the ambient.
 
-The ambient's phase follows the controller clock, so it doesn't restart at scene
-changes. The scene preview shows it from its loop start at scene time 0. Legacy
+The ambient's phase follows the controller clock, so it doesn't restart when a
+scene repeats or changes. The scene preview keeps it running in the same way
+across preview loops; **Restart scene preview** starts it again. Don't also
+place the ambient composition on a scene's timeline: that copy follows scene
+time and restarts every time the scene repeats (the scene's LED bake chip and
+the Show plan warn about it). Legacy
 single-effect scene lighting (synthetic sweep, segment pulse) paints its whole
 output and does not show the ambient underneath.
 

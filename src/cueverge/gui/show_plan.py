@@ -13,6 +13,7 @@ from cueverge.core.models import (
     ScenePool,
     ShowProgramDefinition,
 )
+from cueverge.gui.compiler import ambient_compositions_on_scene_timelines
 from cueverge.gui.contracts import DraftProject, ShowPlanEditRequest
 from cueverge.gui.interactions import describe_interactions
 
@@ -179,6 +180,19 @@ def describe_show_plan(draft: DraftProject) -> dict[str, object]:
         warnings.append(
             "Visitor responses only start when a scene ends with “Let the show pick next”. "
             "No scene in the main show does, so visitor responses will not play."
+        )
+    compositions = draft.editor_metadata.get("compositions")
+    for composition_id, scene_ids in ambient_compositions_on_scene_timelines(draft).items():
+        composition = compositions.get(composition_id) if isinstance(compositions, dict) else None
+        name = (
+            composition.get("name") if isinstance(composition, dict) else None
+        ) or composition_id
+        placed = ", ".join(scenes[scene_id].name for scene_id in scene_ids if scene_id in scenes)
+        warnings.append(
+            f"The ambient lighting composition “{name}” is also placed on the timeline of "
+            f"{placed}. That copy follows scene time and restarts whenever the scene repeats; "
+            "the ambient already runs under every scene that inherits it. Remove it from the "
+            "scene timeline (Timeline editor > Compositions) to keep it continuous."
         )
 
     return {

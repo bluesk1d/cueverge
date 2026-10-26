@@ -1674,6 +1674,13 @@ class LightingBakeStatusResponse(GuiModel):
     error: str | None
     scene_ids: list[str]
     ambient: bool
+    ambient_scene_timeline_ids: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Scenes that inherit the ambient but also place this ambient composition on their "
+            "timeline; that copy follows scene time and restarts when the scene loops."
+        ),
+    )
 
 
 class LightingBakeStatusListResponse(GuiModel):
@@ -2670,6 +2677,16 @@ class SceneLightingPreviewRequest(GuiModel):
     source_revision: int = Field(ge=1)
     scene_id: str = Field(min_length=1)
     timestamp_ms: int = Field(ge=0)
+    ambient_elapsed_ms: int | None = Field(
+        default=None,
+        ge=0,
+        description=(
+            "Time since the show's ambient lighting started. Live, the ambient runs on the "
+            "controller clock and does not restart when a scene loops or changes; pass the "
+            "elapsed playback time here so looping previews stay continuous. Defaults to "
+            "timestamp_ms."
+        ),
+    )
     resource: str | None = None
     pixel_offset: int = Field(default=0, ge=0)
     pixel_limit: int = Field(default=1000, ge=1, le=4096)

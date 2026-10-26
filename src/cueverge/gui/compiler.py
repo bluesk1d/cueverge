@@ -191,18 +191,7 @@ def composition_scene_usage(
     draft: DraftProject,
 ) -> tuple[dict[str, tuple[str, ...]], set[str]]:
     """Scenes each composition plays in (including ambient), and the ambient compositions."""
-    usage: dict[str, list[str]] = {}
-    try:
-        graph = _compile_composition_graph(draft)
-    except (CompilationError, ValueError, KeyError, TypeError):
-        graph = {}
-    for scene in _list_items(graph.get("scenes")):
-        record = _object(scene)
-        scene_id = str(record.get("scene_id"))
-        for raw_context in _list_items(record.get("contexts")):
-            space = str(_object(raw_context).get("editing_space_id"))
-            if space != scene_id and scene_id not in usage.setdefault(space, []):
-                usage[space].append(scene_id)
+    usage = {key: list(value) for key, value in _timeline_composition_usage(draft).items()}
     ambient = parse_ambient_lighting(draft.editor_metadata)
     ambient_ids = {
         output.composition_id
@@ -217,6 +206,47 @@ def composition_scene_usage(
             scenes = usage.setdefault(composition_id, [])
             scenes.extend(scene_id for scene_id in inheriting if scene_id not in scenes)
     return {key: tuple(value) for key, value in usage.items()}, ambient_ids
+
+
+def ambient_compositions_on_scene_timelines(draft: DraftProject) -> dict[str, tuple[str, ...]]:
+    """Ambient compositions also placed on an inheriting scene's timeline, with those scenes.
+
+    The placed copy plays on scene time, so it restarts whenever the scene loops or starts,
+    unlike the ambient itself, which runs on the controller clock.
+    """
+    ambient = parse_ambient_lighting(draft.editor_metadata)
+    if ambient is None:
+        return {}
+    ambient_ids = {
+        output.composition_id for output in ambient.outputs if output.composition_id is not None
+    }
+    usage = _timeline_composition_usage(draft)
+    result: dict[str, tuple[str, ...]] = {}
+    for composition_id in sorted(ambient_ids):
+        scenes = tuple(
+            scene_id
+            for scene_id in usage.get(composition_id, ())
+            if scene_id not in ambient.excluded_scene_ids
+        )
+        if scenes:
+            result[composition_id] = scenes
+    return result
+
+
+def _timeline_composition_usage(draft: DraftProject) -> dict[str, tuple[str, ...]]:
+    usage: dict[str, list[str]] = {}
+    try:
+        graph = _compile_composition_graph(draft)
+    except (CompilationError, ValueError, KeyError, TypeError):
+        graph = {}
+    for scene in _list_items(graph.get("scenes")):
+        record = _object(scene)
+        scene_id = str(record.get("scene_id"))
+        for raw_context in _list_items(record.get("contexts")):
+            space = str(_object(raw_context).get("editing_space_id"))
+            if space != scene_id and scene_id not in usage.setdefault(space, []):
+                usage[space].append(scene_id)
+    return {key: tuple(value) for key, value in usage.items()}
 
 
 def _bake_manifest(

@@ -12,7 +12,10 @@ from typing import Literal, cast
 from uuid import uuid4
 
 from cueverge.gui.asset_upload import AssetUploadError, AssetUploadService
-from cueverge.gui.compiler import composition_scene_usage
+from cueverge.gui.compiler import (
+    ambient_compositions_on_scene_timelines,
+    composition_scene_usage,
+)
 from cueverge.gui.contracts import DraftProject
 from cueverge.gui.lighting_bake import render_lighting_composition
 from cueverge.gui.mapper_export import MapperExportError, MapperExportService
@@ -86,6 +89,8 @@ class LightingBakeStatus:
     error: str | None
     scene_ids: tuple[str, ...]
     ambient: bool
+    # Inheriting scenes whose timeline also places this ambient composition (restarts on loop).
+    ambient_scene_timeline_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -609,6 +614,7 @@ class RenderJobService:
         """Per LED composition: whether the revision has a current bake and which scenes use it."""
         stored = self.repository.get_revision(project_id, revision)
         usage, ambient = composition_scene_usage(stored.draft)
+        on_timelines = ambient_compositions_on_scene_timelines(stored.draft)
         jobs = self.list(project_id)
         statuses: list[LightingBakeStatus] = []
         for item in self._led_bakes(project_id, revision, stored.draft):
@@ -660,6 +666,7 @@ class RenderJobService:
                     ),
                     scene_ids=usage.get(item.composition_id, ()),
                     ambient=item.composition_id in ambient,
+                    ambient_scene_timeline_ids=on_timelines.get(item.composition_id, ()),
                 )
             )
         return tuple(statuses)

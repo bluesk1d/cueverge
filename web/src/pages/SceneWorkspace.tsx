@@ -75,6 +75,10 @@ export function SceneWorkspace({
   const [effectId, setEffectId] = useState("");
   const [filter, setFilter] = useState("");
   const [position, setPosition] = useState(0);
+  // Completed preview loops: the ambient keeps running across them, as it does live.
+  const [loops, setLoops] = useState(0);
+  const positionRef = useRef(position);
+  positionRef.current = position;
   const [playing, setPlaying] = useState(false);
   const [saving, setSaving] = useState(false);
   const [authoring, setAuthoring] = useState<"scene" | "output" | null>(null);
@@ -99,6 +103,7 @@ export function SceneWorkspace({
     setOutputIndex(0);
     setEffectId("");
     setPosition(0);
+    setLoops(0);
     setPlaying(false);
     setError(null);
   }, [draft.draft, draft.revision, sceneId, base, dirty]);
@@ -129,6 +134,7 @@ export function SceneWorkspace({
   const duration = durationValid ? declaredDuration : 1000;
   useEffect(() => {
     setPosition((current) => Math.min(current, duration - 1));
+    setLoops(0);
     setPlaying(false);
   }, [duration, sceneId]);
   const issues = !durationValid ? ["Enter a positive scene duration in seconds."]
@@ -158,15 +164,19 @@ export function SceneWorkspace({
       const now = performance.now();
       const delta = now - previous;
       previous = now;
-      setPosition((current) => {
-        const next = current + delta;
-        if (next >= duration) {
-          if (scene?.completion?.policy === "loop") return Math.floor(next % duration);
+      const next = positionRef.current + delta;
+      let position = Math.floor(next);
+      if (next >= duration) {
+        if (scene?.completion?.policy === "loop") {
+          position = Math.floor(next % duration);
+          setLoops((current) => current + Math.floor(next / duration));
+        } else {
           setPlaying(false);
-          return duration - 1;
+          position = duration - 1;
         }
-        return Math.floor(next);
-      });
+      }
+      positionRef.current = position;
+      setPosition(position);
     }, 250);
     return () => window.clearInterval(timer);
   }, [playing, duration, scene?.completion?.policy]);
@@ -297,6 +307,7 @@ export function SceneWorkspace({
           <ScenePreviewPanel
             projectId={draft.project.id} revision={draft.revision} document={document}
             dirty={dirty} sceneId={sceneId} resource="" position={position} playing={playing}
+            ambientElapsed={loops * duration + position}
             valid={issues.length === 0} assets={assets}
             hasLighting={outputs.length > 0 || ambientResources.length > 0} hasMedia={media.length > 0}
             onTargetNames={setTargetNames}
@@ -306,7 +317,7 @@ export function SceneWorkspace({
             <button disabled={issues.length > 0} onClick={() => setPlaying(!playing)}>
               {playing ? "Pause scene preview" : "Play scene preview"}
             </button>
-            <button onClick={() => { setPlaying(false); setPosition(0); }}>Restart scene preview</button>
+            <button onClick={() => { setPlaying(false); setPosition(0); setLoops(0); }}>Restart scene preview</button>
             <label>Scene preview time (seconds)
               <input type="range" min="0" max={(duration - 1) / 1000} step="0.001" value={position / 1000}
                 onChange={(event) => { setPlaying(false); setPosition(Math.round(Number(event.target.value) * 1000)); }} />
@@ -464,12 +475,14 @@ export interface ScenePreviewMedia {
  */
 export function ScenePreviewPanel({
   projectId, revision, document, dirty, sceneId, resource, position, playing, valid, assets,
-  hasLighting, hasMedia, onFailure, onTargetNames,
+  hasLighting, hasMedia, onFailure, onTargetNames, ambientElapsed,
 }: {
   projectId: string; revision: number; document: Document; dirty: boolean; sceneId: string;
   resource: string; position: number; playing: boolean; valid: boolean; assets: AssetRecord[];
   hasLighting: boolean; hasMedia: boolean; onFailure: () => void;
   onTargetNames: (names: Record<string, string>) => void;
+  /** Time since the ambient started; defaults to the scene position. */
+  ambientElapsed?: number;
 }) {
   const state = useSceneMediaPreview({
     projectId, revision, document, dirty, sceneId, position, valid, enabled: hasMedia,
@@ -482,6 +495,7 @@ export function ScenePreviewPanel({
     {drawsHouse && <ScenePreview
       projectId={projectId} revision={revision} document={document} dirty={dirty}
       sceneId={sceneId} resource={resource} position={position} valid={valid}
+      ambientElapsed={ambientElapsed}
       lightingEnabled={hasLighting} onFailure={onFailure} onTargetNames={onTargetNames}
       media={hasMedia ? { state, outputs: mediaOutputs, assets, playing } : undefined}
     />}
@@ -493,7 +507,7 @@ export function ScenePreviewPanel({
   </>;
 }
 
-export function ScenePreview({ projectId, revision, document, dirty, sceneId, resource, position, onFailure, valid, onTargetNames, external = false, frameOverride = null, intent = false, installationIdOverride, lightingEnabled = true, media, subject = "scene" }: {
+export function ScenePreview({ projectId, revision, document, dirty, sceneId, resource, position, onFailure, valid, onTargetNames, external = false, frameOverride = null, intent = false, installationIdOverride, lightingEnabled = true, media, subject = "scene", ambientElapsed }: {
   projectId: string; revision: number; document?: Document; dirty: boolean; sceneId: string;
   resource: string; position: number; onFailure: () => void;
   valid: boolean;
@@ -505,6 +519,8 @@ export function ScenePreview({ projectId, revision, document, dirty, sceneId, re
   media?: ScenePreviewMedia;
   /** What an external frame shows; "ambient" labels the show-wide ambient loop. */
   subject?: "scene" | "ambient";
+  /** Time since the show's ambient started, so it does not restart when the scene loops. */
+  ambientElapsed?: number;
 }) {
   const [requestedFrame, setFrame] = useState<SceneLightingPreview | null>(null);
   const frame = external ? frameOverride : requestedFrame;
@@ -519,6 +535,8 @@ export function ScenePreview({ projectId, revision, document, dirty, sceneId, re
   const [retry, setRetry] = useState(0);
   const latestPosition = useRef(position);
   latestPosition.current = position;
+  const latestAmbient = useRef(ambientElapsed);
+  latestAmbient.current = ambientElapsed;
   useEffect(() => setPhotoFailed(false), [photoId, retry]);
   const installationId = installationIdOverride ?? document?.editor_metadata.installation_id;
   useEffect(() => {
@@ -543,24 +561,26 @@ export function ScenePreview({ projectId, revision, document, dirty, sceneId, re
     let abort = new AbortController();
     let watchdog: number | undefined;
     let pending = false;
-    let previousPosition: number | null = null;
+    let previousPosition: string | null = null;
     const evaluate = () => {
-      if (!current || pending || previousPosition === latestPosition.current) return;
+      const key = `${latestPosition.current}:${latestAmbient.current ?? ""}`;
+      if (!current || pending || previousPosition === key) return;
       pending = true;
       const requestedPosition = latestPosition.current;
-      previousPosition = requestedPosition;
+      const requestedAmbient = latestAmbient.current;
+      previousPosition = key;
       abort = new AbortController();
       setLoading(true);
       setError(null);
       watchdog = window.setTimeout(() => abort.abort(), 8000);
-      previewSceneLighting(projectId, revision, sceneId, requestedPosition, resource || null, dirty ? document : undefined, abort.signal, pixelLimit)
+      previewSceneLighting(projectId, revision, sceneId, requestedPosition, resource || null, dirty ? document : undefined, abort.signal, pixelLimit, requestedAmbient)
         .then((value) => { if (current) setFrame(value); })
         .catch((failure: unknown) => {
           if (!current) return;
           setFrame(null);
           setError(abort.signal.aborted ? "Preview timed out. Try again after checking the controller."
             : failure instanceof Error ? failure.message : "Scene preview failed.");
-          previousPosition = latestPosition.current;
+          previousPosition = `${latestPosition.current}:${latestAmbient.current ?? ""}`;
           onFailure();
         }).finally(() => {
           window.clearTimeout(watchdog);

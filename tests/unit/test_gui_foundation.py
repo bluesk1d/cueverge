@@ -6146,6 +6146,115 @@ def _draft(*, editor_metadata: dict[str, Any] | None = None) -> dict[str, Any]:
     }
 
 
+def test_mcp_ambient_keeps_its_own_clock_across_scene_loops(tmp_path: Path) -> None:
+    runtime, services, _ = _mcp_fixture(tmp_path)
+    document = json.loads(
+        (Path(__file__).parents[1] / "fixtures" / "usability-authoring.json").read_text()
+    )
+    document["editor_metadata"]["ambient_lighting"] = {
+        "outputs": [
+            {
+                "resource": "roofline.demo",
+                "cycle_ms": 4000,
+                "cues": [
+                    {
+                        "id": "blue",
+                        "primitive": "solid",
+                        "start_ms": 0,
+                        "duration_ms": 2000,
+                        "color": "#0000FF",
+                    },
+                    {
+                        "id": "red",
+                        "primitive": "solid",
+                        "start_ms": 2000,
+                        "duration_ms": 2000,
+                        "color": "#FF0000",
+                    },
+                ],
+            }
+        ],
+        "excluded_scene_ids": [],
+    }
+    project = services.repository.create_project(
+        name="Ambient clock fixture",
+        draft=DraftProject.model_validate(document),
+        actor="admin",
+        role=Role.ADMINISTRATOR,
+        occurred_at=datetime.now(UTC).isoformat(),
+    )
+    project_id = project.project.id
+    simulator = _mcp_token(services, project_id, (McpScope.READ, McpScope.SIMULATION))
+    reader = _mcp_token(services, project_id, (McpScope.READ,))
+    editor = _mcp_token(services, project_id, (McpScope.READ, McpScope.DIRECT_EDIT))
+    with TestClient(
+        create_app(runtime, gui_services=services), base_url="http://localhost"
+    ) as client:
+        capabilities = _mcp_tool(client, simulator, "get_capabilities")["structuredContent"]
+        assert "ambient_elapsed_ms" in capabilities["scene_lighting_preview"]
+        assert "scene loops" in capabilities["ambient_lighting"]["clock"]
+        assert "get_show_plan" in capabilities["ambient_lighting"]["scene_timeline_placement"]
+
+        body = {"scene_id": "legacy-sweep", "timestamp_ms": 1000}
+        restarted = _mcp_tool(client, simulator, "preview_scene_lighting", **body)
+        assert restarted["isError"] is False, restarted
+        continued = _mcp_tool(
+            client, simulator, "preview_scene_lighting", **body, ambient_elapsed_ms=5000 + 1000
+        )
+        assert continued["isError"] is False, continued
+        assert restarted["structuredContent"]["ambient_elapsed_ms"] == 1000
+        assert continued["structuredContent"]["ambient_elapsed_ms"] == 6000
+        assert continued["structuredContent"]["timestamp_ms"] == 1000
+        assert any(
+            "continues across scene loops" in note
+            for note in continued["structuredContent"]["limitations"]
+        )
+        assert (
+            _mcp_tool(client, simulator, "preview_scene_lighting", **body, ambient_elapsed_ms=-1)[
+                "isError"
+            ]
+            is True
+        )
+        assert (
+            _mcp_tool(client, reader, "preview_scene_lighting", **body, ambient_elapsed_ms=10)[
+                "isError"
+            ]
+            is True
+        )
+
+        # An ambient composition also placed on an inheriting scene restarts with that scene.
+        changed = copy.deepcopy(document)
+        changed["editor_metadata"]["compositions"] = {
+            **changed["editor_metadata"].get("compositions", {}),
+            "loop": {
+                "id": "loop",
+                "name": "Ship lights loop",
+                "duration_ms": 2000,
+                "space_kind": "stage",
+                "target_id": "shared-stage",
+                "width": 10,
+                "height": 6,
+                "stage_lighting_surfaces": ["roof"],
+                "stage_projector_resources": [],
+            },
+        }
+        changed["editor_metadata"]["ambient_lighting"]["outputs"][0]["composition_id"] = "loop"
+        changed["editor_metadata"]["scene_compositions"] = {
+            **changed["editor_metadata"].get("scene_compositions", {}),
+            "legacy-sweep": ["loop"],
+        }
+        saved = _mcp_tool(client, editor, "update_project_draft", base_revision=1, draft=changed)
+        assert saved["isError"] is False, saved
+        plan = _mcp_tool(client, reader, "get_show_plan")["structuredContent"]
+        assert any(
+            "Ship lights loop" in warning and "restarts" in warning for warning in plan["warnings"]
+        )
+        bakes = _mcp_tool(client, reader, "get_lighting_bake_status")["structuredContent"]
+        loop = next(item for item in bakes["compositions"] if item["composition_id"] == "loop")
+        assert loop["ambient"] is True
+        assert loop["ambient_scene_timeline_ids"] == ["legacy-sweep"]
+
+
 def test_mcp_ambient_lighting_is_discoverable_validated_and_previewed(tmp_path: Path) -> None:
     runtime, services, _ = _mcp_fixture(tmp_path)
     document = json.loads(

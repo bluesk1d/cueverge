@@ -73,6 +73,7 @@ def preview_project_scene(
         draft=draft,
         scene_id=request.scene_id,
         timestamp_ms=request.timestamp_ms,
+        ambient_elapsed_ms=request.ambient_elapsed_ms,
         resource=request.resource,
         pixel_offset=request.pixel_offset,
         pixel_limit=request.pixel_limit,
@@ -88,6 +89,7 @@ def evaluate_scene_lighting(
     draft: DraftProject,
     scene_id: str,
     timestamp_ms: int,
+    ambient_elapsed_ms: int | None = None,
     resource: str | None = None,
     pixel_offset: int = 0,
     pixel_limit: int = 1000,
@@ -101,6 +103,9 @@ def evaluate_scene_lighting(
         raise ScenePreviewError("preview time must be within the scene duration")
     if pixel_offset < 0 or not 1 <= pixel_limit <= 4096:
         raise ScenePreviewError("pixel offset/limit is outside the supported range")
+    if ambient_elapsed_ms is not None and ambient_elapsed_ms < 0:
+        raise ScenePreviewError("ambient elapsed time must not be negative")
+    ambient_ms = timestamp_ms if ambient_elapsed_ms is None else ambient_elapsed_ms
     counts = {
         binding.resource: binding.pixel_count
         for binding in draft.installation.resources
@@ -202,8 +207,14 @@ def evaluate_scene_lighting(
             raise ScenePreviewError("lighting output does not exist in this scene")
         if looks_by_resource:
             scene_limitations.append(
-                "Ambient lighting is previewed from its loop start at scene time 0; live, it "
-                "keeps running across scene changes."
+                (
+                    "Ambient lighting is previewed from its loop start at scene time 0 and "
+                    "restarts with the scene here; pass ambient_elapsed_ms to keep it "
+                    "continuous. Live, it keeps running across scene loops and changes."
+                    if ambient_elapsed_ms is None
+                    else "Ambient lighting is previewed at its own elapsed time and continues "
+                    "across scene loops, as it does live."
+                )
                 if any(
                     scene_inherits_ambient(looks, scene_id) for looks in looks_by_resource.values()
                 )
@@ -229,7 +240,7 @@ def evaluate_scene_lighting(
                 position_ms=output_position_ms,
                 duration_ms=scene.duration_ms,
                 base_frame=(
-                    render_ambient(looks, timestamp_ms)
+                    render_ambient(looks, ambient_ms)
                     if looks is not None
                     and (output.spatial_sequences or output.definition.timeline)
                     and scene_inherits_ambient(looks, scene_id)
@@ -262,7 +273,7 @@ def evaluate_scene_lighting(
         for looks in ambient_only:
             if pixel_offset >= looks.pixel_count:
                 raise ScenePreviewError("pixel offset is outside the output")
-            colors = render_ambient_output(looks, timestamp_ms, scene_id)
+            colors = render_ambient_output(looks, ambient_ms, scene_id)
             end = min(looks.pixel_count, pixel_offset + pixel_limit)
             result.append(
                 {
@@ -270,7 +281,8 @@ def evaluate_scene_lighting(
                     "resource": looks.definition.resource,
                     "pixel_count": looks.pixel_count,
                     "pixel_offset": pixel_offset,
-                    "output_position_ms": timestamp_ms,
+                    "output_position_ms": ambient_ms % looks.definition.cycle_ms,
+                    "cycle_ms": looks.definition.cycle_ms,
                     "colors": [list(color) for color in colors[pixel_offset:end]],
                     "next_pixel_offset": end if end < looks.pixel_count else None,
                     "limitations": [],
@@ -281,6 +293,7 @@ def evaluate_scene_lighting(
             "source_revision": source_revision,
             "scene_id": scene_id,
             "timestamp_ms": timestamp_ms,
+            "ambient_elapsed_ms": ambient_ms,
             "duration_ms": scene.duration_ms,
             "unsaved": unsaved,
             "evaluation": "production_lighting_renderer",

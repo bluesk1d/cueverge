@@ -70,3 +70,18 @@ test("renders nothing for scenes without LED compositions", async () => {
   await waitFor(() => expect(lookup).toHaveBeenCalled());
   expect(container.textContent).toBe("");
 });
+
+test("warns when the ambient composition is also placed on this scene's timeline", async () => {
+  vi.spyOn(api, "getLightingBakeStatus").mockResolvedValue({
+    project_id: "p", revision: 7, compositions: [status({
+      state: "current", ambient: true, scene_ids: ["ambient", "finale"], ambient_scene_timeline_ids: ["ambient"],
+    })],
+  });
+  const { rerender } = render(<LedBakeChip projectId="p" revision={7} sceneId="ambient" canBake
+    dirty={false} onOpenBakeSettings={() => undefined} />);
+  const note = await screen.findByRole("note");
+  expect(note.textContent).toMatch(/External ship lights is the show.s ambient lighting but also placed on this scene.s timeline/);
+  rerender(<LedBakeChip projectId="p" revision={7} sceneId="finale" canBake
+    dirty={false} onOpenBakeSettings={() => undefined} />);
+  expect(screen.queryByRole("note")).toBeNull();
+});

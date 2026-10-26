@@ -787,6 +787,8 @@ export interface SceneLightingPreview {
   source_revision: number;
   scene_id: string;
   timestamp_ms: number;
+  /** Time since the show's ambient started; it keeps running across scene loops. */
+  ambient_elapsed_ms?: number;
   duration_ms: number;
   unsaved: boolean;
   evaluation: "production_lighting_renderer";
@@ -882,6 +884,7 @@ export async function previewSceneLighting(
   proposedDraft?: ProjectDraftRecord["draft"],
   signal?: AbortSignal,
   pixelLimit = 4096,
+  ambientElapsedMs?: number,
 ): Promise<SceneLightingPreview> {
   return request<SceneLightingPreview>(
     `/api/gui/v1/projects/${encodeURIComponent(projectId)}/scene-lighting-preview`,
@@ -892,6 +895,7 @@ export async function previewSceneLighting(
       body: JSON.stringify({
         source_revision: sourceRevision, scene_id: sceneId, timestamp_ms: timestampMs,
         resource, proposed_draft: proposedDraft, pixel_limit: pixelLimit,
+        ...(ambientElapsedMs === undefined ? {} : { ambient_elapsed_ms: ambientElapsedMs }),
       }),
     },
     true,
@@ -1242,6 +1246,8 @@ export interface LightingBakeStatus {
   error: string | null;
   scene_ids: string[];
   ambient: boolean;
+  /** Inheriting scenes that also place this ambient composition on their timeline. */
+  ambient_scene_timeline_ids?: string[];
 }
 
 export interface LightingBakeStatusList {

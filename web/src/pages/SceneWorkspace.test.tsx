@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
 
+import * as api from "../api";
 import { ApiError, ProjectDraftRecord } from "../api";
 import { SceneWorkspace } from "./SceneWorkspace";
 
@@ -85,4 +86,45 @@ test("without show ambient lighting the scene points to Show options", () => {
   />);
   expect(screen.queryByRole("checkbox", { name: /Inherit ambient lighting/ })).toBeNull();
   expect(screen.getByText(/Show options › Ambient lighting/)).toBeInTheDocument();
+});
+
+test("a looping scene preview keeps the ambient running instead of restarting it", async () => {
+  vi.useFakeTimers();
+  try {
+    let now = 0;
+    vi.spyOn(performance, "now").mockImplementation(() => now);
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response("{}", { status: 404 }));
+    const preview = vi.spyOn(api, "previewSceneLighting").mockImplementation(
+      async (_project, revision, sceneId, timestampMs, _resource, _draft, _signal, _limit, ambientElapsedMs) => ({
+        project_id: "project-1", source_revision: revision, scene_id: sceneId, timestamp_ms: timestampMs,
+        ambient_elapsed_ms: ambientElapsedMs, duration_ms: 1000, unsaved: false,
+        evaluation: "production_lighting_renderer", hardware_commands_sent: false, outputs: [], limitations: [],
+      }),
+    );
+    const loopingDraft = {
+      ...draft,
+      draft: {
+        ...draft.draft,
+        editor_metadata: { ambient_lighting: { schema_version: 1, outputs: [{ resource: "roof", cycle_ms: 4000, cues: [] }], excluded_scene_ids: [] } },
+        scenes: [{ ...scene("klown", "Klown Ship"), duration_ms: 1000, completion: { policy: "loop" } }],
+      },
+    } as unknown as ProjectDraftRecord;
+    render(<SceneWorkspace
+      draft={loopingDraft} sceneId="klown" canEdit canAdd assets={[]}
+      onSelectScene={vi.fn()} onSave={vi.fn()} onDirtyChange={vi.fn()}
+      onOpenTimeline={vi.fn()} onDelete={vi.fn()} onCreated={vi.fn()}
+    />);
+    fireEvent.click(screen.getByRole("button", { name: "Play scene preview" }));
+    now = 1250;
+    await vi.advanceTimersByTimeAsync(500);
+    const last = preview.mock.calls.at(-1);
+    // Scene time wrapped to 250 ms; the ambient is 1250 ms in, as it would be live.
+    expect(last?.[3]).toBe(250);
+    expect(last?.[8]).toBe(1250);
+    fireEvent.click(screen.getByRole("button", { name: "Restart scene preview" }));
+    await vi.advanceTimersByTimeAsync(500);
+    expect(preview.mock.calls.at(-1)?.slice(3, 9)).toEqual([0, null, undefined, expect.anything(), expect.any(Number), 0]);
+  } finally {
+    vi.useRealTimers();
+  }
 });

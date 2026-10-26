@@ -81,6 +81,7 @@ export function LedBakeChip({
   useEffect(() => setOpen(false), [sceneId]);
   if (items.length === 0) return null;
   const tone = chipTone(items);
+  const restarting = items.filter((item) => item.ambient_scene_timeline_ids?.includes(sceneId));
   const needing = items.filter((item) => item.state === "missing" || item.state === "failed");
   const blocked = !canBake
     ? "You can view bakes but not start them."
@@ -113,6 +114,15 @@ export function LedBakeChip({
         <span aria-hidden="true" className="led-bake-chip__dot" />
         {chipLabel(tone, items)}
       </button>
+      {restarting.length > 0 && (
+        <p className="led-bake-chip__warning" role="note">
+          {restarting.map((item) => item.name).join(", ")}{" "}
+          {restarting.length === 1 ? "is" : "are"} the show&apos;s ambient lighting but also
+          placed on this scene&apos;s timeline, so that copy restarts each time the scene
+          repeats. Remove it from the timeline (Edit timeline › Compositions); the ambient
+          already runs continuously under this scene.
+        </p>
+      )}
       {open && (
         <div className="led-bake-chip__panel" role="region" aria-label="LED bakes for this scene">
           <p>

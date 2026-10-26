@@ -373,3 +373,142 @@ def test_compiled_ambient_uses_a_baked_composition_and_keeps_controller_safe_sta
     assert render_ambient(looks, 500) == ((0, 200, 0),) * 4
     assert render_ambient(looks, 1500) == ((0, 0, 0),) * 4
     assert render_ambient(looks, 2500) == ((0, 200, 0),) * 4
+
+
+def _looping_ambient_draft() -> DraftProject:
+    """Accent repeats every 5 s; the ambient is blue for 2 s then green for 1 s (3 s loop)."""
+    document = _draft(
+        _ambient(
+            cycle_ms=3000,
+            brightness_limit=1.0,
+            cues=[
+                {
+                    "id": "blue",
+                    "primitive": "solid",
+                    "start_ms": 0,
+                    "duration_ms": 2000,
+                    "color": "#0000FF",
+                },
+                {
+                    "id": "green",
+                    "primitive": "solid",
+                    "start_ms": 2000,
+                    "duration_ms": 1000,
+                    "color": "#00FF00",
+                },
+            ],
+        )
+    )
+    for scene in document["scenes"]:
+        scene["completion"] = {"policy": "loop"}
+    return DraftProject.model_validate(document)
+
+
+def test_scene_loop_does_not_restart_the_ambient_on_the_controller(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        compiled = DraftCompiler(tmp_path / "compiled").compile(
+            project_id="project", revision=1, draft=_looping_ambient_draft()
+        )
+        clock = ManualClock()
+        sink = MemoryFrameSink()
+        runtime = ControllerRuntime(
+            clock=clock, sink=sink, catalog=load_show_package(compiled.package_root)
+        )
+        first = await runtime.start_scene("accent")
+        clock.now += 0.5
+        assert runtime.render_frame()
+        # Scene time 500 ms, ambient 500 ms: LED 0 is the scene's red, the rest ambient blue.
+        assert sink.frames[-1].pixels[1:] == ((0, 0, 255),) * 3
+
+        clock.now += 4.6
+        runtime.render_frame()
+        for _ in range(20):
+            await asyncio.sleep(0)
+            if (
+                runtime.active_scene is not None
+                and runtime.active_scene.scene_instance_id != first.scene_instance_id
+            ):
+                break
+        looped = runtime.active_scene
+        assert looped is not None and looped.definition.id == "accent"
+        assert looped.scene_instance_id != first.scene_instance_id
+
+        clock.now += 0.4
+        assert runtime.render_frame()
+        # The scene restarted (position ~400 ms) but the ambient is ~5.5 s in: green, not blue.
+        assert sink.frames[-1].pixels[0] == (255, 0, 0)
+        assert sink.frames[-1].pixels[1:] == ((0, 255, 0),) * 3
+        await runtime.shutdown()
+
+    asyncio.run(scenario())
+
+
+def test_scene_preview_evaluates_the_ambient_at_its_own_elapsed_time() -> None:
+    from cueverge.gui.scene_preview import evaluate_scene_lighting
+
+    draft = _looping_ambient_draft()
+
+    def preview(**extra: Any) -> dict[str, Any]:
+        return evaluate_scene_lighting(
+            project_id="project",
+            source_revision=1,
+            draft=draft,
+            scene_id="accent",
+            timestamp_ms=500,
+            **extra,
+        )
+
+    restarted = preview()
+    continuous = preview(ambient_elapsed_ms=5500)
+    assert restarted["ambient_elapsed_ms"] == 500
+    assert continuous["ambient_elapsed_ms"] == 5500
+    assert restarted["outputs"][0]["colors"][1:] == [[0, 0, 255]] * 3
+    assert continuous["outputs"][0]["colors"][1:] == [[0, 255, 0]] * 3
+    # The scene's own pixel follows scene time either way.
+    assert restarted["outputs"][0]["colors"][0] == continuous["outputs"][0]["colors"][0]
+    assert any("continues across scene loops" in item for item in continuous["limitations"])
+    assert any("ambient_elapsed_ms" in item for item in restarted["limitations"])
+
+
+def _ambient_composition_draft(placed_in: str | None) -> DraftProject:
+    composition = {
+        "id": "loop",
+        "name": "Ship lights loop",
+        "duration_ms": 2000,
+        "space_kind": "stage",
+        "target_id": "shared-stage",
+        "width": 10,
+        "height": 6,
+        "stage_lighting_surfaces": ["roof"],
+        "stage_projector_resources": [],
+    }
+    extra: dict[str, object] = {"compositions": {"loop": composition}}
+    if placed_in is not None:
+        extra["scene_compositions"] = {placed_in: ["loop"]}
+    return DraftProject.model_validate(
+        _draft(
+            {
+                "outputs": [{"resource": "lights", "composition_id": "loop"}],
+                "excluded_scene_ids": ["plain"],
+            },
+            extra,
+        )
+    )
+
+
+def test_ambient_composition_placed_on_an_inheriting_scene_timeline_is_reported() -> None:
+    from cueverge.gui.compiler import ambient_compositions_on_scene_timelines
+    from cueverge.gui.show_plan import describe_show_plan
+
+    assert ambient_compositions_on_scene_timelines(_ambient_composition_draft(None)) == {}
+    # Excluded scenes may deliberately play the composition on scene time.
+    assert ambient_compositions_on_scene_timelines(_ambient_composition_draft("plain")) == {}
+    placed = _ambient_composition_draft("accent")
+    assert ambient_compositions_on_scene_timelines(placed) == {"loop": ("accent",)}
+    warnings = describe_show_plan(placed)["warnings"]
+    assert isinstance(warnings, list)
+    assert any("Ship lights loop" in item and "Accent" in item for item in warnings)
+    assert not any(
+        "Ship lights loop" in item
+        for item in describe_show_plan(_ambient_composition_draft(None))["warnings"]  # type: ignore[union-attr]
+    )

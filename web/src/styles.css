@@ -7494,6 +7494,15 @@ p {
 
 .led-bake-chip__actions { display: inline-flex; gap: 6px; }
 .led-bake-chip__error { display: block; color: var(--cv-danger); }
+.led-bake-chip__warning {
+  max-width: 36rem;
+  margin: 6px 0 0;
+  padding: 6px 8px;
+  border: 1px solid var(--cv-warning);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--cv-warning) 10%, var(--cv-bg));
+  font-size: 0.85rem;
+}
 
 .ambient-effects {
   display: grid;
