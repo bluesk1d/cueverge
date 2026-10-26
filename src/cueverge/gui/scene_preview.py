@@ -8,8 +8,13 @@ from typing import TYPE_CHECKING
 
 from cueverge.core.loader import load_show_package
 from cueverge.core.models import SceneDefinitionV2
+from cueverge.gui.ambient_lighting import parse_ambient_lighting
 from cueverge.gui.compiler import CompilationError, DraftCompiler
-from cueverge.gui.contracts import DraftProject, SceneLightingPreviewRequest
+from cueverge.gui.contracts import (
+    AmbientLightingPreviewRequest,
+    DraftProject,
+    SceneLightingPreviewRequest,
+)
 from cueverge.gui.mapper_export import MapperExportError
 from cueverge.gui.render_jobs import RenderJobError
 from cueverge.lighting.ambient import (
@@ -282,6 +287,159 @@ def evaluate_scene_lighting(
             "hardware_commands_sent": False,
             "outputs": result,
             "limitations": scene_limitations,
+        }
+
+
+def preview_project_ambient(
+    services: "GuiServices", project_id: str, request: AmbientLightingPreviewRequest
+) -> dict[str, object]:
+    stored = services.repository.get_revision(project_id, request.source_revision)
+    draft = request.proposed_draft if request.proposed_draft is not None else stored.draft
+    if draft.editor_metadata.get("installation_id") != stored.draft.editor_metadata.get(
+        "installation_id"
+    ):
+        raise ScenePreviewError("preview cannot change the project's installation binding")
+    unsaved = draft != stored.draft
+    lighting_artifacts: dict[str, Path] | None = None
+    if not unsaved:
+        try:
+            lighting_artifacts = services.render_jobs.current_lighting_artifacts(
+                stored.project.id, stored.revision
+            )
+        except (RenderJobError, MapperExportError, ValueError, OSError):
+            lighting_artifacts = None
+    return evaluate_ambient_lighting(
+        project_id=stored.project.id,
+        source_revision=stored.revision,
+        draft=draft,
+        timestamp_ms=request.timestamp_ms,
+        resource=request.resource,
+        pixel_offset=request.pixel_offset,
+        pixel_limit=request.pixel_limit,
+        unsaved=unsaved,
+        lighting_artifacts=lighting_artifacts,
+    )
+
+
+def evaluate_ambient_lighting(
+    *,
+    project_id: str,
+    source_revision: int,
+    draft: DraftProject,
+    timestamp_ms: int,
+    resource: str | None = None,
+    pixel_offset: int = 0,
+    pixel_limit: int = 1000,
+    unsaved: bool = False,
+    lighting_artifacts: dict[str, Path] | None = None,
+) -> dict[str, object]:
+    """The show-wide ambient alone at a time on its loop, with the production renderer."""
+    ambient = parse_ambient_lighting(draft.editor_metadata)
+    if ambient is None or not ambient.outputs:
+        raise ScenePreviewError("this show has no ambient lighting")
+    if resource is not None and all(output.resource != resource for output in ambient.outputs):
+        raise ScenePreviewError("ambient lighting does not include this LED output")
+    if pixel_offset < 0 or not 1 <= pixel_limit <= 4096:
+        raise ScenePreviewError("pixel offset/limit is outside the supported range")
+    counts = {
+        binding.resource: binding.pixel_count
+        for binding in draft.installation.resources
+        if binding.pixel_count is not None
+    }
+    pixels = sum(counts.get(output.resource, 0) for output in ambient.outputs)
+    work = sum(
+        counts.get(output.resource, 0) * (len(output.cues) + 1) for output in ambient.outputs
+    )
+    if pixels > 65536 or work > 2_000_000:
+        raise ScenePreviewError(
+            "Ambient preview exceeds its pixel/index budget; use offline rendering."
+        )
+    with (
+        _preview_slot(),
+        tempfile.TemporaryDirectory(prefix="cueverge-ambient-preview-") as directory,
+    ):
+        compiler = DraftCompiler(Path(directory))
+        limitations: list[str] = []
+        try:
+            compiled = compiler.compile(
+                project_id=project_id,
+                revision=source_revision,
+                draft=draft,
+                lighting_artifacts=lighting_artifacts or None,
+            )
+        except CompilationError as error:
+            if not lighting_artifacts:
+                raise
+            limitations.append(f"Baked LED compositions could not be used: {error}.")
+            compiled = compiler.compile(
+                project_id=project_id, revision=source_revision, draft=draft
+            )
+        unbaked = sorted(
+            {
+                _composition_name(draft.editor_metadata.get("compositions"), output.composition_id)
+                for output in ambient.outputs
+                if output.composition_id is not None
+                and output.composition_id not in (lighting_artifacts or {})
+            }
+        )
+        if unbaked:
+            limitations.append(
+                "Ambient LED composition loops not shown: "
+                + ", ".join(unbaked)
+                + (
+                    ". Save, then bake them to include them in this preview."
+                    if unsaved
+                    else ". Bake them for this saved revision to include them in this preview."
+                )
+            )
+        catalog = load_show_package(compiled.package_root)
+        looks_by_resource = dict(catalog.lighting_looks_by_resource)
+        if catalog.lighting_looks is not None:
+            looks_by_resource.setdefault(
+                catalog.lighting_looks.definition.resource, catalog.lighting_looks
+            )
+        selected = [
+            looks_by_resource[output.resource]
+            for output in ambient.outputs
+            if output.resource in looks_by_resource
+            and (resource is None or output.resource == resource)
+        ]
+        if not selected:
+            raise ScenePreviewError("ambient lighting has nothing to preview yet")
+        if sum(min(pixel_limit, max(0, looks.pixel_count - pixel_offset)) for looks in selected) > (
+            4096
+        ):
+            raise ScenePreviewError(
+                "preview exceeds 4096 samples; select an output or smaller page"
+            )
+        result = []
+        for looks in selected:
+            if pixel_offset >= looks.pixel_count:
+                raise ScenePreviewError("pixel offset is outside the output")
+            colors = render_ambient_output(looks, timestamp_ms, None)
+            end = min(looks.pixel_count, pixel_offset + pixel_limit)
+            result.append(
+                {
+                    "output_id": f"ambient:{looks.definition.resource}",
+                    "resource": looks.definition.resource,
+                    "pixel_count": looks.pixel_count,
+                    "pixel_offset": pixel_offset,
+                    "output_position_ms": timestamp_ms % looks.definition.cycle_ms,
+                    "cycle_ms": looks.definition.cycle_ms,
+                    "colors": [list(color) for color in colors[pixel_offset:end]],
+                    "next_pixel_offset": end if end < looks.pixel_count else None,
+                    "limitations": [],
+                }
+            )
+        return {
+            "project_id": project_id,
+            "source_revision": source_revision,
+            "timestamp_ms": timestamp_ms,
+            "unsaved": unsaved,
+            "evaluation": "production_lighting_renderer",
+            "hardware_commands_sent": False,
+            "outputs": result,
+            "limitations": limitations,
         }
 
 

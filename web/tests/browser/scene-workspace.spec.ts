@@ -842,3 +842,55 @@ test("show ambient lighting is authored once and each scene can opt out", async 
   await expect(page.getByRole("group", { name: "Scenes that inherit ambient lighting" })
     .getByRole("checkbox", { name: state.document.scenes[0].name, exact: true })).not.toBeChecked();
 });
+
+test("ambient effects written through MCP are listed, previewed and editable in the panel", async ({ page }) => {
+  const state = await sceneRoutes(page);
+  Object.assign(state.document.editor_metadata, { ambient_lighting: {
+    schema_version: 1, excluded_scene_ids: [],
+    outputs: [{ resource: "roofline.demo", cycle_ms: 12800, brightness_limit: 1, cues: [
+      { id: "porch-red-base", primitive: "solid", start_ms: 0, duration_ms: 12800, color: "#FF0000",
+        brightness: 1, target: { kind: "fixture", id: "porch-stripe-surface" } },
+      { id: "mouth-red-gable", primitive: "pulse", start_ms: 0, duration_ms: 12800, color: "#FF0000",
+        brightness: 1, period_ms: 900, target: { kind: "segment", id: "porch-gable-right" } },
+      { id: "garage-candy-sweep", primitive: "path_sweep", start_ms: 8900, duration_ms: 3600,
+        color: "#00D8FF", brightness: 1, width_pixels: 4, target: { kind: "path", id: "garage-candy-conduit" } },
+    ] }],
+  } });
+  const previews: Record<string, unknown>[] = [];
+  await page.route("**/api/gui/v1/projects/*/ambient-lighting-preview", async (route) => {
+    const body = route.request().postDataJSON();
+    previews.push(body);
+    return route.fulfill({ json: {
+      project_id: "demo-project", source_revision: body.source_revision, timestamp_ms: body.timestamp_ms,
+      unsaved: Boolean(body.proposed_draft), evaluation: "production_lighting_renderer",
+      hardware_commands_sent: false, limitations: [],
+      outputs: [{ output_id: "ambient:roofline.demo", resource: "roofline.demo", pixel_count: 12,
+        pixel_offset: 0, output_position_ms: body.timestamp_ms % 12800, cycle_ms: 12800,
+        colors: Array.from({ length: 12 }, () => [255, 0, 0]), next_pixel_offset: null, limitations: [] }],
+    } });
+  });
+  await openScenes(page);
+  await page.getByText("Ambient lighting", { exact: true }).click();
+  await expect(page.getByText("· 3 effects on 1 output")).toBeVisible();
+  const list = page.getByRole("region", { name: "Ambient effects on roofline.demo" });
+  await expect(list.getByRole("button", { name: /Edit effect/ })).toHaveCount(3);
+  await expect.poll(() => previews.length).toBeGreaterThan(0);
+  expect(previews[0]).toMatchObject({ timestamp_ms: 0, resource: null });
+  expect(previews[0].proposed_draft).toBeUndefined();
+
+  await list.getByRole("button", { name: "Edit effect garage-candy-sweep" }).click();
+  const inspector = page.getByRole("group", { name: "Selected ambient effect on roofline.demo" });
+  await expect(inspector.getByRole("combobox", { name: "Effect", exact: true })).toHaveValue("path_sweep");
+  await expect(inspector.getByRole("combobox", { name: "Target decorations" })).toHaveValue("path:garage-candy-conduit");
+  await expect(page.getByLabel("Ambient preview time (seconds)")).toHaveValue("8.9");
+  await inspector.getByLabel("Width (LEDs)").fill("6");
+  await expect.poll(() => previews.some((body) => body.proposed_draft !== undefined)).toBe(true);
+  await page.getByRole("button", { name: "Save ambient lighting" }).click();
+  await expect.poll(() => state.saves.length).toBe(1);
+  const saved = (state.saves[0].editor_metadata as unknown as {
+    ambient_lighting: { outputs: { cues: Record<string, unknown>[] }[] };
+  }).ambient_lighting.outputs[0].cues;
+  expect(saved.map((cue) => cue.id)).toEqual(["porch-red-base", "mouth-red-gable", "garage-candy-sweep"]);
+  expect(saved[2]).toMatchObject({ width_pixels: 6, start_ms: 8900, target: { kind: "path", id: "garage-candy-conduit" } });
+  expect(saved[1]).toMatchObject({ primitive: "pulse", period_ms: 900 });
+});

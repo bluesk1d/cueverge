@@ -261,13 +261,19 @@ never need to match up ambient loops.
 
 1. Open the show and expand **Ambient lighting** (below **Show options**).
 2. Tick **Ambient lighting on** an LED output and choose a **Source**:
-   - **Simple look**: a steady color, pulse, flicker, sparkle or chase, with
-     color, brightness, speed and loop length.
+   - **Effects**: one or more lighting effects that loop every **Loop length**.
+     A single whole-output effect offers a quick **Look** (steady color, pulse,
+     flicker, sparkle or chase) with color, brightness and speed. With more
+     effects (for example, an ambient written by an AI assistant over MCP) every
+     effect is listed with its target; select one to edit it like a scene
+     effect, or duplicate, remove or add effects. Effects must fit in the loop.
    - **LED composition loop**: a stage composition with LED surfaces selected.
      Its LED bake loops for the whole show; bake it from its timeline
      (**Render & bake**) after changing what it draws, or from the **LED bake**
      chip on any scene. Publishing needs a current bake.
-3. Set a **Brightness limit** if needed and **Save ambient lighting**.
+3. Set a **Brightness limit** if needed, check the result with **Play ambient
+   preview**, and **Save ambient lighting**. You don't need a dedicated scene:
+   the ambient belongs to the show and plays under every scene that inherits it.
 4. Every scene inherits the ambient by default. To turn it off for one scene,
    clear **Inherit ambient lighting** in that scene's settings (Scenes
    workspace) and **Save scene**, or clear the scene under **Scenes that

@@ -898,6 +898,42 @@ export async function previewSceneLighting(
   );
 }
 
+export interface AmbientLightingPreview {
+  project_id: string;
+  source_revision: number;
+  timestamp_ms: number;
+  unsaved: boolean;
+  evaluation: "production_lighting_renderer";
+  hardware_commands_sent: false;
+  outputs: (SceneLightingPreview["outputs"][number] & { cycle_ms: number })[];
+  limitations: string[];
+}
+
+/** The show-wide ambient alone at a time since its loop started. */
+export async function previewAmbientLighting(
+  projectId: string,
+  sourceRevision: number,
+  timestampMs: number,
+  resource: string | null,
+  proposedDraft?: ProjectDraftRecord["draft"],
+  signal?: AbortSignal,
+  pixelLimit = 4096,
+): Promise<AmbientLightingPreview> {
+  return request<AmbientLightingPreview>(
+    `/api/gui/v1/projects/${encodeURIComponent(projectId)}/ambient-lighting-preview`,
+    {
+      method: "POST",
+      headers: mutationHeaders(),
+      signal,
+      body: JSON.stringify({
+        source_revision: sourceRevision, timestamp_ms: timestampMs, resource,
+        proposed_draft: proposedDraft, pixel_limit: pixelLimit,
+      }),
+    },
+    true,
+  );
+}
+
 export async function previewSceneMedia(
   projectId: string,
   sourceRevision: number,

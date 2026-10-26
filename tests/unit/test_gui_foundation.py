@@ -5310,6 +5310,110 @@ def test_led_only_bakes_survive_unrelated_revisions_and_report_status(
         assert client.get("/api/gui/v1/projects/missing/lighting-bakes").status_code == 404
 
 
+def test_ambient_lighting_preview_shows_every_mcp_effect_over_rest_and_mcp(
+    tmp_path: Path,
+) -> None:
+    runtime, services, project_id = _mcp_fixture(tmp_path)
+    editor = _mcp_token(
+        services,
+        project_id,
+        (McpScope.READ, McpScope.DIRECT_EDIT, McpScope.SIMULATION),
+    )
+    reader = _mcp_token(services, project_id, (McpScope.READ,))
+    document = _draft()
+    document["editor_metadata"]["ambient_lighting"] = {
+        "outputs": [
+            {
+                "resource": "roofline.demo",
+                "cycle_ms": 2000,
+                "brightness_limit": 1,
+                "cues": [
+                    {
+                        "id": "base",
+                        "primitive": "solid",
+                        "start_ms": 0,
+                        "duration_ms": 2000,
+                        "color": "#0000FF",
+                    },
+                    {
+                        "id": "late-red",
+                        "primitive": "solid",
+                        "start_ms": 1000,
+                        "duration_ms": 1000,
+                        "color": "#FF0000",
+                        "precedence": 10,
+                    },
+                ],
+            }
+        ],
+        "excluded_scene_ids": [],
+    }
+    with TestClient(
+        create_app(runtime, gui_services=services), base_url="http://localhost"
+    ) as client:
+        capabilities = _mcp_tool(client, reader, "get_capabilities")["structuredContent"]
+        assert capabilities["tools"]["ambient_lighting_preview"] == "preview_ambient_lighting"
+        assert capabilities["ambient_lighting"]["preview_tool"] == "preview_ambient_lighting"
+        assert capabilities["features"]["ambient_effect_editing_ui"] is True
+        assert (
+            _mcp_tool(client, editor, "preview_ambient_lighting", timestamp_ms=0)["isError"] is True
+        )
+        saved = _mcp_tool(client, editor, "update_project_draft", base_revision=1, draft=document)
+        assert saved["isError"] is False, saved
+
+        def colors(**arguments: Any) -> list[list[int]]:
+            result = _mcp_tool(client, editor, "preview_ambient_lighting", **arguments)
+            assert result["isError"] is False, result
+            content = result["structuredContent"]
+            assert content["hardware_commands_sent"] is False
+            [output] = content["outputs"]
+            assert output["resource"] == "roofline.demo"
+            assert output["cycle_ms"] == 2000
+            return cast(list[list[int]], output["colors"])
+
+        assert colors(timestamp_ms=500) == [[0, 0, 255]] * 8
+        assert colors(timestamp_ms=1500) == [[255, 0, 0]] * 8
+        # The loop wraps: 2500 ms into the show is 500 ms into the ambient.
+        assert colors(timestamp_ms=2500) == [[0, 0, 255]] * 8
+        assert colors(timestamp_ms=0, pixel_offset=6, pixel_limit=2) == [[0, 0, 255]] * 2
+        candidate = copy.deepcopy(document)
+        candidate["editor_metadata"]["ambient_lighting"]["outputs"][0]["cues"][0]["color"] = (
+            "#00FF00"
+        )
+        unsaved = _mcp_tool(
+            client, editor, "preview_ambient_lighting", timestamp_ms=0, proposed_draft=candidate
+        )["structuredContent"]
+        assert unsaved["unsaved"] is True
+        assert unsaved["outputs"][0]["colors"][0] == [0, 255, 0]
+        assert services.repository.get_revision(project_id).revision == 2
+        assert (
+            _mcp_tool(client, reader, "preview_ambient_lighting", timestamp_ms=0)["isError"] is True
+        )
+        assert (
+            _mcp_tool(client, editor, "preview_ambient_lighting", timestamp_ms=0, resource="other")[
+                "isError"
+            ]
+            is True
+        )
+
+        path = f"/api/gui/v1/projects/{project_id}/ambient-lighting-preview"
+        body = {"source_revision": 2, "timestamp_ms": 1500}
+        assert client.post(path, json=body).status_code == 401
+        _login(client)
+        assert client.post(path, json=body).status_code == 403
+        response = client.post(path, json=body, headers=_mutation_headers(client))
+        assert response.status_code == 200, response.text
+        assert response.json()["outputs"][0]["colors"][0] == [255, 0, 0]
+        assert response.json()["outputs"][0]["output_position_ms"] == 1500
+        invalid = client.post(
+            path,
+            json={"source_revision": 1, "timestamp_ms": 0},
+            headers=_mutation_headers(client),
+        )
+        assert invalid.status_code == 422
+        assert invalid.json()["detail"]["code"] == "ambient_preview_invalid"
+
+
 def test_mcp_image_results_fit_exact_png_and_wire_budgets() -> None:
     import random
 

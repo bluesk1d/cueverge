@@ -47,6 +47,7 @@ from cueverge.gui.composition_authoring import (
 )
 from cueverge.gui.contracts import (
     AddSceneOutputRequest,
+    AmbientLightingPreviewRequest,
     ConfigureInputSourceRequest,
     CreateSceneRequest,
     DeleteSceneRequest,
@@ -110,7 +111,11 @@ from cueverge.gui.scene_authoring import (
     scene_authoring_options,
 )
 from cueverge.gui.scene_media_preview import SceneMediaPreviewError, preview_project_scene_media
-from cueverge.gui.scene_preview import ScenePreviewError, preview_project_scene
+from cueverge.gui.scene_preview import (
+    ScenePreviewError,
+    preview_project_ambient,
+    preview_project_scene,
+)
 from cueverge.gui.service import GuiServices
 from cueverge.gui.show_plan import ShowPlanError, apply_show_plan_edit, describe_show_plan
 from cueverge.gui.spatial_authoring import (
@@ -821,6 +826,48 @@ def create_mcp_app(services: GuiServices) -> Starlette:
                 pixel_limit=pixel_limit,
             )
             return _bounded_result(preview_project_scene(services, token.project_id, request))
+        except (
+            ProjectNotFoundError,
+            ScenePreviewError,
+            CompilationError,
+            ShowPackageError,
+            ValidationError,
+        ) as error:
+            raise ToolError(str(error)) from error
+
+    @tool()
+    def preview_ambient_lighting(
+        timestamp_ms: int,
+        source_revision: int | None = None,
+        proposed_draft: dict[str, JsonValue] | None = None,
+        resource: str | None = None,
+        pixel_offset: int = 0,
+        pixel_limit: int = 1000,
+    ) -> dict[str, JsonValue]:
+        """Evaluate the show-wide ambient alone at a loop time; requires simulation.
+
+        Uses the production renderer on the saved revision or an isolated unsaved candidate
+        (editor_metadata.ambient_lighting). timestamp_ms wraps on each output's cycle_ms.
+        Saved revisions include current ambient composition bakes; unbaked ones are listed
+        in limitations. Same view as Show options > Ambient lighting > Preview. No hardware
+        commands are sent.
+        """
+        token = _authorize(services, McpScope.SIMULATION)
+        try:
+            revision = services.repository.get_revision(token.project_id, source_revision)
+            request = AmbientLightingPreviewRequest(
+                source_revision=revision.revision,
+                timestamp_ms=timestamp_ms,
+                proposed_draft=(
+                    DraftProject.model_validate(proposed_draft)
+                    if proposed_draft is not None
+                    else None
+                ),
+                resource=resource,
+                pixel_offset=pixel_offset,
+                pixel_limit=pixel_limit,
+            )
+            return _bounded_result(preview_project_ambient(services, token.project_id, request))
         except (
             ProjectNotFoundError,
             ScenePreviewError,
@@ -1678,6 +1725,8 @@ def create_mcp_app(services: GuiServices) -> Starlette:
                     "controller_timed_scenes": True,
                     "led_only_scenes": True,
                     "scene_lighting_preview": True,
+                    "ambient_lighting_preview": True,
+                    "ambient_effect_editing_ui": True,
                     "scene_media_preview": True,
                     "media_repeat_count": True,
                     "seamless_scene_transitions": True,
@@ -1731,6 +1780,7 @@ def create_mcp_app(services: GuiServices) -> Starlette:
                     "remove_scene_output": "remove_scene_output",
                     "preview": "preview_composition",
                     "scene_lighting_preview": "preview_scene_lighting",
+                    "ambient_lighting_preview": "preview_ambient_lighting",
                     "scene_media_preview": "preview_scene_media",
                     "bake": "create_render_job",
                     "bake_list": "get_render_jobs",
@@ -1827,10 +1877,20 @@ def create_mcp_app(services: GuiServices) -> Starlette:
                         "before publish"
                     ),
                     "clock": "starts with the loaded show and keeps running across scenes",
-                    "preview": "preview_scene_lighting includes the ambient from scene time 0",
+                    "preview": (
+                        "preview_ambient_lighting shows the ambient alone at a loop time; "
+                        "preview_scene_lighting includes it under a scene from scene time 0"
+                    ),
+                    "preview_tool": "preview_ambient_lighting",
                     "compiled_as": "looks.json per resource (baseline cues, baseline_sequence)",
+                    "ui_effect_editing": (
+                        "every cue in outputs[].cues is listed, inspectable and editable in the "
+                        "panel (target, effect, timing, color, speed, fades, precedence, blend); "
+                        "cues must fit inside cycle_ms"
+                    ),
                     "ui_workflow": (
-                        "Show > Ambient lighting; Scenes > scene > Inherit ambient lighting; "
+                        "Show > Ambient lighting (effect list, inspector and loop preview); "
+                        "Scenes > scene > Inherit ambient lighting; "
                         "Timeline > Render & bake > Where nothing is drawn, LEDs show"
                     ),
                     "hardware_commands_sent": False,

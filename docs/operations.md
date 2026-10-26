@@ -1045,6 +1045,25 @@ ambient at scene time 0. Compilation writes the ambient to `looks.json`
 (`baseline`, `baseline_sequence`, `excluded_scene_ids`), merged per resource
 over looks preserved from the controller. None of this sends hardware commands.
 
+`preview_ambient_lighting(timestamp_ms, source_revision=None,
+proposed_draft=None, resource=None, pixel_offset=0, pixel_limit=1000)`
+(`simulation`) evaluates the ambient alone, without any scene, at a time since
+its loop started; `timestamp_ms` wraps on each output's `cycle_ms`, and each
+output reports `cycle_ms` and `output_position_ms`. Saved revisions include
+current ambient composition bakes and list unbaked ones in `limitations`;
+`proposed_draft` previews an isolated unsaved candidate. Browser clients use
+authenticated, CSRF-protected
+`POST /api/gui/v1/projects/{project_id}/ambient-lighting-preview` with the same
+`AmbientLightingPreviewRequest` validation. It is discovered as
+`get_capabilities.tools.ambient_lighting_preview` and
+`ambient_lighting.preview_tool`.
+
+Every cue in `outputs[].cues` is listed, inspectable and editable in **Show >
+Ambient lighting**: the effect list shows each cue's target and span on the
+loop, and the inspector edits the same `LightingCue` fields as scene effects.
+Cues must fit inside `cycle_ms`; the GUI blocks saving until they do, matching
+draft validation.
+
 ### Scene-native LED preview
 
 `get_capabilities.scene_lighting_preview` discovers `preview_scene_lighting`

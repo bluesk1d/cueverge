@@ -62,13 +62,13 @@ source under GPL terms. Dependency licenses remain governed by their own terms.
 ## Validation
 
 - Python: Ruff formatting and lint, and strict mypy checks passed.
-- Python: full test suite with upgraded dependencies pending at report creation.
+- Python: all 572 tests passed with the upgraded dependencies (225.85 seconds).
 - Browser: clean dependency install, TypeScript check, Vite production build,
   and 79 tests across 19 files passed. Vite reports existing bundle-size and
   mixed static/dynamic import warnings. Validation used an isolated temporary
   copy because the workspace's existing `web/node_modules` has permission
   problems; local generated dependencies were not repaired as part of this audit.
-- Static documentation: clean dependency install, build, and checks of 40
+- Static documentation: clean dependency install, build, and checks of 41
   pages for links, anchors, duplicate IDs, and image alt text passed.
 - Browser end-to-end tests, container builds, live deployment, and hardware
   operation were not exercised. Remote repository settings, private security

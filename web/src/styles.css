@@ -1443,13 +1443,15 @@ p {
 .show-library-card button,
 .show-back,
 .scene-workspace button,
+.show-ambient-lighting button,
 .project-card > details > summary {
   min-height: 38px;
 }
 
 .show-library-card button,
 .show-back,
-.scene-workspace button {
+.scene-workspace button,
+.show-ambient-lighting button {
   padding: 8px 12px;
   color: var(--cv-text);
   background: var(--cv-surface-raised);
@@ -7492,3 +7494,20 @@ p {
 
 .led-bake-chip__actions { display: inline-flex; gap: 6px; }
 .led-bake-chip__error { display: block; color: var(--cv-danger); }
+
+.ambient-effects {
+  display: grid;
+  gap: 8px;
+  margin: 8px 0;
+}
+
+.ambient-effect-inspector {
+  display: grid;
+  gap: 8px;
+}
+
+.ambient-preview {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}

@@ -54,6 +54,7 @@ from cueverge.gui.contracts import (
     ActivationRequest,
     ActivityEventResponse,
     AddSceneOutputRequest,
+    AmbientLightingPreviewRequest,
     ApplyScenePresetRequest,
     ArtifactDeploymentResponse,
     AssetMetadataConflictResponse,
@@ -316,6 +317,7 @@ from cueverge.gui.scene_media_preview import (
 from cueverge.gui.scene_preview import (
     ScenePreviewBusyError,
     ScenePreviewError,
+    preview_project_ambient,
     preview_project_scene,
 )
 from cueverge.gui.service import GuiServices
@@ -2945,6 +2947,27 @@ def create_gui_router(services: GuiServices) -> APIRouter:
         except (ScenePreviewError, CompilationError, ShowPackageError) as error:
             raise HTTPException(
                 status_code=422, detail={"code": "scene_preview_invalid", "message": str(error)}
+            ) from error
+
+    @router.post("/projects/{project_id}/ambient-lighting-preview")
+    def ambient_lighting_preview(
+        project_id: str,
+        body: AmbientLightingPreviewRequest,
+        identity: Annotated[AuthenticatedSession, project_commenter],
+    ) -> dict[str, object]:
+        try:
+            return preview_project_ambient(services, project_id, body)
+        except ScenePreviewBusyError as error:
+            raise HTTPException(
+                status_code=429, detail={"code": "scene_preview_busy", "message": str(error)}
+            ) from error
+        except ProjectNotFoundError as error:
+            raise HTTPException(
+                status_code=404, detail={"code": "project_or_revision_not_found"}
+            ) from error
+        except (ScenePreviewError, CompilationError, ShowPackageError) as error:
+            raise HTTPException(
+                status_code=422, detail={"code": "ambient_preview_invalid", "message": str(error)}
             ) from error
 
     @router.post("/projects/{project_id}/scene-media-preview")

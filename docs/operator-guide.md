@@ -767,10 +767,26 @@ Media-only scenes show this picture when the show is linked to an installation.
 
 To keep a consistent LED loop running through every scene, set it once under
 **Show > Ambient lighting** instead of copying it into each composition. Per LED
-output, choose a **Simple look** (steady color, pulse, flicker, sparkle or
-chase) or an **LED composition loop** (a stage composition with LED surfaces,
-looped from its LED bake), plus a brightness limit, then **Save ambient
-lighting**. Composition loops need a current bake before publishing.
+output, choose a **Source**: **Effects** (procedural lighting effects that loop
+every **Loop length**) or an **LED composition loop** (a stage composition with
+LED surfaces, looped from its LED bake, with any effects running under it), plus
+a brightness limit, then **Save ambient lighting**. Composition loops need a
+current bake before publishing.
+
+A single whole-output effect shows quick **Look**, **Color**, **Brightness** and
+speed controls. Anything richer, including ambient loops written through MCP,
+lists every effect with its target and its span across the loop. Search the
+list, select an effect to edit it with the same inspector as scene effects
+(effect, target decoration, color, timing, speed, width, fades, precedence and
+blend), or use **Duplicate effect**, **Remove effect** and **Add ambient
+effect**. Every effect must fit inside the loop; shortening **Loop length**
+flags effects that would run past it, and Save stays unavailable until they
+fit. The summary line shows how many effects each show has.
+
+**Play ambient preview** (or drag **Ambient preview time**) shows the ambient by
+itself on the installation photo, evaluated by the controller's lighting
+renderer, including unsaved edits. Selecting an effect moves the preview to its
+start. The scene preview still shows the ambient underneath each scene.
 
 Scenes inherit the ambient by default. Scene lighting draws over it: effects
 change only the pixels they target, and LED composition bakes change only the

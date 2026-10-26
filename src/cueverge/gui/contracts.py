@@ -2676,6 +2676,15 @@ class SceneLightingPreviewRequest(GuiModel):
     proposed_draft: DraftProject | None = None
 
 
+class AmbientLightingPreviewRequest(GuiModel):
+    source_revision: int = Field(ge=1)
+    timestamp_ms: int = Field(ge=0, description="Time since the ambient loop started.")
+    resource: str | None = None
+    pixel_offset: int = Field(default=0, ge=0)
+    pixel_limit: int = Field(default=1000, ge=1, le=4096)
+    proposed_draft: DraftProject | None = None
+
+
 class SceneMediaPreviewRequest(GuiModel):
     source_revision: int = Field(ge=1)
     scene_id: str = Field(min_length=1)

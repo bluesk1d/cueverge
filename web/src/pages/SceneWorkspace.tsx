@@ -12,6 +12,7 @@ import { AssetPreview, hasAssetArtifact } from "../components/AssetPreview";
 import { ErrorState } from "../components/ui";
 import { SceneAuthoringDialog } from "../components/SceneAuthoringDialog";
 import { SceneOutputActions } from "../components/SceneOutputActions";
+import { LightingCueFields, LightingCueList, NumberField, lightingCueIssues, lightingTargets } from "../components/LightingCueEditor";
 import { LedBakeChip } from "../components/LedBakeChip";
 import { SceneMediaOutputs } from "../components/SceneMediaOutputs";
 import { useSceneMediaPreview } from "../components/useSceneMediaPreview";
@@ -25,11 +26,6 @@ type Document = ProjectDraftRecord["draft"];
 type Scene = Document["scenes"][number];
 type RecordValue = Record<string, unknown>;
 
-const effects = {
-  solid: "Solid color", blackout: "Blackout", envelope: "Fade / envelope",
-  pulse: "Pulse", chase: "Chase", path_sweep: "Path sweep", flicker: "Flicker",
-  sparkle: "Sparkle", ripple: "Ripple", color_transition: "Color transition",
-};
 
 function record(value: unknown): RecordValue {
   return value !== null && typeof value === "object" && !Array.isArray(value)
@@ -142,34 +138,7 @@ export function SceneWorkspace({
     if (typeof limit === "number" && (!Number.isFinite(limit) || limit <= 0 || limit > 1)) {
       messages.push("Output brightness limit must be greater than 0 and at most 100%.");
     }
-    for (const effect of objects(value.timeline)) {
-      const start = Number(effect.start_ms);
-      const length = Number(effect.duration_ms);
-      if (!Number.isSafeInteger(start) || start < 0 || !Number.isSafeInteger(length) ||
-        length <= 0 || start + length > duration) {
-        messages.push(`${text(effect.id)}: start and duration must fit inside the scene.`);
-      }
-      const fades = Number(effect.fade_in_ms ?? 0) + Number(effect.fade_out_ms ?? 0);
-      if (!Number.isFinite(fades) || fades < 0 || fades > length) {
-        messages.push(`${text(effect.id)}: fades must fit inside the effect duration.`);
-      }
-      if (Object.values(effect).some((item) => typeof item === "number" && !Number.isFinite(item))) {
-        messages.push(`${text(effect.id)}: enter valid numbers in all effect fields.`);
-      }
-      for (const key of ["brightness", "end_brightness", "density"]) {
-        const amount = effect[key];
-        if (typeof amount === "number" && (amount < 0 || amount > 1 || (key === "density" && amount === 0))) {
-          messages.push(`${text(effect.id)}: ${key.replaceAll("_", " ")} must be within its percentage range.`);
-        }
-      }
-      for (const key of ["seed", "precedence", "width_pixels", "period_ms"]) {
-        const amount = effect[key];
-        if (typeof amount === "number" && (!Number.isSafeInteger(amount) ||
-          (["width_pixels", "period_ms"].includes(key) && amount <= 0))) {
-          messages.push(`${text(effect.id)}: ${key.replaceAll("_", " ")} must be a valid whole number.`);
-        }
-      }
-    }
+    messages.push(...lightingCueIssues(objects(value.timeline), duration));
     if (value.effect === "segment_pulse") {
       const times = Array.isArray(value.pulse_times_ms) ? value.pulse_times_ms : [];
       if (!times.length || times.some((item, index) => typeof item !== "number" ||
@@ -181,17 +150,7 @@ export function SceneWorkspace({
     return messages;
   });
   const resource = text(output?.resource);
-  const binding = objects(record(document.installation).resources)
-    .find((candidate) => candidate.resource === resource);
-  const objectNames = Object.fromEntries(objects(document.editor_metadata.installation_object_details)
-    .filter((item) => item.resource === resource).map((item) => [`${text(item.kind)}:${text(item.id)}`, text(item.name)]));
-  const targetName = (kind: string, id: string) => objectNames[`${kind}:${id}`] ?? targetNames[`${kind}:${id}`] ?? id.replaceAll("-", " ");
-  const targets = (["segments", "fixtures", "paths"] as const).flatMap((kind) =>
-    objects(binding?.[kind]).map((target) => ({
-      key: `${kind === "segments" ? "segment" : kind === "fixtures" ? "fixture" : "path"}:${text(target.id)}`,
-      label: `${targetName(kind === "segments" ? "segment" : kind === "fixtures" ? "fixture" : "path", text(target.id))} · ${kind.slice(0, -1)}`,
-    })),
-  );
+  const { targets, targetName } = lightingTargets(document.installation, document.editor_metadata, resource, targetNames);
   useEffect(() => {
     if (!playing) return;
     let previous = performance.now();
@@ -280,8 +239,6 @@ export function SceneWorkspace({
     const values = record(document.editor_metadata[key])[sceneId];
     return total + (Array.isArray(values) ? values.length : 0);
   }, 0);
-  const target = record(cue?.target);
-  const supported = cue && Object.hasOwn(effects, text(cue.primitive));
   const formId = `scene-effect-${encodeURIComponent(sceneId)}`;
   return (
     <section className="scene-workspace" aria-label="Scene workspace">
@@ -368,28 +325,13 @@ export function SceneWorkspace({
           {canEdit && output && <SceneOutputActions draft={draft} sceneId={sceneId}
             outputId={Array.isArray(scene.lighting) ? text(output.id) : "lighting"} kind="lighting"
             disabledReason={outputActionBlock} onChanged={(updated) => { setOutputIndex(0); onCreated(updated, sceneId); }} />}
-          <label>Find an effect
-            <input type="search" value={filter} onChange={(event) => setFilter(event.target.value)} />
-          </label>
-          <div className="scene-effect-list" role="region" aria-label="Runtime lighting effects" tabIndex={0}>
-            <p>{cues.length ? `${cues.length} effects · whole scene fitted below` : `Legacy effect: ${text(output?.effect, "unsupported representation")}`}</p>
-            {cues.filter((value) => JSON.stringify([value.id, value.target, value.primitive]).toLowerCase().includes(filter.toLowerCase())).map((value) => (
-              <button className="scene-effect-row" key={text(value.id)} aria-pressed={value.id === cue?.id}
-                aria-label={`Edit effect ${text(value.id)}`} onClick={() => {
-                  setEffectId(text(value.id)); setPlaying(false);
-                  setPosition(Number(value.start_ms));
-                }}>
-                <span>{text(value.id).replaceAll("-", " ")}<small>{value.target ? targetName(text(record(value.target).kind), text(record(value.target).id)) : "Whole output"} · {text(value.primitive)}</small></span>
-                <span className="scene-effect-track">
-                  <span style={{
-                    left: `${Number(value.start_ms) / duration * 100}%`,
-                    width: `${Number(value.duration_ms) / duration * 100}%`,
-                    backgroundColor: text(value.color, "#ffffff"),
-                  }} />
-                </span>
-              </button>
-            ))}
-          </div>
+          <LightingCueList cues={cues} duration={duration} selectedId={text(cue?.id) || undefined}
+            filter={filter} onFilter={setFilter} targetName={targetName}
+            summary={cues.length ? `${cues.length} effects · whole scene fitted below` : `Legacy effect: ${text(output?.effect, "unsupported representation")}`}
+            onSelect={(value) => {
+              setEffectId(text(value.id)); setPlaying(false);
+              setPosition(Number(value.start_ms));
+            }} />
           {canEdit && cues.length > 0 && <button onClick={() => {
             const id = `cue-${crypto.randomUUID()}`;
             changeOutput((value) => ({ ...value, timeline: [
@@ -423,52 +365,8 @@ export function SceneWorkspace({
           onSubmit={(event) => { event.preventDefault(); void save(); }}>
           <h3>{cue ? text(cue.id).replaceAll("-", " ") : output ? "Legacy lighting" : "Scene settings"}</h3>
           <fieldset disabled={!canEdit || saving}>
-            {cue && !supported ? <p role="alert">This effect is not supported by this editor. Its data is preserved; use advanced authoring.</p>
-              : cue ? <>
-                <label>Effect
-                  <select value={text(cue.primitive)} onChange={(event) => changeCue({
-                    primitive: event.target.value,
-                    ...(event.target.value === "color_transition" && !cue.end_color ? { end_color: text(cue.color, "#ffffff") } : {}),
-                  })}>
-                    {Object.entries(effects).map(([key, label]) => <option key={key} value={key}>{label}</option>)}
-                  </select>
-                </label>
-                <label>Target decorations
-                  <select value={cue.target ? `${text(target.kind)}:${text(target.id)}` : ""} onChange={(event) => {
-                    const [kind, ...id] = event.target.value.split(":");
-                    changeCue({ target: event.target.value ? { kind, id: id.join(":") } : null });
-                  }}>
-                    <option value="">Whole output</option>
-                    {targets.map((value) => <option key={value.key} value={value.key}>{value.label}</option>)}
-                  </select>
-                </label>
-                {cue.primitive !== "blackout" && <div className="scene-field-pair">
-                  <label>Effect color<input type="color" value={text(cue.color, "#ffffff")} onChange={(event) => changeCue({ color: event.target.value })} /></label>
-                  <NumberField label="Effect brightness (%)" value={numeric(cue.brightness, 1)} scale={100} min={0} max={100} onChange={(value) => changeCue({ brightness: value })} />
-                </div>}
-                <div className="scene-field-pair">
-                <NumberField label="Start (seconds)" value={numeric(cue.start_ms, 0)} scale={0.001} min={0} max={duration / 1000} onChange={(value) => changeCue({ start_ms: Math.round(value) })} />
-                <NumberField label="Duration (seconds)" value={numeric(cue.duration_ms, 1000)} scale={0.001} min={0.001} max={duration / 1000} onChange={(value) => changeCue({ duration_ms: Math.round(value) })} />
-                </div>
-                {["pulse", "flicker", "sparkle"].includes(text(cue.primitive)) &&
-                  <NumberField label="Cycle (seconds)" value={numeric(cue.period_ms, 200)} scale={0.001} min={0.001} onChange={(value) => changeCue({ period_ms: Math.round(value) })} />}
-                {["chase", "path_sweep", "ripple"].includes(text(cue.primitive)) &&
-                  <NumberField label="Width (LEDs)" value={numeric(cue.width_pixels, 1)} min={1} onChange={(value) => changeCue({ width_pixels: value })} />}
-                {cue.primitive === "sparkle" && <NumberField label="Sparkle density (%)" value={numeric(cue.density, 0.1)} scale={100} min={0} max={100} onChange={(value) => changeCue({ density: value })} />}
-                {cue.primitive === "color_transition" && <label>End color<input type="color" value={text(cue.end_color, "#ffffff")} onChange={(event) => changeCue({ end_color: event.target.value })} /></label>}
-                {["chase", "path_sweep", "ripple"].includes(text(cue.primitive)) && <label><input type="checkbox" checked={cue.reverse === true} onChange={(event) => changeCue({ reverse: event.target.checked })} />Reverse direction</label>}
-                <details className="scene-advanced"><summary>Advanced effect settings</summary>
-                  <NumberField label="Fade in (seconds)" value={numeric(cue.fade_in_ms, 0)} scale={0.001} min={0} onChange={(value) => changeCue({ fade_in_ms: Math.round(value) })} />
-                  <NumberField label="Fade out (seconds)" value={numeric(cue.fade_out_ms, 0)} scale={0.001} min={0} onChange={(value) => changeCue({ fade_out_ms: Math.round(value) })} />
-                  <label><input type="checkbox" checked={typeof cue.end_brightness === "number"} onChange={(event) => changeCue({ end_brightness: event.target.checked ? cue.brightness ?? 1 : null })} />Different end brightness</label>
-                  {typeof cue.end_brightness === "number" && <NumberField label="End brightness (%)" value={numeric(cue.end_brightness, 1)} scale={100} min={0} max={100} onChange={(value) => changeCue({ end_brightness: value })} />}
-                  {["flicker", "sparkle"].includes(text(cue.primitive)) && <NumberField label="Deterministic seed" value={numeric(cue.seed, 0)} onChange={(value) => changeCue({ seed: value })} />}
-                  <NumberField label="Layer precedence" value={numeric(cue.precedence, 0)} min={0} max={1000} onChange={(value) => changeCue({ precedence: value })} />
-                  <label>Blend<select value={text(cue.blend_mode, "replace")} onChange={(event) => changeCue({ blend_mode: event.target.value })}>
-                    {["replace", "add", "max", "multiply"].map((value) => <option key={value}>{value}</option>)}
-                  </select></label>
-                  <small>Stable effect ID: {text(cue.id)}</small>
-                </details>
+            {cue ? <>
+                <LightingCueFields cue={cue} duration={duration} targets={targets} onChange={changeCue} />
                 {canEdit && <button type="button" disabled={cues.length <= 1} onClick={() => {
                   if (window.confirm("Remove this effect from the saved scene when you next save?")) {
                     changeOutput((value) => ({ ...value, timeline: objects(value.timeline).filter((item) => item.id !== cue.id) }));
@@ -552,22 +450,6 @@ function SceneMediaPreview({ asset }: { asset: AssetRecord }) {
   </div>;
 }
 
-function NumberField({ label, value, onChange, scale = 1, min, max }: {
-  label: string; value: number | ""; onChange: (value: number) => void;
-  scale?: number; min?: number; max?: number;
-}) {
-  const places = scale === 100 ? 2 : scale === 0.001 ? -3 : 0;
-  return <label>{label}<input required type="number" step="any" min={min} max={max}
-    value={value === "" ? "" : scaleDecimal(value, places)}
-    onChange={(event) => onChange(scaleDecimal(event.target.valueAsNumber, -places))} /></label>;
-}
-
-function scaleDecimal(value: number, places: number): number {
-  if (!places) return value;
-  const [coefficient, exponent = "0"] = String(value).split("e");
-  return Number(`${coefficient}e${Number(exponent) + places}`);
-}
-
 /** Projector content for the scene preview: controller frames, or review proxies while playing. */
 export interface ScenePreviewMedia {
   state: SceneMediaPreviewState;
@@ -611,7 +493,7 @@ export function ScenePreviewPanel({
   </>;
 }
 
-export function ScenePreview({ projectId, revision, document, dirty, sceneId, resource, position, onFailure, valid, onTargetNames, external = false, frameOverride = null, intent = false, installationIdOverride, lightingEnabled = true, media }: {
+export function ScenePreview({ projectId, revision, document, dirty, sceneId, resource, position, onFailure, valid, onTargetNames, external = false, frameOverride = null, intent = false, installationIdOverride, lightingEnabled = true, media, subject = "scene" }: {
   projectId: string; revision: number; document?: Document; dirty: boolean; sceneId: string;
   resource: string; position: number; onFailure: () => void;
   valid: boolean;
@@ -621,6 +503,8 @@ export function ScenePreview({ projectId, revision, document, dirty, sceneId, re
   /** False for scenes without LED outputs: only projector content is drawn. */
   lightingEnabled?: boolean;
   media?: ScenePreviewMedia;
+  /** What an external frame shows; "ambient" labels the show-wide ambient loop. */
+  subject?: "scene" | "ambient";
 }) {
   const [requestedFrame, setFrame] = useState<SceneLightingPreview | null>(null);
   const frame = external ? frameOverride : requestedFrame;
@@ -741,7 +625,7 @@ export function ScenePreview({ projectId, revision, document, dirty, sceneId, re
   const offPhoto = media ? media.outputs.filter((value) =>
     !projected.some((item) => item.reference.id === value.id)) : [];
   return <section className="scene-preview" aria-label={intent ? "Controller intended LED output" : lightingEnabled ? "Scene lighting preview" : "Scene preview"}>
-    <header><strong>{intent ? "Last sent LED colors" : "Scene preview"}</strong><span>{intent ? "Read-only observation · not physical feedback" : "Simulation only · no hardware commands"}</span></header>
+    <header><strong>{intent ? "Last sent LED colors" : subject === "scene" ? "Scene preview" : "Ambient lighting preview"}</strong><span>{intent ? "Read-only observation · not physical feedback" : "Simulation only · no hardware commands"}</span></header>
     {photos.length > 0 && <label>Preview photo<select value={photoId} onChange={(event) => setPhotoId(event.target.value)}>
       <option value="">Installation canvas (no photo)</option>
       {photos.map((value) => <option key={value.id} value={value.id}>{value.name}</option>)}
@@ -787,7 +671,7 @@ export function ScenePreview({ projectId, revision, document, dirty, sceneId, re
     {(error || mapError || photoFailed) && <button onClick={() => setRetry((value) => value + 1)}>Retry scene preview</button>}
     {lightingEnabled && <p className="scene-preview-status" aria-busy={loading}>
       {frame
-        ? <>{intent ? "Last sent position" : "Evaluated"} {time(frame.timestamp_ms)}.{String(frame.timestamp_ms % 1000).padStart(3, "0")}{!intent && <> · {frame.unsaved ? "unsaved edits" : "saved scene"}</>}</>
+        ? <>{intent ? "Last sent position" : "Evaluated"} {time(frame.timestamp_ms)}.{String(frame.timestamp_ms % 1000).padStart(3, "0")}{!intent && <> · {frame.unsaved ? "unsaved edits" : subject === "scene" ? "saved scene" : "saved show"}</>}</>
         : loading ? "Preparing scene preview…" : "No evaluated frame"}
     </p>}
     {frame && <div>
