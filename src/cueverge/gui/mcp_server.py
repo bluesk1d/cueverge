@@ -1673,6 +1673,8 @@ def create_mcp_app(services: GuiServices) -> Starlette:
                     "stage_reference": True,
                     "image_video_gif": True,
                     "mixed_output_bakes": True,
+                    "led_bake_status": True,
+                    "led_bakes_survive_unrelated_revisions": True,
                     "controller_timed_scenes": True,
                     "led_only_scenes": True,
                     "scene_lighting_preview": True,
@@ -1733,6 +1735,7 @@ def create_mcp_app(services: GuiServices) -> Starlette:
                     "bake": "create_render_job",
                     "bake_list": "get_render_jobs",
                     "bake_status": "get_render_job",
+                    "bake_requirements": "get_lighting_bake_status",
                     "bake_cancel": "cancel_render_job",
                     "list_assets": "list_asset_metadata",
                     "trash_asset": "trash_asset",
@@ -1765,6 +1768,24 @@ def create_mcp_app(services: GuiServices) -> Starlette:
                     "{asset_id}/replacements, then PUT /api/gui/v1/assets/uploads/{upload_id}",
                     "failed_replacement": "discarded; the current revision stays in use",
                     "ui_workflow": "Show > Assets > Replace file; Show > Assets > File history",
+                    "hardware_commands_sent": False,
+                },
+                "lighting_bakes": {
+                    "status_tool": "get_lighting_bake_status",
+                    "bake_tool": "create_render_job",
+                    "states": ["current", "queued", "running", "failed", "missing", "unavailable"],
+                    "reusable_across_revisions": (
+                        "LED-only bakes (lighting_surface compositions and stage compositions "
+                        "with stage_projector_resources []) are keyed on the composition, its "
+                        "media/author layers, asset checksums and the installation mapping, so "
+                        "saving unrelated edits keeps them current"
+                    ),
+                    "revision_bound": "projector and mixed projector/LED bakes",
+                    "unchanged_saves": "a save identical to the head revision creates no revision",
+                    "ui_workflow": (
+                        "Scenes > scene > LED bake chip (Bake now, Open timeline); "
+                        "Timeline > Render & bake"
+                    ),
                     "hardware_commands_sent": False,
                 },
                 "ambient_lighting": {
@@ -1881,7 +1902,10 @@ def create_mcp_app(services: GuiServices) -> Starlette:
                     "concurrent_evaluations": 2,
                     "spatial_compositions": "use preview_composition",
                     "evaluation": "production_lighting_renderer",
-                    "led_composition_bakes": "included for the saved revision when current",
+                    "led_composition_bakes": (
+                        "each current LED bake is included for the saved revision; ones that "
+                        "need a bake are listed in limitations and by get_lighting_bake_status"
+                    ),
                     "ambient_lighting": (
                         "included unless the scene is in excluded_scene_ids; ambient-only "
                         "outputs are reported as ambient:<resource>"
@@ -1958,7 +1982,8 @@ def create_mcp_app(services: GuiServices) -> Starlette:
                     "LED sequences without projector video (no audio layers).",
                     "Propose and human-merge changes, or save with explicit direct_edit.",
                     "Preview the saved draft or an isolated proposal without hardware output.",
-                    "Queue a bake for the saved revision and poll its job until completed.",
+                    "Queue a bake for the saved revision and poll its job until completed; "
+                    "get_lighting_bake_status lists LED compositions that still need one.",
                     "Publish the matching LED sequences and projector videos with publish scope.",
                 ],
                 "limitations": [
@@ -2341,6 +2366,49 @@ def create_mcp_app(services: GuiServices) -> Starlette:
                 raise ToolError("bake has no completed artifact")
             result["artifact"] = services.repository.get_render_artifact_manifest(job.artifact_id)
         return _bounded_result(result)
+
+    @tool()
+    def get_lighting_bake_status(
+        revision: int | None = None,
+        scene_id: str | None = None,
+    ) -> dict[str, JsonValue]:
+        """List LED compositions and whether the saved revision has a current bake for each.
+
+        state is current, queued, running, failed, missing or unavailable (inputs such as the
+        installation mapping cannot be read). LED-only bakes (lighting surfaces and lights-only
+        stage overlays) stay current across revisions that change nothing they draw. Filter by
+        scene_id to see what a scene preview needs; queue missing bakes with create_render_job.
+        """
+        token = _authorize(services, McpScope.READ)
+        try:
+            stored = services.repository.get_revision(token.project_id, revision)
+            statuses = services.render_jobs.lighting_bake_status(token.project_id, stored.revision)
+        except ProjectNotFoundError as error:
+            raise ToolError(str(error)) from error
+        if scene_id is not None and all(scene.id != scene_id for scene in stored.draft.scenes):
+            raise ToolError("scene does not exist in this revision")
+        compositions = [
+            {**asdict(status), "scene_ids": list(status.scene_ids)}
+            for status in statuses
+            if scene_id is None or scene_id in status.scene_ids
+        ]
+        return _bounded_result(
+            {
+                "project_id": token.project_id,
+                "revision": stored.revision,
+                "scene_id": scene_id,
+                "bake_required": [
+                    item["composition_id"]
+                    for item in compositions
+                    if item["state"] not in {"current", "queued", "running"}
+                ],
+                "compositions": compositions,
+                "ui_workflow": (
+                    "Scenes > scene > LED bake chip (Bake now); Timeline > Render & bake"
+                ),
+                "hardware_command_sent": False,
+            }
+        )
 
     @tool()
     def cancel_render_job(job_id: str) -> dict[str, JsonValue]:

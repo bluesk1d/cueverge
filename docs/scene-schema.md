@@ -24,6 +24,11 @@ multi-output version 2 forms.
 
 ## Installation bindings
 
+Examples below use fictional displays, fixtures, and visitor zones. Resource IDs,
+pixel counts, and timing values illustrate the schema; substitute your own
+installation definitions and exact input labels. Separate snippets may describe
+different layouts and are not a complete show package.
+
 `installation.json` maps logical resource names to adapter targets. Version 1
 supports only the simulated roles needed by the vertical slice:
 
@@ -41,19 +46,21 @@ adapter-specific output concepts to scenes. For example:
 
 ```json
 {
-  "resource": "roofline",
+  "resource": "display-border",
   "kind": "pixel_output",
   "target": "wled",
-  "pixel_count": 8,
+  "pixel_count": 120,
   "segments": [
-    {"id": "right-eave", "start": 0, "end": 3, "strand": "lower"},
-    {"id": "left-eave", "start": 3, "end": 8, "strand": "lower"}
+    {"id": "border-left", "start": 0, "end": 30, "strand": "border"},
+    {"id": "border-top", "start": 30, "end": 60, "strand": "border"},
+    {"id": "border-right", "start": 60, "end": 90, "strand": "border"},
+    {"id": "border-bottom", "start": 90, "end": 120, "strand": "border"}
   ]
 }
 ```
 
-Half-open ranges avoid an extra address at the endpoint: `start: 0, end: 8`
-contains the eight addressable pixels `0` through `7`.
+Half-open ranges avoid an extra address at the endpoint: `start: 0, end: 120`
+contains the 120 addressable pixels `0` through `119`.
 
 Pixel outputs may additionally define semantic fixtures and ordered paths:
 
@@ -61,21 +68,21 @@ Pixel outputs may additionally define semantic fixtures and ordered paths:
 {
   "fixtures": [
     {
-      "id": "mouth",
+      "id": "display-frame",
       "precedence": 100,
       "segments": [
-        {"segment": "right-gable"},
-        {"segment": "left-gable", "reverse": true}
+        {"segment": "border-right"},
+        {"segment": "border-left", "reverse": true}
       ]
     }
   ],
   "paths": [
     {
-      "id": "eave-to-mouth",
+      "id": "border-traversal",
       "segments": [
-        {"segment": "eave"},
-        {"segment": "connector"},
-        {"segment": "right-gable"}
+        {"segment": "border-left"},
+        {"segment": "border-top"},
+        {"segment": "border-right"}
       ]
     }
   ]
@@ -99,10 +106,10 @@ fields in `installation.json`. The show draft stores
 
 ```json
 {
-  "resource": "roofline",
+  "resource": "display-border",
   "kind": "fixture",
-  "id": "mouth",
-  "name": "Talking mouth",
+  "id": "display-frame",
+  "name": "Display frame",
   "geometry_semantic_ids": []
 }
 ```
@@ -121,7 +128,7 @@ for placement and safe deletion.
 ```json
 {
   "effect": "segment_pulse",
-  "target": {"kind": "fixture", "id": "mouth"},
+  "target": {"kind": "fixture", "id": "display-frame"},
   "pulse_times_ms": [1000],
   "pulse_duration_ms": 120
 }
@@ -140,14 +147,14 @@ within the scene.
 ```json
 {
   "schema_version": 2,
-  "id": "two-window-scene",
-  "name": "Two Window Scene",
+  "id": "two-display-scene",
+  "name": "Two Display Scene",
   "mode": "media_synchronized",
   "resources": [
     "projector.left",
     "projector.right",
-    "roofline",
-    "porch"
+    "display-border",
+    "accent-lights"
   ],
   "duration_ms": 12000,
   "clock_source": "left-video",
@@ -165,13 +172,13 @@ within the scene.
   ],
   "lighting": [
     {
-      "id": "roofline",
-      "resource": "roofline",
+      "id": "display-border",
+      "resource": "display-border",
       "effect": "synthetic_sweep"
     },
     {
-      "id": "porch",
-      "resource": "porch",
+      "id": "accent-lights",
+      "resource": "accent-lights",
       "effect": "synthetic_sweep"
     }
   ]
@@ -205,9 +212,9 @@ output with a repeat count refuses to start on older agents.
 
 ```json
 {
-  "id": "klown",
-  "resource": "projector.porch",
-  "asset": "klown-loop.mp4",
+  "id": "display-animation",
+  "resource": "projector.exhibit",
+  "asset": "display-loop.mp4",
   "end_behavior": "hold_last_frame",
   "repeat_count": 3
 }
@@ -283,11 +290,11 @@ For an LED-only pre-show, use `media: []` and claim only lighting resources:
   "name": "LED pre-show",
   "mode": "controller_timed",
   "clock_source": "controller",
-  "resources": ["roofline"],
+  "resources": ["display-border"],
   "duration_ms": 30000,
   "media": [],
   "lighting": [
-    {"id": "roofline", "resource": "roofline", "effect": "synthetic_sweep"}
+    {"id": "display-border", "resource": "display-border", "effect": "synthetic_sweep"}
   ],
   "completion": {"policy": "loop"}
 }
@@ -323,24 +330,24 @@ Instead of one legacy effect, a scene may declare a deterministic timeline:
 
 ```json
 {
-  "resource": "roofline",
+  "resource": "display-border",
   "brightness_limit": 0.8,
   "timeline": [
     {
-      "id": "ship-baseline",
+      "id": "border-baseline",
       "primitive": "solid",
       "start_ms": 0,
       "duration_ms": 12000,
-      "target": {"kind": "fixture", "id": "spaceship-exterior"},
+      "target": {"kind": "fixture", "id": "display-frame"},
       "color": "#100020",
       "precedence": 0
     },
     {
-      "id": "raygun-path",
+      "id": "highlight-traversal",
       "primitive": "path_sweep",
       "start_ms": 8200,
       "duration_ms": 1900,
-      "target": {"kind": "path", "id": "garage-to-mouth"},
+      "target": {"kind": "path", "id": "border-traversal"},
       "color": "#00FF66",
       "width_pixels": 5,
       "blend_mode": "max",
@@ -390,7 +397,7 @@ time:
 ```json
 {
   "schema_version": 1,
-  "resource": "roofline",
+  "resource": "display-border",
   "cycle_ms": 6000,
   "brightness_limit": 1.0,
   "baseline": [
@@ -427,7 +434,7 @@ scenes from inheriting it:
 
 ```json
 {
-  "resource": "roofline",
+  "resource": "display-border",
   "cycle_ms": 12000,
   "baseline": [],
   "baseline_sequence": {
@@ -472,7 +479,7 @@ Version 2 wraps the same per-resource definition in an `outputs` array:
   "schema_version": 2,
   "outputs": [
     {
-      "resource": "roofline",
+      "resource": "display-border",
       "cycle_ms": 6000,
       "baseline": [
         {
@@ -492,11 +499,11 @@ Version 2 wraps the same per-resource definition in an `outputs` array:
       ]
     },
     {
-      "resource": "porch",
+      "resource": "accent-lights",
       "cycle_ms": 4000,
       "baseline": [
         {
-          "id": "porch-idle",
+          "id": "accent-idle",
           "primitive": "blackout",
           "start_ms": 0,
           "duration_ms": 4000
@@ -504,7 +511,7 @@ Version 2 wraps the same per-resource definition in an `outputs` array:
       ],
       "safe_state": [
         {
-          "id": "porch-safe",
+          "id": "accent-safe",
           "primitive": "blackout",
           "start_ms": 0,
           "duration_ms": 1
@@ -713,8 +720,8 @@ audience state:
 {
   "schema_version": 1,
   "labels": ["person"],
-  "cameras": ["doorbell"],
-  "zones": ["Porch"],
+  "cameras": ["exhibit-camera"],
+  "zones": ["interaction-area"],
   "observation_freshness_ms": 5000,
   "arrival_confirmation_ms": 1000,
   "absence_grace_ms": 5000,
@@ -745,10 +752,10 @@ time-limited scene opportunities:
   "schema_version": 1,
   "opportunities": [
     {
-      "id": "porch-reaction",
-      "scene_id": "mouth-gotcha",
+      "id": "visitor-welcome",
+      "scene_id": "welcome-scene",
       "trigger_event": "frigate.zone.entered",
-      "trigger_attributes": {"label": "person", "zone": "Porch"},
+      "trigger_attributes": {"label": "person", "zone": "interaction-area"},
       "required_context": {"audience": true},
       "event_ttl_ms": 3000,
       "qualification_window_ms": 600000,

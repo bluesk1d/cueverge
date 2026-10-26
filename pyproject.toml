@@ -7,15 +7,17 @@ name = "cueverge"
 version = "0.1.0"
 description = "A self-hosted reactive multimedia show engine"
 readme = "README.md"
+license = "GPL-3.0-only"
+license-files = ["LICENSE"]
 requires-python = ">=3.12"
 dependencies = [
   "aiomqtt>=2.4,<3",
   "av>=14,<17",
-  "cryptography>=46,<47",
+  "cryptography>=50,<51",
   "fastapi>=0.115,<1",
   "mcp>=2.3,<3",
   "numpy>=2,<3",
-  "pillow>=11,<13",
+  "pillow>=13,<14",
   "pydantic>=2.10,<3",
   "uvicorn>=0.34,<1",
   "websockets>=15,<17",
@@ -31,7 +33,7 @@ cueverge-gui-hash-password = "cueverge.gui.passwords:main"
 dev = [
   "httpx>=0.28,<1",
   "mypy>=1.14,<2",
-  "pytest>=8.3,<9",
+  "pytest>=9.0.3,<10",
   "ruff>=0.9,<1",
 ]
 

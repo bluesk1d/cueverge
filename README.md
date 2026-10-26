@@ -1,5 +1,9 @@
 # Cueverge
 
+Licensed under [GNU GPL version 3 only](LICENSE). You may use, modify, and
+redistribute Cueverge, including commercially, under those terms. Distributing
+modified versions requires providing corresponding source under GPL-3.0-only.
+
 Cueverge is an early-stage, self-hosted reactive show engine. A controller owns
 scene selection and lifecycle, while a media agent reports the authoritative
 playback position used to render synchronized lighting. Scenes can instead
@@ -15,6 +19,11 @@ adapters are opt-in; no physical output or observation ingress is enabled by
 default.
 
 ## Service documentation
+
+The repository also includes a [static landing page and documentation site](site/README.md).
+Build and preview it locally with `cd site && npm ci && npm run build && npm run preview`.
+It presents the guides below alongside the user/show creator guide, using the
+existing Markdown sources without duplicating their content.
 
 Start with the [documentation index](docs/README.md), or choose your role:
 
@@ -73,9 +82,8 @@ hardware-free test harness.
 - `shows/demo/` is a redistributable synthetic example.
 - `shows/multi-output-demo/` is a hardware-free schema-v2 example with two
   media agents and two lighting outputs.
-- `shows/halloween/` is only a placeholder for a private reference
-  implementation. No installation details or copyrighted media belong in the
-  engine or public demo.
+- Keep installation-specific show packages and media separate from the reusable
+  engine and redistributable demos.
 
 See [the architecture](docs/architecture.md), [the protocol](docs/protocol.md),
 [the milestone plan](docs/milestones.md), and the

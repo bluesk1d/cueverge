@@ -32,5 +32,5 @@ know scene IDs or lighting geometry.
 - Scheduling can be simulated without media or hardware.
 - Lighting can be tested without cameras.
 - External observation sources remain replaceable.
-- Installation and Halloween concepts remain private show configuration.
+- Installation geometry and narrative concepts remain private show configuration.
 - Cross-layer requests require explicit typed contracts and observability.

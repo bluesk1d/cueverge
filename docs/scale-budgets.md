@@ -62,7 +62,7 @@ offline compilation/publication or advanced composition budgets above:
   four per second alongside the LED preview.
 
 These bounds are reported through MCP capability discovery and covered by
-preview tests. The 56-cue/605-pixel local demo is qualified through real
+preview tests. The 56-cue synthetic local demo is qualified through real
 browser/MCP readback and frame comparison, not a new claim that every maximum
 scene/asset combination renders interactively.
 

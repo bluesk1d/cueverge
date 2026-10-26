@@ -1,0 +1,41 @@
+name: Static site
+
+on:
+  push:
+    paths:
+      - 'site/**'
+      - 'docs/**'
+      - '.github/workflows/static-site.yml'
+  pull_request:
+    paths:
+      - 'site/**'
+      - 'docs/**'
+      - '.github/workflows/static-site.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: site/package-lock.json
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: npm ci
+        working-directory: site
+      - run: npm run build
+        working-directory: site
+      - run: npm run check
+        working-directory: site
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cueverge-static-site
+          path: site/dist/
+          include-hidden-files: true

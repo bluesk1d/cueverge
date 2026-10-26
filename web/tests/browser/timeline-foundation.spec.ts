@@ -325,7 +325,11 @@ test("LED-only scene remains valid and saves without media dependencies", async 
   await expect(page.getByLabel("Clock authority")).toHaveValue("controller_timed");
   await page.getByRole("dialog").getByRole("button", { name: "Close" }).click();
   await expect(page.getByLabel("Timeline validation")).toContainText("Timeline valid");
-  await page.getByRole("button", { name: "Save timeline" }).click();
+  const saveTimeline = page.getByRole("button", { name: "Save timeline" });
+  await expect(saveTimeline).toBeDisabled();
+  await page.getByLabel("Timeline canvas").focus();
+  await page.keyboard.press("m");
+  await saveTimeline.click();
   await expect.poll(() => savedDraft).not.toBeNull();
   expect((savedDraft as ReturnType<typeof draftDocument> | null)?.scenes[0]).toMatchObject({
     mode: "controller_timed",

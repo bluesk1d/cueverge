@@ -47,7 +47,8 @@ is the `read` scope. Additional independent scopes are:
 - `direct_edit`: save a working draft immediately as a new revision, without a
   proposal or human approval/merge. Saving a draft identical to the current one
   creates no revision (audited as `draft.update` `unchanged`), so revision-bound
-  bakes stay current. Requires designer, publisher, or administrator
+  bakes stay current; LED-only bakes also stay current across saves that change
+  nothing they draw. Requires designer, publisher, or administrator
   project access. Also permits queueing/canceling offline render jobs.
 - `simulation`: run bounded deterministic simulations, scene LED frames, and composition image previews
   without hardware.
@@ -624,7 +625,7 @@ mode 0700, with regular nonsymlink files mode 0600; the controller data parent
 (`CUEVERGE_GUI_DATA_ROOT`) must not be group/world-writable. The controller creates
 that data root as mode 0700 on first start, but an existing bind-mounted folder
 created with a looser mode (for example `770`) must be fixed by the operator, for
-example `chmod 750 <NAS folder>/gui`, before GUI-managed inputs can be saved. This implementation enforces POSIX permissions;
+example `chmod 750 /path/to/cueverge-data/gui`, before GUI-managed inputs can be saved. This implementation enforces POSIX permissions;
 use environment management on platforms without that protection. Permissions
 are not encryption at rest. Passwords are write-only and absent from readback,
 audit details, MCP results, logs and project exports.
@@ -837,8 +838,8 @@ Both writes require `direct_edit` and a current `base_revision`. For example:
   "arguments": {
     "base_revision": 7,
     "request": {
-      "scene_id": "halloween-preshow",
-      "name": "Halloween preshow",
+      "scene_id": "exhibit-preshow",
+      "name": "Exhibit preshow",
       "duration_ms": 180000,
       "mode": "controller_timed",
       "completion_policy": "loop",
@@ -1061,7 +1062,7 @@ production `evaluate_lighting_output` function as the controller. For example:
   "source_revision": 3,
   "resource": "roofline.demo",
   "pixel_offset": 0,
-  "pixel_limit": 605
+  "pixel_limit": 120
 }
 ```
 
@@ -1087,7 +1088,8 @@ is opened. Preview cannot publish or activate. Invalid candidates/dependencies
 fail explicitly; they are not rendered as partial success. For the saved
 revision, LED compositions (`lighting_surface`, or `stage` with
 `stage_lighting_surfaces`) are compiled in from their current bakes exactly as
-Apply would. Unsaved candidates and compositions without a current bake are
+Apply would. Each current bake is used even when another LED composition still
+needs one. Unsaved candidates and compositions without a current bake are
 omitted, and the top-level `limitations` list names them instead of failing the
 preview; `preview_composition` still previews an individual composition before
 baking. Legacy effects retain their existing runtime behavior;
@@ -1227,6 +1229,22 @@ For installation-wide image/video/GIF overlays:
    composition_id)` lists project jobs (maximum 100 per page).
    `cancel_render_job(job_id)` cancels queued/running jobs with the same write
    grants as queueing. Cross-project job IDs are rejected.
+   `get_lighting_bake_status(revision=None, scene_id=None)` (`read`) lists every
+   LED composition for a saved revision with `state` (`current`, `queued`,
+   `running`, `failed`, `missing`, or `unavailable` when inputs such as the
+   installation mapping cannot be read), `scene_ids` (including scenes that
+   inherit an ambient composition), `baked_revision`, and `bake_required`. The
+   GUI shows the same status as the scene **LED bake** chip, and
+   `GET /api/gui/v1/projects/{project_id}/lighting-bakes?revision=` returns it
+   to project readers.
+
+   LED-only bakes (`lighting_surface` compositions and `stage` compositions with
+   `stage_projector_resources: []`) are keyed on the composition, its media and
+   lighting author layers, asset checksums, and the installation mapping, not
+   on the revision. Saving edits that change none of these keeps the bake
+   current, and queueing one returns the existing artifact immediately.
+   Projector and mixed bakes stay bound to the revision they were made for. A
+   draft save identical to the head revision creates no new revision.
 7. Publish/stage/activate using the existing separately granted scopes below.
    Offline bakes do not merge proposals, approve releases, deploy, or activate
    hardware. Controller package handover/restart and physical synchronization
@@ -1505,8 +1523,8 @@ await simulation.observe(
         "source": "frigate",
         "object_id": "synthetic-1",
         "label": "person",
-        "camera": "doorbell",
-        "zone": "Porch",
+        "camera": "exhibit-camera",
+        "zone": "interaction-area",
     },
 )
 await simulation.advance(30 * 60 * 1000)

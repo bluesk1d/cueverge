@@ -387,3 +387,56 @@ test("looping layers set exact plays and compositions can be resized to fit", as
     playback: "loop",
   });
 });
+
+test("the scene LED bake chip bakes a missing overlay and opens its bake settings", async ({ page }) => {
+  await mockStageApi(page, draft());
+  const bakes: { state: string; requests: string[] } = { state: "missing", requests: [] };
+  await page.route("**/api/gui/v1/projects/demo-project/**", async (route) => {
+    const request = route.request();
+    const pathname = new URL(request.url()).pathname;
+    if (pathname.endsWith("/lighting-bakes")) {
+      return route.fulfill({ json: {
+        project_id: "demo-project", revision: 1,
+        compositions: [{
+          composition_id: "flag", name: "Rippling flag", space_kind: "stage", state: bakes.state,
+          reusable_across_revisions: true, artifact_id: bakes.state === "current" ? "set-1" : null,
+          baked_revision: bakes.state === "current" ? 1 : null, job_id: null, progress: null,
+          error: null, scene_ids: ["ambient"], ambient: false,
+        }],
+      } });
+    }
+    if (pathname.endsWith("/render-jobs") && request.method() === "POST") {
+      bakes.requests.push(request.postDataJSON().composition_id);
+      bakes.state = "current";
+      return route.fulfill({ status: 202, json: {
+        id: "job-1", project_id: "demo-project", source_revision: 1, composition_id: "flag",
+        cache_key: "k", state: "completed", progress: 1, reserved_bytes: 0, error: null,
+        artifact_id: "set-1", cancel_requested: false, created_by: "admin",
+        created_at: "", started_at: null, completed_at: "", updated_at: "",
+      } });
+    }
+    return route.fallback();
+  });
+  await page.goto("/demo.html");
+  await page.getByRole("button", { name: "Shows", exact: true }).click();
+  await page.getByRole("button", { name: /^Open show / }).first().click();
+  await page.getByRole("button", { name: "Scenes", exact: true }).click();
+
+  const chip = page.getByRole("button", { name: /LED bake needed/ });
+  await expect(chip).toBeVisible();
+  await chip.click();
+  const panel = page.getByRole("region", { name: "LED bakes for this scene" });
+  await expect(panel).toContainText("Rippling flag");
+  await panel.getByRole("button", { name: "Bake now" }).click();
+  await expect.poll(() => bakes.requests).toEqual(["flag"]);
+  await expect(page.getByRole("button", { name: /LED bake current/ })).toBeVisible();
+
+  await panel.getByRole("button", { name: "Bake settings" }).click();
+  await expect(page.getByRole("tab", { name: "Render & bake", exact: true })).toHaveAttribute(
+    "aria-selected", "true",
+  );
+  await expect(page.locator('[role="tab"][data-composition-id="flag"]')).toHaveAttribute(
+    "aria-selected", "true",
+  );
+  await expect(page.getByRole("button", { name: "Save timeline" })).toBeDisabled();
+});

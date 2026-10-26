@@ -2,12 +2,36 @@
 .pytest_cache/
 .ruff_cache/
 .venv/
+# Private configuration; keep redistributable templates visible.
+.env
+.env.*
 .env*.local
+*.env
+!*.env.example
+!.env.example
+!.env.*.example
+
+# Runtime state and device credentials must stay outside the source tree.
+*.sqlite
+*.sqlite3
+*.sqlite-*
+*.sqlite3-*
+*.db
+*.db-*
+*.pem
+*.key
+*.p12
+*.pfx
+/data/
+/secrets/
+/credentials/
 __pycache__/
 *.py[cod]
 dist/
-web/node_modules/
+node_modules/
 web/dist/
 web/test-results/
 web/playwright-report/
 shows/local-*/
+.DS_Store
+Thumbs.db

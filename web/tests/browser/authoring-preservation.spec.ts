@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { openAdvancedShowWorkspace, openTimelineEditor } from "./show-workspace";
+import { openAdvancedShowWorkspace, openTimelineEditor, openTimelineTool } from "./show-workspace";
 
 import baseline from "../../../tests/fixtures/usability-authoring.json" with { type: "json" };
 
@@ -37,8 +37,16 @@ for (const scene of baseline.scenes) {
       await expect(page.getByRole("slider", { name: "Zoom", exact: true })).toHaveValue("100");
       await expect(page.getByRole("combobox", { name: "Snap", exact: true })).toHaveValue("250");
     }
-    await page.getByRole("button", { name: "Save timeline", exact: true }).click();
+    const saveTimeline = page.getByRole("button", { name: "Save timeline", exact: true });
+    // Nothing to save until an edit: an unchanged save would only create a new revision.
+    await expect(saveTimeline).toBeDisabled();
+    await openTimelineTool(page, "Markers & cues");
+    await page.getByLabel("New sync marker name").fill("Preservation check");
+    await page.getByRole("button", { name: "Add sync marker" }).click();
+    await expect(saveTimeline).toBeEnabled();
+    await saveTimeline.click();
     await expect.poll(() => saved).toBeDefined();
+    await expect(saveTimeline).toBeDisabled();
 
     expect(saved!.scenes).toEqual(baseline.scenes);
     expect(saved!.installation).toEqual(baseline.installation);

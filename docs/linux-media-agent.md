@@ -33,8 +33,8 @@ after logout. A system-level service without access to the graphical session
 may connect to the controller but fail to create a usable fullscreen window.
 
 Linux support is covered by transport and protocol tests but has not yet been
-validated on the target NUC and projector. Hardware validation must cover
-fullscreen placement, decode performance, audio routing, prepare/play/seek/
+qualified across deployment hardware. Validate your media host and display.
+Hardware validation must cover fullscreen placement, decode performance, audio routing, prepare/play/seek/
 stop behavior, reconnect reconciliation, and sustained playback.
 
 ## Repeat counts and seamless scene changes
@@ -79,7 +79,7 @@ cp examples/cueverge-media-agent.desktop \
 systemctl --user daemon-reload
 ```
 
-Edit the private environment file, then test from a terminal inside the NUC's
+Edit the private environment file, then test from a terminal inside the media host's
 desktop session before relying on autostart:
 
 ```bash
@@ -112,7 +112,7 @@ systemctl --user stop cueverge-media-agent.service
 systemctl --user restart cueverge-media-agent.service
 ```
 
-Before unattended use, reboot the NUC and verify:
+Before unattended use, reboot the media host and verify:
 
 1. Desktop login completes without interaction.
 2. Exactly one agent process connects to the controller.
@@ -166,7 +166,7 @@ In GNOME Settings:
 2. Set the projector's native resolution and refresh rate.
 3. Disable display blanking and automatic suspend for the show account.
 4. Decide deliberately whether automatic login is acceptable for the physical
-   security of the NUC.
+   security of the media host.
 
 After the service starts, verify its inherited environment and process tree:
 
@@ -181,19 +181,19 @@ The service is coupled to `graphical-session.target` and the XDG autostart
 entry starts it after GNOME login. This avoids starting mpv from a system
 service that lacks access to the user's Wayland compositor.
 
-## Target NUC hardware checklist
+## Media-host hardware checklist
 
 Record results alongside the private installation configuration. Do not commit
 local addresses, serial numbers, credentials, or copyrighted test media.
 
 ### 1. Inventory before installation
 
-- [ ] Record NUC model, CPU, memory, storage, firmware version, and GPU.
+- [ ] Record media host model, CPU, memory, storage, firmware version, and GPU.
 - [ ] Record projector model, native resolution, supported refresh rates, and
       the HDMI cable/adapter path.
-- [ ] Confirm wired Ethernet availability and record whether the NUC must use
+- [ ] Confirm wired Ethernet availability and record whether the media host must use
       Wi-Fi.
-- [ ] Confirm the NUC clock, firmware, and Ubuntu installation can recover
+- [ ] Confirm the media host clock, firmware, and Ubuntu installation can recover
       after power loss.
 - [ ] Decide whether the show account may use GNOME automatic login.
 
@@ -278,7 +278,7 @@ journalctl -k --since today
 - [ ] Copy all media into the local asset root.
 - [ ] Verify every v2 scene asset referenced by this agent exists locally.
 - [ ] Set the validated fullscreen screen index.
-- [ ] Set audio output only if this NUC owns an audio destination.
+- [ ] Set audio output only if this media host owns an audio destination.
 - [ ] Run the agent manually from a GNOME terminal.
 - [ ] Verify prepare, play, pause, seek, resume, stop, and completion.
 - [ ] Install the user service and XDG autostart templates.
@@ -330,13 +330,13 @@ journalctl -k --since today
       adopted incorrectly.
 - [ ] Power-cycle the projector and document whether manual intervention is
       required.
-- [ ] Reboot the NUC and confirm unattended return to a connected idle agent.
+- [ ] Reboot the media host and confirm unattended return to a connected idle agent.
 - [ ] Verify explicit stop and shutdown leave every projector and lighting
       output in the intended installation-safe state.
 
 ### 8. Acceptance record
 
-Do not promote the NUC to show use until the following are recorded:
+Do not promote the media host to show use until the following are recorded:
 
 - [ ] Validated Ubuntu, kernel, mpv, Cueverge, and GPU driver versions.
 - [ ] Validated display index, resolution, refresh rate, and decode mode.
@@ -344,4 +344,4 @@ Do not promote the NUC to show use until the following are recorded:
 - [ ] Agent and controller restart outcomes.
 - [ ] Known HDMI/projector power-order limitations.
 - [ ] Final private environment-file location and service status.
-- [ ] A rollback plan to the previously validated single-projector setup.
+- [ ] A rollback plan to a known-good hardware and software configuration.

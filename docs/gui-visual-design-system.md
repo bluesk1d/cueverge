@@ -187,7 +187,7 @@ editable as browser-created content. Revision identifiers and draft management
 must not obstruct the everyday edit/preview flow; retain history and recovery
 without implying that saved changes are live.
 
-For the initial runtime-compatible slice, expose existing media outputs and existing timed lighting cues. Do not imply support for arbitrary multi-clip video composition, crossfades, or video layering until the engine explicitly supports it. Asset references and preview use backend-authoritative data. Timeline colors may distinguish Video, Audio, Lighting, Spatial Effects, Events, and Automation, but unsupported tracks must not appear editable. The mockup's dialogue audio and scripted upcoming scenes are illustrative mistakes, not requirements. The Halloween sample is silent character performance, but Cueverge itself must support audio where the engine permits.
+For the initial runtime-compatible slice, expose existing media outputs and existing timed lighting cues. Do not imply support for arbitrary multi-clip video composition, crossfades, or video layering until the engine explicitly supports it. Asset references and preview use backend-authoritative data. Timeline colors may distinguish Video, Audio, Lighting, Spatial Effects, Events, and Automation, but unsupported tracks must not appear editable. The mockup's dialogue audio and scripted upcoming scenes are illustrative mistakes, not requirements. A sample may use silent character performance; other shows can include audio where the engine permits.
 
 Preview is **simulation by default**; hardware rehearsal requires explicit authorization and arming. Editing must never mutate the active package.
 

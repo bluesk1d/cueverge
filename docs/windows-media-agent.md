@@ -8,11 +8,11 @@ initiates an outbound WebSocket connection to the controller.
 1. Install a current mpv build and record its version/source.
 2. Place show media in a local asset directory. Agent commands carry only
    package-relative asset IDs; traversal outside this root is rejected.
-3. Run `mpv --audio-device=help` and choose the wired analog output if mpv does
+3. Run `mpv --audio-device=help` and choose the intended audio output if mpv does
    not select it by default.
 4. Determine the projector's Windows display index and validate fullscreen
    placement.
-5. Confirm TCP connectivity from laptop to controller.
+5. Confirm TCP connectivity from media host to controller.
 
 Copy `examples/media-agent.env.example` into a private environment file and set
 real values. Do not commit device names, addresses, or credentials.
@@ -51,26 +51,27 @@ When validating hardware, confirm the cut between two scenes on the actual
 projector: there should be no black frame between the last frame of one clip
 and the first frame of the next. Record the mpv version you validated.
 
-## 2026-10-08 hardware checks
+## Hardware qualification and deployment
 
-The target Windows 11 laptop was checked with portable mpv 0.41.0:
+Record the Windows, GPU-driver, and mpv versions used for your installation,
+then verify:
 
-- `C:\Program Files\mpv\mpv.exe` launches successfully.
-- `--fs-screen=1` places fullscreen mpv on the extended projector only.
-- The wired Home Max AUX path is audible through the Realtek **Headphones**
-  WASAPI endpoint.
-- The headphones endpoint appears only after the 3.5 mm cable is connected.
-  Device enumeration and agent startup must therefore happen after cabling, or
-  readiness must fail with an actionable device error.
+- The configured mpv executable launches from the show account.
+- Fullscreen output reaches the intended display. For example, `--fs-screen=1`
+  selects display index 1; discover the correct index on your own host.
+- The selected audio endpoint is audible through the intended speakers.
+- Device enumeration works with the installation fully connected. Some analog
+  endpoints appear only after cabling, and HDMI endpoints can depend on display
+  power state. Report unavailable devices rather than silently selecting another.
 
-The machine-specific WASAPI GUID is intentionally not committed. It belongs in
-the laptop's private environment configuration.
+Keep machine-specific audio endpoint identifiers in the media host's private
+environment configuration. No speaker brand or particular audio route is required.
 
 `CUEVERGE_AUDIO_DELAY_MS` optionally shifts audio relative to video through
 mpv's audio-delay setting. Positive values delay audio; negative values advance
 it. This is an installation calibration value and defaults to zero.
 
-The agent is deployed as a Task Scheduler job configured for the logged-in
+For an interactive Windows deployment, use a Task Scheduler job for the logged-in
 user's interactive desktop. A process launched directly by OpenSSH runs in a
 non-interactive Windows session and cannot reliably create the projector GPU
 swapchain. Remote administration therefore starts and stops the scheduled task
@@ -93,7 +94,7 @@ adopts an existing responsive player rather than spawning another instance.
 The on-demand stop script terminates only mpv processes whose command line
 uses Cueverge's named pipe.
 
-Rotate the laptop credential while its agent task is stopped, then use
+Rotate the media-host credential while its agent task is stopped, then use
 `C:\Cueverge\start-agent.ps1` to activate the replacement certificate:
 
 ```powershell
@@ -101,10 +102,10 @@ cueverge-device-rotate `
   --transport-url wss://controller-host:7443/api/device/v2/agent/ws
 ```
 
-Live validation covered prepare/play, authoritative position telemetry, pause,
-seek while paused, resume, explicit stop, and controller restart
-reconciliation. The integrated lighting loop maintained 25 FPS without missed
-local deadlines and returned to an idle state after stop.
+Before show use, verify prepare/play, authoritative position telemetry, pause,
+seek while paused, resume, explicit stop, and controller restart reconciliation.
+Record lighting cadence and missed deadlines during representative playback, and
+confirm that stop returns the installation to its intended safe state.
 
 The controller's `CUEVERGE_LIGHTING_DELAY_MS` setting independently delays
 rendered lighting relative to authoritative media time without changing status

@@ -91,42 +91,54 @@ do not deploy old `/api/v1/...` integration examples.
 
 ## Deploying the controller
 
-### Using the published image on a NAS
+### Using the published image on a Docker host
 
-For Caddy reaching the NAS over its LAN address, use the standalone
-[NAS Compose file](../compose.nas.yaml). It pins the verified published image
-and maps:
+For Caddy reaching the Docker host over its LAN address, use the standalone
+[Docker host Compose file](../compose.host.yaml). It pins a published image and
+takes deployment-specific addresses and storage from your private environment file.
+For example, a fictional Docker host deployment could use:
 
-| NAS endpoint / volume | Container target | Purpose |
+```dotenv
+# Documentation-only values: replace with your own host, path, and HTTPS origin.
+CUEVERGE_HOST_BIND_ADDRESS=192.0.2.10
+CUEVERGE_HOST_DATA_DIRECTORY=/srv/cueverge
+CUEVERGE_GUI_ALLOWED_ORIGINS=https://cueverge.example.com
+```
+
+These three settings are required by the Compose template, along with the
+administrator password hash described below. They map:
+
+| Docker host endpoint / volume | Container target | Purpose |
 | --- | --- | --- |
-| `192.0.2.10:7000/tcp` | `8000/tcp` | HTTP upstream for Caddy; GUI, API, and `/mcp/` |
-| `192.0.2.10:7443/tcp` | `7443/tcp` | Direct mTLS media-agent transport, when enabled |
-| NAS folder `/share/Container/mounts/cueverge` | `/var/lib/cueverge` | Database, originals/photos, derived artifacts, renders, packages, and device CA |
+| Configured Docker host address, port `7000/tcp` | `8000/tcp` | HTTP upstream for Caddy; GUI, API, and `/mcp/` |
+| Configured Docker host address, port `7443/tcp` | `7443/tcp` | Direct mTLS media-agent transport, when enabled |
+| Configured Docker host data directory | `/var/lib/cueverge` | Database, originals/photos, derived artifacts, renders, packages, and device CA |
 
-Copy the Compose file and your private `.env.controller.local` to the NAS,
-authenticate Docker to GHCR as described below, then run:
+Copy the Compose file and your private `.env.controller.local` to the Docker host,
+then run the commands below. Public GHCR images need no login; authenticate only
+if you are using a private package, as described below.
 
 ```bash
-docker compose --env-file .env.controller.local -f compose.nas.yaml config --quiet
-docker compose --env-file .env.controller.local -f compose.nas.yaml pull
-docker compose --env-file .env.controller.local -f compose.nas.yaml run \
+docker compose --env-file .env.controller.local -f compose.host.yaml config --quiet
+docker compose --env-file .env.controller.local -f compose.host.yaml pull
+docker compose --env-file .env.controller.local -f compose.host.yaml run \
   --rm --no-deps --user 0:0 --entrypoint /bin/sh controller -ec '
     mkdir -p /var/lib/cueverge/gui
     chown cueverge:cueverge /var/lib/cueverge
     chown -R cueverge:cueverge /var/lib/cueverge/gui
   '
-docker compose --env-file .env.controller.local -f compose.nas.yaml up -d
-docker compose --env-file .env.controller.local -f compose.nas.yaml ps
+docker compose --env-file .env.controller.local -f compose.host.yaml up -d
+docker compose --env-file .env.controller.local -f compose.host.yaml ps
 ```
 
 Keep the password hash single-quoted in the environment file so its `$`
 characters are literal. Do not commit or share that file. The stack requires
-an administrator hash, enables secure cookies, and defaults to the HTTPS
-origin `https://controller.example.com`. The published image and application run as
+an administrator hash, enables secure cookies, and requires your configured HTTPS
+origin. The published image and application run as
 an unprivileged user. The one-time initialization command runs as root only
 to prepare the mounted application directory; it uses the image's account
-names rather than guessing a NAS UID/GID. It preserves existing files.
-Back up this NAS folder and do not delete or empty it when updating.
+names rather than guessing a host UID/GID. It preserves existing files.
+Back up this Docker host folder and do not delete or empty it when updating.
 
 A bind mount hides the directories and ownership prepared inside the image;
 unlike a fresh Docker-managed volume, it does not copy them into the host
@@ -136,27 +148,27 @@ the controller first, run the initialization command above, then start it
 again and inspect the logs:
 
 ```bash
-docker compose --env-file .env.controller.local -f compose.nas.yaml stop controller
+docker compose --env-file .env.controller.local -f compose.host.yaml stop controller
 # Run the one-time initialization command above while the controller is stopped.
-docker compose --env-file .env.controller.local -f compose.nas.yaml up -d controller
-docker compose --env-file .env.controller.local -f compose.nas.yaml logs --tail=100 controller
+docker compose --env-file .env.controller.local -f compose.host.yaml up -d controller
+docker compose --env-file .env.controller.local -f compose.host.yaml logs --tail=100 controller
 ```
 
 Do not run the ordinary controller as root or use world-writable permissions
-as a workaround. If the NAS rejects `chown` or access still fails, inspect
+as a workaround. If the Docker host rejects `chown` or access still fails, inspect
 the shared folder's ACL and filesystem permissions; a read-only mount or
-NAS-enforced ACL cannot be corrected by an application setting.
+host-enforced ACL cannot be corrected by an application setting.
 
-Caddy's upstream for this deployment is:
+For the fictional addresses above, the corresponding Caddy configuration is:
 
 ```caddyfile
-controller.example.com {
+cueverge.example.com {
     reverse_proxy 192.0.2.10:7000
 }
 ```
 
-Caddy must be able to reach that NAS address from its container. Preserve the
-public request Host; Caddy does this by default for this HTTP upstream. Do not
+Caddy must be able to reach your configured Docker host address from its container.
+Preserve the public request Host; Caddy does this by default for this HTTP upstream. Do not
 forward port 7000 from the internet or use its LAN HTTP address as the browser
 URL when secure cookies are enabled.
 
@@ -164,7 +176,11 @@ The 7443 mapping is reserved but enrollment and its listener remain disabled
 by default. To enable devices, configure both enable flags, confirm verified
 TLS termination, and supply a private CA-key password as described under
 [device enrollment](#enrolling-and-maintaining-media-hosts). Devices connect
-directly to `wss://192.0.2.10:7443/api/device/v2/agent/ws`; do not put an
+directly to your configured mTLS endpoint, for example
+`wss://controller.example.com:7443/api/device/v2/agent/ws`. Replace the template's
+example `CUEVERGE_DEVICE_LISTENER_IDENTITIES` and
+`CUEVERGE_DEVICE_LISTENER_PUBLIC_URL` with names or IPs reachable by your agents
+and covered by the listener certificate. Do not put an
 ordinary TLS-terminating Caddy HTTP proxy in front of this mTLS listener.
 If device operation is not needed, the 7443 port mapping can be removed.
 
@@ -193,23 +209,41 @@ in its build stage.
 The registry image is `ghcr.io/bluesk1d/cueverge:latest`. Each publication also
 has a `sha-<full-git-commit>` tag, and the workflow summary records the exact
 digest. Prefer a digest-pinned image for a qualified installation; `latest`
-changes on the next successful automatic or manual publication. The GitHub package remains
-private unless its owner explicitly changes visibility.
+changes on the next successful automatic or manual publication.
 
-On the NAS, authenticate with a GitHub credential authorized to read the
-private package (a classic personal access token with `read:packages`, and
-access to the repository/package, is supported):
+**Public images require no GHCR login or GitHub account to pull:**
 
 ```bash
-read -rsp 'GitHub package-read token: ' GHCR_TOKEN
-printf '\n'
-printf '%s' "$GHCR_TOKEN" | docker login ghcr.io --username bluesk1d --password-stdin
-unset GHCR_TOKEN
 docker pull ghcr.io/bluesk1d/cueverge:latest
 ```
 
+For maintainers preparing a public release, make the container package public
+in its GitHub package settings as well as making the source repository public.
+GHCR package visibility is managed separately from repository visibility, and
+new packages default to private. See GitHub's
+[package visibility documentation](https://docs.github.com/en/packages/learn-github-packages/configuring-a-packages-access-control-and-visibility).
+The publishing workflow still signs in with `GITHUB_TOKEN` to push images;
+this does not require users pulling a public image to authenticate.
+
+**Private images only:** before pulling or running `docker compose pull`,
+authenticate on the Docker host with a GitHub credential authorized to read the
+package. A classic personal access token with `read:packages` and access to the
+package is supported. See GitHub's
+[Container registry authentication documentation](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry).
+
+Use your own GitHub login for `GITHUB_USERNAME`; the registry path below is the
+project's image location, not the account you must use to authenticate.
+
+```bash
+read -rp 'GitHub username: ' GITHUB_USERNAME
+read -rsp 'GitHub package-read token: ' GHCR_TOKEN
+printf '\n'
+printf '%s' "$GHCR_TOKEN" | docker login ghcr.io --username "$GITHUB_USERNAME" --password-stdin
+unset GHCR_TOKEN
+```
+
 Use a registry-image stack rather than the source-build Compose file on the
-NAS. For example, behind a same-host HTTPS reverse proxy:
+Docker host. For example, behind a same-host HTTPS reverse proxy:
 
 ```yaml
 services:
@@ -232,10 +266,10 @@ volumes:
   cueverge-data:
 ```
 
-Supply the private environment values described below through the NAS stack
-manager or a protected Compose environment file. If the reverse proxy is
+Supply the private environment values described below through the container
+management interface or a protected Compose environment file. If the reverse proxy is
 containerized, connect it over a private Docker network instead of assuming
-its loopback reaches the NAS host. The controller's container HTTP port is
+its loopback reaches the Docker host. The controller's container HTTP port is
 8000, while this example's host port is 7000. Device listener publication,
 private package mounts, DDP, and MQTT remain separate opt-in configuration.
 Do not remove the persistent volume when updating the image.
@@ -442,12 +476,12 @@ key; discovery or an IP address alone never grants command authority.
 Follow the platform runbooks for actual service installation:
 
 - [Linux media agent](linux-media-agent.md): user-session systemd service,
-  graphical autostart, Wayland/X11 environment, and NUC acceptance checklist.
+  graphical autostart, Wayland/X11 environment, and media-host acceptance checklist.
 - [Windows media agent](windows-media-agent.md): interactive desktop/task
   scheduling, fullscreen selection, audio routing, and validated hardware.
 
-Linux transport is tested, but the target NUC/projector is not yet hardware
-qualified. Do not describe it as equivalent to the validated Windows setup.
+Linux transport is tested, but Linux hardware qualification remains outstanding.
+Use the platform checklist to qualify your media host and display before show use.
 
 ### Connection policy, rotation, and retirement
 

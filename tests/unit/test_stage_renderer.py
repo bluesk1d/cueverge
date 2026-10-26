@@ -332,6 +332,9 @@ def test_installation_overlay_bakes_one_animation_for_projectors_and_leds(
         RenderJobService,
         SimpleNamespace(
             lighting_artifacts=lambda _project_id, _revision: {"stage-composition": artifact},
+            current_lighting_artifacts=lambda _project_id, _revision: {
+                "stage-composition": artifact
+            },
             list=lambda _project_id: [
                 SimpleNamespace(
                     source_revision=2,
@@ -550,6 +553,9 @@ def test_lights_only_overlay_bakes_led_sequences_without_projector_video(
         RenderJobService,
         SimpleNamespace(
             lighting_artifacts=lambda _project_id, _revision: {"stage-composition": artifact},
+            current_lighting_artifacts=lambda _project_id, _revision: {
+                "stage-composition": artifact
+            },
             list=lambda _project_id: [
                 SimpleNamespace(
                     source_revision=2,

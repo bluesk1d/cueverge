@@ -102,14 +102,13 @@ does not persist state across restarts or attempt hardware recovery.
 
 ## Package boundaries
 
-The `cueverge` package has no Halloween concepts, local addresses, device
+The `cueverge` package has no installation narrative, local addresses, device
 credentials, or private geometry. Generic synthetic content lives in
-`shows/demo`; the future installation-specific package lives separately in
-`shows/halloween`.
+`shows/demo`; installation-specific packages and assets are maintained separately.
 
 Scenes refer only to logical resource names. The installation document owns
 the mapping from those names to agent and output targets.
 
 The synthetic demo owns its event names and encounter states. Core logic only
 interprets the versioned transition model and never imports detector-specific
-schemas or Halloween content.
+schemas or installation-specific content.

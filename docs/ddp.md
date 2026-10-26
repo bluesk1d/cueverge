@@ -16,23 +16,24 @@ safety control.
 
 The legacy environment settings configure one DDP sink. Deployments with
 multiple logical pixel resources set `CUEVERGE_OUTPUT_CONFIG` to a private JSON
-file instead:
+file instead. This fictional example uses documentation-only addresses and
+arbitrary pixel counts; replace them with your measured output configuration:
 
 ```json
 {
   "schema_version": 1,
   "lighting": [
     {
-      "resource": "roofline",
+      "resource": "display-border",
       "kind": "ddp",
-      "host": "roofline-wled.local",
-      "expected_pixel_count": 605
+      "host": "192.0.2.20",
+      "expected_pixel_count": 120
     },
     {
-      "resource": "porch",
+      "resource": "accent-lights",
       "kind": "ddp",
-      "host": "porch-wled.local",
-      "expected_pixel_count": 150,
+      "host": "192.0.2.21",
+      "expected_pixel_count": 60,
       "brightness_limit": 0.6
     }
   ]
@@ -80,7 +81,7 @@ test events are audited. UDP send success is not a device acknowledgement.
 Before enabling output, validate:
 
 - WLED version, configured LED count, RGB/RGBW layout, and color order.
-- Unicast reachability from the NAS and sustainable frame rate.
+- Unicast reachability from the controller host and sustainable frame rate.
 - Realtime ownership and behavior when packets stop.
 - How to restore or relinquish to the prior WLED preset.
 
@@ -90,19 +91,20 @@ enabled output target has already been configured appropriately.
 
 RGBW output is not implemented. Do not enable the sink for an RGBW installation.
 
-## 2026-10-08 hardware spike
+## Hardware qualification
 
-Read-only inspection and an authorized controlled test established:
+Qualify each controller and LED layout before relying on live output. Record:
 
-- WLED 0.16.0.1 on ESP32 with 605 RGB pixels.
-- Two physical outputs: 377 and 228 pixels, represented as one linear range.
-- DDP input accepted all 605 pixels and identified the realtime source as DDP.
-- A dim three-pixel frame at 20 FPS was received successfully.
-- 300 all-black frames were sent at exactly 30.00 FPS over ten seconds with
-  zero sender deadline misses.
-- WLED relinquished realtime mode within five seconds and returned to the exact
-  prior off state after both tests.
+- Device firmware, RGB layout, total pixel count, and physical-output boundaries.
+- Whether a bounded low-brightness test reaches the intended pixels.
+- Sustained sender cadence and deadline misses at the intended show rate.
+- Realtime timeout and restoration behavior after transmission stops.
+- Packet loss and visible update latency measured independently of send success.
 
-WLED's instantaneous JSON FPS field reported values different from commanded
-cadence and is treated as diagnostic only. Packet loss and visible update
-latency were not measured.
+For example, two 60-pixel runs could be configured as one 120-pixel logical
+output. Verify the wiring transition with a bounded traversal test rather than
+assuming physical runs map continuously. These counts illustrate addressing;
+they are not a validated device configuration.
+
+WLED's instantaneous JSON FPS field is diagnostic only; it may differ from
+commanded cadence. A successful UDP send does not prove visible output.

@@ -1193,6 +1193,27 @@ export interface RenderJob {
   updated_at: string;
 }
 
+export interface LightingBakeStatus {
+  composition_id: string;
+  name: string;
+  space_kind: string;
+  state: "current" | "queued" | "running" | "failed" | "missing" | "unavailable";
+  reusable_across_revisions: boolean;
+  artifact_id: string | null;
+  baked_revision: number | null;
+  job_id: string | null;
+  progress: number | null;
+  error: string | null;
+  scene_ids: string[];
+  ambient: boolean;
+}
+
+export interface LightingBakeStatusList {
+  project_id: string;
+  revision: number;
+  compositions: LightingBakeStatus[];
+}
+
 export type SimulationStep =
   | { kind: "visitor"; camera: string; zone?: string; label?: string; object_id?: string; observation: "arrive" | "stay" | "leave"; age_ms?: number }
   | { kind: "advance"; delta_ms: number }
@@ -2053,6 +2074,16 @@ export function projectorSimulationOverlayUrl(
 export async function getRenderJobs(projectId: string): Promise<RenderJob[]> {
   return request<RenderJob[]>(
     `/api/gui/v1/projects/${encodeURIComponent(projectId)}/render-jobs`,
+  );
+}
+
+export async function getLightingBakeStatus(
+  projectId: string,
+  revision?: number,
+): Promise<LightingBakeStatusList> {
+  const query = revision === undefined ? "" : `?revision=${encodeURIComponent(revision)}`;
+  return request<LightingBakeStatusList>(
+    `/api/gui/v1/projects/${encodeURIComponent(projectId)}/lighting-bakes${query}`,
   );
 }
 

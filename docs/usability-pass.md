@@ -100,8 +100,8 @@ unless investigation proves otherwise; record why MCP requires no change.
   tests passed:
 
   ```bash
-  npm --prefix web run test:browser -- workspace-containment.spec.ts workspace-forms.spec.ts visual-shell.spec.ts timeline-foundation.spec.ts --workers=2 --output /home/justin/.copilot/session-state/682e79cb-7f6f-49af-b3de-2a28c152c99f/files/up00-browser-results
-  npm --prefix web run build -- --configLoader runner --outDir /home/justin/.local/share/cueverge/local-demo/web
+  npm --prefix web run test:browser -- workspace-containment.spec.ts workspace-forms.spec.ts visual-shell.spec.ts timeline-foundation.spec.ts --workers=2 --output /tmp/cueverge-review/up00-browser-results
+  npm --prefix web run build -- --configLoader runner --outDir "$HOME/.local/share/cueverge/local-demo/web"
   ```
 
   TypeScript checking and the Vite production build passed. Used the installed
@@ -196,9 +196,9 @@ frontend-managed controller restart.
 
   ```bash
   .venv/bin/python -m pytest tests/unit/test_gui_foundation.py tests/unit/test_mqtt.py tests/unit/test_frigate.py tests/unit/test_lighting_timeline.py -k 'usability_baseline or mcp_controller_timed or compilation_round_trips or mcp_shared_stage or mcp_spatial_context or mcp_endpoint_requires_project_token or mcp_existing_scopes or mcp_direct_edit or mqtt or frigate or timeline'
-  npm --prefix web run test:browser -- authoring-preservation.spec.ts workspace-containment.spec.ts timeline-foundation.spec.ts timeline-lighting-surface.spec.ts timeline-sync-markers.spec.ts timeline-multi-output-scene.spec.ts --workers=2 --output /home/justin/.copilot/session-state/682e79cb-7f6f-49af-b3de-2a28c152c99f/files/up01-browser-results
+  npm --prefix web run test:browser -- authoring-preservation.spec.ts workspace-containment.spec.ts timeline-foundation.spec.ts timeline-lighting-surface.spec.ts timeline-sync-markers.spec.ts timeline-multi-output-scene.spec.ts --workers=2 --output /tmp/cueverge-review/up01-browser-results
   .venv/bin/ruff check src/cueverge/gui/mcp_server.py tests/unit/test_gui_foundation.py
-  npm --prefix web run build -- --configLoader runner --outDir /home/justin/.local/share/cueverge/local-demo/web
+  npm --prefix web run build -- --configLoader runner --outDir "$HOME/.local/share/cueverge/local-demo/web"
   ```
 
   Results: 22 Python tests and 17 browser tests passed; lint, frontend type-check
@@ -278,10 +278,10 @@ green status cannot conceal an old snapshot.
 
   ```bash
   npm --prefix web test -- --configLoader runner --no-cache src/App.test.tsx src/useLiveStatus.test.tsx
-  npm --prefix web run test:browser -- overview-status.spec.ts visual-shell.spec.ts accessibility.spec.ts workspace-forms.spec.ts workspace-containment.spec.ts authoring-preservation.spec.ts timeline-foundation.spec.ts --workers=2 --output /home/justin/.copilot/session-state/682e79cb-7f6f-49af-b3de-2a28c152c99f/files/up02-browser-results
+  npm --prefix web run test:browser -- overview-status.spec.ts visual-shell.spec.ts accessibility.spec.ts workspace-forms.spec.ts workspace-containment.spec.ts authoring-preservation.spec.ts timeline-foundation.spec.ts --workers=2 --output /tmp/cueverge-review/up02-browser-results
   .venv/bin/python -m pytest tests/unit/test_gui_foundation.py -k 'runtime_snapshot or gui_resources_require_authentication or mcp_endpoint_requires_project_token or mcp_existing_scopes or usability_baseline or mcp_controller_timed or compilation_round_trips'
   .venv/bin/ruff check src/cueverge/gui/contracts.py src/cueverge/gui/router.py src/cueverge/gui/mcp_server.py tests/unit/test_gui_foundation.py
-  npm --prefix web run build -- --configLoader runner --outDir /home/justin/.local/share/cueverge/local-demo/web
+  npm --prefix web run build -- --configLoader runner --outDir "$HOME/.local/share/cueverge/local-demo/web"
   ```
 
   Results: 13 frontend unit tests, 30 browser regressions and 12 Python/MCP tests
@@ -364,10 +364,10 @@ JSON, and without dropping authored behavior. Saving does not make it live.
 - Final checks passed:
 
   ```bash
-  npm --prefix web run test:browser -- --workers=2 --output /home/justin/.copilot/session-state/682e79cb-7f6f-49af-b3de-2a28c152c99f/files/up03-browser-results
+  npm --prefix web run test:browser -- --workers=2 --output /tmp/cueverge-review/up03-browser-results
   .venv/bin/python -m pytest tests/unit/test_gui_foundation.py tests/unit/test_lighting_timeline.py tests/unit/test_lighting_preview.py tests/unit/test_stage_renderer.py tests/unit/test_multi_output_lighting.py -k 'scene_lighting_preview or usability_baseline or mcp_controller_timed or compilation_round_trips or mcp_shared_stage or mcp_spatial_context or mcp_existing_scopes or lighting or stage'
   npm --prefix web test -- --configLoader runner --no-cache src/App.test.tsx src/useLiveStatus.test.tsx
-  npm --prefix web run build -- --configLoader runner --outDir /home/justin/.local/share/cueverge/local-demo/web
+  npm --prefix web run build -- --configLoader runner --outDir "$HOME/.local/share/cueverge/local-demo/web"
   ```
 
   Results: all 63 browser tests, 33 selected Python tests, and 13 frontend units
@@ -378,11 +378,11 @@ JSON, and without dropping authored behavior. Saving does not make it live.
 - Real local end-to-end verification created an original synthetic MCP-authored
   56-cue project, then saved one browser brightness edit. Exact MCP readback
   matched the expected full draft with no unrelated changes; canonical frames
-  differed as intended. All 605 output samples and 605 photo locations were
+  differed as intended. All output samples and mapped photo locations were
   available. The project remains as UP-03 Scene Editor Demo; its temporary token
   was revoked. Saved head is revision 3, no package was published, and hardware
   command flags were false.
-- Shared local browser is open to the saved demo with Sparkle selected and 605
+- Shared local browser is open to the saved demo with Sparkle selected and all
   mapped locations. Both local services remain running; only the isolated local
   backend was restarted. Production data and physical output were untouched.
 - Preview usability follow-up: removed the per-frame loading message that
@@ -534,7 +534,7 @@ misreported as guaranteed scene playback.
   original **UP-05 Visitor Response Demo**. Before Save, an unsaved preview
   qualified a visitor after one second and selected welcome at five seconds.
   MCP full-draft comparison afterward verified only the requested changes;
-  a saved test returned to ambient at eight seconds and sampled all 605 pixels.
+  a saved test returned to ambient at eight seconds and sampled all pixels in the sample output.
   Saved head is revision 3, temporary tokens were revoked, live ingress stayed
   disabled and live playback stayed stopped. No production broker, project or
   physical output was touched. Local services remain available for review.
@@ -698,7 +698,7 @@ safety controls.
   `operate_loaded_show`, requiring live_operation, current operator/admin live
   permission and explicit physical confirmation. Schema/discovery and guides
   expose the same boundaries; read/activate alone cannot transport.
-- Shared browser displayed 605 actual last-sent LED colors on their saved photo
+- Shared browser displayed actual last-sent LED colors for the sample output on their saved photo
   positions. Three successive observations kept the footer at exactly the same
   Y position. Browser tests measure nonoverlap/rate and hidden-tab suspension.
   Desktop, wide desktop, tablet and phone controls are reachable; the phone
@@ -738,8 +738,8 @@ remains open with specific limitations. No broad "done" based on screenshots alo
   version 3 and stayed stopped. Controller restart recovered that verified
   package stopped before input. A temporary MCP token with read/activate/
   live_operation **without publish** inspected capabilities/runtime, started
-  the loaded LED scene with explicit confirmation, read **605** last-sent mapped
-  LED samples, restored the retained version while playing, observed a new
+  the loaded LED scene with explicit confirmation, read the sample output's
+  last-sent mapped LED samples, restored the retained version while playing, observed a new
   loaded generation, and stopped playback. The saved head stayed version 3
   and the complete draft matched byte-for-byte after normalized JSON encoding:
   SHA-256 `d447ebe403fa3f867c533e0b22ab6b248251d6cbc947a981e8a6aa50c6b12291`.
@@ -961,7 +961,7 @@ identity during assignment or troubleshooting.
 ### Browser evidence
 
 Inspected the existing house photo, roofline LED segments, window projection
-surfaces, default projector-surface form, existing garage-eave segment editor,
+surfaces, default projector-surface form, existing sample segment editor,
 and browser-only whole-output wiring traversal preview on 2026-10-22.
 Opened the existing segment editor without changing fields or saving.
 Started and closed the explicitly browser-only traversal preview; no physical
@@ -981,8 +981,8 @@ test, alignment grid, save, update, or removal action was invoked.
 - The object list exposes semantic identifiers and point counts alongside
   names. Canvas selection behavior was not tested by clicking the drawing
   surface, to avoid adding points to the active creation form.
-- Editing garage-eave exposes a 162-LED segment on output wled-001, first pixel
-  0, strand ID, wiring direction, creation method, and additional property
+- Editing a sample segment exposes its LED count, assigned output, first
+  pixel, strand ID, wiring direction, creation method, and additional property
   groups. Basic output assignment and LED count are meaningful setup facts;
   not every technical field should simply disappear.
 - "Preview traversal" in a segment inspector actually previews all saved
@@ -1034,7 +1034,7 @@ data.
 ### Proposed acceptance scenarios
 
 - Opening an existing photo presents the house and mapped objects, not an active
-  drawing operation. A user can find garage-eave from the photo or companion list
+  drawing operation. A user can find a named segment from the photo or companion list
   and identify its controller, LED count, and direction without reading IDs.
 - A user can explicitly add and trace lights, enter required setup facts, and
   correct the shape before saving. Cancellation leaves saved mappings unchanged.
@@ -1148,8 +1148,8 @@ or that any one display is authoritative.
 
 ### Browser evidence
 
-Reviewed Halloween2026 and located "Halloween Pre-show 2026 — Klown Ship" on
-2026-10-22. Expanded Scenes & reusable presets and Timeline editor, selected the
+Reviewed an installation-specific show and its pre-show scene on 2026-10-22.
+Personal show and scene names are omitted from this public review record. Expanded Scenes & reusable presets and Timeline editor, selected the
 pre-show in the editor's scene dropdown, and selected its lighting output track.
 No authored fields were changed or saved; no scene was activated, published,
 or sent to hardware. Opening editor surfaces can initiate normal application

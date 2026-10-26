@@ -17,6 +17,7 @@ from cueverge.gui.ambient_lighting import AmbientLighting, parse_ambient_lightin
 from cueverge.gui.contracts import DraftProject
 from cueverge.gui.render_pipeline import render_pipeline_manifest
 from cueverge.gui.render_verification import verification_policy_manifest
+from cueverge.gui.stage_renderer import bakes_lighting_only
 
 
 class CompilationError(ValueError):
@@ -88,6 +89,11 @@ class DraftCompiler:
                 for output in (ambient.outputs if ambient is not None else ())
                 if output.composition_id is not None
             }
+            lighting_only = frozenset(
+                key
+                for key, value in _object_map(draft.editor_metadata.get("compositions")).items()
+                if bakes_lighting_only(value)
+            )
             if lighting_artifacts:
                 try:
                     _install_lighting_sequences(
@@ -96,6 +102,7 @@ class DraftCompiler:
                         lighting_artifacts,
                         revision,
                         ambient_compositions,
+                        lighting_only,
                     )
                 except (OSError, ValueError, KeyError) as error:
                     raise CompilationError(f"invalid lighting bake: {error}") from error
@@ -106,6 +113,7 @@ class DraftCompiler:
                     lighting_looks,
                     lighting_artifacts or {},
                     revision,
+                    lighting_only,
                 )
             except (OSError, ValueError, KeyError) as error:
                 raise CompilationError(f"invalid ambient lighting: {error}") from error
@@ -179,14 +187,49 @@ def _write_json(path: Path, value: object) -> None:
     )
 
 
-def _bake_manifest(source: Path, composition_id: str, revision: int) -> dict[str, Any]:
+def composition_scene_usage(
+    draft: DraftProject,
+) -> tuple[dict[str, tuple[str, ...]], set[str]]:
+    """Scenes each composition plays in (including ambient), and the ambient compositions."""
+    usage: dict[str, list[str]] = {}
+    try:
+        graph = _compile_composition_graph(draft)
+    except (CompilationError, ValueError, KeyError, TypeError):
+        graph = {}
+    for scene in _list_items(graph.get("scenes")):
+        record = _object(scene)
+        scene_id = str(record.get("scene_id"))
+        for raw_context in _list_items(record.get("contexts")):
+            space = str(_object(raw_context).get("editing_space_id"))
+            if space != scene_id and scene_id not in usage.setdefault(space, []):
+                usage[space].append(scene_id)
+    ambient = parse_ambient_lighting(draft.editor_metadata)
+    ambient_ids = {
+        output.composition_id
+        for output in (ambient.outputs if ambient is not None else ())
+        if output.composition_id is not None
+    }
+    if ambient is not None:
+        inheriting = [
+            scene.id for scene in draft.scenes if scene.id not in ambient.excluded_scene_ids
+        ]
+        for composition_id in ambient_ids:
+            scenes = usage.setdefault(composition_id, [])
+            scenes.extend(scene_id for scene_id in inheriting if scene_id not in scenes)
+    return {key: tuple(value) for key, value in usage.items()}, ambient_ids
+
+
+def _bake_manifest(
+    source: Path, composition_id: str, revision: int, lighting_only: bool = False
+) -> dict[str, Any]:
     manifest_path = (
         source / "manifest.json"
         if (source / "manifest.json").exists()
         else source / "render-manifest.json"
     )
     manifest: dict[str, Any] = json.loads(manifest_path.read_text(encoding="utf-8"))
-    if manifest.get("source_revision") != revision:
+    # LED-only bakes are keyed on what they draw, so one from an earlier revision stays valid.
+    if manifest.get("source_revision") != revision and not lighting_only:
         raise CompilationError("lighting bake belongs to a different draft revision")
     if manifest.get("composition_id") != composition_id:
         raise CompilationError("lighting bake belongs to a different composition")
@@ -201,6 +244,7 @@ def _compile_lighting_looks(
     controller_looks: MultiLightingLooksDefinition | None,
     artifacts: dict[str, Path],
     revision: int,
+    lighting_only: frozenset[str] = frozenset(),
 ) -> MultiLightingLooksDefinition | None:
     """Ambient lighting from the draft, over any retained controller looks per LED output."""
     from cueverge.lighting.sequence import LightingSequenceReference, load_lighting_sequence
@@ -219,7 +263,12 @@ def _compile_lighting_looks(
                 if not output.cues:
                     continue
             else:
-                manifest = _bake_manifest(source, output.composition_id, revision)
+                manifest = _bake_manifest(
+                    source,
+                    output.composition_id,
+                    revision,
+                    output.composition_id in lighting_only,
+                )
                 sequence = next(
                     (
                         item
@@ -306,6 +355,7 @@ def _install_lighting_sequences(
     artifacts: dict[str, Path],
     revision: int,
     ambient_compositions: set[str] | None = None,
+    lighting_only: frozenset[str] = frozenset(),
 ) -> None:
     from cueverge.lighting.sequence import LightingSequenceReference, load_lighting_sequence
 
@@ -328,7 +378,7 @@ def _install_lighting_sequences(
                 else source / "render-manifest.json"
             )
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            if manifest.get("source_revision") != revision:
+            if manifest.get("source_revision") != revision and composition_id not in lighting_only:
                 raise CompilationError("lighting bake belongs to a different draft revision")
             if manifest.get("composition_id") != composition_id:
                 raise CompilationError("lighting bake belongs to a different composition")

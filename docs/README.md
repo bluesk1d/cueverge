@@ -1,5 +1,10 @@
 # Cueverge documentation
 
+These Markdown files also power the [static documentation site](../site/README.md).
+The site provides dedicated user/show creator, operator, and service administration
+pages with shared navigation. Edit documentation here and rebuild the site to
+keep GitHub and the website in sync.
+
 ## Choose your role
 
 | Audience | Start here | Covers |
@@ -22,7 +27,7 @@ technical handover required for changed runtime scene logic.
 - [Operations and simulation](operations.md): modes, diagnostics, MCP,
   deployment dependencies, publication/cache behavior, and recovery.
 - [Show creator guide](show-creator-guide.md): creative capabilities,
-  installation-specific examples, and a show brief template.
+  fictional capability examples, and a show brief template.
 - [Scene schema](scene-schema.md), [events](events.md), and
   [device protocol v2](protocol.md): data and integration contracts.
 - [Windows media agent](windows-media-agent.md) and

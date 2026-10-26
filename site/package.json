@@ -1,0 +1,15 @@
+{
+  "name": "cueverge-site",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "check": "python3 check.py",
+    "preview": "python3 -m http.server 4173 --bind 127.0.0.1 --directory dist"
+  },
+  "dependencies": {
+    "github-slugger": "2.0.0",
+    "markdown-it": "14.3.3"
+  },
+  "license": "GPL-3.0-only"
+}

@@ -247,8 +247,18 @@ class PublicationService:
         except (RenderJobError, MapperExportError, ValueError, OSError) as error:
             add("lighting_bake_stale", str(error))
         jobs = self.render_jobs.list(project_id)
+        current_led = self.render_jobs.current_lighting_artifacts(project_id, revision)
         artifact_ids: set[str] = set()
         for composition_id in sorted(compositions):
+            if bakes_lighting_only(_object_map(compositions[composition_id])):
+                # LED-only bakes stay current across revisions that change nothing they draw.
+                if composition_id not in current_led:
+                    add(
+                        "current_bake_missing",
+                        f"Composition {composition_id} has no current LED bake "
+                        f"for revision {revision}.",
+                    )
+                continue
             job = next(
                 (
                     item
@@ -265,7 +275,7 @@ class PublicationService:
                     "current_bake_missing",
                     f"Composition {composition_id} has no successful bake for revision {revision}.",
                 )
-            elif not bakes_lighting_only(_object_map(compositions[composition_id])):
+            else:
                 artifact_ids.add(
                     lighting_artifacts[composition_id].name
                     if composition_id in lighting_artifacts

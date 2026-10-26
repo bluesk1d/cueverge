@@ -5040,6 +5040,276 @@ def test_mcp_shared_stage_discovery_authoring_preview_and_bake_parity(
         assert {"mcp.render.create", "mcp.render.cancel"}.issubset(actions)
 
 
+def test_led_only_bakes_survive_unrelated_revisions_and_report_status(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime, services, project_id = _mcp_fixture(tmp_path)
+    installation_id = services.repository.get_runtime_installation().id
+    image = tmp_path / "flag.png"
+    Image.new("RGB", (64, 32), "red").save(image)
+    asset = SimpleNamespace(
+        id="flag",
+        project_id=project_id,
+        digest_sha256=hashlib.sha256(image.read_bytes()).hexdigest(),
+        media_type="image/png",
+        metadata={"width": 64, "height": 32},
+    )
+    monkeypatch.setattr(services.asset_upload, "get_original", lambda _: (asset, image))
+    monkeypatch.setattr(services.render_jobs, "_ensure_worker", lambda: None)
+    mapper: dict[str, Any] = {
+        "projectors": [],
+        "lighting_surfaces": [
+            {
+                "semantic_id": "facade",
+                "resource": "roofline.demo",
+                "name": "Facade",
+                "local_width": 8,
+                "local_height": 4,
+                "local_points": [[0, 0], [8, 4]],
+                "stage_matrix": [1, 0, 0, 1, 0, 0],
+                "brightness_limit": 1,
+                "mapping_revision": 1,
+                "calibration_id": "calibrated",
+                "pixels": [
+                    {
+                        "output_index": 0,
+                        "local_x": 2,
+                        "local_y": 1,
+                        "stage_x": 2,
+                        "stage_y": 1,
+                        "footprint_width": 0.1,
+                        "footprint_height": 0.1,
+                    }
+                ],
+            }
+        ],
+        "fixtures": [],
+        "paths": [],
+        "zones": [],
+    }
+    monkeypatch.setattr(services.mapper_export, "export", lambda _: copy.deepcopy(mapper))
+    editor = _mcp_token(
+        services,
+        project_id,
+        (McpScope.READ, McpScope.DIRECT_EDIT, McpScope.SIMULATION),
+    )
+    reader = _mcp_token(services, project_id, (McpScope.READ,))
+    layer = {
+        "layer_schema_version": 1,
+        "id": "flag-layer",
+        "name": "Flag",
+        "kind": "image",
+        "source_id": "flag",
+        "track_id": "stage-track",
+        "start_ms": 0,
+        "duration_ms": 1000,
+        "in_point_ms": 0,
+        "out_point_ms": 1000,
+        "z_index": 0,
+        "fade_in_ms": 0,
+        "fade_out_ms": 0,
+        "playback": "hold",
+        "alpha_interpretation": "straight",
+        "source_color_space": "srgb",
+        "scaling_behavior": "stretch",
+        "keyframes": [
+            {
+                "id": "flag-frame",
+                "time_ms": 0,
+                "position": [4, 2],
+                "scale": [1, 1],
+                "rotation_deg": 0,
+                "anchor": [0.5, 0.5],
+                "opacity": 1,
+                "crop": [0, 0, 0, 0],
+                "interpolation": {"kind": "linear"},
+            }
+        ],
+    }
+    document = _draft(
+        editor_metadata={
+            "installation_id": installation_id,
+            "compositions": {
+                "stage": {
+                    "id": "stage",
+                    "name": "Ship lights",
+                    "space_kind": "stage",
+                    "target_id": "shared-stage",
+                    "width": 8,
+                    "height": 4,
+                    "duration_ms": 1000,
+                    "stage_lighting_surfaces": ["facade"],
+                    "stage_projector_resources": [],
+                    "children": [],
+                    "render_settings": {
+                        "render_pipeline_revision": 1,
+                        "render_width": 64,
+                        "render_height": 32,
+                        "frame_rate_numerator": 2,
+                        "frame_rate_denominator": 1,
+                        "working_color_space": "linear_srgb",
+                        "working_alpha_mode": "premultiplied",
+                        "scaling_filter": "lanczos",
+                        "output_background_color": "#000000",
+                        "media_end_behavior": "hold_last_frame",
+                        "output_profile": {
+                            "preset_id": "legacy_h264",
+                            "container": "mp4",
+                            "video_codec": "h264",
+                            "video_profile": "baseline",
+                            "video_level": "3.1",
+                            "pixel_format": "yuv420p",
+                            "max_video_bitrate_kbps": 1000,
+                            "audio_codec": "aac",
+                            "audio_sample_rate": 48000,
+                            "audio_channel_layout": "stereo",
+                            "loudness_target_lufs": -16,
+                            "keyframe_interval_frames": 2,
+                            "b_frames": 0,
+                            "hardware_decoder_compatibility": "h264_baseline_level_3_1_yuv420p",
+                        },
+                    },
+                }
+            },
+            "scene_compositions": {"ambient": ["stage"]},
+            "timeline_tracks": {
+                "stage": [
+                    {
+                        "id": "stage-track",
+                        "name": "Overlay",
+                        "kind": "group",
+                        "resource_binding": "roofline.demo",
+                    }
+                ]
+            },
+            "timeline_transform_layers": {"stage": [layer]},
+        }
+    )
+    document["scenes"] = [
+        {
+            "schema_version": 2,
+            "id": "ambient",
+            "name": "Ambient",
+            "mode": "controller_timed",
+            "duration_ms": 4000,
+            "resources": ["roofline.demo"],
+            "clock_source": "controller",
+            "media": [],
+            "lighting": [
+                {
+                    "id": "lights",
+                    "resource": "roofline.demo",
+                    "required": True,
+                    "effect": "synthetic_sweep",
+                }
+            ],
+        }
+    ]
+
+    def status(**arguments: Any) -> dict[str, Any]:
+        result = _mcp_tool(client, reader, "get_lighting_bake_status", **arguments)
+        assert result["isError"] is False, result
+        return cast(dict[str, Any], result["structuredContent"])
+
+    with TestClient(
+        create_app(runtime, gui_services=services), base_url="http://localhost"
+    ) as client:
+        capabilities = _mcp_tool(client, reader, "get_capabilities")["structuredContent"]
+        assert capabilities["features"]["led_bakes_survive_unrelated_revisions"] is True
+        assert capabilities["tools"]["bake_requirements"] == "get_lighting_bake_status"
+        assert capabilities["lighting_bakes"]["status_tool"] == "get_lighting_bake_status"
+        saved = _mcp_tool(client, editor, "update_project_draft", base_revision=1, draft=document)
+        assert saved["isError"] is False, saved
+        unbaked = status(scene_id="ambient")
+        assert unbaked["revision"] == 2
+        assert unbaked["bake_required"] == ["stage"]
+        [entry] = unbaked["compositions"]
+        assert entry["state"] == "missing"
+        assert entry["reusable_across_revisions"] is True
+        assert entry["scene_ids"] == ["ambient"]
+        assert entry["name"] == "Ship lights"
+        assert "output_path" not in json.dumps(unbaked)
+        assert (
+            _mcp_tool(client, reader, "get_lighting_bake_status", scene_id="missing")["isError"]
+            is True
+        )
+
+        queued = _mcp_tool(
+            client, editor, "create_render_job", base_revision=2, composition_id="stage"
+        )["structuredContent"]
+        assert status()["compositions"][0]["state"] == "queued"
+        job = services.render_jobs._next_job()
+        assert job is not None
+        services.render_jobs._process(job)
+        assert services.render_jobs.get(queued["id"]).state == "completed"
+        baked = status()
+        assert baked["bake_required"] == []
+        assert baked["compositions"][0]["state"] == "current"
+        assert baked["compositions"][0]["baked_revision"] == 2
+
+        # Renaming the scene draws nothing different on the LEDs, so the bake stays current.
+        renamed = copy.deepcopy(document)
+        renamed["scenes"][0]["name"] = "Ambient renamed"
+        saved = _mcp_tool(client, editor, "update_project_draft", base_revision=2, draft=renamed)
+        assert saved["structuredContent"]["revision"] == 3
+        carried = status()
+        assert carried["revision"] == 3
+        assert carried["compositions"][0]["state"] == "current"
+        assert carried["compositions"][0]["baked_revision"] == 2
+        artifacts = services.render_jobs.lighting_artifacts(project_id, 3)
+        assert artifacts["stage"].name == baked["compositions"][0]["artifact_id"]
+        stored = services.repository.get_revision(project_id, 3)
+        compiled = services.compiler.compile(
+            project_id=project_id,
+            revision=3,
+            draft=stored.draft,
+            lighting_artifacts=artifacts,
+        )
+        assert not (compiled.package_root / "runtime" / "lighting-bake-required.json").exists()
+        assert not [
+            item
+            for item in services.publication.validate(project_id, 3)
+            if item.code in {"current_bake_missing", "lighting_bake_stale"}
+        ]
+        preview = _mcp_tool(
+            client,
+            editor,
+            "preview_scene_lighting",
+            source_revision=3,
+            scene_id="ambient",
+            timestamp_ms=0,
+        )["structuredContent"]
+        assert not any("LED compositions not shown" in item for item in preview["limitations"])
+        rebake = _mcp_tool(
+            client, editor, "create_render_job", base_revision=3, composition_id="stage"
+        )["structuredContent"]
+        assert rebake["state"] == "completed"
+        assert rebake["artifact_id"] == baked["compositions"][0]["artifact_id"]
+
+        # Changing what the LEDs draw needs a new bake.
+        dimmed = copy.deepcopy(renamed)
+        dimmed["editor_metadata"]["timeline_transform_layers"]["stage"][0]["keyframes"][0][
+            "opacity"
+        ] = 0.5
+        saved = _mcp_tool(client, editor, "update_project_draft", base_revision=3, draft=dimmed)
+        assert saved["structuredContent"]["revision"] == 4
+        stale = status(revision=4)
+        assert stale["bake_required"] == ["stage"]
+        assert stale["compositions"][0]["state"] == "missing"
+        assert status(revision=3)["compositions"][0]["state"] == "current"
+
+        assert client.get(f"/api/gui/v1/projects/{project_id}/lighting-bakes").status_code == 401
+        _login(client)
+        response = client.get(f"/api/gui/v1/projects/{project_id}/lighting-bakes")
+        assert response.status_code == 200, response.text
+        assert response.json()["revision"] == 4
+        assert response.json()["compositions"][0]["state"] == "missing"
+        response = client.get(f"/api/gui/v1/projects/{project_id}/lighting-bakes?revision=3")
+        assert response.json()["compositions"][0]["state"] == "current"
+        assert client.get("/api/gui/v1/projects/missing/lighting-bakes").status_code == 404
+
+
 def test_mcp_image_results_fit_exact_png_and_wire_budgets() -> None:
     import random
 

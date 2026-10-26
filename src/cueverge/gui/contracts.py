@@ -1661,6 +1661,27 @@ class RenderJobResponse(GuiModel):
     updated_at: str
 
 
+class LightingBakeStatusResponse(GuiModel):
+    composition_id: str
+    name: str
+    space_kind: str
+    state: Literal["current", "queued", "running", "failed", "missing", "unavailable"]
+    reusable_across_revisions: bool
+    artifact_id: str | None
+    baked_revision: int | None
+    job_id: str | None
+    progress: float | None = Field(default=None, ge=0, le=1)
+    error: str | None
+    scene_ids: list[str]
+    ambient: bool
+
+
+class LightingBakeStatusListResponse(GuiModel):
+    project_id: str
+    revision: int = Field(ge=1)
+    compositions: list[LightingBakeStatusResponse]
+
+
 class SimulationStepRequest(GuiModel):
     kind: Literal[
         "advance",

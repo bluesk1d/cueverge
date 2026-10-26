@@ -29,13 +29,13 @@ You are bootstrapping a **new, potentially open-source software project** from a
 
 Build a **self-hosted, event-driven, stateful, distributed multimedia show-control system** for interactive physical installations. External events (camera detection, Home Assistant automation, MQTT, webhook, button press, schedules) can initiate or modify encounters and scenes. A central orchestrator coordinates remote media playback and real-time addressable lighting, with an extensible path to props, DMX, servos, fog machines, and additional displays.
 
-The initial real-world installation is a Halloween 2026 *Killer Klowns from Outer Space*-inspired house display: two upstairs windows are illuminated by a single projector driven by a laptop; audio comes from a Google Home Max speaker using its analog 3.5 mm input; permanent roofline LEDs are controlled by an existing QuinLED Dig-Uno running WLED. Frigate and Home Assistant can detect people approaching the house and trigger scenes where projected Klown characters react to visitors, accompanied by synchronized roofline lighting and sound.
+An illustrative installation is an interactive exhibit: a media host drives a projector or display, speakers play the scene's audio, and a DDP-compatible RGB controller drives a light border. An optional Frigate camera detects visitors entering a configured interaction area and qualifies a welcome scene with synchronized lighting and sound. This fictional example demonstrates the architecture; it does not prescribe hardware, geometry, media, or camera labels.
 
-**Core differentiator:** This is not primarily a holiday light sequencer or a fixed media playlist. It is a **reactive scene engine** with event ingestion, encounter state, priorities, composable effects, and timeline-based outputs. The media playback timeline can act as the authoritative clock for a synchronized scene, with the NAS following actual reported playback progress rather than assuming a synchronized start time.
+**Core differentiator:** This is not primarily a holiday light sequencer or a fixed media playlist. It is a **reactive scene engine** with event ingestion, encounter state, priorities, composable effects, and timeline-based outputs. The media playback timeline can act as the authoritative clock for a synchronized scene, with the Docker host following actual reported playback progress rather than assuming a synchronized start time.
 
 ### Success in one sentence
 
-A Frigate-derived event can cause a Klown to appear in a window while roof LEDs and sound effects follow the **actual laptop playback position**, with predictable behavior under pause, seek, disconnection, restart, and repeated detections.
+A configured visitor event can select a welcome scene while LEDs and audio follow the **actual media playback position**, with predictable behavior under pause, seek, disconnection, restart, and repeated detections.
 
 ---
 
@@ -44,13 +44,13 @@ A Frigate-derived event can cause a Klown to appear in a window while roof LEDs 
 ### Goals — first release trajectory
 
 - Self-hosted and operable entirely on a local network; no internet dependency at runtime.
-- Central controller suitable for container deployment on a NAS.
+- Central controller suitable for container deployment on a Docker host.
 - Lightweight agent on a separate laptop for video and audio playback.
-- Real-time WLED pixel streaming from the NAS, initially via DDP, with no firmware modification.
+- Real-time WLED pixel streaming from the Docker host, initially via DDP, with no firmware modification.
 - Scene/event API suitable for Home Assistant; MQTT and webhooks are desirable integration paths.
 - Declarative, reusable, versionable scene and show definitions.
 - Stateful encounters with cooldowns, timeouts, trigger filtering, interruption and priority policies.
-- Media playback timecode reported by the laptop and consumed by the NAS to drive lighting.
+- Media playback timecode reported by the laptop and consumed by the Docker host to drive lighting.
 - Deterministic, seekable lighting animations based on scene time and a physical pixel map.
 - Unattended reliability, clean startup/shutdown, observable status, and safe recovery.
 - Headless simulation and automated testing without the physical installation.
@@ -70,45 +70,47 @@ A Frigate-derived event can cause a Klown to appear in a window while roof LEDs 
 
 ---
 
-## 3. Existing physical environment and hard constraints
+## 3. Illustrative deployment and architectural constraints
+
+This section describes example deployment roles. Choose actual hardware, geometry, audio routing, and network settings per installation; the product does not require a particular venue or device brand.
 
 ### 3.1 Controller host
 
-- User owns a **QNAP NAS** and runs containerized/self-hosted services.
-- Proposed central **show orchestrator** runs on NAS, ideally as a Docker container with persistent configuration and logs.
-- Exact NAS model, CPU, OS/container runtime, network interfaces, and resource budget are **not yet specified**. Avoid assumptions about hardware acceleration or platform-specific paths.
-- NAS is intended to own show state, trigger routing, scene selection, control commands, and (initially) LED frame rendering/streaming.
+- A **self-hosted Docker host** runs containerized services.
+- Proposed central **show orchestrator** runs on a Docker host as a container with persistent configuration and logs.
+- Docker host CPU, OS/container runtime, network interfaces, and resource budget are **not yet specified**. Avoid assumptions about hardware acceleration or platform-specific paths.
+- Docker host is intended to own show state, trigger routing, scene selection, control commands, and (initially) LED frame rendering/streaming.
 
 ### 3.2 Media host
 
-- A **laptop** is positioned inside the house, connected via **HDMI to a conventional home-theater projector**.
-- Projector is physically placed in the upstairs hallway with a clear view of **two upstairs windows** at approximately similar throw distances.
-- Projected video will be one composite image spanning both windows, with geometry correction and black masking for non-window regions. Exact mapping/calibration method is TBD; content can be authored in After Effects.
+- A **media host** connects to a projector or display, for example over HDMI.
+- Projector placement, throw distance, surface geometry, and viewing position are installation decisions.
+- For multiple projection surfaces, content can use a composite canvas with geometry correction and black masking between surfaces. Specify the mapping and calibration workflow before producing final media.
 - Laptop plays **video and audio from the same media file**, ideally using **mpv** under agent control; video goes to HDMI/projector, audio to laptop's analog output.
-- **Google Home Max** has a **3.5 mm analog AUX input**; use a wired connection from the laptop rather than Bluetooth or independent Google Cast sessions. The speaker can still add internal processing latency; calibrate rather than assume zero delay.
+- Select an audio output on the media host. A wired speaker connection is one option; measure output latency rather than assuming zero delay.
 - Laptop OS, GPU, exact display arrangement, projector model, and media-player version are TBD. Do not assume Windows-specific or Linux-specific mechanisms without first detecting/asking.
 - Media files should be available locally to the laptop or cached ahead of playback; **do not rely on streaming media frames over the control channel**.
 
 ### 3.3 Lighting host and hardware
 
-- Permanent individually addressable LEDs follow the roofline and multiple gables/peaks of a two-story house.
-- Existing controller: **QuinLED Dig-Uno running WLED**. User does **not** want hardware or firmware changes.
-- Initial real-time output: **DDP over LAN/UDP** from the NAS to WLED, subject to a hardware validation spike. WLED's current network settings, LED count, RGB/RGBW layout, segments, DDP behavior, and frame-rate ceiling must be measured rather than invented.
+- Individually addressable RGB LEDs can outline a display, decorate a structure, or form a prop.
+- A **DDP-compatible controller**, such as one running WLED, receives pixel frames without requiring custom firmware.
+- Initial real-time output: **DDP over LAN/UDP** from the Docker host to WLED, subject to a hardware validation spike. WLED's current network settings, LED count, RGB/RGBW layout, segments, DDP behavior, and frame-rate ceiling must be measured rather than invented.
 - Roof geometry, per-run start/end pixel indices, pixel directions, gaps, and physical measurements will be supplied later via a straight-on photo and mapping notes.
 - Existing WLED presets should be recoverable after show control ends; do not permanently change the user's normal lighting configuration.
 - Assume other automations may control WLED outside show sessions. Define clear resource ownership and restoration behavior.
 
 ### 3.4 Automation and perception
 
-- Existing **Home Assistant** instance and **Frigate** camera/object-detection system.
+- Optional **Home Assistant** and **Frigate** integrations provide automation and camera observations.
 - Frigate can produce person detections, zones, and occupancy-style events; use Home Assistant and/or MQTT as initial event bridges.
-- A group of trick-or-treaters should generally count as one encounter, not one event per person.
+- A group of visitors should generally count as one encounter, not one event per person.
 - No facial recognition, identity inference, or individual visitor profiling is needed.
 - External triggers should be accepted through a generic event interface, not coupled to Frigate-specific schemas in core logic.
 
 ### 3.5 Network and operational assumptions
 
-- Local network has UniFi infrastructure. Device VLANs may exist; cross-VLAN connectivity, multicast behavior, firewall rules, and UDP delivery are **not guaranteed**.
+- The local network may have separate device VLANs; cross-VLAN connectivity, multicast behavior, firewall rules, and UDP delivery are **not guaranteed**.
 - Prefer explicit configured hostnames/IPs and straightforward TCP/WebSocket control; DDP uses unicast UDP where possible.
 - Secrets, credentials, and exact local addresses must be configuration, never hardcoded or committed.
 - No assumption of sub-millisecond network latency or perfect packet delivery.
@@ -125,7 +127,7 @@ A Frigate-derived event can cause a Klown to appear in a window while roof LEDs 
                             | external events / commands
                             v
             +------------------------------+
-            | NAS: Show Orchestrator       |
+            | Docker host: Controller      |
             | - event ingestion            |
             | - encounter state machine    |
             | - scene selection/priority   |
@@ -148,21 +150,21 @@ A Frigate-derived event can cause a Klown to appear in a window while roof LEDs 
             | - timecode/state telemetry   |
             +------------------------------+
 
-            NAS LED renderer --DDP/UDP--> WLED Dig-Uno --> Roof pixels
+            Docker host LED renderer --DDP/UDP--> RGB controller --> LEDs
 ```
 
 ### Ownership rules
 
-- **NAS owns** event policy, scene/encounter lifecycle, agent commands, resource arbitration, overall health, and lighting output.
+- **Docker host owns** event policy, scene/encounter lifecycle, agent commands, resource arbitration, overall health, and lighting output.
 - **Laptop owns** actual media playback and reports the position and playback state of that media.
-- **For media-synchronized scenes, laptop playback position is authoritative for scene time.** The NAS follows that clock; it must not blindly infer scene time from the command send time.
+- **For media-synchronized scenes, laptop playback position is authoritative for scene time.** The Docker host follows that clock; it must not blindly infer scene time from the command send time.
 - **WLED owns** only the final physical pixel output; it should not independently run competing animations while under real-time show control.
 - **Home Assistant owns** home-automation triggers and user controls, but should not be tasked with rendering media frames or precisely timing individual LED cues.
 - Agent APIs and output adapters should remain replaceable. A later deployment might put the lighting renderer on the laptop or use FPP as a backend without changing scene semantics.
 
 ### Important architectural distinction
 
-The NAS is authoritative for **which scene is active**; the laptop's playback telemetry is authoritative for **where a media-backed scene is in time**. These are different forms of authority. Define behavior when telemetry is stale, the player pauses, or the laptop goes away.
+The Docker host is authoritative for **which scene is active**; the laptop's playback telemetry is authoritative for **where a media-backed scene is in time**. These are different forms of authority. Define behavior when telemetry is stale, the player pauses, or the laptop goes away.
 
 ---
 
@@ -175,8 +177,8 @@ The NAS is authoritative for **which scene is active**; the laptop's playback te
 3. Controller sends `play` and records a unique `playback_session_id` and scene instance ID.
 4. Laptop agent observes actual player playback position and state through mpv IPC (or a better supported timing API if available).
 5. Laptop publishes position telemetry at an initial target of approximately **10–20 Hz** over a persistent connection.
-6. NAS maintains a bounded estimate of current media time between telemetry samples.
-7. NAS renders deterministic lighting frames from estimated media time at an initial target of **20–30 FPS** and transmits them via DDP.
+6. Docker host maintains a bounded estimate of current media time between telemetry samples.
+7. Docker host renders deterministic lighting frames from estimated media time at an initial target of **20–30 FPS** and transmits them via DDP.
 8. Calibration parameters account for fixed media/display/speaker/WLED latencies and observed transport delay.
 9. On pause/seek/rate change/end/error/disconnect, lighting follows explicit scene policy.
 
@@ -186,7 +188,7 @@ The NAS is authoritative for **which scene is active**; the laptop's playback te
 {
   "type": "media.position",
   "protocol_version": 1,
-  "agent_id": "upstairs-projector",
+  "agent_id": "exhibit-display",
   "scene_instance_id": "scene-unique-id",
   "playback_session_id": "session-unique-id",
   "sequence": 42,
@@ -198,11 +200,11 @@ The NAS is authoritative for **which scene is active**; the laptop's playback te
 }
 ```
 
-The `agent_monotonic_ms` field is diagnostic and can help estimate delay **only if a valid clock-offset estimate is maintained**; never subtract timestamps from unrelated monotonic clock origins directly. NAS receipt time uses its own monotonic clock. Add round-trip measurement/offset estimation only if testing shows it is necessary. Reject stale session IDs, out-of-order sequences, and implausible position jumps.
+The `agent_monotonic_ms` field is diagnostic and can help estimate delay **only if a valid clock-offset estimate is maintained**; never subtract timestamps from unrelated monotonic clock origins directly. Docker host receipt time uses its own monotonic clock. Add round-trip measurement/offset estimation only if testing shows it is necessary. Reject stale session IDs, out-of-order sequences, and implausible position jumps.
 
 ### 5.3 Interpolation and correction
 
-- At each accepted telemetry sample, anchor reported media position to NAS receipt time, with optional bounded transport-delay correction.
+- At each accepted telemetry sample, anchor reported media position to Docker host receipt time, with optional bounded transport-delay correction.
 - Between samples, estimate position using monotonic elapsed time × playback rate **only while playing**.
 - Avoid unbounded extrapolation: after a configurable stale interval, freeze or fall back according to scene policy.
 - On explicit seek, reset estimator immediately. On a small discrepancy, consider a bounded smoothing correction to avoid visual jitter; on a large discrepancy, snap to authoritative position.
@@ -213,7 +215,7 @@ The `agent_monotonic_ms` field is diagnostic and can help estimate delay **only 
 ### 5.4 Calibration and realism
 
 - mpv `time-pos` or equivalent is **not guaranteed to equal the frame currently visible on the projector**. HDMI/display buffering, video presentation scheduling, and projector processing introduce delay.
-- The Google Home Max AUX path may include DSP buffering; wired analog removes Bluetooth/Cast session uncertainty, not all latency.
+- An audio output path may include DSP buffering; wired analog removes Bluetooth/Cast session uncertainty, not all latency.
 - WLED DDP reception and pixel refresh also add delay.
 - Build a configurable `led_timing_offset_ms` (sign convention clearly documented) and optionally separate `audio_offset_ms` / `video_offset_ms` if the media pipeline permits.
 - Provide a **flash-and-click calibration scene** and instructions to capture/measure with a phone slow-motion recording or other practical method.
@@ -242,7 +244,7 @@ The `agent_monotonic_ms` field is diagnostic and can help estimate delay **only 
 
 ### 6.1 Domain concepts
 
-**Event:** An external or internal observation: `person.entered_driveway`, `person.present_5s`, `porch.motion`, `button.pressed`, `schedule.main_show`, `media.ended`, `agent.disconnected`.
+**Event:** An external or internal observation: `person.entered_interaction_area`, `person.present_5s`, `interaction-area.motion`, `button.pressed`, `schedule.main_show`, `media.ended`, `agent.disconnected`.
 
 **Condition/guard:** A predicate evaluated against current state, such as `show_enabled`, `encounter_active`, `person_still_present`, `cooldown_elapsed`, `nighttime`, `not_in_main_show`.
 
@@ -254,7 +256,7 @@ The `agent_monotonic_ms` field is diagnostic and can help estimate delay **only 
 
 **Cue:** A timeline-relative instruction or effect change, e.g., start roof ripple at 12.4 s, dim background, play a local sound, mark a state transition.
 
-**Output/resource:** A logical destination such as `projector.upstairs`, `audio.main`, `roofline`, `fog.machine`, or `porch.props`, bound to physical devices in deployment config.
+**Output/resource:** A logical destination such as `projector.exhibit`, `audio.main`, `roofline`, `fog.machine`, or `exhibit.props`, bound to physical devices in deployment config.
 
 **Rule:** Event + guards + action/scene selection, with priority, debouncing, cooldown, and concurrency behavior.
 
@@ -263,11 +265,11 @@ The `agent_monotonic_ms` field is diagnostic and can help estimate delay **only 
 ```text
 AMBIENT / UNAWARE
   person enters configured zone
-       -> SUSPICIOUS (Klown peeks out)
+       -> WELCOME (a character notices the visitor)
   person remains for N seconds
-       -> INTERESTED (second Klown appears)
-  person reaches porch zone
-       -> REACTION (ray-gun / roof pulse)
+       -> ENGAGED (a longer scene becomes eligible)
+  person remains in the interaction zone
+       -> REACTION (display accent / light-border pulse)
   person leaves or sequence ends
        -> RESET / COOLDOWN
   cooldown expires
@@ -311,17 +313,17 @@ Use a human-readable declarative format such as YAML or JSON, validated against 
 
 ```yaml
 schema_version: 1
-id: klown-raygun
-name: Klown Ray Gun
+id: display-highlight
+name: Display Highlight
 mode: media_synchronized
 priority: 60
 resources:
-  - projector.upstairs
+  - projector.exhibit
   - audio.main
   - roofline
 media:
-  asset: media/klown-raygun.mp4
-  agent: upstairs-projector
+  asset: media/display-highlight.mp4
+  agent: exhibit-display
   display: projector
   audio_output: analog
 lighting:
@@ -330,12 +332,12 @@ lighting:
   cues:
     - at_ms: 8200
       effect: charge-up
-      parameters: { origin: left-gable, duration_ms: 1900 }
+      parameters: { origin: border-left, duration_ms: 1900 }
     - at_ms: 10100
       effect: traveling-pulse
-      parameters: { path: upper-roof-to-porch, color: "#00FF66", duration_ms: 600 }
+      parameters: { path: border-traversal, color: "#00FF66", duration_ms: 600 }
 completion:
-  transition_to: ambient-ship
+  transition_to: ambient-display
 interruption:
   policy: queue_or_replace_by_priority
 ```
@@ -348,22 +350,22 @@ Separate files for:
 
 - Controller settings (API/listen addresses, state store, log level).
 - Agent registrations and capability declarations.
-- Device bindings (`roofline` → WLED host; `projector.upstairs` → laptop media agent).
+- Device bindings (`roofline` → WLED host; `projector.exhibit` → laptop media agent).
 - Roofline pixel geometry (segments, direction, named paths, physical adjacency, pixel count, RGB/RGBW channels).
 - Timing calibration offsets.
 - Home Assistant/MQTT integration settings.
 - Show content and local media assets.
 
-The open-source repository should ship **synthetic demo geometry and freely redistributable demo assets**. Do not distribute copyrighted *Killer Klowns* movie footage, logos, sound effects, or licensed characters as bundled OSS samples.
+The open-source repository should ship **synthetic demo geometry and freely redistributable demo assets**. Do not distribute unlicensed footage, logos, sound effects, or characters as bundled OSS samples.
 
 ---
 
 ## 8. Roofline mapping and animation
 
-The roofline has multiple horizontal stretches, sloped gables, corners, and potentially discontinuous pixel indices. **Physical geometry and wiring order are not interchangeable.** Build a mapping abstraction:
+An illustrative light border can include horizontal and vertical sections, corners, and wiring gaps. **Physical geometry and wiring order are not interchangeable.** Build a mapping abstraction:
 
 - Physical pixel index and controller/channel.
-- Logical segments (`left_gable_up`, `left_gable_down`, `garage_eave`, etc.).
+- Logical segments (`border-left`, `border-top`, `border-right`, etc.).
 - Segment direction and ordered pixel lists.
 - Named paths that can cross multiple segments.
 - Optional approximate 2D coordinates (normalized or measured) for geometry-aware effects.
@@ -398,12 +400,12 @@ Use explicit request/response schemas, meaningful HTTP errors, and idempotency s
 
 ### 9.2 Agent connection
 
-- Persistent **WebSocket** is a reasonable initial choice for NAS ↔ laptop command/telemetry.
+- Persistent **WebSocket** is a reasonable initial choice for Docker host ↔ laptop command/telemetry.
 - Define protocol version, agent identity, capabilities, connection/heartbeat, request IDs, acknowledgment, errors, and session fencing.
 - Commands: `prepare`, `play`, `pause`, `resume`, `seek`, `stop`, `get_status`.
 - Telemetry: player state, playback position, rate, duration, errors, device status, and optional latency diagnostics.
 - Controller restart and agent reconnection must reconcile actual state; do not blindly replay stale commands.
-- If laptop is behind a firewall, prefer agent-initiated outbound WebSocket connection to NAS.
+- If laptop is behind a firewall, prefer agent-initiated outbound WebSocket connection to Docker host.
 
 ### 9.3 Home Assistant and Frigate
 
@@ -450,7 +452,7 @@ Use explicit request/response schemas, meaningful HTTP errors, and idempotency s
 - **Pydantic** or equivalent for configuration/protocol validation.
 - **mpv** for media playback, controlled through its supported IPC interface.
 - **DDP over UDP** for WLED output.
-- **Docker/Compose** for NAS deployment.
+- **Docker/Compose** for Docker host deployment.
 - **pytest**, type checking, linting/formatting, and GitHub Actions CI.
 - Use the standard library for simple scheduling and state logic unless a dependency clearly improves correctness.
 
@@ -459,10 +461,10 @@ These are preferences, not immutable constraints. Choose versions after checking
 ### Questions intentionally unresolved
 
 1. Laptop OS, exact audio/video device enumeration, and mpv IPC transport.
-2. Whether the NAS should render DDP long-term or whether a dedicated renderer agent becomes preferable.
+2. Whether the Docker host should render DDP long-term or whether a dedicated renderer agent becomes preferable.
 3. Real WLED pixel count, channel layout, DDP capabilities, throughput, and brightness/power ceiling.
-4. Actual network topology and connectivity between NAS, laptop, HA, and WLED.
-5. Precise calibration offsets for HDMI projector, Home Max AUX, and WLED.
+4. Actual network topology and connectivity between Docker host, laptop, HA, and WLED.
+5. Precise calibration offsets for display, audio output, and lighting controller.
 6. How to preload/switch clips seamlessly in the selected mpv architecture.
 7. Whether scenes eventually need genuine simultaneous video layers, or authored clips/transitions are sufficient.
 8. Persistence model: in-memory first, SQLite if durable event/state history becomes necessary.
@@ -494,7 +496,7 @@ reactive-show-engine/
 ├── BOOTSTRAP.md
 ├── LICENSE                     # only after license selection
 ├── pyproject.toml
-├── compose.yaml                # NAS deployment, when ready
+├── compose.yaml                # Docker host deployment, when ready
 ├── src/
 │   └── reactive_show_engine/
 │       ├── core/               # domain models, rules, state machines
@@ -537,7 +539,7 @@ Treat this as a proposed layout, not a demand to create dozens of empty files. K
 
 ### M1 — Authoritative timecode vertical slice (highest priority)
 
-Implement a **fake media agent** that publishes deterministic playback position/state to a controller. Implement the NAS-side timecode follower and a deterministic synthetic LED effect. Initially send frames to an in-memory/mock DDP sink, not the actual roof.
+Implement a **fake media agent** that publishes deterministic playback position/state to a controller. Implement the Docker host-side timecode follower and a deterministic synthetic LED effect. Initially send frames to an in-memory/mock DDP sink, not physical LEDs.
 
 **Acceptance:**
 
@@ -553,9 +555,9 @@ Implement laptop mpv agent and DDP output. Use a test media file with obvious vi
 
 **Acceptance:**
 
-- Laptop plays video on projector and audio via analog output to Home Max.
-- Laptop publishes actual player timecode; NAS follows it.
-- NAS sends real DDP frames to WLED without modifying firmware.
+- The media host plays video on the selected display and audio through the selected output.
+- Laptop publishes actual player timecode; Docker host follows it.
+- Docker host sends real DDP frames to WLED without modifying firmware.
 - Calibrate and document measured alignment and jitter; no unsupported claim of frame accuracy.
 - Stop/restart/failure restores or relinquishes WLED control safely.
 
@@ -571,9 +573,9 @@ Add event API, rules, encounter state, cooldowns, priorities, and ambient fallba
 - The system returns to ambient after completion/timeout.
 - The same behavior can be tested without cameras via synthetic events.
 
-### M4 — Halloween show package
+### M4 — Example installation show package
 
-Add actual roof geometry and media authored separately from engine code. Build Klown lookout, ray gun, malfunction, and ambient scenes. Keep copyrighted/private assets out of public examples.
+Add installation geometry and media authored separately from engine code. Build example welcome, highlight, and ambient scenes. Keep copyrighted/private assets out of public examples.
 
 ### M5 — OSS hardening (later)
 
@@ -625,24 +627,19 @@ Documentation, onboarding, sample show, packaging, security review, cross-platfo
 
 ---
 
-## 17. Halloween reference experience (creative context, not core implementation)
+## 17. Illustrative exhibit experience (creative example)
 
-The physical presentation is a two-window projection meant to suggest **one continuous room inside a Klown spaceship**. Characters can appear in one window, move behind the actual siding, and reappear in the other. The windows are relatively small and viewed from below at a steep angle; visuals should use bold silhouettes, high contrast, readable gestures, and close-to-window action rather than tiny details. Effects may include strange machinery, cotton-candy cocoons, ray guns, electrical overloads, and slapstick reactions.
-
-The creative direction is playful, eerie, absurd 1980s practical-effects sci-fi horror rather than generic haunted-house jump scares or a giant static clown face.
+A fictional interactive exhibit uses an animated display and a light border. An optional second projection surface can extend the scene, while a configured camera zone qualifies visitor responses. Choose readable shapes, appropriate contrast, and viewing distances for the venue rather than assuming a particular building or projection arrangement.
 
 Possible scenes:
 
-- `ambient-ship`: quiet spaceship machinery with subtle roofline breathing.
-- `klown-lookout`: one Klown notices someone in the driveway.
-- `klown-calls-backup`: second Klown appears in other window.
-- `raygun-reaction`: projected ray-gun charge/fire synchronized with a roofline pulse.
-- `ship-malfunction`: Klown pushes wrong button, triggering chaotic synchronized effects.
-- `ship-shutdown`: sequential power-down and return to ambient.
+- `ambient-display`: a quiet animated background with subtle accent lighting.
+- `visitor-welcome`: an arrival makes a short welcome scene eligible.
+- `display-highlight`: a visual accent follows an ordered LED path.
+- `extended-visit`: sustained presence qualifies a longer scene variant.
+- `display-shutdown`: a controlled power-down animation returns to the safe look.
 
-Desired operation: an ambient loop interspersed with ~60–120-second mini-shows and short visitor-triggered reactions. Scenes may be scheduled, manually triggered, or selected by interactive encounter state. Avoid repeating exactly the same reaction every time; support a small pool of eligible variants eventually.
-
-**Keep all of the above in a separate show package.** The software must work just as well for Christmas, an escape room, a museum exhibit, or an unrelated interactive installation.
+Example timing, content, and transition choices belong in the show package. Test duplicate detections, scene boundaries, cooldown, visitor departure, and ambient recovery with synthetic observations before a physical rehearsal. These scenes illustrate engine capabilities, not a prescribed narrative or validated installation.
 
 ---
 
@@ -669,17 +666,17 @@ Treat this as a **hypothesis about a useful niche**, not a proven market gap. Ev
 
 | Topic | Status | Direction |
 |---|---|---|
-| Central orchestration on NAS | **Decided** | Persistent self-hosted controller |
-| Laptop for video/audio | **Decided** | HDMI projector + wired analog Home Max |
-| Existing WLED/Dig-Uno unchanged | **Hard constraint** | Real-time network output, no firmware/hardware replacement |
-| Playback position authoritative for synchronized lighting | **Decided** | Laptop telemetry → NAS timecode follower |
-| NAS renders and streams DDP | **Preferred initial design** | Keep renderer relocatable in architecture |
+| Central orchestration on Docker host | **Decided** | Persistent self-hosted controller |
+| Media host for video/audio | **Decided** | Configured display and audio output |
+| DDP-compatible lighting controller | **Hard constraint** | Real-time network output, no firmware/hardware replacement |
+| Playback position authoritative for synchronized lighting | **Decided** | Laptop telemetry → Docker host timecode follower |
+| Docker host renders and streams DDP | **Preferred initial design** | Keep renderer relocatable in architecture |
 | Home Assistant triggers | **Decided capability** | Generic event/API interface, HA adapter |
 | Frigate person/zone interaction | **Primary reference use case** | Stateful encounters, no identity tracking |
 | Python/FastAPI/mpv/WebSocket | **Preferred stack** | Validate platform compatibility |
 | 10–20 Hz timecode, 20–30 FPS DDP | **Starting hypothesis** | Measure and tune |
 | Exact sync offsets | **Unknown** | Calibrate with hardware |
-| Laptop OS and roofline pixel map | **Unknown** | Ask before hardware-specific work |
+| Media-host OS and installation pixel map | **Unknown** | Ask before hardware-specific work |
 | Full composited media layers | **Future** | MVP can use transitions/clip replacement |
 | Public OSS release | **Intention, not commitment** | Build cleanly now, decide after proof |
 

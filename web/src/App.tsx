@@ -11,6 +11,7 @@ import { PhysicalOutputTestControls } from "./components/PhysicalOutputTestContr
 import { AssetPreview } from "./components/AssetPreview";
 import { DetailsDialog } from "./components/DetailsDialog";
 import { ApplyPanel } from "./pages/ApplyPanel";
+import type { TimelineToolTab } from "./pages/TimelineEditor";
 import { IntegrationsPanel } from "./pages/IntegrationsPanel";
 import { LiveOutputMonitor } from "./pages/LiveOutputMonitor";
 
@@ -644,6 +645,9 @@ function ProjectCard({
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [assetError, setAssetError] = useState<string | null>(null);
   const [timelineWorkspace, setTimelineWorkspace] = useState(false);
+  const [timelineTarget, setTimelineTarget] = useState<
+    { compositionId: string; tab: TimelineToolTab } | null
+  >(null);
   const [sceneId, setSceneId] = useState("");
   const [sceneDirty, setSceneDirty] = useState(false);
   const [interactionDirty, setInteractionDirty] = useState(false);
@@ -797,6 +801,8 @@ function ProjectCard({
               setDraft(updated);
               setTimelineReload((value) => value + 1);
             }}
+            initialCompositionId={timelineTarget?.compositionId}
+            initialToolTab={timelineTarget?.tab}
           />
         </Suspense>
       </article>
@@ -856,7 +862,15 @@ function ProjectCard({
           canAdd={!interactionDirty}
           onCreated={(updated, id) => { setSceneId(id); setDraft(updated); }}
           assets={assets ?? []} onSelectScene={setSceneId} onDirtyChange={updateSceneDirty}
-          onOpenTimeline={() => setTimelineWorkspace(true)}
+          onOpenTimeline={(target) => {
+            setTimelineTarget(target
+              ? {
+                compositionId: target.compositionId,
+                tab: target.spaceKind === "lighting_surface" ? "layers" : "render",
+              }
+              : null);
+            setTimelineWorkspace(true);
+          }}
           onSave={async (document) => setDraft(await updateProjectDraft(project.id, draft.revision, document))}
           onDelete={async (id) => {
             const updated = await deleteScene(project.id, draft.revision, id);
@@ -1120,7 +1134,7 @@ function ProjectCard({
           <div className="show-advanced-timeline">
             <strong>Timeline editor</strong>
             <p>Layered media, lighting cues, compositions and whole-display overlays open in a full-screen editor.</p>
-            <button disabled={sceneDirty} onClick={() => setTimelineWorkspace(true)}>
+            <button disabled={sceneDirty} onClick={() => { setTimelineTarget(null); setTimelineWorkspace(true); }}>
               Open timeline editor
             </button>
           </div>

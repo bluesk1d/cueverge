@@ -10,7 +10,7 @@ capabilities. It preserves three independent layers:
 3. **Presentation** executes one selected scene using synchronized media and
    deterministic lighting.
 
-Halloween narrative, private geometry, camera names, and media remain outside
+Installation narratives, private geometry, camera names, and media remain outside
 the reusable engine.
 
 ## Progress
@@ -181,8 +181,8 @@ pass an end-to-end placeholder test:
 2. Presence after a long idle makes an awakening scene eligible.
 3. Engagement follows at a completion boundary.
 4. Arrivals during a protected spectacle do not interrupt it.
-5. Recent porch activity creates one expiring mouth opportunity.
-6. Media-time lighting targets semantic mouth and roof fixtures.
+5. Activity in an example interaction zone creates one expiring welcome opportunity.
+6. Media-time lighting targets semantic display-border and accent fixtures.
 7. Ten minutes of attendance rotates content without immediate repetition.
 8. Sustained absence returns gracefully to quiet ambient.
 9. Controller and agent interruptions do not duplicate completion or

@@ -5,16 +5,15 @@
 
 ## Context
 
-The first installation has private geometry, addresses, and Halloween media,
-while the intended engine should support unrelated installations and safe
-open-source distribution.
+Installations have their own geometry, addresses, and media. The engine must
+support unrelated installations and safe open-source distribution.
 
 ## Decision
 
 Reusable orchestration, timing, protocol, and rendering code lives under
 `src/cueverge`. Redistributable synthetic content lives under `shows/demo`.
 Installation-specific definitions and private asset references belong under a
-separate `shows/halloween` package and are not imported by the engine.
+separate private show package and are not imported by the engine.
 
 ## Consequences
 

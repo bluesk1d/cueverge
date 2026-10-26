@@ -148,7 +148,8 @@ export function AmbientLightingPanel({ draft, canEdit, blockedReason = null, onS
                 </select>
               </label>
               <small>The composition&apos;s LED bake loops for the whole show. Bake it in its timeline
-                (Render &amp; bake) after every change; publishing needs a current bake.</small>
+                (Render &amp; bake) or from a scene&apos;s LED bake chip after changing what it draws;
+                publishing needs a current bake.</small>
             </> : cue && !known ? <p>This look uses the {primitive} effect; edit it with MCP or advanced authoring. It is kept as is.</p>
               : <>
                 <label>Look

@@ -9,6 +9,11 @@ It documents the current application, not a promise that every roadmap item
 is available. Read the [current boundaries](#current-boundaries) before
 planning a live opening.
 
+Examples use fictional display layouts, sample shows, and synthetic screenshots.
+For instance, an exhibit might use a light border and an `interaction-area`
+camera zone to welcome visitors. Substitute your own outputs, geometry, media,
+and exact input labels; no particular building layout or narrative is required.
+
 ## Contents
 
 - [Orientation and safety](#orientation-and-safety)
@@ -787,9 +792,28 @@ Frames include declared output timing offsets. Looping scenes wrap to the start
 using whole-millisecond preview positions; other completion policies stop the
 preview at the last millisecond. For a saved show, LED compositions (spatial
 lighting, or whole-display compositions that drive LEDs) are included when they
-have a current bake for that revision. Otherwise the preview still shows the
+have a current bake for that revision; one composition needing a bake does not
+hide the others. Otherwise the preview still shows the
 scene's own lighting effects and names the compositions that need **Bake LED
-animation** first. All outputs share a 4,096-LED sample budget; large
+animation** first.
+
+The scene heading shows an **LED bake** chip for every scene that uses LED
+compositions, including ambient compositions it inherits: green when all are
+baked, amber when one needs a bake, blue while baking and red when a bake failed
+or cannot run (for example, the installation mapping is unavailable). Select the
+chip to see each composition, then **Bake now** (or **Bake all**) to bake the
+saved revision, or **Bake settings** to open that composition's timeline at its
+bake controls. Save or cancel scene edits first; bakes always use the saved
+revision.
+
+LED-only bakes (spatial lighting compositions and lights-only stage overlays)
+stay current when you save edits that don't change what they draw, such as
+renaming a scene or editing another composition. Changing the composition, its
+layers, its media files or the installation mapping needs a new bake. Projector
+and mixed projector/LED bakes still need a bake for each saved revision. A save
+that changes nothing keeps the current revision, and **Save timeline** stays
+unavailable until the timeline has an edit. Zoom, snap and loop range are saved
+with your next timeline edit. All outputs share a 4,096-LED sample budget; large
 installations show a paged sample (choose one output in Preview to see more).
 A matching saved photo displays evaluated LED locations; the output
 strip remains available when mapping is absent or incomplete. Different

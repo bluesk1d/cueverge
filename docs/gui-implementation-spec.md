@@ -28,7 +28,7 @@ Evidence is from inspected source and docs, not a full live-device test. “Pres
 | Audience presence, encounters, opportunities, arbitration | Present, tested software-only | `observation/presence.py`, `core/encounter.py`, `core/opportunities.py`, `core/arbitration.py`, `simulation.py`; integration tests | Use engine evaluator for scenario simulation; visual trace requires API/structured reasons |
 | Deterministic simulation | Present as Python harness | `src/cueverge/simulation.py`, integration tests | Expose simulation API; browser visualization and persisted scenarios are new |
 | Windows mpv media agent | Present; hardware validation documented | `media_agent/mpv.py`, `mpv_player.py`, `docs/milestones.md` | Existing agent transport can be reused |
-| Linux mpv media agent | Present; target device not validated in snapshot | Unix socket transport; `docs/linux-media-agent.md` | Explicit NUC/Ubuntu validation task; no claims of deployed readiness |
+| Linux mpv media agent | Present; target device not validated in snapshot | Unix socket transport; `docs/linux-media-agent.md` | Explicit Linux media-host validation task; no claims of deployed readiness |
 | DDP lighting output | Present; Windows/WLED target validation documented | `lighting/ddp.py`, `lighting/sink.py`, `docs/milestones.md` | Preserve opt-in output and current render cadence semantics |
 | Secure device enrollment, protocol capabilities, RBAC | **Not present** | `docs/gui-roadmap.md` explicitly notes agent v1 lacks auth/authz/capability negotiation | GUI-00 prerequisite before network-exposed operations |
 | Asset library, transcoding, content-addressed cache | **Not present** | `core/loader.py` package-confined resolution; `media_agent/mpv.py` local asset root; no transfer/cache API | Existing local files are **not** a managed distribution system |
@@ -216,7 +216,7 @@ Do **not** attempt all milestones in one pass. Begin with a GUI-00 vertical slic
 5. Add contract/integration tests for unauthorized access, concurrent revision conflict, package roundtrip, and no hardware side effects in preview.
 6. Run existing tests, Ruff, mypy; document limitations and next incremental PR. If required infrastructure is too large for one PR, break into coherent tested commits and stop at a stable boundary.
 
-**Explicit deferments:** no automatic client enrollment, no live hardware activation from the new GUI, no video clip compositing, no geometry schema mutation, no migration of private Halloween assets in this first increment.
+**Explicit deferments:** no automatic client enrollment, no live hardware activation from the new GUI, no video clip compositing, no geometry schema mutation, no migration of private installation assets in this first increment.
 
 ## 14. Acceptance scenarios for eventual product
 

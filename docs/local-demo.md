@@ -108,10 +108,10 @@ runtime using a temporary, subsequently revoked read-only project token.
 
 UP-03 is visible under **Shows**. Choose **Open show** on
 **UP-03 Scene Editor Demo**: this original synthetic project was populated with
-56 raw effects through MCP and adapted to the sandbox's 605-pixel allocation.
+56 raw effects through MCP and adapted to the sandbox's sample output allocation.
 It is not a copy of private production scenes or media. A browser brightness
 edit was read back through MCP with every unrelated field unchanged, and
-evaluated output changed as intended. All 605 saved photo locations were shown,
+evaluated output changed as intended. All saved photo locations were shown,
 no package was published, and no hardware command was issued.
 The verification token was revoked; the project remains for hands-on review.
 Press **Play scene preview**, choose effects, or inspect the legacy scenes.
@@ -128,7 +128,7 @@ but honestly reports that no visitor rules are loaded. Tests exercise actual
 receiver delivery/reconnect and qualification with an isolated connector/runtime;
 they do not establish deployment-specific live reception.
 
-UP-05 adds **UP-05 Visitor Response Demo**, an original two-scene 605-pixel show.
+UP-05 adds **UP-05 Visitor Response Demo**, an original two-scene synthetic show.
 Open **Visitor responses** to inspect **Welcome porch visitors**, or **Try it**
 to open the shared visitor Preview. Example camera `porch`, zone `walkway`:
 arrive, advance one second to qualify, then four seconds to select the welcome
@@ -170,9 +170,13 @@ page errors and automatic refresh continuing.
 
 ## Included data
 
+Names, counts, and geometry below identify the existing synthetic sandbox fixtures
+so you can reproduce the walkthrough. They are not production-installation
+requirements; choose your own layout, outputs, and labels for a real show.
+
 - Two original synthetic house reference images: front and angled views.
-- Eight linked roofline segments in both views, with the Halloween allocation:
-  162, 34, 46, 46, 89, 87, 72, and 69 pixels, totaling 605.
+- Eight linked sample roofline segments in both views. Counts and wiring order
+  are sandbox fixture data for exercising the mapper, not a recommended layout.
 - Lower/upper strand assignments, fixture/group/path associations, and saved
   lighting surfaces for allocation and calibration testing.
 - Two linked projector surfaces with a generated calibration-grid image.

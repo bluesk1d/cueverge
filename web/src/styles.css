@@ -7423,3 +7423,72 @@ p {
   display: block;
   margin-top: 4px;
 }
+
+.led-bake-chip {
+  position: relative;
+  display: inline-block;
+  margin: 0 8px;
+}
+
+.led-bake-chip button.led-bake-chip__toggle {
+  --led-bake-tone: var(--cv-success);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  padding: 3px 10px;
+  color: var(--led-bake-tone);
+  font-size: 12px;
+  font-weight: 600;
+  background: color-mix(in srgb, var(--led-bake-tone) 10%, var(--cv-bg));
+  border: 1px solid color-mix(in srgb, var(--led-bake-tone) 50%, var(--cv-border));
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+.led-bake-chip button.led-bake-chip__toggle--needed { --led-bake-tone: var(--cv-warning); }
+.led-bake-chip button.led-bake-chip__toggle--baking { --led-bake-tone: var(--cv-info); }
+.led-bake-chip button.led-bake-chip__toggle--failed { --led-bake-tone: var(--cv-danger); }
+
+.led-bake-chip__dot {
+  width: 8px;
+  height: 8px;
+  background: currentColor;
+  border-radius: 50%;
+}
+
+.led-bake-chip__panel {
+  position: absolute;
+  right: 0;
+  z-index: 20;
+  display: grid;
+  gap: 8px;
+  width: min(420px, 90vw);
+  margin-top: 6px;
+  padding: 12px;
+  background: var(--cv-surface);
+  border: 1px solid var(--cv-border);
+  border-radius: var(--cv-radius-panel);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 35%);
+}
+
+.led-bake-chip__panel p { margin: 0; font-size: 12px; color: var(--cv-text-muted); }
+
+.led-bake-chip__panel ul {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.led-bake-chip__panel li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.led-bake-chip__actions { display: inline-flex; gap: 6px; }
+.led-bake-chip__error { display: block; color: var(--cv-danger); }

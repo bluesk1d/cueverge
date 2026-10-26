@@ -6,13 +6,13 @@ services:
     restart: unless-stopped
     init: true
     ports:
-      - "192.0.2.10:7000:8000"
-      - "192.0.2.10:7443:7443"
+      - "${CUEVERGE_HOST_BIND_ADDRESS:?Set the Docker host LAN address in your private environment file}:7000:8000"
+      - "${CUEVERGE_HOST_BIND_ADDRESS:?Set the Docker host LAN address in your private environment file}:7443:7443"
     environment:
       CUEVERGE_GUI_ENABLED: "true"
       CUEVERGE_GUI_ADMIN_USERNAME: ${CUEVERGE_GUI_ADMIN_USERNAME:-admin}
       CUEVERGE_GUI_ADMIN_PASSWORD_HASH: ${CUEVERGE_GUI_ADMIN_PASSWORD_HASH:?Set the administrator password hash in your private environment file}
-      CUEVERGE_GUI_ALLOWED_ORIGINS: ${CUEVERGE_GUI_ALLOWED_ORIGINS:-https://controller.example.com}
+      CUEVERGE_GUI_ALLOWED_ORIGINS: ${CUEVERGE_GUI_ALLOWED_ORIGINS:?Set your HTTPS browser origin in your private environment file}
       CUEVERGE_GUI_SECURE_COOKIES: "true"
       CUEVERGE_DEVICE_ENROLLMENT_ENABLED: ${CUEVERGE_DEVICE_ENROLLMENT_ENABLED:-false}
       CUEVERGE_DEVICE_ENROLLMENT_TLS_TERMINATED: ${CUEVERGE_DEVICE_ENROLLMENT_TLS_TERMINATED:-false}
@@ -20,7 +20,7 @@ services:
       CUEVERGE_DEVICE_LISTENER_ENABLED: ${CUEVERGE_DEVICE_LISTENER_ENABLED:-false}
       CUEVERGE_DEVICE_LISTENER_HOST: "0.0.0.0"
       CUEVERGE_DEVICE_LISTENER_PORT: "7443"
-      CUEVERGE_DEVICE_LISTENER_IDENTITIES: ${CUEVERGE_DEVICE_LISTENER_IDENTITIES:-192.0.2.10}
-      CUEVERGE_DEVICE_LISTENER_PUBLIC_URL: ${CUEVERGE_DEVICE_LISTENER_PUBLIC_URL:-wss://192.0.2.10:7443/api/device/v2/agent/ws}
+      CUEVERGE_DEVICE_LISTENER_IDENTITIES: ${CUEVERGE_DEVICE_LISTENER_IDENTITIES:-controller.example.com}
+      CUEVERGE_DEVICE_LISTENER_PUBLIC_URL: ${CUEVERGE_DEVICE_LISTENER_PUBLIC_URL:-wss://controller.example.com:7443/api/device/v2/agent/ws}
     volumes:
-      - /share/Container/mounts/cueverge:/var/lib/cueverge
+      - ${CUEVERGE_HOST_DATA_DIRECTORY:?Set an absolute Docker host data directory in your private environment file}:/var/lib/cueverge

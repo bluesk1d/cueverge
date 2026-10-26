@@ -22,8 +22,24 @@ jobs:
       - run: uv run mypy src
       - run: uv run pytest
 
+  web:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - run: npm run build
+      - run: npm test
+
   publish:
-    needs: test
+    needs: [test, web]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     permissions:
       contents: read

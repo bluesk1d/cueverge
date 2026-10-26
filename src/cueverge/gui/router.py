@@ -1,6 +1,7 @@
 import asyncio
 import time
 from collections.abc import Callable, Collection, Mapping
+from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 from io import BytesIO
 from typing import Annotated, Literal, cast
@@ -113,6 +114,8 @@ from cueverge.gui.contracts import (
     InstallationSummaryResponse,
     InteractionEditRequest,
     InteractionPreviewRequest,
+    LightingBakeStatusListResponse,
+    LightingBakeStatusResponse,
     LightingSurfaceRequest,
     LightingSurfaceResponse,
     LocalUserRequest,
@@ -3015,6 +3018,34 @@ def create_gui_router(services: GuiServices) -> APIRouter:
     )
     def render_jobs(project_id: str) -> list[RenderJobResponse]:
         return [_render_job(job) for job in services.render_jobs.list(project_id)]
+
+    @router.get(
+        "/projects/{project_id}/lighting-bakes",
+        response_model=LightingBakeStatusListResponse,
+        dependencies=[project_reader],
+    )
+    def lighting_bake_status(
+        project_id: str,
+        revision: Annotated[int | None, Query(ge=1)] = None,
+    ) -> LightingBakeStatusListResponse:
+        try:
+            stored = services.repository.get_revision(project_id, revision)
+            statuses = services.render_jobs.lighting_bake_status(project_id, stored.revision)
+        except ProjectNotFoundError as error:
+            raise HTTPException(
+                status_code=404,
+                detail={"code": "project_not_found"},
+            ) from error
+        return LightingBakeStatusListResponse(
+            project_id=project_id,
+            revision=stored.revision,
+            compositions=[
+                LightingBakeStatusResponse.model_validate(
+                    {**asdict(status), "scene_ids": list(status.scene_ids)}
+                )
+                for status in statuses
+            ],
+        )
 
     @router.post("/projects/{project_id}/apply", status_code=202)
     async def apply_saved_show(

@@ -91,8 +91,9 @@ journey. Real hardware/broker commissioning remains installation-specific.
 
 ### Target-device validation completed
 
-- Windows 11 portable mpv 0.41.0, projector fullscreen screen index, and wired
-  Home Max analog WASAPI route are validated.
+- A Windows media-agent configuration was validated with projector fullscreen
+  placement and an analog WASAPI audio route. Qualify each deployment
+  independently; this is not a required speaker or display configuration.
 - Named-pipe prepare/play, telemetry, pause, seek, resume, explicit stop, and
   controller restart reconciliation are validated end to end.
 - The agent runs in the logged-in Windows desktop through Task Scheduler and
@@ -111,5 +112,5 @@ journey. Real hardware/broker commissioning remains installation-specific.
 ## M3 integration and later work: planned
 
 HA/Frigate/MQTT adapters require deployment choices and live payload examples.
-The private Halloween package requires actual geometry and authored media.
+Installation-specific shows require measured geometry and authored media.
 OSS hardening, naming, and licensing remain later decisions.

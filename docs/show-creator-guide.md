@@ -4,8 +4,9 @@ For the current browser workflow, use the
 [installation and show operator guide](operator-guide.md). For deployment,
 accounts, devices, and recovery, use the
 [service administration guide](service-administration.md). This document is
-the creative capability reference and brief template; installation-specific
-examples below are not universal system requirements.
+the creative capability reference and brief template. Examples use a fictional
+interactive display; names, layouts, counts, and timing values illustrate the
+capabilities and should be replaced with your own design.
 
 This document describes Cueverge from the perspective of a show creator. It is
 both a capability reference and a creative brief template. A completed show
@@ -27,7 +28,7 @@ coordinates:
 
 - Video projected from a Windows or Linux media computer (see the platform
   guides for hardware qualification status).
-- Audio played from the same media asset through the configured analog output.
+- Audio played from the same media asset through the configured audio output.
 - Addressable RGB lighting rendered from authoritative media or controller time.
 - External observations such as Frigate person and zone events.
 - Stateful encounters with timeout, cooldown, priority, and ambient recovery.
@@ -41,7 +42,7 @@ observed media clock, not the time at which the controller requested playback.
 Explicit controller-timed scenes instead use local monotonic time and can
 run LED-only shows without a media player.
 
-The reusable engine contains no Halloween story, house geometry, private
+The reusable engine contains no installation narrative, venue geometry, private
 addresses, credentials, or copyrighted assets. Those belong in a private show
 package and deployment configuration.
 
@@ -65,7 +66,7 @@ on saved photo mappings. It is not another candidate preview or physical proof:
 media reports, stale/held samples and unmapped coverage are labeled separately.
 Decoded projector video and electrical LED/audio feedback are not captured.
 
-The house overlay uses the production lighting evaluator. It keeps the last
+The installation photo overlay uses the production lighting evaluator. It keeps the last
 evaluated frame visible while the next frame is prepared, without inserting
 per-frame loading messages into the layout. **LED output details** optionally
 shows a single horizontally scrollable row in pixel-address order; it is a
@@ -78,45 +79,40 @@ spatial composition preview; the selected scene is shared with the main view.
 Collaboration remains available under **Show options > Share & review** without
 occupying the normal hobby workflow.
 
-## 2. Validated installation capabilities
+## 2. Example installation
 
-The current installation has been validated with:
+Consider a fictional interactive exhibit with:
 
-- One Windows 11 media agent running mpv.
-- One projector display driven fullscreen by that agent.
-- One wired analog audio destination.
-- One WLED-controlled roofline with 605 RGB pixels.
-- Frigate MQTT person observations and named zone-entry events.
-- Measured audio and lighting delay compensation.
+- A Windows or Linux media agent running mpv.
+- A fullscreen projector or display showing an animated scene.
+- An audio destination selected on the media host.
+- A DDP-compatible RGB controller driving a 120-pixel light border.
+- An optional Frigate camera named `exhibit-camera` with an `interaction-area` zone.
 
-The projector presents two physical windows as parts of one visual
-environment. Content can exploit the real siding between them: a character or
-object may leave one projected window, travel through implied off-screen
-space, and appear in the other.
+This is an illustrative configuration, not a required hardware list or a
+hardware-validation record. An LED-only show can omit the media agent and use
+controller time. A multi-output scene can use additional media and lighting
+resources. Qualify your own devices using the platform guides.
 
-The exact media resolution, frame rate, composition mask, safe title area, and
-window alignment are content-production decisions. They are not encoded in
-the current scene schema and must be specified in the show definition before
-final media is rendered.
+For projection onto multiple surfaces, an animation might leave one surface,
+cross an implied off-screen space, and appear on another. The number and shape
+of surfaces depend on the installation. Define media resolution, frame rate,
+masks, safe areas, and physical alignment before producing final media.
 
-### Roofline segments
+### Example pixel segments
 
 Pixel addressing follows wiring order and uses half-open ranges `[start, end)`.
-The final endpoint is 605, so the addressable pixel indices are 0 through 604.
+For this fictional 120-pixel border, indices run from 0 through 119:
 
 | Segment ID | Range | Count | Strand |
 |---|---:|---:|---|
-| `garage-eave` | 0–162 | 162 | lower |
-| `garage-to-porch` | 162–196 | 34 | lower |
-| `porch-gable-right` | 196–242 | 46 | lower |
-| `porch-gable-left` | 242–288 | 46 | lower |
-| `porch-eave` | 288–377 | 89 | lower |
-| `upper-eave` | 377–464 | 87 | upper |
-| `upper-gable-right` | 464–536 | 72 | upper |
-| `upper-gable-left` | 536–605 | 69 | upper |
+| `border-left` | 0–30 | 30 | border |
+| `border-top` | 30–60 | 30 | border |
+| `border-right` | 60–90 | 30 | border |
+| `border-bottom` | 90–120 | 30 | border |
 
-The installation has been visually checked for segment placement, pixel
-direction, strand transition, and full-line traversal.
+Use measured counts and wiring order for your own installation. Verify segment
+placement, direction, strand transitions, and full-output traversal before use.
 
 ## 3. Current scene model
 
@@ -197,7 +193,7 @@ This is primarily a diagnostic primitive, not a finished creative effect.
 
 #### `segment_pulse`
 
-- Targets one named roofline segment.
+- Targets one named pixel segment.
 - Uses one RGB color.
 - Accepts one or more media-relative pulse start times.
 - Uses one pulse duration for every pulse.
@@ -230,7 +226,7 @@ The show definition should freely request effects such as:
 
 - Solid looks and blackout.
 - Fades and crossfades.
-- Whole-roof or per-segment brightness envelopes.
+- Whole-output or per-segment brightness envelopes.
 - Segment chases and direction-aware sweeps.
 - Paths crossing multiple segments.
 - Charge-up, traveling pulse, ripple, flicker, sparkle, electrical arc, and
@@ -244,8 +240,8 @@ primitive, describe its visible result, target geometry, timing, colors,
 direction, repetition, and behavior under pause or seek.
 
 Semantic fixtures and ordered paths are supported in installation
-configuration. A scene can target a segment, a fixture such as the concealed
-mouth lighting, or a direction-aware architectural path without embedding
+configuration. A scene can target a segment, a fixture such as the exhibit's
+light border, or a direction-aware path without embedding
 pixel indices.
 
 ### Persistent looks
@@ -269,7 +265,8 @@ never need to match up ambient loops.
      color, brightness, speed and loop length.
    - **LED composition loop**: a stage composition with LED surfaces selected.
      Its LED bake loops for the whole show; bake it from its timeline
-     (**Render & bake**) after every change. Publishing needs a current bake.
+     (**Render & bake**) after changing what it draws, or from the **LED bake**
+     chip on any scene. Publishing needs a current bake.
 3. Set a **Brightness limit** if needed and **Save ambient lighting**.
 4. Every scene inherits the ambient by default. To turn it off for one scene,
    clear **Inherit ambient lighting** in that scene's settings (Scenes
@@ -364,10 +361,10 @@ Cueverge normalizes live Frigate MQTT messages into:
 | `frigate.zone.entered` | The object entered a new zone | `label`, `camera`, `object_id`, `zone` |
 | `frigate.object.end` | Tracking ended | `label`, `camera`, `object_id` |
 
-The live path has been validated for `person` observations from the doorbell
-and garage exterior cameras. Observed zone names include `Porch`,
-`Frontyard`, `Driveway`, `Sidewalk`, `Street`, and `East sideyard`. A show
-should use only zones that have a deliberate narrative purpose.
+For example, a `person` entering `interaction-area` on `exhibit-camera` could
+qualify a welcome response. These are fictional labels, not built-in camera or
+zone names. Match the exact labels configured in your Frigate installation and
+use only zones that have a deliberate role in the experience.
 
 ### Event behavior supported now
 
@@ -381,7 +378,7 @@ should use only zones that have a deliberate narrative purpose.
   short tracking glitches.
 - Semantic `audience.arrived`, `audience.present`, `audience.departed`, and
   `audience.long_idle` events can drive encounters and opportunities.
-- A porch-zone event can advance an encounter.
+- A configured zone-entry event can advance an encounter.
 - An object-end event can enter cooldown.
 - Inactivity can force cooldown.
 - Cooldown expiry returns to ambient.
@@ -467,18 +464,18 @@ All creative cue times should be expressed relative to the media timeline,
 preferably in milliseconds. Cueverge currently renders lighting at 25 FPS from
 bounded media-time estimates.
 
-The installation has measured compensation for projector, audio, and lighting
-latency. The accepted calibration reduced projector/audio median residual
-alignment to approximately 7 ms in the test recording. This does not promise
-that every cue is frame-perfect; projector processing, audio DSP, WLED refresh,
-and network variability still exist.
+Measure display, audio, and lighting latency for each installation before
+choosing compensation values. For example, a flash-and-click test can reveal
+whether an audio accent leads or trails a visible flash. Set offsets from those
+measurements and repeat the test. No example offset guarantees alignment:
+display processing, audio DSP, LED refresh, and network variability all matter.
 
 For every sharp synchronized moment, provide:
 
 - Media timestamp.
 - What is visible in the projection.
 - What is heard.
-- Which roof segment or path reacts.
+- Which lighting segment, fixture, or path reacts.
 - Desired color and brightness shape.
 - Acceptable timing tolerance.
 - Whether the cue may repeat after a seek.
@@ -505,7 +502,7 @@ show-package/
     private-media-files
 ```
 
-The controller package and laptop asset cache are separate in the current
+The controller package and media-host asset cache are separate in the current
 deployment. Scene asset paths are normalized relative paths; absolute paths,
 backslashes, and parent traversal are rejected.
 
@@ -529,7 +526,7 @@ requirements in the returned show specification even if final values remain
 TBD.
 
 Do not place copyrighted media, camera footage, credentials, private network
-addresses, or house-specific geometry in the public demo package.
+addresses, or private installation geometry in the public demo package.
 
 ## 8. Required creative definition
 
@@ -605,7 +602,7 @@ Provide one row per transition:
 
 | From state(s) | Observation or condition | Required camera/zone | Minimum state age | To state | Scene request | Duplicate behavior |
 |---|---|---|---:|---|---|---|
-| `ambient` | New person | Doorbell or TBD | 0 ms | `suspicious` | TBD | Ignore |
+| `ambient` | New person | `exhibit-camera` / `interaction-area` (example) | 0 ms | `welcome` | TBD | Ignore |
 
 Also answer:
 
@@ -614,7 +611,7 @@ Also answer:
 - Can a second person restart or advance the encounter?
 - Can the encounter regress?
 - What happens if tracking briefly disappears?
-- What should happen when no porch-zone event ever arrives?
+- What should happen when no target-zone event ever arrives?
 - How long is cooldown?
 
 Define the audience estimator separately from narrative transitions:
@@ -650,11 +647,11 @@ where applicable.
 For every scene, provide:
 
 1. **Narrative action:** Beat-by-beat visible action.
-2. **Window blocking:** Left window, right window, implied off-screen travel,
-   entrances, exits, and eyelines.
+2. **Visual blocking:** Display or projection surfaces, implied off-screen
+   travel, entrances, exits, and eyelines where relevant.
 3. **Media:** Duration, loop points, frame rate, audio, dialogue, music, and
    transitions.
-4. **Lighting baseline:** Roof appearance when no accent cue is active.
+4. **Lighting baseline:** Installation appearance when no accent cue is active.
 5. **Cue timeline:** One row per synchronized cue.
 6. **Completion:** Hold, stop, loop, transition, return to ambient, or await
    another event.
@@ -705,14 +702,14 @@ For every pair of operating categories, specify replace, queue, or ignore:
 
 Explicitly decide:
 
-- Visitor leaves during suspicious or reaction scene.
+- Visitor leaves during a welcome or reaction scene.
 - Frigate emits duplicate, late, or out-of-order observations.
 - Person never enters the target zone.
 - Multiple cameras observe the same person.
 - Media agent disconnects.
 - Projector is unavailable.
 - Audio output is disconnected.
-- WLED is unavailable.
+- The configured lighting controller is unavailable.
 - Controller restarts during a scene.
 - Show is stopped manually.
 - Show enters disabled, maintenance, or blackout mode.
@@ -725,7 +722,7 @@ Explicitly decide:
 ### J. Content-production specification
 
 - Master canvas resolution and frame rate.
-- Exact two-window mask and safe areas.
+- Surface masks and safe areas for each display or projection target.
 - Viewing-distance readability rules.
 - Color and contrast rules.
 - Audio loudness and low-frequency constraints.

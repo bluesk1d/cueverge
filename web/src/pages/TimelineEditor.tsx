@@ -57,7 +57,7 @@ function clampNumber(value: number, minimum: number, maximum: number): number {
   return Math.min(maximum, Math.max(minimum, value));
 }
 
-type TimelineToolTab = "layers" | "cues" | "tracks" | "compositions" | "render" | "ranges";
+export type TimelineToolTab = "layers" | "cues" | "tracks" | "compositions" | "render" | "ranges";
 
 const TIMELINE_TOOL_TABS: [TimelineToolTab, string][] = [
   ["layers", "Media layers"],
@@ -375,6 +375,8 @@ export function TimelineEditor({
   selectedSceneId,
   onSceneChange,
   onOutputsChanged,
+  initialCompositionId,
+  initialToolTab,
 }: {
   draft: ProjectDraftRecord;
   assets: AssetRecord[];
@@ -384,8 +386,10 @@ export function TimelineEditor({
   selectedSceneId?: string;
   onSceneChange?: (id: string) => void;
   onOutputsChanged?: (updated: ProjectDraftRecord) => void;
+  initialCompositionId?: string;
+  initialToolTab?: TimelineToolTab;
 }) {
-  const [toolTab, setToolTab] = useState<TimelineToolTab>("layers");
+  const [toolTab, setToolTab] = useState<TimelineToolTab>(initialToolTab ?? "layers");
   const [sceneSettingsOpen, setSceneSettingsOpen] = useState(false);
   const [compositionSettingsOpen, setCompositionSettingsOpen] = useState(false);
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
@@ -405,10 +409,21 @@ export function TimelineEditor({
   const [compositionInstances, setCompositionInstances] = useState<
     Record<string, CompositionInstance[]>
   >(() => compositionInstanceMap(draft.draft.editor_metadata.composition_instances));
-  const [activeCompositionId, setActiveCompositionId] = useState(() =>
-    defaultCompositionForScene(scene, compositions, sceneCompositions, compositionInstances),
+  // A deep link (such as the scene's LED bake chip) opens one composition once.
+  const initialCompositionRef = useRef(
+    initialCompositionId && compositions[initialCompositionId] ? initialCompositionId : null,
+  );
+  const [activeCompositionId, setActiveCompositionId] = useState(
+    () =>
+      initialCompositionRef.current ??
+      defaultCompositionForScene(scene, compositions, sceneCompositions, compositionInstances),
   );
   useEffect(() => {
+    if (initialCompositionRef.current) {
+      setActiveCompositionId(initialCompositionRef.current);
+      initialCompositionRef.current = null;
+      return;
+    }
     setActiveCompositionId(
       defaultCompositionForScene(scene, compositions, sceneCompositions, compositionInstances),
     );
@@ -1983,7 +1998,7 @@ export function TimelineEditor({
   });
   shortcutHandlers.current = {
     save: () => {
-      if (canEdit && timelineDiagnostics.length === 0) void save();
+      if (canEdit && timelineDirtyRef.current && timelineDiagnostics.length === 0) void save();
     },
     undo: () => {
       if (canEdit && historyIndexRef.current > 0) restoreHistory(historyIndexRef.current - 1);
@@ -2111,8 +2126,8 @@ export function TimelineEditor({
               </button>
               <button
                 className="timeline-primary-action"
-                title="Save (Ctrl+S)"
-                disabled={timelineDiagnostics.length > 0}
+                title={timelineDirty ? "Save (Ctrl+S)" : "No timeline changes to save"}
+                disabled={!timelineDirty || timelineDiagnostics.length > 0}
                 onClick={() => void save()}
               >
                 Save timeline

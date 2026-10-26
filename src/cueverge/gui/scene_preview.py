@@ -56,7 +56,8 @@ def preview_project_scene(
     lighting_artifacts: dict[str, Path] | None = None
     if not unsaved:
         try:
-            lighting_artifacts = services.render_jobs.lighting_artifacts(
+            # Bakes that are current still show when another LED composition needs a bake.
+            lighting_artifacts = services.render_jobs.current_lighting_artifacts(
                 stored.project.id, stored.revision
             )
         except (RenderJobError, MapperExportError, ValueError, OSError):

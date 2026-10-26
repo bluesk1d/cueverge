@@ -1,3 +1,4 @@
+import builtins
 import hashlib
 import json
 import shutil
@@ -10,9 +11,11 @@ from pathlib import Path
 from typing import Literal, cast
 from uuid import uuid4
 
-from cueverge.gui.asset_upload import AssetUploadService
+from cueverge.gui.asset_upload import AssetUploadError, AssetUploadService
+from cueverge.gui.compiler import composition_scene_usage
+from cueverge.gui.contracts import DraftProject
 from cueverge.gui.lighting_bake import render_lighting_composition
-from cueverge.gui.mapper_export import MapperExportService
+from cueverge.gui.mapper_export import MapperExportError, MapperExportService
 from cueverge.gui.projector_overlap import (
     ProjectorOverlapService,
     StoredProjectorOverlap,
@@ -21,6 +24,7 @@ from cueverge.gui.projector_renderer import ProjectorRenderError, render_project
 from cueverge.gui.repository import GuiRepository
 from cueverge.gui.stage_coverage import StageCoverage, StageCoverageService
 from cueverge.gui.stage_renderer import (
+    bakes_lighting_only,
     is_lights_only_stage,
     leds_show_ambient,
     render_stage_composition,
@@ -63,6 +67,34 @@ class RenderInputs:
     composition: dict[str, object]
     source_checksums: dict[str, str]
     environment: dict[str, object]
+
+
+LightingBakeState = Literal["current", "queued", "running", "failed", "missing", "unavailable"]
+
+
+@dataclass(frozen=True)
+class LightingBakeStatus:
+    composition_id: str
+    name: str
+    space_kind: str
+    state: LightingBakeState
+    reusable_across_revisions: bool
+    artifact_id: str | None
+    baked_revision: int | None
+    job_id: str | None
+    progress: float | None
+    error: str | None
+    scene_ids: tuple[str, ...]
+    ambient: bool
+
+
+@dataclass(frozen=True)
+class _LedBake:
+    composition_id: str
+    composition: dict[str, object]
+    keys: tuple[str, ...]
+    artifact: sqlite3.Row | None
+    error: Exception | None
 
 
 class RenderJobService:
@@ -124,24 +156,14 @@ class RenderJobService:
         available = shutil.disk_usage(self.output_root).free
         if reserved_bytes > available:
             raise RenderJobError("controller has insufficient free storage for render reservation")
-        cache_key = _cache_key(
-            composition=inputs.composition,
-            source_checksums=inputs.source_checksums,
-            source_revision=revision.revision,
-            environment=inputs.environment,
-        )
+        keys = _bake_keys(inputs, project_id, revision.revision)
+        cache_key = keys[0]
         occurred_at = _now()
         job_id = str(uuid4())
         with self._connect() as connection:
-            artifact = connection.execute(
-                """
-                SELECT id, output_path
-                FROM render_artifacts
-                WHERE cache_key = ?
-                """,
-                (cache_key,),
-            ).fetchone()
-            cache_hit = artifact is not None and Path(str(artifact["output_path"])).is_dir()
+            artifact = _artifact_row(connection, project_id, keys)
+            artifact_id = str(artifact["id"]) if artifact is not None else None
+            cache_hit = artifact_id is not None
             connection.execute(
                 """
                 INSERT INTO render_jobs(
@@ -159,7 +181,7 @@ class RenderJobService:
                     "completed" if cache_hit else "queued",
                     1 if cache_hit else 0,
                     reserved_bytes,
-                    str(artifact["id"]) if cache_hit else None,
+                    artifact_id,
                     actor,
                     occurred_at,
                     occurred_at if cache_hit else None,
@@ -176,7 +198,7 @@ class RenderJobService:
                         artifact_id = excluded.artifact_id,
                         updated_at = excluded.updated_at
                     """,
-                    (project_id, composition_id, str(artifact["id"]), occurred_at),
+                    (project_id, composition_id, artifact_id, occurred_at),
                 )
         if not cache_hit:
             self._ensure_worker()
@@ -318,15 +340,7 @@ class RenderJobService:
                     job.composition_id,
                     job.project_id,
                 )
-                if (
-                    _cache_key(
-                        composition=inputs.composition,
-                        source_checksums=inputs.source_checksums,
-                        source_revision=job.source_revision,
-                        environment=inputs.environment,
-                    )
-                    != job.cache_key
-                ):
+                if job.cache_key not in _bake_keys(inputs, job.project_id, job.source_revision):
                     raise RenderJobError("lighting mapping changed after the bake was queued")
                 manifest = render_lighting_composition(
                     project_id=job.project_id,
@@ -352,15 +366,7 @@ class RenderJobService:
                     job.composition_id,
                     job.project_id,
                 )
-                if (
-                    _cache_key(
-                        composition=inputs.composition,
-                        source_checksums=inputs.source_checksums,
-                        source_revision=job.source_revision,
-                        environment=inputs.environment,
-                    )
-                    != job.cache_key
-                ):
+                if job.cache_key not in _bake_keys(inputs, job.project_id, job.source_revision):
                     raise RenderJobError("stage mapping changed after queuing; retry the bake")
                 mapper, coverage, overlaps, admission = self._stage_inputs(
                     revision.draft.editor_metadata,
@@ -574,37 +580,114 @@ class RenderJobService:
         return RenderInputs(composition, checksums, environment)
 
     def lighting_artifacts(self, project_id: str, revision: int) -> dict[str, Path]:
-        stored = self.repository.get_revision(project_id, revision)
+        """Every LED bake the revision needs; raises when any is missing (publication)."""
         artifacts: dict[str, Path] = {}
-        for composition_id, raw in _mapping(
-            stored.draft.editor_metadata.get("compositions")
-        ).items():
-            composition = _mapping(raw)
-            if composition.get("space_kind") != "lighting_surface" and not (
-                composition.get("space_kind") == "stage"
-                and composition.get("stage_lighting_surfaces")
-            ):
-                continue
-            inputs = self._render_inputs(stored.draft.editor_metadata, composition_id, project_id)
-            key = _cache_key(
-                composition=inputs.composition,
-                source_checksums=inputs.source_checksums,
-                source_revision=revision,
-                environment=inputs.environment,
-            )
-            with self._connect() as connection:
-                row = connection.execute(
-                    "SELECT output_path FROM render_artifacts "
-                    "WHERE project_id = ? AND cache_key = ?",
-                    (project_id, key),
-                ).fetchone()
-            if row is None or not Path(str(row["output_path"])).is_dir():
+        for item in self._led_bakes(project_id, revision):
+            if item.error is not None:
+                raise item.error
+            if item.artifact is None:
                 raise RenderJobError(
-                    f"lighting composition {composition_id} needs a current bake; "
+                    f"lighting composition {item.composition_id} needs a current bake; "
                     "media, authoring or installation calibration may have changed"
                 )
-            artifacts[composition_id] = Path(str(row["output_path"]))
+            artifacts[item.composition_id] = Path(str(item.artifact["output_path"]))
         return artifacts
+
+    def current_lighting_artifacts(self, project_id: str, revision: int) -> dict[str, Path]:
+        """The LED bakes that are current for the revision, skipping any that are not."""
+        return {
+            item.composition_id: Path(str(item.artifact["output_path"]))
+            for item in self._led_bakes(project_id, revision)
+            if item.artifact is not None
+        }
+
+    def lighting_bake_status(
+        self,
+        project_id: str,
+        revision: int,
+    ) -> tuple["LightingBakeStatus", ...]:
+        """Per LED composition: whether the revision has a current bake and which scenes use it."""
+        stored = self.repository.get_revision(project_id, revision)
+        usage, ambient = composition_scene_usage(stored.draft)
+        jobs = self.list(project_id)
+        statuses: list[LightingBakeStatus] = []
+        for item in self._led_bakes(project_id, revision, stored.draft):
+            job = next(
+                (
+                    candidate
+                    for candidate in jobs
+                    if candidate.composition_id == item.composition_id
+                    and candidate.cache_key in item.keys
+                ),
+                None,
+            )
+            state: LightingBakeState
+            if item.error is not None:
+                state = "unavailable"
+            elif item.artifact is not None:
+                state = "current"
+            elif job is not None and job.state in {"queued", "running", "failed"}:
+                state = cast(LightingBakeState, job.state)
+            else:
+                state = "missing"
+            manifest = (
+                _mapping(json.loads(str(item.artifact["manifest_json"])))
+                if item.artifact is not None
+                else {}
+            )
+            baked_revision = manifest.get("source_revision")
+            statuses.append(
+                LightingBakeStatus(
+                    composition_id=item.composition_id,
+                    name=str(item.composition.get("name") or item.composition_id),
+                    space_kind=str(item.composition.get("space_kind")),
+                    state=state,
+                    reusable_across_revisions=bakes_lighting_only(item.composition),
+                    artifact_id=str(item.artifact["id"]) if item.artifact is not None else None,
+                    baked_revision=(
+                        baked_revision
+                        if isinstance(baked_revision, int) and not isinstance(baked_revision, bool)
+                        else None
+                    ),
+                    job_id=job.id if job is not None and state != "current" else None,
+                    progress=job.progress if job is not None and state != "current" else None,
+                    error=(
+                        str(item.error)
+                        if item.error is not None
+                        else job.error
+                        if job is not None and state == "failed"
+                        else None
+                    ),
+                    scene_ids=usage.get(item.composition_id, ()),
+                    ambient=item.composition_id in ambient,
+                )
+            )
+        return tuple(statuses)
+
+    def _led_bakes(
+        self,
+        project_id: str,
+        revision: int,
+        draft: DraftProject | None = None,
+    ) -> tuple["_LedBake", ...]:
+        if draft is None:
+            draft = self.repository.get_revision(project_id, revision).draft
+        metadata = draft.editor_metadata
+        result: builtins.list[_LedBake] = []
+        for composition_id, raw in _mapping(metadata.get("compositions")).items():
+            composition = _mapping(raw)
+            if not _bakes_leds(composition):
+                continue
+            try:
+                inputs = self._render_inputs(metadata, composition_id, project_id)
+            except (RenderJobError, MapperExportError, AssetUploadError, ValueError) as error:
+                result.append(_LedBake(composition_id, composition, (), None, error))
+                continue
+            keys = _bake_keys(inputs, project_id, revision)
+            with self._connect() as connection:
+                artifact = _artifact_row(connection, project_id, keys)
+            result.append(_LedBake(composition_id, composition, keys, artifact, None))
+        return tuple(result)
 
     def _stage_inputs(
         self,
@@ -745,19 +828,71 @@ def _cache_key(
     *,
     composition: dict[str, object],
     source_checksums: dict[str, str],
-    source_revision: int,
+    source_revision: int | None,
     environment: dict[str, object],
+    project_id: str | None = None,
 ) -> str:
-    payload = {
+    payload: dict[str, object] = {
         "renderer": "projector-runner-v1",
-        "source_revision": source_revision,
         "composition": composition,
         "source_checksums": source_checksums,
         "environment": environment,
     }
+    if source_revision is not None:
+        payload["source_revision"] = source_revision
+    if project_id is not None:
+        payload["project_id"] = project_id
     return hashlib.sha256(
         json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
+
+
+def _bakes_leds(composition: Mapping[str, object]) -> bool:
+    return composition.get("space_kind") == "lighting_surface" or bool(
+        composition.get("space_kind") == "stage" and composition.get("stage_lighting_surfaces")
+    )
+
+
+def _bake_keys(inputs: RenderInputs, project_id: str, revision: int) -> tuple[str, ...]:
+    """Cache keys that identify a current bake, preferred key first.
+
+    LED-only bakes are drawn from the composition, its layers, asset checksums and the
+    installation mapping alone, so they are keyed on those and stay current across
+    revisions that change nothing they draw. The revision-bound key still matches bakes
+    made before LED-only keys existed. Projector and mixed bakes stay bound to a revision.
+    """
+    bound = _cache_key(
+        composition=inputs.composition,
+        source_checksums=inputs.source_checksums,
+        source_revision=revision,
+        environment=inputs.environment,
+    )
+    if not bakes_lighting_only(inputs.composition):
+        return (bound,)
+    content = _cache_key(
+        composition=inputs.composition,
+        source_checksums=inputs.source_checksums,
+        source_revision=None,
+        environment=inputs.environment,
+        project_id=project_id,
+    )
+    return (content, bound)
+
+
+def _artifact_row(
+    connection: sqlite3.Connection,
+    project_id: str,
+    keys: tuple[str, ...],
+) -> sqlite3.Row | None:
+    for key in keys:
+        row = connection.execute(
+            "SELECT id, output_path, manifest_json FROM render_artifacts "
+            "WHERE project_id = ? AND cache_key = ?",
+            (project_id, key),
+        ).fetchone()
+        if row is not None and Path(str(row["output_path"])).is_dir():
+            return cast(sqlite3.Row, row)
+    return None
 
 
 def _stored_job(row: sqlite3.Row) -> StoredRenderJob:
