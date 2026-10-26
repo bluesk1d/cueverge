@@ -17,7 +17,31 @@ npm run preview
 Open <http://127.0.0.1:4173>. The generated `site/dist/` directory can be hosted
 by any static web server, including under a subdirectory such as `/cueverge/`.
 It requires no server-side runtime, client-side router, or external font service.
-This change does not configure or publish hosting.
+
+## GitHub Pages
+
+The workflow targets <https://bluesk1d.github.io/cueverge/>.
+In repository **Settings → Pages**, select **GitHub Actions** as the publishing
+source before the first deployment.
+
+The [Static site workflow](../.github/workflows/static-site.yml) builds and checks
+site/documentation changes in pull requests. On matching pushes to `main`, or a
+manual run on `main`, it uploads only `site/dist/` as a Pages artifact and deploys
+it through the `github-pages` environment. Other branches and pull requests do
+not deploy. Deployment permission is confined to the deploy job, which runs only
+after a successful build and link check. Deployments are serialized so a newer
+run does not interrupt a deployment in progress. This is the only Pages workflow;
+it publishes the built site rather than the repository root.
+
+Site/docs-only changes, including the root README and bootstrap brief, run site
+checks without running Python package tests, application frontend tests/builds,
+or controller image publication. The package CI workflow performs a lightweight
+Git change check and skips those jobs. Mixed documentation and application changes
+still run the full package checks. Manual controller image publication remains
+available independently.
+
+Generated files stay out of Git. Rebuild from the Markdown and site sources;
+there is no separate publishing branch or second copy of the guides to maintain.
 
 ## Editing
 
@@ -46,6 +70,13 @@ copied from `docs/assets/`. Repository files, examples, and source directories
 link to GitHub. Existing Markdown paths remain valid for GitHub readers and
 contributors. The build intentionally copies only documentation assets, never
 private show packages or local controller settings.
+
+Use absolute published website URLs for reader-facing documentation links in
+the root README. Keep links within `docs/` relative and pointing to the Markdown
+sources, including section fragments; the generator converts them to relative
+HTML URLs. This keeps GitHub source navigation working and allows the built
+site to run under the `/cueverge/` project path. Retain a secondary documentation
+source link in the README for contributors.
 
 ## Validation
 

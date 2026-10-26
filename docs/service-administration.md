@@ -189,9 +189,12 @@ inbound port, or MQTT broker port is needed for this GUI/MCP deployment.
 Private show mounts and hardware output/observation adapters remain separate
 opt-in configuration.
 
-Controller images are published automatically after the CI test job succeeds
-for a push to `main`, using the same tested commit. Pull requests and pushes
-to other branches do not publish images. Manual publishing from `main` remains
+Controller images are published automatically after the Python and application
+frontend CI jobs succeed for a package-affecting push to `main`, using the same
+tested commit. Site/docs-only changes skip those jobs and image publication;
+mixed documentation and application changes still run the full package checks.
+Pull requests and pushes to other branches do not publish images.
+Manual publishing from `main` remains
 available through the
 [Publish controller image workflow](../.github/workflows/publish-image.yml).
 It checks AMD64 startup, native dependency preflight, frontend availability,

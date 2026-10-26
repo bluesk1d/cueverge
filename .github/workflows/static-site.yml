@@ -1,16 +1,25 @@
 name: Static site
 
 on:
+  workflow_dispatch:
   push:
+    branches:
+      - main
     paths:
+      - 'README.md'
+      - 'BOOTSTRAP.md'
       - 'site/**'
       - 'docs/**'
       - '.github/workflows/static-site.yml'
+      - '.github/workflows/static.yml'
   pull_request:
     paths:
+      - 'README.md'
+      - 'BOOTSTRAP.md'
       - 'site/**'
       - 'docs/**'
       - '.github/workflows/static-site.yml'
+      - '.github/workflows/static.yml'
 
 permissions:
   contents: read
@@ -34,8 +43,28 @@ jobs:
         working-directory: site
       - run: npm run check
         working-directory: site
-      - uses: actions/upload-artifact@v4
+      - name: Upload GitHub Pages artifact
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        uses: actions/upload-pages-artifact@v4
         with:
-          name: cueverge-static-site
           path: site/dist/
-          include-hidden-files: true
+
+  deploy:
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    concurrency:
+      group: github-pages
+      cancel-in-progress: false
+    steps:
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+      - name: Deploy GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

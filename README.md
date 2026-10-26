@@ -8,7 +8,7 @@ Cueverge is an early-stage, self-hosted reactive show engine. A controller owns
 scene selection and lifecycle, while a media agent reports the authoritative
 playback position used to render synchronized lighting. Scenes can instead
 explicitly use the controller's monotonic clock, including LED-only shows
-with no media agent. See [controller-timed scenes](docs/scene-schema.md#controller-timed-scenes)
+with no media agent. See [controller-timed scenes](https://bluesk1d.github.io/cueverge/docs/scene-schema.html#controller-timed-scenes)
 and the [LED-only example](shows/led-only-demo).
 
 This repository contains the software vertical slice, declarative autonomous
@@ -18,24 +18,26 @@ accelerated in-memory simulation. Windows/Linux mpv, RGB DDP, and Frigate MQTT
 adapters are opt-in; no physical output or observation ingress is enabled by
 default.
 
-## Service documentation
+## Documentation
 
-The repository also includes a [static landing page and documentation site](site/README.md).
-Build and preview it locally with `cd site && npm ci && npm run build && npm run preview`.
-It presents the guides below alongside the user/show creator guide, using the
-existing Markdown sources without duplicating their content.
+Visit the [Cueverge website](https://bluesk1d.github.io/cueverge/) or start with
+the [documentation index](https://bluesk1d.github.io/cueverge/docs/index.html).
 
-Start with the [documentation index](docs/README.md), or choose your role:
-
-- [Service administration guide](docs/service-administration.md): requirements,
+- [User guide](https://bluesk1d.github.io/cueverge/docs/show-creator-guide.html):
+  creative capabilities, show concepts, and a show brief template.
+- [Service administration guide](https://bluesk1d.github.io/cueverge/docs/service-administration.html): requirements,
   deployment, networking, media hosts, users and permissions, monitoring,
   upgrades, backup, and recovery.
-- [Installation and show operator guide](docs/operator-guide.md): installation
+- [Installation and show operator guide](https://bluesk1d.github.io/cueverge/docs/operator-guide.html): installation
   records and mapping, assets, scene/timeline and autonomous authoring,
   rehearsal, release handover, and show-day operation.
 
-Both guides include integrated-browser screenshots from an isolated synthetic
-controller and distinguish implemented behavior from current limitations.
+The administration and operator guides include integrated-browser screenshots
+from an isolated synthetic controller and distinguish implemented behavior from
+current limitations.
+
+Contributors can edit the [documentation sources](docs/README.md) and follow the
+[site development instructions](site/README.md) to build and preview changes locally.
 
 ## Development
 
@@ -72,7 +74,7 @@ identities. See `examples/controller.env.example`.
 The authenticated GUI API binds wherever Uvicorn is configured. The old
 unauthenticated protocol-v1 HTTP and WebSocket surfaces have been removed.
 Media agents connect only through the certificate-authenticated protocol-v2 listener.
-See [operations and simulation](docs/operations.md) for mode semantics,
+See [operations and simulation](https://bluesk1d.github.io/cueverge/docs/operations.html) for mode semantics,
 diagnostics, container deployment, native tool dependencies, and the
 hardware-free test harness.
 
@@ -85,23 +87,23 @@ hardware-free test harness.
 - Keep installation-specific show packages and media separate from the reusable
   engine and redistributable demos.
 
-See [the architecture](docs/architecture.md), [the protocol](docs/protocol.md),
-[the milestone plan](docs/milestones.md), and the
-[show creator guide](docs/show-creator-guide.md). Autonomous show capabilities
+See [the architecture](https://bluesk1d.github.io/cueverge/docs/architecture.html), [the protocol](https://bluesk1d.github.io/cueverge/docs/protocol.html),
+[the milestone plan](https://bluesk1d.github.io/cueverge/docs/milestones.html), and the
+[show creator guide](https://bluesk1d.github.io/cueverge/docs/show-creator-guide.html). Autonomous show capabilities
 are tracked in the
-[show readiness roadmap](docs/show-readiness-roadmap.md).
+[show readiness roadmap](https://bluesk1d.github.io/cueverge/docs/show-readiness-roadmap.html).
 The browser operator and authoring implementation plan is tracked in the
-[web controller and show designer roadmap](docs/gui-roadmap.md).
+[web controller and show designer roadmap](https://bluesk1d.github.io/cueverge/docs/gui-roadmap.html).
 Media-host setup is documented for
-[Windows](docs/windows-media-agent.md) and [Linux](docs/linux-media-agent.md).
+[Windows](https://bluesk1d.github.io/cueverge/docs/windows-media-agent.html) and [Linux](https://bluesk1d.github.io/cueverge/docs/linux-media-agent.html).
 
 ## Browser GUI
 
 The opt-in GUI includes installation mapping, revisioned show authoring,
 collaboration, simulation, rendering, publication, and authorized live controls.
 It remains disabled by default. See the
-[service administration guide](docs/service-administration.md) for deployment
-and access control, and [the GUI foundation analysis](docs/gui-foundation.md)
+[service administration guide](https://bluesk1d.github.io/cueverge/docs/service-administration.html) for deployment
+and access control, and [the GUI foundation analysis](https://bluesk1d.github.io/cueverge/docs/gui-foundation.html)
 for the original architectural boundaries.
 
 Generate a private administrator password hash:

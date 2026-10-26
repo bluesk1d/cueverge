@@ -8,7 +8,61 @@ permissions:
   contents: read
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      package: ${{ steps.filter.outputs.package }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Detect package changes
+        id: filter
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import subprocess
+
+          with open(os.environ["GITHUB_EVENT_PATH"]) as event_file:
+              event = json.load(event_file)
+          if os.environ["GITHUB_EVENT_NAME"] == "pull_request":
+              pull_request = event["pull_request"]
+              comparison = f'{pull_request["base"]["sha"]}...{pull_request["head"]["sha"]}'
+          else:
+              comparison = f'{event["before"]}..{event["after"]}'
+              if event["before"] == "0" * 40:
+                  default_branch = event["repository"]["default_branch"]
+                  if event["ref"] != f"refs/heads/{default_branch}":
+                      comparison = f'origin/{default_branch}...{event["after"]}'
+
+          diff = subprocess.run(
+              ["git", "diff", "--no-renames", "--name-only", "-z", comparison, "--"],
+              capture_output=True,
+          )
+          # Initial default-branch pushes or unavailable history run full checks.
+          package = diff.returncode != 0
+          documentation = {
+              b"README.md",
+              b"BOOTSTRAP.md",
+              b".github/workflows/static-site.yml",
+              b".github/workflows/static.yml",
+          }
+          if not package:
+              paths = filter(None, diff.stdout.split(b"\0"))
+              package = any(
+                  path not in documentation and not path.startswith((b"site/", b"docs/"))
+                  for path in paths
+              )
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              print(f"package={str(package).lower()}", file=output)
+          print("Package changes detected." if package else "Only site/documentation changes; skipping package CI.")
+          PY
+
   test:
+    needs: changes
+    if: needs.changes.outputs.package == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -23,6 +77,8 @@ jobs:
       - run: uv run pytest
 
   web:
+    needs: changes
+    if: needs.changes.outputs.package == 'true'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -39,8 +95,8 @@ jobs:
       - run: npm test
 
   publish:
-    needs: [test, web]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [changes, test, web]
+    if: needs.changes.outputs.package == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main'
     permissions:
       contents: read
       packages: write
