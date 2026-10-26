@@ -6,17 +6,21 @@ exclusions, build checks, and public-facing documentation. Existing authoring
 and documentation work was preserved. No commits, pushes, visibility changes,
 or history rewrites were performed.
 
-## Publication blockers
+## Publication blockers (resolved)
 
-- **Personal email in Git history.** The owner requested that this block
-  publication. Historical author metadata includes a personal address, even
-  though newer commits use a GitHub noreply address. Changing `.gitignore`,
-  adding `.mailmap`, or changing future Git identity does not remove the
-  original metadata. Before publication, rewrite author and committer identity
-  in an isolated clone across every branch and tag intended for release, or
-  publish a new repository with a sanitized initial commit. Keep a private
-  backup, coordinate any rewritten remote refs, and recheck identities and
-  secret scans afterward. The working repository was not rewritten.
+- **Personal email and installation details in Git history.** Historical
+  author metadata included a personal address, and older commits contained a
+  private LAN address and the owner's deployment hostname. Resolved on
+  2026-10-26: `main` was rewritten in an isolated clone with `git filter-repo`
+  (author/committer identity remapped to the GitHub noreply address; the LAN
+  address and hostname replaced with documentation placeholders) and pushed
+  to a new public `bluesk1d/cueverge` repository. The final tree is identical
+  to the pre-rewrite tree. The original repository was renamed to a private
+  archive so no pre-rewrite commit is reachable from the public repository.
+  Post-rewrite identity checks, string searches across all blobs and messages,
+  and a Gitleaks scan were clean.
+- Local agent checkpoint refs in older working clones still reference the
+  pre-rewrite history. Never `git push --mirror` from such a clone.
 
 ## Licensing
 
@@ -75,19 +79,10 @@ source under GPL terms. Dependency licenses remain governed by their own terms.
   reporting, branch protection, registry visibility, and refs unavailable
   locally were not audited.
 
-## Before changing repository visibility
+## Public repository settings
 
-1. Resolve the historical identity blocker above.
-2. Review and commit the intended working-tree changes, including the existing
-   site and deployment work. The audit started with substantial uncommitted
-   changes; a clean clone sees only committed content.
-3. Run CI against the exact commit intended for publication. Re-run secret
-   scanning after any history rewrite and inspect all refs being published.
-4. Publish only repository artifacts. Keep ignored environments, private show
-   packages, credentials, runtime state, and backup copies outside any public
-   source archive or uploaded attachment.
-
-When preparing the public repository, push only the intended branches and tags.
-This working repository also has local agent/checkpoint refs; a mirror push
-would include those refs and their otherwise unpublished history. The full-ref
-secret scan covered them, but they are not intended release branches.
+The public repository has secret scanning with push protection, private
+vulnerability reporting, Dependabot alerts and security updates enabled, and
+`main` blocks force pushes and deletion. Keep ignored environments, private
+show packages, credentials, runtime state, and backups out of commits and
+attachments. Push only intended branches and tags.
