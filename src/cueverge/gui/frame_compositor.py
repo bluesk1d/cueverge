@@ -541,13 +541,15 @@ def compose_visual_frame(
     output_width: int,
     output_height: int,
     background_rgb: tuple[int, int, int],
+    transparent_background: bool = False,
 ) -> tuple[FloatImage, ByteImage]:
     background_rgba = np.zeros((output_height, output_width, 4), dtype=np.uint8)
-    background_rgba[..., :3] = np.asarray(background_rgb, dtype=np.uint8)
-    background_rgba[..., 3] = 255
+    if not transparent_background:
+        background_rgba[..., :3] = np.asarray(background_rgb, dtype=np.uint8)
+        background_rgba[..., 3] = 255
     working = to_working_rgba(
         background_rgba,
-        alpha_interpretation="opaque",
+        alpha_interpretation="straight" if transparent_background else "opaque",
         source_color_space="srgb",
     )
     for layer in sorted(layers, key=lambda item: (item.z_index, item.id)):
@@ -654,6 +656,32 @@ def working_to_srgb8(image: FloatImage) -> ByteImage:
     )
     encoded = _encode_srgb(np.clip(straight, 0, 1))
     return np.rint(np.concatenate((encoded, alpha), axis=2) * 255).astype(np.uint8)
+
+
+def working_to_srgb8_over_black(image: FloatImage) -> ByteImage:
+    """RGBA bytes for LEDs: RGB is the light emitted over black, A is coverage.
+
+    Laying it over other lighting as `rgb + (1 - a) * base` is exact where coverage is 0 or 1.
+    """
+    if image.ndim != 3 or image.shape[2] != 4:
+        raise ValueError("working image must be HxWx4 RGBA")
+    encoded = _encode_srgb(np.clip(image[..., :3], 0, 1))
+    alpha = np.clip(image[..., 3:4], 0, 1)
+    return np.rint(np.concatenate((encoded, alpha), axis=2) * 255).astype(np.uint8)
+
+
+def flatten_over_background(image: FloatImage, background_rgb: tuple[int, int, int]) -> FloatImage:
+    """Composite a transparent working frame over an opaque background color."""
+    background = to_working_rgba(
+        np.asarray([[[*background_rgb, 255]]], dtype=np.uint8),
+        alpha_interpretation="opaque",
+        source_color_space="srgb",
+    )[0, 0]
+    alpha = image[..., 3:4]
+    flattened = np.empty_like(image)
+    flattened[..., :3] = image[..., :3] + background[:3] * (np.float32(1) - alpha)
+    flattened[..., 3] = 1
+    return flattened
 
 
 def conform_preview_pixel_format(

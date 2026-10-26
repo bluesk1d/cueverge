@@ -8,7 +8,12 @@ from pathlib import Path
 from typing import Any
 
 from cueverge.core.loader import ShowPackageError, load_show_package
-from cueverge.core.models import MultiLightingLooksDefinition
+from cueverge.core.models import (
+    LightingCue,
+    LightingLookDefinition,
+    MultiLightingLooksDefinition,
+)
+from cueverge.gui.ambient_lighting import AmbientLighting, parse_ambient_lighting
 from cueverge.gui.contracts import DraftProject
 from cueverge.gui.render_pipeline import render_pipeline_manifest
 from cueverge.gui.render_verification import verification_policy_manifest
@@ -64,7 +69,6 @@ class DraftCompiler:
                 ("audience.json", draft.audience),
                 ("opportunities.json", draft.opportunities),
                 ("encounter.json", draft.encounter),
-                ("looks.json", lighting_looks),
             ):
                 if definition is not None:
                     _write_json(
@@ -78,6 +82,12 @@ class DraftCompiler:
                 runtime_root / "composition-graph.json",
                 graph,
             )
+            ambient = parse_ambient_lighting(draft.editor_metadata)
+            ambient_compositions = {
+                output.composition_id
+                for output in (ambient.outputs if ambient is not None else ())
+                if output.composition_id is not None
+            }
             if lighting_artifacts:
                 try:
                     _install_lighting_sequences(
@@ -85,9 +95,22 @@ class DraftCompiler:
                         graph,
                         lighting_artifacts,
                         revision,
+                        ambient_compositions,
                     )
                 except (OSError, ValueError, KeyError) as error:
                     raise CompilationError(f"invalid lighting bake: {error}") from error
+            try:
+                looks = _compile_lighting_looks(
+                    temporary_root,
+                    ambient,
+                    lighting_looks,
+                    lighting_artifacts or {},
+                    revision,
+                )
+            except (OSError, ValueError, KeyError) as error:
+                raise CompilationError(f"invalid ambient lighting: {error}") from error
+            if looks is not None:
+                _write_json(temporary_root / "looks.json", looks.model_dump(mode="json"))
             _write_json(
                 runtime_root / "render-pipeline.json",
                 render_pipeline_manifest(),
@@ -156,11 +179,133 @@ def _write_json(path: Path, value: object) -> None:
     )
 
 
+def _bake_manifest(source: Path, composition_id: str, revision: int) -> dict[str, Any]:
+    manifest_path = (
+        source / "manifest.json"
+        if (source / "manifest.json").exists()
+        else source / "render-manifest.json"
+    )
+    manifest: dict[str, Any] = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if manifest.get("source_revision") != revision:
+        raise CompilationError("lighting bake belongs to a different draft revision")
+    if manifest.get("composition_id") != composition_id:
+        raise CompilationError("lighting bake belongs to a different composition")
+    if manifest_path.name != "render-manifest.json":
+        manifest["lighting_sequences"] = [{**manifest, "path": "frames.rgb"}]
+    return manifest
+
+
+def _compile_lighting_looks(
+    root: Path,
+    ambient: AmbientLighting | None,
+    controller_looks: MultiLightingLooksDefinition | None,
+    artifacts: dict[str, Path],
+    revision: int,
+) -> MultiLightingLooksDefinition | None:
+    """Ambient lighting from the draft, over any retained controller looks per LED output."""
+    from cueverge.lighting.sequence import LightingSequenceReference, load_lighting_sequence
+
+    retained = {
+        look.resource: look for look in (controller_looks.outputs if controller_looks else ())
+    }
+    outputs: dict[str, LightingLookDefinition] = dict(retained)
+    excluded = ambient.excluded_scene_ids if ambient is not None else ()
+    for output in ambient.outputs if ambient is not None else ():
+        sequence_reference: LightingSequenceReference | None = None
+        if output.composition_id is not None:
+            source = artifacts.get(output.composition_id)
+            if source is None:
+                # Unbaked: the package carries the bake-required marker; cues still preview.
+                if not output.cues:
+                    continue
+            else:
+                manifest = _bake_manifest(source, output.composition_id, revision)
+                sequence = next(
+                    (
+                        item
+                        for item in manifest.get("lighting_sequences", [])
+                        if item.get("resource") == output.resource
+                    ),
+                    None,
+                )
+                if sequence is None:
+                    raise CompilationError(
+                        f"ambient composition {output.composition_id} does not light "
+                        f"{output.resource}; include its LED surfaces in the composition"
+                    )
+                channels = sequence.get("channels", 3)
+                relative = (
+                    f"runtime/lighting/ambient-{output.resource.encode().hex()}."
+                    f"{'rgba' if channels == 4 else 'rgb'}"
+                )
+                reference = LightingSequenceReference.model_validate(
+                    {
+                        **{
+                            key: sequence[key]
+                            for key in (
+                                "resource",
+                                "output_indices",
+                                "frame_rate",
+                                "frame_count",
+                                "duration_ms",
+                                "digest_sha256",
+                                "path",
+                            )
+                        },
+                        "frame_rate_denominator": sequence.get("frame_rate_denominator", 1),
+                        "channels": channels,
+                        "scene_id": "ambient",
+                    }
+                )
+                load_lighting_sequence(source, reference)
+                destination = root / relative
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(source / reference.path, destination)
+                sequence_reference = reference.model_copy(update={"path": relative})
+        previous = retained.get(output.resource)
+        outputs[output.resource] = LightingLookDefinition(
+            resource=output.resource,
+            cycle_ms=(
+                output.cycle_ms
+                if output.cues or sequence_reference is None
+                else sequence_reference.duration_ms
+            ),
+            brightness_limit=output.brightness_limit,
+            baseline=output.cues,
+            baseline_sequence=sequence_reference,
+            safe_state=(
+                previous.safe_state
+                if previous is not None
+                else (
+                    LightingCue(
+                        id="ambient-safe-blackout",
+                        primitive="blackout",
+                        start_ms=0,
+                        duration_ms=1,
+                    ),
+                )
+            ),
+            excluded_scene_ids=excluded,
+        )
+    if not outputs:
+        return None
+    return MultiLightingLooksDefinition(
+        schema_version=2,
+        outputs=tuple(
+            look.model_copy(update={"excluded_scene_ids": excluded})
+            if ambient is not None
+            else look
+            for _, look in sorted(outputs.items())
+        ),
+    )
+
+
 def _install_lighting_sequences(
     root: Path,
     graph: dict[str, object],
     artifacts: dict[str, Path],
     revision: int,
+    ambient_compositions: set[str] | None = None,
 ) -> None:
     from cueverge.lighting.sequence import LightingSequenceReference, load_lighting_sequence
 
@@ -207,7 +352,8 @@ def _install_lighting_sequences(
             if not isinstance(sequences, list) or not sequences:
                 raise CompilationError("stage bake contains no lighting sequences")
             for index, sequence in enumerate(sequences):
-                relative = f"runtime/lighting/{composition_id.encode().hex()}-{index}.rgb"
+                extension = "rgba" if sequence.get("channels", 3) == 4 else "rgb"
+                relative = f"runtime/lighting/{composition_id.encode().hex()}-{index}.{extension}"
                 reference = LightingSequenceReference.model_validate(
                     {
                         **{
@@ -223,6 +369,7 @@ def _install_lighting_sequences(
                             )
                         },
                         "frame_rate_denominator": sequence.get("frame_rate_denominator", 1),
+                        "channels": sequence.get("channels", 3),
                         "scene_id": record["scene_id"],
                         "offset_ms": context["offset_ms"],
                         "time_scale": context["time_scale"],
@@ -234,9 +381,10 @@ def _install_lighting_sequences(
                 shutil.copyfile(source / reference.path, destination)
                 references.append({**reference.model_dump(mode="json"), "path": relative})
             attached.add(composition_id)
-    if attached != set(artifacts):
+    if set(artifacts).difference(attached, ambient_compositions or set()):
         raise CompilationError(
-            "every lighting composition must be attached to a scene before publication"
+            "every lighting composition must be attached to a scene or be the show's ambient "
+            "lighting before publication"
         )
     _write_json(root / "runtime/lighting-sequences.json", references)
 

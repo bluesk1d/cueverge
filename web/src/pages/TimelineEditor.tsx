@@ -149,6 +149,8 @@ type Composition = {
   stage_projector_resources?: string[];
   /** Stage only: composition units per source pixel at scale 1 (media size independent of render size). */
   source_pixel_units?: number;
+  /** Stage LED bakes: what undrawn LEDs show (unset: ambient when the background is black). */
+  led_background?: "ambient" | "background";
   safe_points_ms: number[];
   protected_intervals: { start_ms: number; end_ms: number }[];
   render_settings: {
@@ -5924,6 +5926,35 @@ export function TimelineEditor({
                     }
                   />
                 </label>
+                {composition.space_kind === "stage" &&
+                  composition.stage_lighting_surfaces.length > 0 && (
+                  <label>
+                    Where nothing is drawn, LEDs show
+                    <select
+                      aria-label="Where nothing is drawn, LEDs show"
+                      disabled={!canEdit}
+                      value={
+                        composition.led_background ??
+                        (composition.render_settings.output_background_color.toUpperCase() === "#000000"
+                          ? "ambient"
+                          : "background")
+                      }
+                      onChange={(event) =>
+                        setCompositions((current) => ({
+                          ...current,
+                          [composition.id]: {
+                            ...current[composition.id],
+                            led_background: event.target.value as "ambient" | "background",
+                          },
+                        }))
+                      }
+                    >
+                      <option value="ambient">Ambient lighting (only drawn LEDs change)</option>
+                      <option value="background">Final output background (every selected LED)</option>
+                    </select>
+                    <small>Takes effect at the next LED bake.</small>
+                  </label>
+                )}
                 <label>
                   Media end behavior
                   <select
@@ -11378,6 +11409,9 @@ function compositionMap(value: unknown): Record<string, Composition> {
             Number.isFinite(composition.source_pixel_units) &&
             composition.source_pixel_units > 0
               ? { source_pixel_units: composition.source_pixel_units }
+              : {}),
+            ...(composition.led_background === "ambient" || composition.led_background === "background"
+              ? { led_background: composition.led_background }
               : {}),
             safe_points_ms: numberArray(composition.safe_points_ms),
             protected_intervals: intervalArray(

@@ -92,6 +92,7 @@ import { SnapshotFreshness, STATUS_TIMEOUT_MS } from "./status";
 const ShowPlan = lazy(() => import("./pages/ShowPlan").then((module) => ({ default: module.ShowPlan })));
 const VisitorInteractions = lazy(() => import("./pages/VisitorInteractions").then((module) => ({ default: module.VisitorInteractions })));
 const SimulationScenarioPanel = lazy(() => import("./components/SimulationScenarioPanel").then((module) => ({ default: module.SimulationScenarioPanel })));
+const AmbientLightingPanel = lazy(() => import("./components/AmbientLightingPanel").then((module) => ({ default: module.AmbientLightingPanel })));
 const ShowPreviewWorkspace = lazy(() => import("./pages/ShowPreviewWorkspace").then((module) => ({ default: module.ShowPreviewWorkspace })));
 const ShowLogicDesigner = lazy(() =>
   import("./pages/ShowLogicDesigner").then((module) => ({
@@ -920,6 +921,9 @@ function ProjectCard({
         </Suspense>}
       </details>
       </details>
+      {draft && <Suspense fallback={null}><AmbientLightingPanel draft={draft} canEdit={canEditScene && !project.archived_at}
+        blockedReason={sceneDirty || interactionDirty ? "Save or cancel pending scene and visitor-response edits first." : null}
+        onSave={async (document) => setDraft(await updateProjectDraft(project.id, draft.revision, document))} /></Suspense>}
       <details className="project-assets">
         <summary>Assets</summary>
         <div className="asset-toolbar">

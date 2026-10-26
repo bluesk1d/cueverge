@@ -5770,3 +5770,87 @@ def _draft(*, editor_metadata: dict[str, Any] | None = None) -> dict[str, Any]:
         ],
         "editor_metadata": editor_metadata or {},
     }
+
+
+def test_mcp_ambient_lighting_is_discoverable_validated_and_previewed(tmp_path: Path) -> None:
+    runtime, services, _ = _mcp_fixture(tmp_path)
+    document = json.loads(
+        (Path(__file__).parents[1] / "fixtures" / "usability-authoring.json").read_text()
+    )
+    project = services.repository.create_project(
+        name="Ambient fixture",
+        draft=DraftProject.model_validate(document),
+        actor="admin",
+        role=Role.ADMINISTRATOR,
+        occurred_at=datetime.now(UTC).isoformat(),
+    )
+    project_id = project.project.id
+    reader = _mcp_token(services, project_id, (McpScope.READ, McpScope.SIMULATION))
+    editor = _mcp_token(services, project_id, (McpScope.READ, McpScope.DIRECT_EDIT))
+    ambient = {
+        "schema_version": 1,
+        "outputs": [
+            {
+                "resource": "roofline.demo",
+                "cycle_ms": 4000,
+                "cues": [
+                    {
+                        "id": "blue",
+                        "primitive": "solid",
+                        "start_ms": 0,
+                        "duration_ms": 4000,
+                        "color": "#0000FF",
+                    }
+                ],
+            }
+        ],
+        "excluded_scene_ids": [],
+    }
+    with TestClient(
+        create_app(runtime, gui_services=services), base_url="http://localhost"
+    ) as client:
+        capabilities = _mcp_tool(client, reader, "get_capabilities")["structuredContent"]
+        assert capabilities["features"]["ambient_lighting"] is True
+        block = capabilities["ambient_lighting"]
+        assert block["draft_key"] == "editor_metadata.ambient_lighting"
+        assert block["write_tool"] == "update_project_draft"
+        assert block["write_requires_scope"] == "direct_edit"
+        assert "Show > Ambient lighting" in block["ui_workflow"]
+        schema = _mcp_tool(client, reader, "get_authoring_schema")["structuredContent"]
+        assert "AmbientLighting" in json.dumps(schema)
+
+        changed = copy.deepcopy(document)
+        changed["editor_metadata"]["ambient_lighting"] = ambient
+        denied = _mcp_tool(client, reader, "update_project_draft", base_revision=1, draft=changed)
+        assert denied["isError"] is True
+        invalid = copy.deepcopy(changed)
+        invalid["editor_metadata"]["ambient_lighting"]["excluded_scene_ids"] = ["missing"]
+        rejected = _mcp_tool(client, editor, "update_project_draft", base_revision=1, draft=invalid)
+        assert rejected["isError"] is True
+        wrong = copy.deepcopy(changed)
+        wrong["editor_metadata"]["ambient_lighting"]["outputs"][0]["resource"] = "projector.demo"
+        assert (
+            _mcp_tool(client, editor, "update_project_draft", base_revision=1, draft=wrong)[
+                "isError"
+            ]
+            is True
+        )
+        saved = _mcp_tool(client, editor, "update_project_draft", base_revision=1, draft=changed)
+        assert saved["isError"] is False, saved
+        body = {"source_revision": 2, "scene_id": "legacy-sweep", "timestamp_ms": 1000}
+        legacy = _mcp_tool(client, reader, "preview_scene_lighting", **body)
+        assert legacy["isError"] is False, legacy
+        assert any(
+            "Ambient lighting" in note for note in legacy["structuredContent"]["limitations"]
+        )
+
+        excluded = copy.deepcopy(changed)
+        excluded["editor_metadata"]["ambient_lighting"]["excluded_scene_ids"] = ["legacy-sweep"]
+        saved = _mcp_tool(client, editor, "update_project_draft", base_revision=2, draft=excluded)
+        assert saved["isError"] is False, saved
+        opted_out = _mcp_tool(
+            client, reader, "preview_scene_lighting", **{**body, "source_revision": 3}
+        )["structuredContent"]
+        assert (
+            "This scene does not inherit the show's ambient lighting." in opted_out["limitations"]
+        )

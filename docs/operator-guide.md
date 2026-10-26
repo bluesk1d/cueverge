@@ -758,6 +758,30 @@ each surface and its source, and names outputs with no surface on the selected
 photo (pick another **Preview photo** or draw the surface in Installation).
 Media-only scenes show this picture when the show is linked to an installation.
 
+### Ambient lighting across scenes
+
+To keep a consistent LED loop running through every scene, set it once under
+**Show > Ambient lighting** instead of copying it into each composition. Per LED
+output, choose a **Simple look** (steady color, pulse, flicker, sparkle or
+chase) or an **LED composition loop** (a stage composition with LED surfaces,
+looped from its LED bake), plus a brightness limit, then **Save ambient
+lighting**. Composition loops need a current bake before publishing.
+
+Scenes inherit the ambient by default. Scene lighting draws over it: effects
+change only the pixels they target, and LED composition bakes change only the
+LEDs their media covers. LEDs the scene doesn't light, including during
+media-only scenes, keep the ambient, and its phase continues across scene
+changes. Clear **Inherit ambient lighting** in a scene's settings (then **Save
+scene**) when a scene must start from black. Ambient LEDs it doesn't light then
+show the safe state.
+
+In a stage composition's **Render & bake** tab, **Where nothing is drawn, LEDs
+show** chooses **Ambient lighting** (the default with a black final output
+background) or **Final output background**. Re-bake after changing it. LED
+bakes made before ambient lighting existed must be re-baked once. The scene
+preview includes the ambient from its loop start at scene time 0; live, the
+ambient keeps running from when the show was loaded.
+
 LED frames come from the same lighting evaluator used by the controller.
 Frames include declared output timing offsets. Looping scenes wrap to the start
 using whole-millisecond preview positions; other completion policies stop the

@@ -1261,8 +1261,12 @@ The package loader validates sequence size, checksum, pixel indices,
 scene intervals and conflicting overlaps before playback, with a total
 256 MiB loaded-sequence budget. Controller rendering selects frames from
 authoritative scene/output time, respecting composition offsets and time
-scales. Baked samples replace mapped indices over timeline/persistent
-baselines; unmapped pixels retain those baselines. Legacy synthetic sweeps
+scales. Three-channel baked samples replace mapped indices over
+timeline/persistent baselines; four-channel (coverage) samples composite over
+them, so LEDs the composition does not draw keep the ambient underneath, and
+unmapped pixels retain those baselines. Stage compositions bake coverage when
+`led_background` is `ambient` (the default for a black final output
+background). Legacy synthetic sweeps
 are not used as the background of a spatial output. Output-level brightness
 limits still apply. Unbaked structural proposal packages carry an explicit
 marker that the runtime loader rejects.

@@ -17,6 +17,7 @@ from cueverge.gui.frame_compositor import (
     PreparedVisualLayer,
     compose_visual_frame,
     conform_preview_pixel_format,
+    flatten_over_background,
     layer_source_time,
     mix_audio_layers,
     overlap_distance_field_masks,
@@ -25,6 +26,7 @@ from cueverge.gui.frame_compositor import (
     render_stage_to_projector,
     scale_layer_geometry,
     working_to_srgb8,
+    working_to_srgb8_over_black,
 )
 from cueverge.gui.projector_overlap import StoredProjectorOverlap
 from cueverge.gui.projector_renderer import (
@@ -126,9 +128,11 @@ def prepare_stage_composition(
     if pixel_count:
         if frame_rate_numerator > 60 * frame_rate_denominator:
             raise ProjectorRenderError("mixed stage lighting supports at most 60 fps")
-        if pixel_count * frame_count * 3 > MAX_SEQUENCE_BYTES:
+        if pixel_count * frame_count * 4 > MAX_SEQUENCE_BYTES:
             raise ProjectorRenderError("stage lighting exceeds the 256 MiB sequence budget")
     background = _hex_rgb(_string(settings.get("output_background_color")))
+    # LEDs record coverage so undrawn LEDs keep the ambient/scene lighting underneath.
+    led_coverage = bool(lighting_surfaces) and leds_show_ambient(composition)
 
     def compose_frames() -> Iterator[np.ndarray]:
         # Frames where no layer draws are all the background; compose that once and reuse it
@@ -150,6 +154,7 @@ def prepare_stage_composition(
                 output_width=render_width,
                 output_height=render_height,
                 background_rgb=background,
+                transparent_background=led_coverage,
             )[0]
             if empty:
                 frame.setflags(write=False)
@@ -163,7 +168,15 @@ def prepare_stage_composition(
         lighting_surfaces,
         logical_width,
         logical_height,
+        coverage=led_coverage,
     )
+    if led_coverage and stage_frames:
+        # Projectors still show the composition background where nothing is drawn.
+        flattened: dict[int, np.ndarray] = {}
+        stage_frames = tuple(
+            flattened.setdefault(id(frame), flatten_over_background(frame, background))
+            for frame in stage_frames
+        )
     output_profile = _mapping(settings.get("output_profile"))
     profile = EncoderProfile(
         video_profile=_string(output_profile.get("video_profile")),
@@ -403,6 +416,13 @@ def _sample_stage_surface(
                 "output_index": output_index,
                 "requested_color": requested.tolist(),
                 "color": color.tolist(),
+                "alpha": int(
+                    frame[
+                        round(y / height * (frame.shape[0] - 1)),
+                        round(x / width * (frame.shape[1] - 1)),
+                        3,
+                    ]
+                ),
             }
         )
     if not samples:
@@ -410,11 +430,26 @@ def _sample_stage_surface(
     return samples
 
 
+def leds_show_ambient(composition: Mapping[str, object]) -> bool:
+    """Whether undrawn LEDs show the lighting underneath instead of the background color.
+
+    `led_background` chooses explicitly; older compositions show the ambient only when their
+    background is black, which looks identical when nothing is underneath.
+    """
+    choice = composition.get("led_background")
+    if choice in {"ambient", "background"}:
+        return choice == "ambient"
+    background = _mapping(composition.get("render_settings")).get("output_background_color")
+    return not isinstance(background, str) or background.upper() == "#000000"
+
+
 def _prepare_stage_lighting(
     frames: Iterable[np.ndarray],
     surfaces: tuple[dict[str, object], ...],
     width: float,
     height: float,
+    *,
+    coverage: bool = False,
 ) -> tuple[LightingMember, ...]:
     if not surfaces:
         return ()
@@ -425,7 +460,7 @@ def _prepare_stage_lighting(
     for frame in frames:
         if frame is not previous:
             grouped: dict[str, dict[int, list[int]]] = {}
-            srgb = working_to_srgb8(frame)
+            srgb = working_to_srgb8_over_black(frame) if coverage else working_to_srgb8(frame)
             for surface in surfaces:
                 resource = _string(surface.get("resource"))
                 samples = grouped.setdefault(resource, {})
@@ -435,7 +470,9 @@ def _prepare_stage_lighting(
                         raise ProjectorRenderError(
                             "stage lighting surfaces overlap physical indices"
                         )
-                    samples[index] = cast(list[int], sample["color"])
+                    samples[index] = cast(list[int], sample["color"]) + (
+                        [_integer(sample["alpha"])] if coverage else []
+                    )
             encoded = {}
             for resource, samples in grouped.items():
                 indices[resource] = sorted(samples)
@@ -450,7 +487,13 @@ def _prepare_stage_lighting(
         json.dumps(surfaces, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
     return tuple(
-        LightingMember(resource, tuple(indices[resource]), bytes(data), mapping_digest)
+        LightingMember(
+            resource,
+            tuple(indices[resource]),
+            bytes(data),
+            mapping_digest,
+            channels=4 if coverage else 3,
+        )
         for resource, data in sorted(buffers.items())
     )
 

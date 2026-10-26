@@ -97,7 +97,9 @@ def _bind_spatial_sequences(root: Path, scenes: dict[str, LoadedScene]) -> None:
                     raise ValueError("lighting sequence path has conflicting metadata")
                 sequence = LoadedLightingSequence(reference, cached.data)
             else:
-                total_bytes += reference.frame_count * len(reference.output_indices) * 3
+                total_bytes += (
+                    reference.frame_count * len(reference.output_indices) * reference.channels
+                )
                 if total_bytes > MAX_SEQUENCE_BYTES:
                     raise ValueError("package lighting sequences exceed the 256 MiB budget")
                 sequence = load_lighting_sequence(root, reference)
@@ -232,11 +234,28 @@ def load_show_package(package_root: Path) -> SceneCatalog:
             raise ShowPackageError(
                 f"persistent lighting looks use invalid pixel resource: {look_definition.resource}"
             )
+        unknown_scenes = sorted(set(look_definition.excluded_scene_ids).difference(scenes))
+        if unknown_scenes:
+            raise ShowPackageError(
+                f"ambient lighting excludes unknown scenes: {', '.join(unknown_scenes)}"
+            )
+        baseline_sequence = None
+        if look_definition.baseline_sequence is not None:
+            reference = look_definition.baseline_sequence
+            if reference.output_indices[-1] >= binding.pixel_count:
+                raise ShowPackageError(
+                    f"ambient sequence for {look_definition.resource} exceeds its pixel count"
+                )
+            try:
+                baseline_sequence = load_lighting_sequence(root, reference)
+            except (OSError, ValueError) as error:
+                raise ShowPackageError(f"invalid ambient lighting sequence: {error}") from error
         lighting_looks_by_resource[look_definition.resource] = LoadedLightingLooks(
             definition=look_definition,
             pixel_count=binding.pixel_count,
             baseline_cues=_load_cues(binding, look_definition.baseline, "persistent baseline"),
             safe_state_cues=_load_cues(binding, look_definition.safe_state, "safe state"),
+            baseline_sequence=baseline_sequence,
         )
     lighting_looks = next(iter(lighting_looks_by_resource.values()), None)
     if isinstance(looks_definition, LightingLooksDefinition):

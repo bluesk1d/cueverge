@@ -12,6 +12,11 @@ from cueverge.gui.compiler import CompilationError, DraftCompiler
 from cueverge.gui.contracts import DraftProject, SceneLightingPreviewRequest
 from cueverge.gui.mapper_export import MapperExportError
 from cueverge.gui.render_jobs import RenderJobError
+from cueverge.lighting.ambient import (
+    render_ambient,
+    render_ambient_output,
+    scene_inherits_ambient,
+)
 from cueverge.lighting.evaluation import evaluate_lighting_output
 
 if TYPE_CHECKING:
@@ -169,16 +174,39 @@ def evaluate_scene_lighting(
                         "this preview."
                     )
                 )
-        loaded = load_show_package(compiled.package_root).require(scene_id)
+        catalog = load_show_package(compiled.package_root)
+        loaded = catalog.require(scene_id)
+        looks_by_resource = dict(catalog.lighting_looks_by_resource)
+        if catalog.lighting_looks is not None:
+            looks_by_resource.setdefault(
+                catalog.lighting_looks.definition.resource, catalog.lighting_looks
+            )
         outputs = tuple(
             output
             for output in loaded.lighting_outputs
             if resource is None or output.definition.resource == resource
         )
-        if not outputs:
+        lit = {output.definition.resource for output in loaded.lighting_outputs}
+        ambient_only = tuple(
+            looks
+            for key, looks in sorted(looks_by_resource.items())
+            if key not in lit and (resource is None or key == resource)
+        )
+        if not outputs and not ambient_only:
             raise ScenePreviewError("lighting output does not exist in this scene")
+        if looks_by_resource:
+            scene_limitations.append(
+                "Ambient lighting is previewed from its loop start at scene time 0; live, it "
+                "keeps running across scene changes."
+                if any(
+                    scene_inherits_ambient(looks, scene_id) for looks in looks_by_resource.values()
+                )
+                else "This scene does not inherit the show's ambient lighting."
+            )
         samples = sum(
             min(pixel_limit, max(0, output.pixel_count - pixel_offset)) for output in outputs
+        ) + sum(
+            min(pixel_limit, max(0, looks.pixel_count - pixel_offset)) for looks in ambient_only
         )
         if samples > 4096:
             raise ScenePreviewError(
@@ -189,8 +217,23 @@ def evaluate_scene_lighting(
             if pixel_offset >= output.pixel_count:
                 raise ScenePreviewError("pixel offset is outside the output")
             output_position_ms = max(0, timestamp_ms - output.definition.timing_offset_ms)
+            looks = looks_by_resource.get(output.definition.resource)
             colors = evaluate_lighting_output(
-                output, position_ms=output_position_ms, duration_ms=scene.duration_ms
+                output,
+                position_ms=output_position_ms,
+                duration_ms=scene.duration_ms,
+                base_frame=(
+                    render_ambient(looks, timestamp_ms)
+                    if looks is not None
+                    and (output.spatial_sequences or output.definition.timeline)
+                    and scene_inherits_ambient(looks, scene_id)
+                    else None
+                ),
+                brightness_limit=(
+                    min(output.definition.brightness_limit, looks.definition.brightness_limit)
+                    if looks is not None
+                    else None
+                ),
             )
             end = min(output.pixel_count, pixel_offset + pixel_limit)
             result.append(
@@ -208,6 +251,23 @@ def evaluate_scene_lighting(
                         and output.definition.brightness_limit < 1
                         else []
                     ),
+                }
+            )
+        for looks in ambient_only:
+            if pixel_offset >= looks.pixel_count:
+                raise ScenePreviewError("pixel offset is outside the output")
+            colors = render_ambient_output(looks, timestamp_ms, scene_id)
+            end = min(looks.pixel_count, pixel_offset + pixel_limit)
+            result.append(
+                {
+                    "output_id": f"ambient:{looks.definition.resource}",
+                    "resource": looks.definition.resource,
+                    "pixel_count": looks.pixel_count,
+                    "pixel_offset": pixel_offset,
+                    "output_position_ms": timestamp_ms,
+                    "colors": [list(color) for color in colors[pixel_offset:end]],
+                    "next_pixel_offset": end if end < looks.pixel_count else None,
+                    "limitations": [],
                 }
             )
         return {

@@ -23,6 +23,14 @@ class LightingSequenceReference(BaseModel):
     duration_ms: int = Field(gt=0)
     offset_ms: int = Field(default=0, ge=0)
     time_scale: float = Field(default=1, gt=0, le=100)
+    channels: Literal[3, 4] = Field(
+        default=3,
+        description=(
+            "3: RGB that replaces the covered LEDs. 4: RGB plus coverage alpha; the RGB is the "
+            "color over black and is laid over the ambient/scene lighting underneath "
+            "(alpha 0 leaves an LED untouched)."
+        ),
+    )
 
     @model_validator(mode="after")
     def validate_frames(self) -> "LightingSequenceReference":
@@ -36,7 +44,7 @@ class LightingSequenceReference(BaseModel):
             raise ValueError("lighting sequence frame rate exceeds 60 fps")
         if self.frame_count != (self.duration_ms * self.frame_rate + period - 1) // period:
             raise ValueError("sequence frame count does not match duration")
-        if self.frame_count * len(self.output_indices) * 3 > MAX_SEQUENCE_BYTES:
+        if self.frame_count * len(self.output_indices) * self.channels > MAX_SEQUENCE_BYTES:
             raise ValueError("lighting sequence exceeds the 256 MiB budget")
         relative = PurePosixPath(self.path)
         if relative.is_absolute() or ".." in relative.parts or "\\" in self.path:
@@ -56,8 +64,34 @@ class LoadedLightingSequence:
         index = int(
             local_ms * self.reference.frame_rate / (1000 * self.reference.frame_rate_denominator)
         )
-        stride = len(self.reference.output_indices) * 3
+        stride = len(self.reference.output_indices) * self.reference.channels
         return self.data[index * stride : (index + 1) * stride]
+
+    def overlay(self, pixels: list[tuple[int, int, int]], position_ms: int) -> None:
+        """Lay this sequence's frame over `pixels` in place (no-op outside its interval)."""
+        frame = self.frame(position_ms)
+        if frame is None:
+            return
+        if self.reference.channels == 3:
+            for offset, index in enumerate(self.reference.output_indices):
+                base = offset * 3
+                pixels[index] = (frame[base], frame[base + 1], frame[base + 2])
+            return
+        for offset, index in enumerate(self.reference.output_indices):
+            base = offset * 4
+            alpha = frame[base + 3]
+            if alpha == 0:
+                continue
+            if alpha == 255:
+                pixels[index] = (frame[base], frame[base + 1], frame[base + 2])
+                continue
+            keep = 255 - alpha
+            red, green, blue = pixels[index]
+            pixels[index] = (
+                min(255, frame[base] + (red * keep + 127) // 255),
+                min(255, frame[base + 1] + (green * keep + 127) // 255),
+                min(255, frame[base + 2] + (blue * keep + 127) // 255),
+            )
 
 
 def load_lighting_sequence(
@@ -66,7 +100,7 @@ def load_lighting_sequence(
     path = (root / reference.path).resolve()
     if not path.is_relative_to(root.resolve()):
         raise ValueError("lighting sequence escapes the package")
-    expected = reference.frame_count * len(reference.output_indices) * 3
+    expected = reference.frame_count * len(reference.output_indices) * reference.channels
     if path.stat().st_size != expected:
         raise ValueError("lighting sequence size does not match its manifest")
     data = path.read_bytes()

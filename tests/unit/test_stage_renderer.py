@@ -471,10 +471,12 @@ def test_lights_only_overlay_bakes_led_sequences_without_projector_video(
     sequences = cast(list[dict[str, object]], manifest["lighting_sequences"])
     assert [item["output_indices"] for item in sequences] == [[2, 8]]
     artifact = tmp_path / "renders" / str(manifest["activation_identity"])
+    # A black background shows whatever lighting is underneath, so LEDs record coverage.
     assert sorted(path.name for path in artifact.iterdir()) == [
-        "lighting-0001.rgb",
+        "lighting-0001.rgba",
         "render-manifest.json",
     ]
+    assert sequences[0]["channels"] == 4
     compiled = DraftCompiler(tmp_path / "compiled").compile(
         project_id="demo-project",
         revision=2,
@@ -1258,3 +1260,104 @@ def test_source_pixel_units_are_validated_for_stage_compositions_only() -> None:
     compositions["stage-composition"]["space_kind"] = "projector_native"
     with pytest.raises(ValidationError, match="only stage compositions"):
         DraftProject.model_validate(document)
+
+
+@pytest.mark.parametrize("led_background", ["ambient", "background"])
+def test_undrawn_leds_show_ambient_lighting_unless_background_is_chosen(
+    tmp_path: Path, led_background: str
+) -> None:
+    image = tmp_path / "half.png"
+    pixels = np.zeros((36, 128, 4), dtype=np.uint8)
+    pixels[:, :64] = [255, 0, 0, 255]
+    Image.fromarray(pixels, mode="RGBA").save(image)
+    assets = cast(AssetUploadService, _FixtureAssets({"ghost": ("image/png", image)}))
+    document = _draft()
+    document["installation"] = {
+        "schema_version": 1,
+        "resources": [
+            {"resource": name, "kind": "media_agent", "target": name}
+            for name in ("projector.left", "projector.right")
+        ]
+        + [{"resource": "lights", "kind": "pixel_output", "target": "memory", "pixel_count": 10}],
+    }
+    metadata = cast(dict[str, object], document["editor_metadata"])
+    composition = cast(dict[str, dict[str, object]], metadata["compositions"])["stage-composition"]
+    composition["stage_projector_resources"] = []
+    composition["stage_lighting_surfaces"] = ["stage-pixels", "right-pixels"]
+    composition["led_background"] = led_background
+    layer = _visual_layer()
+    cast(list[dict[str, object]], layer["keyframes"])[0]["opacity"] = 1
+    layers = cast(dict[str, list[dict[str, object]]], metadata["timeline_transform_layers"])
+    layers["stage-composition"] = [layer]
+    metadata["timeline_tracks"] = {
+        "stage-composition": [
+            {
+                "id": "stage-track",
+                "name": "Media",
+                "kind": "group",
+                "resource_binding": "shared-stage",
+            }
+        ]
+    }
+    metadata["ambient_lighting"] = {
+        "schema_version": 1,
+        "outputs": [
+            {
+                "resource": "lights",
+                "cycle_ms": 1000,
+                "cues": [
+                    {
+                        "id": "blue",
+                        "primitive": "solid",
+                        "start_ms": 0,
+                        "duration_ms": 1000,
+                        "color": "#0000FF",
+                    }
+                ],
+            }
+        ],
+    }
+    mapper = _mapper_export()
+    surface = cast(list[dict[str, object]], mapper["lighting_surfaces"])[0]
+    cast(list[dict[str, object]], surface["pixels"])[0].update(
+        {"output_index": 8, "stage_x": 1, "stage_y": 2}
+    )
+    right = copy.deepcopy(surface)
+    right["semantic_id"] = "right-pixels"
+    cast(list[dict[str, object]], right["pixels"])[0].update({"output_index": 2, "stage_x": 7})
+    mapper["lighting_surfaces"] = [surface, right]
+    draft = DraftProject.model_validate(document)
+    manifest = render_stage_composition(
+        draft=draft,
+        project_id="demo-project",
+        source_revision=2,
+        composition_id="stage-composition",
+        assets=assets,
+        mapper_export=mapper,
+        coverage=_coverage(),
+        overlaps=(),
+        sync_admission=SyncAdmission(True, "lights_only_stage", "test", None),
+        output_directory=tmp_path / "renders",
+    )
+    sequence = cast(list[dict[str, object]], manifest["lighting_sequences"])[0]
+    assert sequence["channels"] == (4 if led_background == "ambient" else 3)
+    artifact = tmp_path / "renders" / str(manifest["activation_identity"])
+    compiled = DraftCompiler(tmp_path / "compiled").compile(
+        project_id="demo-project",
+        revision=2,
+        draft=draft,
+        lighting_artifacts={"stage-composition": artifact},
+    )
+    catalog = load_show_package(compiled.package_root)
+    runtime = ControllerRuntime(catalog=catalog)
+    rendered = runtime._render_lighting_output(
+        catalog.require("ambient").lighting_outputs[0],
+        render_position_ms=0,
+        rendered_at=runtime.clock(),
+        duration_ms=1000,
+        scene_id="ambient",
+    )
+    assert rendered[8][0] > 0 and rendered[8][1:] == (0, 0)
+    assert rendered[2] == ((0, 0, 255) if led_background == "ambient" else (0, 0, 0))
+    # LEDs the composition never maps keep the ambient underneath.
+    assert rendered[0] == (0, 0, 255)

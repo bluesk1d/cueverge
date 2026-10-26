@@ -218,10 +218,11 @@ and a scene-level brightness limit applies after composition.
 Every effect remains a pure function of media time and seed, so pause, seek,
 and reconnect reproduce the same frame.
 
-An optional show-level persistent look can run fixture baselines on a
-controller-monotonic cycle across media scene changes. Timeline scenes overlay
-only their targeted pixels and restore the baseline naturally afterward.
-Explicit stop renders a configured safe state.
+An optional show-level persistent look (ambient lighting) can run fixture
+baselines or a looping LED composition on a controller-monotonic cycle across
+media scene changes. Timeline scenes overlay only their targeted pixels and
+restore the ambient naturally afterward. Explicit stop renders a configured
+safe state.
 
 ### Lighting features that may still be requested
 
@@ -255,6 +256,45 @@ across scene changes. Timeline scenes affect only addressed pixels and then
 reveal the continuing baseline. An explicit stop renders the configured safe
 state; a queued scene-to-scene continuation does not insert an unintended safe
 frame.
+
+#### Authoring ambient lighting in the GUI
+
+Use ambient lighting for a consistent loop that runs during every scene, so
+scene compositions only carry the lighting that is specific to that scene and
+never need to match up ambient loops.
+
+1. Open the show and expand **Ambient lighting** (below **Show options**).
+2. Tick **Ambient lighting on** an LED output and choose a **Source**:
+   - **Simple look**: a steady color, pulse, flicker, sparkle or chase, with
+     color, brightness, speed and loop length.
+   - **LED composition loop**: a stage composition with LED surfaces selected.
+     Its LED bake loops for the whole show; bake it from its timeline
+     (**Render & bake**) after every change. Publishing needs a current bake.
+3. Set a **Brightness limit** if needed and **Save ambient lighting**.
+4. Every scene inherits the ambient by default. To turn it off for one scene,
+   clear **Inherit ambient lighting** in that scene's settings (Scenes
+   workspace) and **Save scene**, or clear the scene under **Scenes that
+   inherit ambient lighting**. Scenes that don't inherit it draw their lighting
+   over black, and ambient LEDs they don't light go to the safe state.
+
+How scenes override the ambient:
+
+- Procedural scene lighting cues change only the pixels they target.
+- Stage compositions with LED surfaces change only the LEDs their media covers
+  when **Render & bake > Where nothing is drawn, LEDs show** is **Ambient
+  lighting** (the default when the final output background is black). Choose
+  **Final output background** to paint every selected LED with the background
+  color instead. Re-bake after changing this option. LED bakes made before this
+  option existed must be re-baked once.
+- LEDs a scene doesn't light at all keep the ambient.
+
+The ambient's phase follows the controller clock, so it doesn't restart at scene
+changes. The scene preview shows it from its loop start at scene time 0. Legacy
+single-effect scene lighting (synthetic sweep, segment pulse) paints its whole
+output and does not show the ambient underneath.
+
+MCP clients edit the same `editor_metadata.ambient_lighting` object with
+`update_project_draft`; see `get_capabilities().ambient_lighting`.
 
 The show definition should specify:
 

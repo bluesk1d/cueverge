@@ -22,6 +22,7 @@ from cueverge.gui.repository import GuiRepository
 from cueverge.gui.stage_coverage import StageCoverage, StageCoverageService
 from cueverge.gui.stage_renderer import (
     is_lights_only_stage,
+    leds_show_ambient,
     render_stage_composition,
     selected_stage_lighting_surfaces,
     selected_stage_projectors,
@@ -733,7 +734,11 @@ def _stage_raster_identity(composition: Mapping[str, object]) -> dict[str, objec
     """
     raster = stage_raster_size(composition)
     stored = _mapping(composition.get("render_settings")).get("render_height")
-    return {} if stored == raster[1] else {"stage_raster": list(raster)}
+    identity: dict[str, object] = {} if stored == raster[1] else {"stage_raster": list(raster)}
+    if composition.get("stage_lighting_surfaces") and leds_show_ambient(composition):
+        # LED sequences now carry coverage so the ambient shows where nothing is drawn.
+        identity["led_coverage"] = True
+    return identity
 
 
 def _cache_key(

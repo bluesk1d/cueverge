@@ -2,6 +2,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from cueverge.gui.ambient_lighting import AmbientLighting
 from cueverge.gui.apply import ApplyRequest
 from cueverge.gui.contracts import (
     AddSceneOutputRequest,
@@ -115,6 +116,14 @@ class Composition(MetadataSchema):
             "pixel."
         ),
     )
+    led_background: Literal["ambient", "background"] | None = Field(
+        default=None,
+        description=(
+            "Stage compositions with LEDs: where nothing is drawn, LEDs show the ambient/scene "
+            "lighting underneath ('ambient', default for black backgrounds) or the background "
+            "color ('background', default otherwise)."
+        ),
+    )
     render_settings: RenderSettings | None = None
     lighting_settings: LightingSettings | None = None
 
@@ -211,6 +220,14 @@ class SpatialMetadata(MetadataSchema):
     scene_compositions: dict[str, list[str]] = Field(default_factory=dict)
     timeline_tracks: dict[str, list[TimelineTrack]] = Field(default_factory=dict)
     timeline_transform_layers: dict[str, list[MediaLayer]] = Field(default_factory=dict)
+    ambient_lighting: AmbientLighting | None = Field(
+        default=None,
+        description=(
+            "Show-wide ambient lighting: per LED output, looping cues and/or a baked stage "
+            "composition on the controller clock, under every scene's lighting. Scenes listed "
+            "in excluded_scene_ids do not inherit it."
+        ),
+    )
 
 
 def authoring_schema() -> dict[str, Any]:

@@ -20,15 +20,7 @@ def evaluate_lighting_output(
             )
         )
         for sequence in output.spatial_sequences:
-            frame = sequence.frame(position_ms)
-            if frame is None:
-                continue
-            for offset, index in enumerate(sequence.reference.output_indices):
-                pixels[index] = (
-                    frame[offset * 3],
-                    frame[offset * 3 + 1],
-                    frame[offset * 3 + 2],
-                )
+            sequence.overlay(pixels, position_ms)
         return tuple(
             (round(red * limit), round(green * limit), round(blue * limit))
             for red, green, blue in pixels

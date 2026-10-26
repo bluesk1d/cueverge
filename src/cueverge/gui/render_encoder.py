@@ -5,6 +5,7 @@ import tempfile
 from dataclasses import dataclass
 from fractions import Fraction
 from pathlib import Path
+from typing import Literal
 from uuid import uuid4
 
 import av.error
@@ -51,6 +52,8 @@ class LightingMember:
     output_indices: tuple[int, ...]
     data: bytes
     mapping_digest: str
+    # 4: RGB plus coverage alpha so undrawn LEDs keep the lighting underneath.
+    channels: Literal[3, 4] = 3
 
 
 def encode_output_set(
@@ -233,7 +236,7 @@ def encode_lighting_sequence_set(
     first = lighting_members[0]
     if not first.output_indices:
         raise RenderEncodingError("stage lighting member has no output indices")
-    frame_count = len(first.data) // (len(first.output_indices) * 3)
+    frame_count = len(first.data) // (len(first.output_indices) * first.channels)
     output_directory.mkdir(parents=True, exist_ok=True)
     activation_identity = str(uuid4())
     temporary_directory = Path(tempfile.mkdtemp(prefix=".render-set-", dir=output_directory))
@@ -290,7 +293,7 @@ def _write_lighting_sequences(
 ) -> list[dict[str, object]]:
     sequences: list[dict[str, object]] = []
     for index, lighting in enumerate(lighting_members):
-        filename = f"lighting-{index + 1:04d}.rgb"
+        filename = f"lighting-{index + 1:04d}.{'rgba' if lighting.channels == 4 else 'rgb'}"
         reference = LightingSequenceReference(
             scene_id="bake",
             resource=lighting.resource,
@@ -301,8 +304,9 @@ def _write_lighting_sequences(
             frame_rate_denominator=frame_rate_denominator,
             frame_count=frame_count,
             duration_ms=duration_ms,
+            channels=lighting.channels,
         )
-        expected_size = reference.frame_count * len(reference.output_indices) * 3
+        expected_size = reference.frame_count * len(reference.output_indices) * reference.channels
         if len(lighting.data) != expected_size:
             raise RenderEncodingError("stage lighting data does not match frame count")
         (directory / filename).write_bytes(lighting.data)

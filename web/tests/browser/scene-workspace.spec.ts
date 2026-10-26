@@ -814,3 +814,31 @@ test("the scene preview draws projector frames on their surfaces under the LEDs"
   await expect(page.getByRole("article", { name: "Media output left-window" })).toBeVisible();
   expect(state.saves).toHaveLength(0);
 });
+
+test("show ambient lighting is authored once and each scene can opt out", async ({ page }) => {
+  const state = await sceneRoutes(page);
+  await openScenes(page);
+  await page.getByText("Ambient lighting", { exact: true }).click();
+  const ambient = page.getByRole("region", { name: "Ambient lighting for roofline.demo" });
+  await ambient.getByRole("checkbox", { name: "Ambient lighting on roofline.demo" }).check();
+  await ambient.getByLabel("Look", { exact: true }).selectOption("pulse");
+  await ambient.getByLabel("Loop length (seconds)").fill("8");
+  await page.getByRole("button", { name: "Save ambient lighting" }).click();
+  await expect.poll(() => state.saves.length).toBe(1);
+  const saved = state.saves[0].editor_metadata as unknown as { ambient_lighting: Record<string, unknown> };
+  expect(saved.ambient_lighting).toMatchObject({
+    schema_version: 1, excluded_scene_ids: [],
+    outputs: [{ resource: "roofline.demo", cycle_ms: 8000, cues: [{ primitive: "pulse", duration_ms: 8000 }] }],
+  });
+
+  const inherit = page.getByRole("checkbox", { name: /Inherit ambient lighting/ });
+  await expect(inherit).toBeChecked();
+  await inherit.uncheck();
+  await page.getByRole("button", { name: "Save scene" }).click();
+  await expect.poll(() => state.saves.length).toBe(2);
+  const sceneId = state.document.scenes[0].id;
+  expect((state.saves[1].editor_metadata as unknown as { ambient_lighting: { excluded_scene_ids: string[] } })
+    .ambient_lighting.excluded_scene_ids).toEqual([sceneId]);
+  await expect(page.getByRole("group", { name: "Scenes that inherit ambient lighting" })
+    .getByRole("checkbox", { name: state.document.scenes[0].name, exact: true })).not.toBeChecked();
+});

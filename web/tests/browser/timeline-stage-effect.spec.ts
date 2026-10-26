@@ -200,6 +200,9 @@ test("a lights-only house effect drops every projector and shows the house in La
   await expect(page.getByRole("button", { name: "Bake LED overlay", exact: true })).toBeEnabled();
   await page.getByRole("button", { name: "Use LED bake size (1200 × 720)" }).click();
   await expect(page.getByLabel("Render width", { exact: true })).toHaveValue("1200");
+  const ledBackground = page.getByLabel("Where nothing is drawn, LEDs show");
+  await expect(ledBackground).toHaveValue("ambient");
+  await ledBackground.selectOption("background");
   await expect(page.getByAltText(/Controller render preview/)).toHaveCount(0);
   await expect(page.getByText("Cross-projector rehearsal evidence")).toHaveCount(0);
   await expect(page.getByText(/no projector frames to inspect/)).toBeVisible();
@@ -211,6 +214,7 @@ test("a lights-only house effect drops every projector and shows the house in La
   }).editor_metadata.compositions.flag;
   expect(composition.stage_projector_resources).toEqual([]);
   expect(composition.stage_lighting_surfaces).toEqual(["roofline"]);
+  expect(composition.led_background).toBe("background");
 });
 
 test("the whole house lights preset selects every LED surface by its segment name", async ({ page }) => {

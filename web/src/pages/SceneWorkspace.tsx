@@ -120,6 +120,11 @@ export function SceneWorkspace({
   const scene = document.scenes.find((candidate) => candidate.id === sceneId);
   const outputs = scene ? lighting(scene) : [];
   const output = outputs[outputIndex];
+  const ambient = record(document.editor_metadata.ambient_lighting);
+  const ambientResources = objects(ambient.outputs).map((value) => text(value.resource)).filter(Boolean);
+  const excludedScenes = Array.isArray(ambient.excluded_scene_ids)
+    ? ambient.excluded_scene_ids.filter((value): value is string => typeof value === "string") : [];
+  const inheritsAmbient = !excludedScenes.includes(sceneId);
   const cues = objects(output?.timeline);
   const cue = cues.find((candidate) => candidate.id === effectId) ?? cues[0];
   const declaredDuration = scene?.duration_ms;
@@ -327,12 +332,12 @@ export function SceneWorkspace({
       </header>
       <div className="scene-editor-grid">
         <div>
-          {(outputs.length > 0 || media.length > 0) && <>
+          {(outputs.length > 0 || media.length > 0 || ambientResources.length > 0) && <>
           <ScenePreviewPanel
             projectId={draft.project.id} revision={draft.revision} document={document}
             dirty={dirty} sceneId={sceneId} resource="" position={position} playing={playing}
             valid={issues.length === 0} assets={assets}
-            hasLighting={outputs.length > 0} hasMedia={media.length > 0}
+            hasLighting={outputs.length > 0 || ambientResources.length > 0} hasMedia={media.length > 0}
             onTargetNames={setTargetNames}
             onFailure={() => setPlaying(false)}
           />
@@ -494,6 +499,23 @@ export function SceneWorkspace({
               <p>Resource: {resource}</p>
               {cues.length > 0 && <NumberField label="Output brightness limit (%)" value={numeric(output.brightness_limit, 1)} scale={100} min={0} max={100} onChange={(value) => changeOutput((item) => ({ ...item, brightness_limit: value }))} />}
             </details>}
+            {ambientResources.length > 0 ? <label className="scene-ambient-toggle">
+              <input type="checkbox" checked={inheritsAmbient} onChange={(event) => {
+                const inherit = event.target.checked;
+                setDocument((current) => {
+                  const settings = record(current.editor_metadata.ambient_lighting);
+                  const others = (Array.isArray(settings.excluded_scene_ids) ? settings.excluded_scene_ids : [])
+                    .filter((value) => value !== sceneId);
+                  return { ...current, editor_metadata: { ...current.editor_metadata, ambient_lighting: {
+                    ...settings, excluded_scene_ids: inherit ? others : [...others, sceneId],
+                  } } };
+                });
+              }} />
+              Inherit ambient lighting
+              <small>{inheritsAmbient
+                ? "The show's ambient lighting keeps running under this scene; this scene's lighting draws over it."
+                : "Ambient lighting is off in this scene: its lighting draws over black and other ambient LEDs go to their safe state."}</small>
+            </label> : <small className="scene-ambient-toggle">No ambient lighting is set for this show. Add it under Show options › Ambient lighting.</small>}
             <details className="scene-advanced"><summary>Scene details</summary>
               <label>Scene name<input required maxLength={200} value={scene.name} onChange={(event) => {
                 const name = event.target.value;

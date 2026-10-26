@@ -498,7 +498,8 @@ def test_invalid_creation_is_rejected_by_http_and_mcp(
         assert services.repository.get_revision(project_id).revision == 1
 
 
-def test_media_only_preserves_persistent_safe_state_without_rendering_a_baseline(tmp_path: Path):
+@pytest.mark.parametrize("excluded", [False, True])
+def test_media_only_scene_inherits_ambient_unless_excluded(tmp_path: Path, excluded: bool):
     original = DraftProject.model_validate(_draft())
     created = create_scene(
         original,
@@ -515,6 +516,7 @@ def test_media_only_preserves_persistent_safe_state_without_rendering_a_baseline
             {
                 "schema_version": 1,
                 "resource": "roofline.demo",
+                "excluded_scene_ids": ["halloween-preshow"] if excluded else [],
                 "cycle_ms": 4000,
                 "baseline": [
                     {
@@ -543,10 +545,12 @@ def test_media_only_preserves_persistent_safe_state_without_rendering_a_baseline
         try:
             await simulation.operator_start("halloween-preshow")
             await simulation.advance(1000)
-            assert simulation.sinks["roofline.demo"].frames == []
+            frames = simulation.sinks["roofline.demo"].frames
+            assert frames
+            expected = (0, 0, 0) if excluded else (255, 0, 0)
+            assert frames[-1].pixels == (expected,) * 8
             await simulation.runtime.stop()
-            assert len(simulation.sinks["roofline.demo"].frames) == 1
-            assert simulation.sinks["roofline.demo"].frames[0].pixels == ((0, 0, 0),) * 8
+            assert simulation.sinks["roofline.demo"].frames[-1].pixels == ((0, 0, 0),) * 8
             assert simulation.runtime.lighting_output_error_count == 0
         finally:
             await simulation.runtime.shutdown()

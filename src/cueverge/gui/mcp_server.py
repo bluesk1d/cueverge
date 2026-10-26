@@ -1688,6 +1688,7 @@ def create_mcp_app(services: GuiServices) -> Starlette:
                     "media_only_scenes": True,
                     "asset_trash": True,
                     "asset_replacement": True,
+                    "ambient_lighting": True,
                     "geometry_editing": False,
                     "live_media_rendering": False,
                 },
@@ -1766,6 +1767,53 @@ def create_mcp_app(services: GuiServices) -> Starlette:
                     "ui_workflow": "Show > Assets > Replace file; Show > Assets > File history",
                     "hardware_commands_sent": False,
                 },
+                "ambient_lighting": {
+                    "draft_key": "editor_metadata.ambient_lighting",
+                    "schema": "AmbientLighting",
+                    "read_tool": "get_project_draft",
+                    "write_tool": "update_project_draft",
+                    "write_requires_scope": "direct_edit",
+                    "per_resource": "one entry in outputs per pixel_output resource",
+                    "sources": {
+                        "cues": "procedural LightingCue loop repeating every cycle_ms",
+                        "composition_id": (
+                            "stage composition with stage_lighting_surfaces; its LED bake "
+                            "loops on its own duration over any cues"
+                        ),
+                    },
+                    "scene_inheritance": {
+                        "default": "every scene inherits the ambient",
+                        "opt_out_field": "editor_metadata.ambient_lighting.excluded_scene_ids",
+                        "excluded_scenes": (
+                            "render their own lighting over black and the look safe_state "
+                            "on ambient outputs they do not light"
+                        ),
+                    },
+                    "scene_override": (
+                        "scene lighting draws over the ambient; procedural cues replace only "
+                        "the indices they target, LED composition bakes replace only the LEDs "
+                        "their media covers"
+                    ),
+                    "led_background": {
+                        "field": "editor_metadata.compositions[id].led_background",
+                        "values": ["ambient", "background"],
+                        "default": "ambient when background is #000000, else background",
+                        "applies_to": "stage compositions with stage_lighting_surfaces",
+                        "requires_rebake": True,
+                    },
+                    "bake_required": (
+                        "ambient compositions need a current LED bake (create_render_job) "
+                        "before publish"
+                    ),
+                    "clock": "starts with the loaded show and keeps running across scenes",
+                    "preview": "preview_scene_lighting includes the ambient from scene time 0",
+                    "compiled_as": "looks.json per resource (baseline cues, baseline_sequence)",
+                    "ui_workflow": (
+                        "Show > Ambient lighting; Scenes > scene > Inherit ambient lighting; "
+                        "Timeline > Render & bake > Where nothing is drawn, LEDs show"
+                    ),
+                    "hardware_commands_sent": False,
+                },
                 "asset_lifecycle": {
                     "read_tool": "list_asset_metadata",
                     "trash_tool": "trash_asset",
@@ -1834,6 +1882,10 @@ def create_mcp_app(services: GuiServices) -> Starlette:
                     "spatial_compositions": "use preview_composition",
                     "evaluation": "production_lighting_renderer",
                     "led_composition_bakes": "included for the saved revision when current",
+                    "ambient_lighting": (
+                        "included unless the scene is in excluded_scene_ids; ambient-only "
+                        "outputs are reported as ambient:<resource>"
+                    ),
                 },
                 "scene_transitions": {
                     "media_repeat_count": {

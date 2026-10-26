@@ -993,6 +993,54 @@ served as immutable only when the request carries `?revision=` equal to the
 current revision; otherwise they are `no-cache`, so browsers never keep showing
 a replaced file.
 
+### Ambient lighting over MCP
+
+`get_capabilities` reports `features.ambient_lighting` and an
+`ambient_lighting` block. Ambient lighting is stored in the draft at
+`editor_metadata.ambient_lighting` (schema `AmbientLighting` in
+`get_authoring_schema`) and edited with `get_project_draft` and
+`update_project_draft` (`direct_edit`), the same object as **Show > Ambient
+lighting** in the GUI:
+
+```json
+{
+  "schema_version": 1,
+  "outputs": [
+    {
+      "resource": "roofline.demo",
+      "cycle_ms": 8000,
+      "brightness_limit": 0.6,
+      "cues": [
+        {"id": "ambient", "primitive": "pulse", "start_ms": 0,
+         "duration_ms": 8000, "color": "#FFB060", "brightness": 0.3,
+         "period_ms": 4000}
+      ]
+    },
+    {"resource": "porch", "composition_id": "ambient-shimmer", "cues": []}
+  ],
+  "excluded_scene_ids": ["finale-blackout"]
+}
+```
+
+Each output targets a distinct `pixel_output` resource and needs `cues`
+(procedural `LightingCue`s within `cycle_ms`), a `composition_id`, or both. A
+composition must be a stage composition with `stage_lighting_surfaces`; its LED
+bake (`create_render_job`) loops on its own duration and must be current before
+publish. `excluded_scene_ids` lists existing scenes that do not inherit the
+ambient (the GUI's per-scene **Inherit ambient lighting** checkbox). Invalid
+resources, compositions, scenes, duplicate IDs, or cues outside the cycle are
+rejected with a validation error. Stage compositions accept
+`led_background: "ambient" | "background"` to choose whether undrawn LEDs show
+the ambient (four-channel coverage bake) or the background color. Changing it
+requires a re-bake.
+
+`preview_scene_lighting` includes the ambient beneath scene outputs and reports
+LED resources the scene doesn't light as `ambient:<resource>` outputs (the safe
+state for excluded scenes). Its limitations note that the preview starts the
+ambient at scene time 0. Compilation writes the ambient to `looks.json`
+(`baseline`, `baseline_sequence`, `excluded_scene_ids`), merged per resource
+over looks preserved from the controller. None of this sends hardware commands.
+
 ### Scene-native LED preview
 
 `get_capabilities.scene_lighting_preview` discovers `preview_scene_lighting`

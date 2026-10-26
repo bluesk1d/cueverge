@@ -249,9 +249,11 @@ cannot have both output arrays empty. For example:
 }
 ```
 
-Media-only scenes prepare and transport their media normally but send no
-lighting frames. A persistent baseline is not a separate running layer and
-does not add lighting outputs or claims to these scenes. Legacy single-resource
+Media-only scenes prepare and transport their media normally and declare no
+lighting outputs or claims. When the show has persistent looks (ambient
+lighting), the controller keeps sending each look's ambient frames during
+these scenes unless the scene is listed in that look's `excluded_scene_ids`, in
+which case it sends the look's `safe_state`. Legacy single-resource
 lighting-look packages may include media-only scenes; scenes that do contain
 lighting must still match that legacy look's resource. Explicit stop still
 applies any configured safe-state lighting looks.
@@ -420,6 +422,48 @@ therefore survives media completion and scene replacement. A timeline scene
 renders over the baseline, changing only pixels addressed by active scene cues.
 Fixture and cue precedence continue to determine overlap order.
 
+A look may also loop a baked LED sequence on top of its cues, and may exclude
+scenes from inheriting it:
+
+```json
+{
+  "resource": "roofline",
+  "cycle_ms": 12000,
+  "baseline": [],
+  "baseline_sequence": {
+    "path": "runtime/lighting/ambient-3f2a.rgb",
+    "sha256": "<64 hex digits>",
+    "scene_id": "ambient",
+    "start_ms": 0,
+    "duration_ms": 12000,
+    "frame_rate_numerator": 30,
+    "frame_rate_denominator": 1,
+    "output_indices": [0, 1, 2],
+    "channels": 3
+  },
+  "excluded_scene_ids": ["blackout-finale"],
+  "safe_state": [
+    {"id": "safe", "primitive": "blackout", "start_ms": 0, "duration_ms": 1}
+  ]
+}
+```
+
+`baseline_sequence` loops on its own duration over the baseline cues and must
+use the look's resource; a look needs baseline cues, a baseline sequence, or
+both. Scenes listed in `excluded_scene_ids` (unique, existing scene IDs) do not
+inherit the look: their lighting renders over black, and the look's resource
+shows `safe_state` while they play if they do not light it. Every other scene
+inherits the look, including scenes with no lighting outputs.
+
+Baked LED sequences (`lighting_sequences` in scene outputs and
+`baseline_sequence`) use `channels: 3` (RGB, replaces the mapped indices) or
+`channels: 4` (`.rgba`: RGB over black plus coverage alpha). Four-channel
+frames are composited over the lighting underneath as `rgb + (1 - alpha) *
+underneath`, so a composition only changes the LEDs its media covers.
+
+The GUI writes `looks.json` from **Show > Ambient lighting**
+(`editor_metadata.ambient_lighting`); see the show-creator guide.
+
 Version 1 defines one look resource and requires it to appear in every scene.
 Version 2 wraps the same per-resource definition in an `outputs` array:
 
@@ -471,7 +515,8 @@ Version 2 wraps the same per-resource definition in an `outputs` array:
 }
 ```
 
-The `baseline` and `safe_state` arrays must each contain at least one cue.
+The `safe_state` array must contain at least one cue; `baseline` may be empty
+when `baseline_sequence` is set.
 Resources must be unique and bound to pixel outputs. Baselines are
 composited only into the matching scene lighting output. Explicit stop renders
 every configured resource's `safe_state`; queued scene continuation does not

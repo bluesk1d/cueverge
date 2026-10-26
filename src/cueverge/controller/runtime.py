@@ -24,6 +24,7 @@ from cueverge.core.models import (
     SceneDefinition,
 )
 from cueverge.core.opportunities import OpportunityManager
+from cueverge.lighting.ambient import render_ambient, render_ambient_output, scene_inherits_ambient
 from cueverge.lighting.ddp import DdpUdpSink
 from cueverge.lighting.evaluation import evaluate_lighting_output
 from cueverge.lighting.output_test import (
@@ -1302,33 +1303,55 @@ class ControllerRuntime:
         # render the last valid millisecond so the end-of-scene tick does not go dark.
         last_ms = max(0, active.definition.duration_ms - 1)
         render_position_ms = max(0, min(estimate.position_ms, last_ms) - self.lighting_delay_ms)
+        frames: list[tuple[str, int, tuple[tuple[int, int, int], ...]]] = []
         for output in active.scene.lighting_outputs:
             output_position_ms = max(
                 0,
                 render_position_ms - output.definition.timing_offset_ms,
             )
-            pixels = self._render_lighting_output(
-                output,
-                render_position_ms=output_position_ms,
-                rendered_at=rendered_at,
-                duration_ms=active.definition.duration_ms,
+            frames.append(
+                (
+                    output.definition.resource,
+                    output_position_ms,
+                    self._render_lighting_output(
+                        output,
+                        render_position_ms=output_position_ms,
+                        rendered_at=rendered_at,
+                        duration_ms=active.definition.duration_ms,
+                        scene_id=active.definition.id,
+                    ),
+                )
             )
+        # Ambient keeps running on LED outputs this scene does not light itself.
+        lit = {output.definition.resource for output in active.scene.lighting_outputs}
+        for resource, looks in self._all_lighting_looks().items():
+            if resource not in lit:
+                frames.append(
+                    (
+                        resource,
+                        render_position_ms,
+                        render_ambient_output(
+                            looks,
+                            self._ambient_elapsed_ms(rendered_at),
+                            active.definition.id,
+                        ),
+                    )
+                )
+        for resource, output_position_ms, pixels in frames:
             try:
                 self._send_output_frame(
                     RenderedFrame(
                         scene_instance_id=active.scene_instance_id,
                         position_ms=output_position_ms,
                         pixels=pixels,
-                        resource=output.definition.resource,
+                        resource=resource,
                     )
                 )
             except (OSError, ValueError) as error:
                 self.lighting_output_error_count += 1
-                self._lighting_output_errors[output.definition.resource] = (
-                    f"{type(error).__name__}: {error}"
-                )
+                self._lighting_output_errors[resource] = f"{type(error).__name__}: {error}"
                 continue
-            self._lighting_output_errors.pop(output.definition.resource, None)
+            self._lighting_output_errors.pop(resource, None)
             self.rendered_frames += 1
         if estimate.degraded:
             self.stale_frames += 1
@@ -1345,16 +1368,21 @@ class ControllerRuntime:
         render_position_ms: int,
         rendered_at: float,
         duration_ms: int,
+        scene_id: str | None = None,
     ) -> tuple[tuple[int, int, int], ...]:
         lighting = output.definition
         looks = self._lighting_looks_for(lighting.resource)
+        if scene_id is None and self.active_scene is not None:
+            scene_id = self.active_scene.definition.id
         return evaluate_lighting_output(
             output,
             position_ms=render_position_ms,
             duration_ms=duration_ms,
             base_frame=(
-                self._render_persistent_baseline(rendered_at, output)
-                if output.spatial_sequences or lighting.timeline
+                render_ambient(looks, self._ambient_elapsed_ms(rendered_at))
+                if looks is not None
+                and (output.spatial_sequences or lighting.timeline)
+                and scene_inherits_ambient(looks, scene_id)
                 else None
             ),
             brightness_limit=min(
@@ -1388,21 +1416,15 @@ class ControllerRuntime:
         else:
             self._emit_safe_lighting()
 
-    def _render_persistent_baseline(
-        self,
-        now: float,
-        output: LoadedLightingOutput,
-    ) -> tuple[tuple[int, int, int], ...] | None:
-        looks = self._lighting_looks_for(output.definition.resource)
-        if looks is None:
-            return None
-        elapsed_ms = round((now - self._lighting_started_at) * 1000)
-        position_ms = elapsed_ms % looks.definition.cycle_ms
-        return LightingTimeline(
-            pixel_count=looks.pixel_count,
-            cues=looks.baseline_cues,
-            brightness_limit=1.0,
-        ).render(position_ms)
+    def _ambient_elapsed_ms(self, now: float) -> int:
+        return round((now - self._lighting_started_at) * 1000)
+
+    def _all_lighting_looks(self) -> dict[str, LoadedLightingLooks]:
+        looks = dict(self.catalog.lighting_looks_by_resource)
+        legacy = self.catalog.lighting_looks
+        if legacy is not None:
+            looks.setdefault(legacy.definition.resource, legacy)
+        return looks
 
     def _emit_safe_lighting(self) -> None:
         looks_by_resource = self.catalog.lighting_looks_by_resource

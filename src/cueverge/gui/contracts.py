@@ -27,6 +27,7 @@ from cueverge.core.models import (
     SegmentReference,
     ShowProgramDefinition,
 )
+from cueverge.gui.ambient_lighting import validate_ambient_lighting
 from cueverge.gui.spatial_effects import SpatialRipple
 from cueverge.protocol.device_v2 import DeviceCapabilityDocument, DeviceKind
 
@@ -122,6 +123,7 @@ class DraftProject(GuiModel):
             {scene.id: scene.duration_ms for scene in self.scenes},
         )
         _validate_autonomous_show(self)
+        validate_ambient_lighting(self.editor_metadata, self.installation, set(scene_ids))
         if "installation_object_details" in self.editor_metadata:
             details = self.editor_metadata["installation_object_details"]
             if not isinstance(details, list):
@@ -207,6 +209,12 @@ def _validate_composition_graph(
             raise ValueError("stage lighting surfaces must be up to 100 unique semantic IDs")
         if stage_surfaces and value.get("space_kind") != "stage":
             raise ValueError("only stage compositions can select stage lighting surfaces")
+        led_background = value.get("led_background")
+        if led_background is not None:
+            if value.get("space_kind") != "stage":
+                raise ValueError("only stage compositions set led_background")
+            if led_background not in {"ambient", "background"}:
+                raise ValueError("led_background must be ambient or background")
         source_pixel_units = value.get("source_pixel_units")
         if source_pixel_units is not None:
             if value.get("space_kind") != "stage":

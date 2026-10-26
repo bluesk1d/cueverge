@@ -5,7 +5,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from cueverge.lighting.sequence import LoadedLightingSequence
+from cueverge.lighting.sequence import LightingSequenceReference, LoadedLightingSequence
 
 
 class FrozenModel(BaseModel):
@@ -546,14 +546,39 @@ class OpportunityProgramDefinition(FrozenModel):
 
 
 class LightingLookDefinition(FrozenModel):
+    """Ambient (persistent) lighting for one LED output, running across scene changes."""
+
     resource: str = Field(min_length=1)
     cycle_ms: int = Field(gt=0)
     brightness_limit: float = Field(default=1.0, gt=0, le=1)
-    baseline: tuple[LightingCue, ...] = Field(min_length=1)
+    baseline: tuple[LightingCue, ...] = Field(
+        default=(),
+        description="Procedural cues looping every cycle_ms on the controller clock.",
+    )
+    baseline_sequence: LightingSequenceReference | None = Field(
+        default=None,
+        description=(
+            "Baked LED sequence (for example a lights-only composition) looping over its own "
+            "duration on top of the baseline cues."
+        ),
+    )
     safe_state: tuple[LightingCue, ...] = Field(min_length=1)
+    excluded_scene_ids: tuple[str, ...] = Field(
+        default=(),
+        description=(
+            "Scenes that do not inherit this ambient lighting: their own lighting renders over "
+            "black, and outputs they do not light show the safe state."
+        ),
+    )
 
     @model_validator(mode="after")
     def validate_cues(self) -> "LightingLookDefinition":
+        if not self.baseline and self.baseline_sequence is None:
+            raise ValueError("ambient lighting needs baseline cues or a baseline sequence")
+        if self.baseline_sequence is not None and self.baseline_sequence.resource != self.resource:
+            raise ValueError("ambient baseline sequence must drive the look's resource")
+        if len(self.excluded_scene_ids) != len(set(self.excluded_scene_ids)):
+            raise ValueError("ambient excluded scenes must be unique")
         for cue in self.baseline:
             if cue.start_ms + cue.duration_ms > self.cycle_ms:
                 raise ValueError("baseline lighting cue exceeds look cycle")
@@ -584,6 +609,7 @@ class LoadedLightingLooks(FrozenModel):
     pixel_count: int
     baseline_cues: tuple[LoadedLightingCue, ...]
     safe_state_cues: tuple[LoadedLightingCue, ...]
+    baseline_sequence: LoadedLightingSequence | None = None
 
 
 class EncounterTransition(FrozenModel):

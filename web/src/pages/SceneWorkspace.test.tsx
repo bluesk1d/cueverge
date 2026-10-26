@@ -51,3 +51,38 @@ test("shows a refused scene deletion beside the Delete scene button", async () =
   expect(alert).not.toHaveTextContent("Cueverge API request failed");
   expect(deleteButton).toBeEnabled();
 });
+
+test("scenes inherit ambient lighting by default and can opt out with Save scene", async () => {
+  vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response("{}", { status: 404 }));
+  const onSave = vi.fn().mockResolvedValue(undefined);
+  const ambientDraft = {
+    ...draft,
+    draft: {
+      ...draft.draft,
+      editor_metadata: { ambient_lighting: { schema_version: 1, outputs: [{ resource: "roof", cycle_ms: 4000, cues: [] }], excluded_scene_ids: [] } },
+    },
+  } as unknown as ProjectDraftRecord;
+  render(<SceneWorkspace
+    draft={ambientDraft} sceneId="klown" canEdit canAdd assets={[]}
+    onSelectScene={vi.fn()} onSave={onSave} onDirtyChange={vi.fn()}
+    onOpenTimeline={vi.fn()} onDelete={vi.fn()} onCreated={vi.fn()}
+  />);
+  const inherit = screen.getByRole("checkbox", { name: /Inherit ambient lighting/ });
+  expect(inherit).toBeChecked();
+  fireEvent.click(inherit);
+  expect(inherit).not.toBeChecked();
+  fireEvent.click(screen.getByRole("button", { name: "Save scene" }));
+  await waitFor(() => expect(onSave).toHaveBeenCalled());
+  expect(onSave.mock.calls[0][0].editor_metadata.ambient_lighting.excluded_scene_ids).toEqual(["klown"]);
+});
+
+test("without show ambient lighting the scene points to Show options", () => {
+  vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response("{}", { status: 404 }));
+  render(<SceneWorkspace
+    draft={draft} sceneId="klown" canEdit canAdd assets={[]}
+    onSelectScene={vi.fn()} onSave={vi.fn()} onDirtyChange={vi.fn()}
+    onOpenTimeline={vi.fn()} onDelete={vi.fn()} onCreated={vi.fn()}
+  />);
+  expect(screen.queryByRole("checkbox", { name: /Inherit ambient lighting/ })).toBeNull();
+  expect(screen.getByText(/Show options › Ambient lighting/)).toBeInTheDocument();
+});
