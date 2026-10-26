@@ -34,19 +34,19 @@ test("timeline shows media thumbnails and audio waveforms", async ({ page }) => 
     page.getByAltText("Head frame of Window loop"),
   ).toHaveAttribute(
     "src",
-    "/api/gui/v1/assets/video-asset/artifacts/thumbnail",
+    "/api/gui/v1/assets/video-asset/artifacts/thumbnail?revision=1",
   );
   await expect(
     page.getByAltText("Timeline waveform for Window loop"),
   ).toHaveAttribute(
     "src",
-    "/api/gui/v1/assets/video-asset/artifacts/waveform",
+    "/api/gui/v1/assets/video-asset/artifacts/waveform?revision=1",
   );
   await expect(
     page.getByAltText("Timeline waveform for Narration reference"),
   ).toHaveAttribute(
     "src",
-    "/api/gui/v1/assets/audio-asset/artifacts/waveform",
+    "/api/gui/v1/assets/audio-asset/artifacts/waveform?revision=1",
   );
   await expect(
     page.getByLabel("Narration timing reference"),
@@ -58,7 +58,7 @@ test("timeline shows media thumbnails and audio waveforms", async ({ page }) => 
     page.getByLabel("Editorial audio proxy for Narration"),
   ).toHaveAttribute(
     "src",
-    "/api/gui/v1/assets/audio-asset/artifacts/review",
+    "/api/gui/v1/assets/audio-asset/artifacts/review?revision=1",
   );
   await expect(
     page.getByAltText("Editorial waveform for Narration reference"),

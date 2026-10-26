@@ -817,7 +817,16 @@ unavailable; save or cancel first. Stale saves retain edits and report conflict.
    reachable from **Advanced authoring and history > Open timeline editor**.
    Its **Scene** selection stays synchronized with the main scene workspace.
 2. Use the tabs above the viewer to switch between **Whole scene** and each
-   composition. **+ New composition** opens presets: **Whole display
+   composition. **Whole scene** is the scene itself, not a composition, so it
+   cannot be deleted: it holds the scene's own media and lighting output
+   tracks, and a **Compositions in this scene** lane shows each placed
+   composition as a clip at the time it plays (select a clip to open that
+   composition). A scene with no media outputs and a single placed
+   composition, such as a lights-only scene, opens directly on that
+   composition's tab, where its content is edited. Opening the editor or
+   switching scenes or tabs never counts as an edit: **Undo** stays
+   unavailable and **Save timeline** has nothing new to save until you change
+   something. **+ New composition** opens presets: **Whole display
    overlay** (sized to the installation stage, output `shared-stage`),
    **Whole house lights** (the same stage overlay with every mapped LED
    output and no projectors), **One projector** (sized to the chosen

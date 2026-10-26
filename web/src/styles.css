@@ -2719,6 +2719,23 @@ p {
   white-space: nowrap;
 }
 
+.timeline-track--compositions {
+  height: 56px;
+}
+
+.timeline-composition-clip {
+  gap: 6px;
+  border-color: color-mix(in srgb, var(--cv-accent, #a78bfa) 60%, transparent);
+  background: color-mix(in srgb, var(--cv-accent, #a78bfa) 18%, transparent);
+}
+
+.timeline-composition-clip small {
+  overflow: hidden;
+  color: var(--cv-text-faint);
+  font-size: 0.7rem;
+  white-space: nowrap;
+}
+
 .timeline-track-reference__hold {
   position: absolute;
   top: 0;

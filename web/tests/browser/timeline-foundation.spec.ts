@@ -425,7 +425,7 @@ for (const width of [1280, 390]) {
     await expect(list.getByText(/malware|scan:/i)).toHaveCount(0);
     const first = cards.nth(0);
     const second = cards.nth(1);
-    await first.locator("summary").click();
+    await first.locator(".asset-governance > summary").click();
     await expect(first.getByLabel("Owner", { exact: true })).toBeVisible();
     await first.getByLabel("Owner", { exact: true }).fill("Halloween production");
     await first.getByLabel("Provenance notes", { exact: true }).fill("Original production notes");
@@ -449,7 +449,7 @@ for (const width of [1280, 390]) {
       filenameBelowHeader: true, cardFits: true, detailsFit: true, pageFits: true,
     });
     const expanded = (await first.boundingBox())!.height;
-    await first.locator("summary").click();
+    await first.locator(".asset-governance > summary").click();
     await expect.poll(async () => (await first.boundingBox())!.height).toBeLessThan(expanded);
     await expect.poll(async () => {
       const firstBounds = (await first.boundingBox())!;

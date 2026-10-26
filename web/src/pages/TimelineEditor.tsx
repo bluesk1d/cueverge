@@ -401,8 +401,15 @@ export function TimelineEditor({
   const [compositionInstances, setCompositionInstances] = useState<
     Record<string, CompositionInstance[]>
   >(() => compositionInstanceMap(draft.draft.editor_metadata.composition_instances));
-  const [activeCompositionId, setActiveCompositionId] = useState("");
-  useEffect(() => { if (selectedSceneId !== undefined) setActiveCompositionId(""); }, [selectedSceneId]);
+  const [activeCompositionId, setActiveCompositionId] = useState(() =>
+    defaultCompositionForScene(scene, compositions, sceneCompositions, compositionInstances),
+  );
+  useEffect(() => {
+    setActiveCompositionId(
+      defaultCompositionForScene(scene, compositions, sceneCompositions, compositionInstances),
+    );
+    // Only a scene switch chooses the default tab; later composition edits keep the user's tab.
+  }, [scene?.id]);
   const [newCompositionName, setNewCompositionName] = useState("");
   const [newCompositionDuration, setNewCompositionDuration] = useState(5000);
   const [newCompositionSpace, setNewCompositionSpace] =
@@ -479,6 +486,10 @@ export function TimelineEditor({
   const gestureRef = useRef({ active: false, recorded: false });
   const stashedTracksRef = useRef<Record<string, TimelineTrack[]>>({});
   const previousSpaceRef = useRef<string | null>(null);
+  const previousLoadedSceneRef = useRef<string | null>(null);
+  // Values the space-load effect is applying; the render that shows them is a baseline, not an edit.
+  const pendingSpaceLoadRef = useRef<{ values: string; scenePolicy: string | null; passes: number } | null>(null);
+  const timelineDirtyRef = useRef(false);
   const [viewerMode, setViewerMode] = useState<"house" | "layout">("house");
   const [sceneViewerMode, setSceneViewerMode] = useState<"house" | "monitor">("house");
   const playheadDragRef = useRef(false);
@@ -789,16 +800,18 @@ export function TimelineEditor({
   ]);
 
   useEffect(() => {
-    setSafePoints([
+    const loadedSafePoints = [
       ...(composition?.safe_points_ms ??
         scene?.scheduling?.safe_points_ms ??
         []),
-    ]);
-    setRegions([
+    ];
+    const loadedRegions = [
       ...(composition?.protected_intervals ??
         scene?.scheduling?.protected_intervals ??
         []),
-    ]);
+    ];
+    setSafePoints(loadedSafePoints);
+    setRegions(loadedRegions);
     setRegionStart(0);
     setRegionEnd(Math.min(1000, scene?.duration_ms ?? 1000));
     setLoopStart(numberValue(sceneView.loop_start_ms, 0));
@@ -809,9 +822,16 @@ export function TimelineEditor({
       stashedTracksRef.current[previousSpaceRef.current] = customTracks;
     }
     previousSpaceRef.current = editingSpaceId;
-    setCustomTracks(
-      stashedTracksRef.current[editingSpaceId] ?? trackArray(timelineTracks[editingSpaceId]),
-    );
+    const loadedTracks =
+      stashedTracksRef.current[editingSpaceId] ?? trackArray(timelineTracks[editingSpaceId]);
+    setCustomTracks(loadedTracks);
+    const sceneChanged = previousLoadedSceneRef.current !== (scene?.id ?? null);
+    previousLoadedSceneRef.current = scene?.id ?? null;
+    pendingSpaceLoadRef.current = {
+      values: JSON.stringify([loadedSafePoints, loadedRegions, loadedTracks]),
+      scenePolicy: sceneChanged ? JSON.stringify(readSceneOperationalPolicy(scene)) : null,
+      passes: 0,
+    };
     setSelectedTrackId("");
     setSelectedTransformLayerId("");
     setSelectedTransformKeyframeId("");
@@ -908,8 +928,38 @@ export function TimelineEditor({
   useEffect(() => {
     const snapshot = timelineSnapshot();
     const serialized = JSON.stringify(snapshot);
+    const pendingLoad = pendingSpaceLoadRef.current;
+    if (pendingLoad) {
+      pendingLoad.passes += 1;
+      const loaded =
+        JSON.stringify([snapshot.safePoints, snapshot.regions, snapshot.customTracks]) ===
+          pendingLoad.values &&
+        (pendingLoad.scenePolicy === null ||
+          JSON.stringify(snapshot.scenePolicy) === pendingLoad.scenePolicy);
+      if (loaded) {
+        // Opening the editor or switching scene/composition only loads saved values.
+        pendingSpaceLoadRef.current = null;
+        restoringHistoryRef.current = false;
+        if (savedSnapshotRef.current === null || !timelineDirtyRef.current) {
+          savedSnapshotRef.current = serialized;
+        }
+        if (historyIndexRef.current < 0) {
+          historyRef.current = [snapshot];
+          historyIndexRef.current = 0;
+        } else {
+          historyRef.current[historyIndexRef.current] = snapshot;
+        }
+        timelineDirtyRef.current = serialized !== savedSnapshotRef.current;
+        setTimelineDirty(timelineDirtyRef.current);
+        setHistoryVersion((version) => version + 1);
+        return;
+      }
+      if (pendingLoad.passes < 3) return;
+      pendingSpaceLoadRef.current = null;
+    }
     if (savedSnapshotRef.current === null) savedSnapshotRef.current = serialized;
-    setTimelineDirty(serialized !== savedSnapshotRef.current);
+    timelineDirtyRef.current = serialized !== savedSnapshotRef.current;
+    setTimelineDirty(timelineDirtyRef.current);
     if (restoringHistoryRef.current) {
       restoringHistoryRef.current = false;
       return;
@@ -997,6 +1047,13 @@ export function TimelineEditor({
         : [];
     return [...media, ...lighting, ...customTracks];
   }, [composition, customTracks, scene]);
+  const placedCompositions = useMemo(
+    () =>
+      scene
+        ? scenePlacedCompositions(scene.id, compositions, sceneCompositions, compositionInstances)
+        : [],
+    [compositionInstances, compositions, scene, sceneCompositions],
+  );
   const selectedTrack = tracks.find((track) => track.id === selectedTrackId);
   const selectedOutputRef = !composition && selectedTrack?.built_in &&
     (selectedTrack.kind === "media_output" || selectedTrack.kind === "lighting_output")
@@ -1283,6 +1340,7 @@ export function TimelineEditor({
       },
     });
     savedSnapshotRef.current = JSON.stringify(timelineSnapshot(updatedCompositions));
+    timelineDirtyRef.current = false;
     setTimelineDirty(false);
   }
 
@@ -3375,6 +3433,41 @@ export function TimelineEditor({
                 }}
               />
             ))}
+          {!composition && placedCompositions.length > 0 && (
+            <div
+              className="timeline-track timeline-track--compositions"
+              aria-label="Track Compositions in this scene"
+            >
+              <span className="timeline-track__label">Compositions in this scene</span>
+              {placedCompositions.map((placed) => {
+                const placedComposition = compositions[placed.compositionId];
+                const start = Math.min(Math.max(0, placed.startMs), duration);
+                const end = Math.min(duration, placed.startMs + placed.durationMs);
+                return (
+                  <button
+                    type="button"
+                    key={placed.key}
+                    aria-label={`Open composition ${placedComposition.name}`}
+                    className="timeline-track-reference timeline-track-reference--clip timeline-composition-clip"
+                    style={{
+                      left: `${(start * 100) / duration}%`,
+                      width: `${(Math.max(0, end - start) * 100) / duration}%`,
+                    }}
+                    title={`${placedComposition.name} · ${humanizeSpace(placedComposition.space_kind)} · ${formatTimecode(placed.startMs)}–${formatTimecode(placed.startMs + placed.durationMs)} · open to edit`}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      setActiveCompositionId(placed.compositionId);
+                    }}
+                  >
+                    <span className="timeline-track-reference__name">
+                      {placedComposition.name}
+                    </span>
+                    <small>{humanizeSpace(placedComposition.space_kind)}</small>
+                  </button>
+                );
+              })}
+            </div>
+          )}
           {tracks.map((track) => {
             const asset = timelineTrackAsset(previewScene ?? scene, track, assets);
             const showThumbnail =
@@ -11373,6 +11466,62 @@ function stringArrayMap(value: unknown): Record<string, string[]> {
   return Object.fromEntries(
     Object.entries(record).map(([key, item]) => [key, stringArray(item)]),
   );
+}
+
+type ScenePlacedComposition = {
+  key: string;
+  compositionId: string;
+  instanceId: string | null;
+  startMs: number;
+  durationMs: number;
+};
+
+/** Where compositions play in a scene, mirroring the compiler: instances, else scene roots. */
+function scenePlacedCompositions(
+  sceneId: string,
+  compositions: Record<string, Composition>,
+  sceneCompositions: Record<string, string[]>,
+  compositionInstances: Record<string, CompositionInstance[]>,
+): ScenePlacedComposition[] {
+  const instances = (compositionInstances[sceneId] ?? []).filter(
+    (instance) => compositions[instance.composition_id],
+  );
+  const instanced = new Set(instances.map((instance) => instance.composition_id));
+  const roots = (sceneCompositions[sceneId] ?? [])
+    .filter((id) => compositions[id] && !instanced.has(id))
+    .map((id) => ({
+      key: `root:${id}`,
+      compositionId: id,
+      instanceId: null,
+      startMs: compositions[id].local_time_offset_ms,
+      durationMs: compositions[id].duration_ms,
+    }));
+  return [
+    ...roots,
+    ...instances.map((instance) => ({
+      key: `instance:${instance.id}`,
+      compositionId: instance.composition_id,
+      instanceId: instance.id,
+      startMs: instance.start_offset_ms,
+      durationMs: Math.round(compositions[instance.composition_id].duration_ms * instance.time_scale),
+    })),
+  ].sort((left, right) => left.startMs - right.startMs || left.key.localeCompare(right.key));
+}
+
+/** Open a scene without media outputs on its only composition, where its content is edited. */
+function defaultCompositionForScene(
+  scene: ProjectDraftRecord["draft"]["scenes"][number] | undefined,
+  compositions: Record<string, Composition>,
+  sceneCompositions: Record<string, string[]>,
+  compositionInstances: Record<string, CompositionInstance[]>,
+): string {
+  if (!scene || !Array.isArray(scene.media) || scene.media.length > 0) return "";
+  const placed = new Set(
+    scenePlacedCompositions(scene.id, compositions, sceneCompositions, compositionInstances).map(
+      (item) => item.compositionId,
+    ),
+  );
+  return placed.size === 1 ? [...placed][0] : "";
 }
 
 function compositionInstanceMap(
