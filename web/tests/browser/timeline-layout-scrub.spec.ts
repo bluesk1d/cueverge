@@ -53,6 +53,44 @@ test("layout view shows each video layer's frame at the scrubbed playhead", asyn
   expect(seconds).toBeCloseTo(0.3, 2);
 });
 
+test("layer start accepts typed milliseconds and undoes in one step", async ({ page }) => {
+  await page.route("**/api/gui/v1/**", async (route) => {
+    const url = new URL(route.request().url());
+    if (url.pathname.endsWith("/projects/demo-project/assets")) return route.fulfill({ json: [] });
+    if (url.pathname.endsWith("/projects/demo-project/draft")) {
+      return route.fulfill({ json: response(document()) });
+    }
+    return route.fulfill({ status: 404, json: { detail: "fixture route missing" } });
+  });
+  await page.goto("/demo.html");
+  await page.getByRole("button", { name: "Shows", exact: true }).click();
+  await openTimelineEditor(page);
+  await openComposition(page, "window");
+  await page.getByRole("button", { name: "Media layer Window loop", exact: true }).click();
+  const start = page.getByLabel("Media layer start");
+  await expect(start).toHaveValue("1000");
+
+  await start.click();
+  await start.press("ControlOrMeta+a");
+  await start.pressSequentially("1537");
+  await expect(start).toHaveValue("1537");
+  await start.press("Enter");
+  await expect(start).toHaveValue("1537");
+  await expect(start).not.toBeFocused();
+
+  // Out-of-range values are clamped to where the layer still fits (5000 - 3000).
+  await start.click();
+  await start.press("ControlOrMeta+a");
+  await start.pressSequentially("9000");
+  await start.press("Tab");
+  await expect(start).toHaveValue("2000");
+
+  await page.getByRole("button", { name: "Undo timeline edit" }).click();
+  await expect(start).toHaveValue("1537");
+  await page.getByRole("button", { name: "Undo timeline edit" }).click();
+  await expect(start).toHaveValue("1000");
+});
+
 function response(draft: unknown) {
   return {
     project: {
@@ -128,7 +166,7 @@ function document() {
       },
       scene_compositions: { ambient: ["window"] },
       timeline_tracks: {
-        window: [{ id: "window-track", kind: "visual", name: "Window track", built_in: false }],
+        window: [{ id: "window-track", kind: "media_output", name: "Window track", resource_binding: "", built_in: false }],
       },
       timeline_transform_layers: {
         window: [

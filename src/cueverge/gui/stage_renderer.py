@@ -16,6 +16,7 @@ from cueverge.gui.contracts import DraftProject
 from cueverge.gui.frame_compositor import (
     compose_visual_frame,
     conform_preview_pixel_format,
+    layer_source_time,
     mix_audio_layers,
     overlap_distance_field_masks,
     planar_projector_mesh,
@@ -142,17 +143,30 @@ def prepare_stage_composition(
     background = _hex_rgb(_string(settings.get("output_background_color")))
 
     def compose_frames() -> Iterator[np.ndarray]:
+        # Frames where no layer draws are all the background; compose that once and reuse it
+        # (read-only) so leading/trailing gaps cost almost nothing.
+        blank: np.ndarray | None = None
         for index in range(frame_count):
             if on_frame is not None:
                 on_frame(index, frame_count)
-            yield compose_visual_frame(
+            timestamp_ms = ((index + first_frame) * 1000 * frame_rate_denominator) // (
+                frame_rate_numerator
+            )
+            empty = all(layer_source_time(layer, timestamp_ms) is None for layer in stage_layers)
+            if empty and blank is not None:
+                yield blank
+                continue
+            frame = compose_visual_frame(
                 stage_layers,
-                timestamp_ms=((index + first_frame) * 1000 * frame_rate_denominator)
-                // frame_rate_numerator,
+                timestamp_ms=timestamp_ms,
                 output_width=render_width,
                 output_height=render_height,
                 background_rgb=background,
             )[0]
+            if empty:
+                frame.setflags(write=False)
+                blank = frame
+            yield frame
 
     # Lights-only bakes sample each frame and discard it; projector bakes need every frame.
     stage_frames: tuple[np.ndarray, ...] = () if lights_only else tuple(compose_frames())
@@ -418,22 +432,32 @@ def _prepare_stage_lighting(
         return ()
     indices: dict[str, list[int]] = {}
     buffers: dict[str, bytearray] = {}
+    previous: np.ndarray | None = None
+    encoded: dict[str, bytes] = {}
     for frame in frames:
-        grouped: dict[str, dict[int, list[int]]] = {}
-        srgb = working_to_srgb8(frame)
-        for surface in surfaces:
-            resource = _string(surface.get("resource"))
-            samples = grouped.setdefault(resource, {})
-            for sample in _sample_stage_surface(srgb, surface, width, height):
-                index = _integer(sample["output_index"])
-                if index in samples:
-                    raise ProjectorRenderError("stage lighting surfaces overlap physical indices")
-                samples[index] = cast(list[int], sample["color"])
-        for resource, samples in grouped.items():
-            indices[resource] = sorted(samples)
-            buffers.setdefault(resource, bytearray()).extend(
-                channel for index in indices[resource] for channel in samples[index]
-            )
+        if frame is not previous:
+            grouped: dict[str, dict[int, list[int]]] = {}
+            srgb = working_to_srgb8(frame)
+            for surface in surfaces:
+                resource = _string(surface.get("resource"))
+                samples = grouped.setdefault(resource, {})
+                for sample in _sample_stage_surface(srgb, surface, width, height):
+                    index = _integer(sample["output_index"])
+                    if index in samples:
+                        raise ProjectorRenderError(
+                            "stage lighting surfaces overlap physical indices"
+                        )
+                    samples[index] = cast(list[int], sample["color"])
+            encoded = {}
+            for resource, samples in grouped.items():
+                indices[resource] = sorted(samples)
+                encoded[resource] = bytes(
+                    channel for index in indices[resource] for channel in samples[index]
+                )
+            previous = frame
+        # A repeated (shared blank) frame reuses the samples of the identical frame before it.
+        for resource, data in encoded.items():
+            buffers.setdefault(resource, bytearray()).extend(data)
     mapping_digest = hashlib.sha256(
         json.dumps(surfaces, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()

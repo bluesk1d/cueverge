@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
+import type { CSSProperties, InputHTMLAttributes, PointerEvent as ReactPointerEvent } from "react";
 
 import {
   assetArtifactUrl,
@@ -2591,18 +2591,19 @@ export function TimelineEditor({
                 </label>
                 <label>
                   Layer start
-                  <input
+                  <TimeNumberInput
                     aria-label="Media layer start"
                     disabled={!canEdit}
-                    max={duration - selectedTransformLayer.duration_ms}
-                    min="0"
+                    max={Math.max(0, duration - selectedTransformLayer.duration_ms)}
+                    min={0}
                     step={snapMs}
-                    type="number"
                     value={selectedTransformLayer.start_ms}
-                    onChange={(event) =>
+                    onEditStart={beginGesture}
+                    onEditEnd={endGesture}
+                    onCommit={(start) =>
                       updateTransformLayer(selectedTransformLayer.id, (layer) => ({
                         ...layer,
-                        start_ms: snappedLocal(Number(event.target.value)),
+                        start_ms: start,
                       }))
                     }
                   />
@@ -4471,30 +4472,20 @@ export function TimelineEditor({
                       }))
                     }
                   />
-                  <input
+                  <TimeNumberInput
                     aria-label={`Sync marker time ${marker.name}`}
                     disabled={!canEdit}
                     max={bounds.maximum}
                     min={bounds.minimum}
                     step={snapMs}
-                    type="number"
                     value={marker.time_ms}
-                    onChange={(event) =>
+                    onEditStart={beginGesture}
+                    onEditEnd={endGesture}
+                    onCommit={(time) =>
                       setSyncMarkers((current) => ({
                         ...current,
                         [editingSpaceId]: markers.map((candidate) =>
-                          candidate.id === marker.id
-                            ? {
-                                ...candidate,
-                                time_ms: Math.max(
-                                  bounds.minimum,
-                                  Math.min(
-                                    bounds.maximum,
-                                    snappedLocal(Number(event.target.value)),
-                                  ),
-                                ),
-                              }
-                            : candidate,
+                          candidate.id === marker.id ? { ...candidate, time_ms: time } : candidate,
                         ),
                       }))
                     }
@@ -4610,16 +4601,16 @@ export function TimelineEditor({
                     <div className="timeline-lighting-properties">
                       <label>
                         Start
-                        <input
+                        <TimeNumberInput
                           aria-label={`Lighting cue start ${cue.name}`}
                           disabled={!canEdit}
-                          max={duration - cue.lighting.duration_ms}
-                          min="0"
+                          max={Math.max(0, duration - cue.lighting.duration_ms)}
+                          min={0}
                           step={snapMs}
-                          type="number"
                           value={effectiveTime}
-                          onChange={(event) => {
-                            const start = snappedLocal(Number(event.target.value));
+                          onEditStart={beginGesture}
+                          onEditEnd={endGesture}
+                          onCommit={(start) => {
                             setSyncCues((current) => ({
                               ...current,
                               [editingSpaceId]: cues.map((candidate) =>
@@ -6414,28 +6405,22 @@ export function TimelineEditor({
             <div className="timeline-region-controls">
               <label>
                 Protected start
-                <input
+                <TimeNumberInput
                   max={duration}
-                  min="0"
+                  min={0}
                   step={snapMs}
-                  type="number"
                   value={regionStart}
-                  onChange={(event) =>
-                    setRegionStart(snappedLocal(Number(event.target.value)))
-                  }
+                  onCommit={setRegionStart}
                 />
               </label>
               <label>
                 Protected end
-                <input
+                <TimeNumberInput
                   max={duration}
-                  min="0"
+                  min={0}
                   step={snapMs}
-                  type="number"
                   value={regionEnd}
-                  onChange={(event) =>
-                    setRegionEnd(snappedLocal(Number(event.target.value)))
-                  }
+                  onCommit={setRegionEnd}
                 />
               </label>
               <button
@@ -6451,28 +6436,22 @@ export function TimelineEditor({
               </button>
               <label>
                 Loop start
-                <input
+                <TimeNumberInput
                   max={duration}
-                  min="0"
+                  min={0}
                   step={snapMs}
-                  type="number"
                   value={loopStart}
-                  onChange={(event) =>
-                    setLoopStart(snappedLocal(Number(event.target.value)))
-                  }
+                  onCommit={setLoopStart}
                 />
               </label>
               <label>
                 Loop end
-                <input
+                <TimeNumberInput
                   max={duration}
-                  min="0"
+                  min={0}
                   step={snapMs}
-                  type="number"
                   value={loopEnd}
-                  onChange={(event) =>
-                    setLoopEnd(snappedLocal(Number(event.target.value)))
-                  }
+                  onCommit={setLoopEnd}
                 />
               </label>
             </div>
@@ -7441,6 +7420,54 @@ function layerSourceSize(
   if (width > 0 && height > 0) return [width, height];
   const upp = layerUnitsPerSourcePixel(composition);
   return composition ? [composition.width / upp, composition.height / upp] : [1920, 1080];
+}
+
+/**
+ * Millisecond field that accepts typed values: what is typed stays visible while focused and
+ * each valid number is applied unsnapped (clamped to min/max); arrows step by `step`.
+ */
+function TimeNumberInput({
+  value,
+  min,
+  max,
+  onCommit,
+  onEditStart,
+  onEditEnd,
+  ...rest
+}: Omit<InputHTMLAttributes<HTMLInputElement>, "value" | "onChange" | "type" | "min" | "max"> & {
+  value: number;
+  min: number;
+  max: number;
+  onCommit: (milliseconds: number) => void;
+  onEditStart?: () => void;
+  onEditEnd?: () => void;
+}) {
+  const [draft, setDraft] = useState<string | null>(null);
+  return (
+    <input
+      {...rest}
+      type="number"
+      min={min}
+      max={max}
+      value={draft ?? String(value)}
+      onFocus={() => {
+        setDraft(String(value));
+        onEditStart?.();
+      }}
+      onBlur={() => {
+        setDraft(null);
+        onEditEnd?.();
+      }}
+      onKeyDown={(event) => {
+        if (event.key === "Enter") event.currentTarget.blur();
+      }}
+      onChange={(event) => {
+        setDraft(event.target.value);
+        const typed = event.target.valueAsNumber;
+        if (Number.isFinite(typed)) onCommit(Math.round(Math.min(max, Math.max(min, typed))));
+      }}
+    />
+  );
 }
 
 function keyframeAtTime(layer: TransformLayer, localMs: number): TransformKeyframe | undefined {

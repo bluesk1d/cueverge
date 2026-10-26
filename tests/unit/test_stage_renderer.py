@@ -1056,3 +1056,99 @@ def _write_wave(path: Path) -> None:
         output.setsampwidth(2)
         output.setframerate(48000)
         output.writeframes(samples.tobytes())
+
+
+def test_lights_only_bake_composes_empty_frames_once_with_identical_output(
+    tmp_path: Path,
+) -> None:
+    image = tmp_path / "stripes.png"
+    pixels = np.zeros((36, 128, 3), dtype=np.uint8)
+    pixels[:, :64] = [255, 0, 0]
+    pixels[:, 64:] = [255, 200, 0]
+    Image.fromarray(pixels).save(image)
+    assets = cast(AssetUploadService, _FixtureAssets({"ghost": ("image/png", image)}))
+    document = _draft()
+    document["installation"] = {
+        "schema_version": 1,
+        "resources": [
+            {"resource": name, "kind": "media_agent", "target": name}
+            for name in ("projector.left", "projector.right")
+        ]
+        + [{"resource": "lights", "kind": "pixel_output", "target": "memory", "pixel_count": 10}],
+    }
+    scene = cast(list[dict[str, object]], document["scenes"])[0]
+    scene["duration_ms"] = 10_000
+    metadata = cast(dict[str, object], document["editor_metadata"])
+    composition = cast(dict[str, dict[str, object]], metadata["compositions"])["stage-composition"]
+    composition["duration_ms"] = 10_000
+    composition["stage_projector_resources"] = []
+    composition["stage_lighting_surfaces"] = ["stage-pixels", "right-pixels"]
+    settings = cast(dict[str, object], composition["render_settings"])
+    settings["output_background_color"] = "#102030"
+    layers = cast(dict[str, list[dict[str, object]]], metadata["timeline_transform_layers"])
+    layers["stage-composition"] = [
+        {**_visual_layer(), "start_ms": 7000, "duration_ms": 2000, "out_point_ms": 2000}
+    ]
+    metadata["timeline_tracks"] = {
+        "stage-composition": [
+            {
+                "id": "stage-track",
+                "name": "Media",
+                "kind": "group",
+                "resource_binding": "shared-stage",
+            }
+        ]
+    }
+    mapper = _mapper_export()
+    surface = cast(list[dict[str, object]], mapper["lighting_surfaces"])[0]
+    cast(list[dict[str, object]], surface["pixels"])[0].update(
+        {"output_index": 8, "stage_x": 1, "stage_y": 2}
+    )
+    right = copy.deepcopy(surface)
+    right["semantic_id"] = "right-pixels"
+    cast(list[dict[str, object]], right["pixels"])[0].update({"output_index": 2, "stage_x": 7})
+    mapper["lighting_surfaces"] = [surface, right]
+    draft = DraftProject.model_validate(document)
+    assert bakes_lighting_only(composition)
+
+    def bake(directory: str) -> tuple[bytes, int, int]:
+        calls = 0
+        frames = 0
+
+        def counted(*args: Any, **kwargs: Any) -> Any:
+            nonlocal calls
+            calls += 1
+            return compose_visual_frame(*args, **kwargs)
+
+        def progress(index: int, total: int) -> None:
+            nonlocal frames
+            frames += 1
+
+        with patch("cueverge.gui.stage_renderer.compose_visual_frame", side_effect=counted):
+            manifest = render_stage_composition(
+                project_id="demo-project",
+                source_revision=2,
+                draft=draft,
+                composition_id="stage-composition",
+                assets=assets,
+                mapper_export=mapper,
+                coverage=_coverage(),
+                overlaps=(),
+                sync_admission=SyncAdmission(True, "lights_only_stage", "test", None),
+                output_directory=tmp_path / directory,
+                on_frame=progress,
+            )
+        artifact = tmp_path / directory / str(manifest["activation_identity"])
+        return (artifact / "lighting-0001.rgb").read_bytes(), calls, frames
+
+    reused, reused_calls, reused_frames = bake("reused")
+    # 20 frames at 2 fps; the layer draws on 4 (7.0 to 8.5 s), the other 16 share one blank frame.
+    assert reused_frames == 20
+    assert reused_calls == 5
+    with patch("cueverge.gui.stage_renderer.layer_source_time", return_value=0):
+        every, every_calls, _ = bake("every-frame")
+    assert every_calls == 20
+    assert reused == every
+    blank = reused[:6]
+    assert blank != bytes(6)
+    assert reused[14 * 6 : 15 * 6] != blank

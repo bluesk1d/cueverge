@@ -852,7 +852,10 @@ unavailable; save or cancel first. Stale saves retain edits and report conflict.
    composition in the scene.
 3. Use the transport bar: stop, frame steps, play/pause, the playhead
    timecode (composition time, plus scene time inside a composition), **Go to
-   (ms)**, speed, zoom, and snap.
+   (ms)**, speed, zoom, and snap. Snap applies to dragging and to the arrow
+   steps of millisecond fields; a value typed into a field such as **Layer
+   start**, a marker or LED cue time, or a loop/protected range is used exactly
+   (limited to where it fits) and the whole edit is one undo step.
 4. The **Media** bin lists ready uploads and other compositions. Drag an item
    onto a track to place it at the drop time, or onto the **Viewer** to place
    it at the playhead on the selected track (or the first media track). The
@@ -1051,7 +1054,10 @@ sweeping along every roofline segment, choose **Whole house lights** instead.
 It is the same shared-stage composition with no projectors and every mapped
 LED output selected. The bake (**Bake LED overlay**) produces LED sequences
 for the controller only: no projector video is rendered, audio layers are
-rejected, and no projector synchronization rehearsal is needed. You can also
+rejected, and no projector synchronization rehearsal is needed. Stretches where
+no layer is showing (for example before a clip placed at 14 s to line up with a
+projector video) are rendered once and reused, so empty time adds almost
+nothing to bake time. You can also
 turn an existing overlay into a lights-only one by clearing every projector
 under **Outputs in this effect** once at least one LED output is selected.
 

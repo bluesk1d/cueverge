@@ -518,6 +518,22 @@ def layer_mask_alpha(
     return alpha
 
 
+def layer_source_time(layer: PreparedVisualLayer, timestamp_ms: int) -> int | None:
+    """Source time a layer shows at a composition time, or None when it draws nothing."""
+    local_time = timestamp_ms - layer.start_ms
+    if local_time < 0 or local_time >= layer.duration_ms:
+        return None
+    source_time = layer.in_point_ms + local_time
+    if layer.source_kind == "video" and layer.playback != "hold":
+        if layer.source_duration_ms is None or layer.source_duration_ms <= 0:
+            raise ValueError("timed media playback requires a source duration")
+        if layer.playback == "loop":
+            source_time %= layer.source_duration_ms
+        elif source_time >= layer.source_duration_ms:
+            return None
+    return source_time
+
+
 def compose_visual_frame(
     layers: tuple[PreparedVisualLayer, ...],
     *,
@@ -535,17 +551,10 @@ def compose_visual_frame(
         source_color_space="srgb",
     )
     for layer in sorted(layers, key=lambda item: (item.z_index, item.id)):
-        local_time = timestamp_ms - layer.start_ms
-        if local_time < 0 or local_time >= layer.duration_ms:
+        source_time = layer_source_time(layer, timestamp_ms)
+        if source_time is None:
             continue
-        source_time = layer.in_point_ms + local_time
-        if layer.source_kind == "video" and layer.playback != "hold":
-            if layer.source_duration_ms is None or layer.source_duration_ms <= 0:
-                raise ValueError("timed media playback requires a source duration")
-            if layer.playback == "loop":
-                source_time %= layer.source_duration_ms
-            elif source_time >= layer.source_duration_ms:
-                continue
+        local_time = timestamp_ms - layer.start_ms
         source = (
             layer.source.frame_at(source_time)
             if isinstance(layer.source, VideoFrameSource)
