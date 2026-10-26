@@ -147,6 +147,8 @@ type Composition = {
   children: string[];
   stage_lighting_surfaces: string[];
   stage_projector_resources?: string[];
+  /** Stage only: composition units per source pixel at scale 1 (media size independent of render size). */
+  source_pixel_units?: number;
   safe_points_ms: number[];
   protected_intervals: { start_ms: number; end_ms: number }[];
   render_settings: {
@@ -1515,16 +1517,26 @@ export function TimelineEditor({
         protected_intervals: [],
         stage_lighting_surfaces: [],
         ...spec.stageOutputs,
-        render_settings: defaultRenderSettings(
-          spec.space === "projector_native"
-            ? [spec.width, spec.height]
-            : spec.space === "stage"
-              ? suggestedStageRenderResolution(
-                  mapperExport,
-                  spec.stageOutputs?.stage_projector_resources?.length === 0,
-                )
-              : [1920, 1080],
-        ),
+        ...(() => {
+          if (spec.space !== "stage") {
+            return {
+              render_settings: defaultRenderSettings(
+                spec.space === "projector_native" ? [spec.width, spec.height] : [1920, 1080],
+              ),
+            };
+          }
+          const [renderWidth] = suggestedStageRenderResolution(
+            mapperExport,
+            spec.stageOutputs?.stage_projector_resources?.length === 0,
+          );
+          return {
+            source_pixel_units: spec.width / renderWidth,
+            render_settings: defaultRenderSettings([
+              renderWidth,
+              stageRenderHeight(spec.width, spec.height, renderWidth),
+            ]),
+          };
+        })(),
         lighting_settings: defaultLightingSettings(),
       },
     }));
@@ -1562,12 +1574,9 @@ export function TimelineEditor({
     }
     if (composition && composition.space_kind !== "lighting_surface" && spec.kind !== "audio") {
       const sourceComposition = compositions[spec.sourceId];
-      const width = sourceComposition
-        ? sourceComposition.render_settings.render_width
-        : numberValue(asset?.metadata?.width, 0);
-      const height = sourceComposition
-        ? sourceComposition.render_settings.render_height
-        : numberValue(asset?.metadata?.height, 0);
+      const [width, height] = sourceComposition
+        ? compositionRasterSize(sourceComposition)
+        : [numberValue(asset?.metadata?.width, 0), numberValue(asset?.metadata?.height, 0)];
       const upp = layerUnitsPerSourcePixel(composition);
       keyframe.position = [composition.width / 2, composition.height / 2];
       if (width > 0 && height > 0) {
@@ -5744,28 +5753,46 @@ export function TimelineEditor({
                     min="1"
                     type="number"
                     value={composition.render_settings.render_width}
-                    onChange={(event) =>
+                    onChange={(event) => {
+                      const renderWidth = Number(event.target.value);
+                      if (!Number.isFinite(renderWidth) || renderWidth <= 0) return;
                       setCompositions((current) => ({
                         ...current,
-                        [composition.id]: {
-                          ...current[composition.id],
-                          render_settings: {
-                            ...current[composition.id].render_settings,
-                            render_width: Number(event.target.value),
-                          },
-                        },
-                      }))
-                    }
+                        [composition.id]:
+                          current[composition.id].space_kind === "stage"
+                            ? withStageSize(current[composition.id], { renderWidth })
+                            : {
+                                ...current[composition.id],
+                                render_settings: {
+                                  ...current[composition.id].render_settings,
+                                  render_width: renderWidth,
+                                },
+                              },
+                      }));
+                    }}
                   />
                 </label>
                 <label>
                   Render height
                   <input
                     aria-label="Render height"
-                    disabled={!canEdit}
+                    disabled={!canEdit || composition.space_kind === "stage"}
+                    title={
+                      composition.space_kind === "stage"
+                        ? "Follows the composition's shape so media is never stretched"
+                        : undefined
+                    }
                     min="1"
                     type="number"
-                    value={composition.render_settings.render_height}
+                    value={
+                      composition.space_kind === "stage"
+                        ? stageRenderHeight(
+                            composition.width,
+                            composition.height,
+                            composition.render_settings.render_width,
+                          )
+                        : composition.render_settings.render_height
+                    }
                     onChange={(event) =>
                       setCompositions((current) => ({
                         ...current,
@@ -6013,8 +6040,7 @@ export function TimelineEditor({
                 </label>
                 <small>
                   Logical {composition.width}×{composition.height} · render{" "}
-                  {composition.render_settings.render_width}×
-                  {composition.render_settings.render_height} · linear sRGB working
+                  {compositionRasterSize(composition).join("×")} · linear sRGB working
                   color · premultiplied working alpha. Preview and baking consume this
                   same contract.
                 </small>
@@ -6040,13 +6066,14 @@ export function TimelineEditor({
                     <small>
                       Lights only: render size and frame rate apply; video encoder, bitrate,
                       loudness and media end settings are not used because no projector video is
-                      made. Render size only sets how finely the video is sampled at each LED;
-                      about {LIGHTS_ONLY_RENDER_WIDTH} px wide is plenty and bakes much faster than
-                      projector sizes.
+                      made. Render size only sets how finely the video is sampled at each LED and
+                      never resizes or stretches media; about {LIGHTS_ONLY_RENDER_WIDTH} px wide is
+                      plenty and bakes much faster than projector sizes.
                     </small>
                     {composition.render_settings.render_width > LIGHTS_ONLY_RENDER_WIDTH * 1.5 &&
                       (() => {
-                        const [width, height] = suggestedStageRenderResolution(mapperExport, true);
+                        const [width] = suggestedStageRenderResolution(mapperExport, true);
+                        const height = stageRenderHeight(composition.width, composition.height, width);
                         return (
                           <button
                             type="button"
@@ -6054,14 +6081,9 @@ export function TimelineEditor({
                             onClick={() =>
                               setCompositions((current) => ({
                                 ...current,
-                                [composition.id]: {
-                                  ...current[composition.id],
-                                  render_settings: {
-                                    ...current[composition.id].render_settings,
-                                    render_width: width,
-                                    render_height: height,
-                                  },
-                                },
+                                [composition.id]: withStageSize(current[composition.id], {
+                                  renderWidth: width,
+                                }),
                               }))
                             }
                           >
@@ -7399,6 +7421,9 @@ function TransformFields({
 
 function layerUnitsPerSourcePixel(composition: Composition | undefined): number {
   if (!composition) return 1;
+  if (composition.space_kind === "stage" && (composition.source_pixel_units ?? 0) > 0) {
+    return composition.source_pixel_units!;
+  }
   const raster =
     composition.space_kind === "lighting_surface"
       ? composition.lighting_settings.canvas_width
@@ -7413,7 +7438,7 @@ function layerSourceSize(
   compositions: Record<string, Composition>,
 ): [number, number] {
   const child = compositions[layer.source_id];
-  if (child) return [child.render_settings.render_width, child.render_settings.render_height];
+  if (child) return compositionRasterSize(child);
   const asset = assets.find((candidate) => candidate.id === layer.source_id);
   const width = numberValue(asset?.metadata?.width, 0);
   const height = numberValue(asset?.metadata?.height, 0);
@@ -9343,20 +9368,15 @@ function StageOutputSelector({
             disabled={!canEdit}
             onClick={() =>
               onChange((current) => {
-                const [renderWidth, renderHeight] = suggestedStageRenderResolution(
+                const [renderWidth] = suggestedStageRenderResolution(
                   mapperExport,
                   current.stage_projector_resources?.length === 0,
                 );
-                return {
-                  ...current,
+                return withStageSize(current, {
+                  renderWidth,
                   width: roundStage(stage.width),
                   height: roundStage(stage.height),
-                  render_settings: {
-                    ...current.render_settings,
-                    render_width: renderWidth,
-                    render_height: renderHeight,
-                  },
-                };
+                });
               })
             }
           >
@@ -11354,6 +11374,11 @@ function compositionMap(value: unknown): Record<string, Composition> {
             ...(Array.isArray(composition.stage_projector_resources)
               ? { stage_projector_resources: stringArray(composition.stage_projector_resources) }
               : {}),
+            ...(typeof composition.source_pixel_units === "number" &&
+            Number.isFinite(composition.source_pixel_units) &&
+            composition.source_pixel_units > 0
+              ? { source_pixel_units: composition.source_pixel_units }
+              : {}),
             safe_points_ms: numberArray(composition.safe_points_ms),
             protected_intervals: intervalArray(
               composition.protected_intervals,
@@ -11387,6 +11412,43 @@ function lightingSettings(value: unknown): Composition["lighting_settings"] {
         : "bilinear",
     gamma: numberValue(settings.gamma, 2.2),
     brightness: numberValue(settings.brightness, 1),
+  };
+}
+
+/** Raster a composition renders at; stage rasters follow the composition's shape. */
+function compositionRasterSize(composition: Composition): [number, number] {
+  const { render_width: width, render_height: height } = composition.render_settings;
+  return composition.space_kind === "stage"
+    ? [width, stageRenderHeight(composition.width, composition.height, width)]
+    : [width, height];
+}
+
+/** Stage render height that keeps the composition's shape, exactly as the renderer derives it. */
+function stageRenderHeight(width: number, height: number, renderWidth: number): number {
+  return Math.max(1, Math.round((renderWidth * height) / width));
+}
+
+/**
+ * Resize a stage composition's render raster (and optionally its logical size) without
+ * resizing its media: media size is pinned in composition units before anything changes.
+ */
+function withStageSize(
+  composition: Composition,
+  change: { renderWidth: number; width?: number; height?: number },
+): Composition {
+  const sourcePixelUnits = layerUnitsPerSourcePixel(composition);
+  const width = change.width ?? composition.width;
+  const height = change.height ?? composition.height;
+  return {
+    ...composition,
+    width,
+    height,
+    source_pixel_units: sourcePixelUnits,
+    render_settings: {
+      ...composition.render_settings,
+      render_width: change.renderWidth,
+      render_height: stageRenderHeight(width, height, change.renderWidth),
+    },
   };
 }
 

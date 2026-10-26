@@ -104,6 +104,17 @@ class Composition(MetadataSchema):
             "sequences for stage_lighting_surfaces and no projector video."
         ),
     )
+    source_pixel_units: float | None = Field(
+        default=None,
+        gt=0,
+        description=(
+            "Stage compositions: composition units covered by one source media pixel at "
+            "keyframe scale 1, so media size does not depend on render_width. Stage rasters "
+            "keep the composition's aspect ratio (render height = render_width * height / "
+            "width). Omit only on older compositions, where one source pixel is one render "
+            "pixel."
+        ),
+    )
     render_settings: RenderSettings | None = None
     lighting_settings: LightingSettings | None = None
 

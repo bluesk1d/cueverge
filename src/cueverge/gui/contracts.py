@@ -207,6 +207,18 @@ def _validate_composition_graph(
             raise ValueError("stage lighting surfaces must be up to 100 unique semantic IDs")
         if stage_surfaces and value.get("space_kind") != "stage":
             raise ValueError("only stage compositions can select stage lighting surfaces")
+        source_pixel_units = value.get("source_pixel_units")
+        if source_pixel_units is not None:
+            if value.get("space_kind") != "stage":
+                raise ValueError("only stage compositions set source_pixel_units")
+            if (
+                not isinstance(source_pixel_units, (int, float))
+                or isinstance(source_pixel_units, bool)
+                or not math.isfinite(source_pixel_units)
+                or source_pixel_units <= 0
+                or source_pixel_units > 1_000_000
+            ):
+                raise ValueError("source_pixel_units must be a positive number")
         stage_projectors = value.get("stage_projector_resources")
         if stage_projectors is not None:
             if (

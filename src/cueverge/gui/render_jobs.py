@@ -25,6 +25,7 @@ from cueverge.gui.stage_renderer import (
     render_stage_composition,
     selected_stage_lighting_surfaces,
     selected_stage_projectors,
+    stage_raster_size,
 )
 from cueverge.gui.sync_rehearsal import SyncAdmission, SyncRehearsalService
 
@@ -556,6 +557,7 @@ class RenderJobService:
             environment = {
                 "mapper_export": mapper,
                 "transform_layers": layers,
+                **_stage_raster_identity(composition),
                 "coverage": asdict(coverage),
                 "overlaps": [
                     {
@@ -705,6 +707,8 @@ def _estimate_reservation(composition: dict[str, object]) -> int:
     settings = _mapping(composition.get("render_settings"))
     width = _integer(settings.get("render_width"))
     height = _integer(settings.get("render_height"))
+    if composition.get("space_kind") == "stage":
+        width, height = stage_raster_size(composition)
     numerator = _integer(settings.get("frame_rate_numerator"))
     denominator = _integer(settings.get("frame_rate_denominator"))
     duration_ms = _integer(composition.get("duration_ms"))
@@ -719,6 +723,17 @@ def _estimate_reservation(composition: dict[str, object]) -> int:
     raw_video = width * height * 4 * frame_count
     raw_audio = duration_ms * 48 * 2 * 4
     return (raw_video + raw_audio) * 2 + lighting
+
+
+def _stage_raster_identity(composition: Mapping[str, object]) -> dict[str, object]:
+    """Distinguish bakes drawn before stage rasters followed the composition's shape.
+
+    Only compositions whose stored render height differs from the derived one render
+    differently now, so only their cache keys (and bakes) change.
+    """
+    raster = stage_raster_size(composition)
+    stored = _mapping(composition.get("render_settings")).get("render_height")
+    return {} if stored == raster[1] else {"stage_raster": list(raster)}
 
 
 def _cache_key(

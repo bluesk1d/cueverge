@@ -1104,8 +1104,16 @@ contains only the RGB sequences; **Render & bake** then hides projector
 rehearsal and frame inspection (check sampled colors in **House view**), and
 only render size and frame rate apply. Render size only sets how finely the
 video is sampled at each LED, so **Whole house lights** defaults to 1200 px
-wide (stage aspect) and **Use LED bake size** resizes an existing overlay;
+wide and **Use LED bake size** resizes an existing overlay;
 projector-sized rasters bake many times slower for no visible LED benefit.
+For every shared-stage composition (lights-only or with projectors), media
+size is fixed in stage units and never depends on the render size: **Render
+height** follows the composition's shape from **Render width** and cannot be
+set separately, so media is never stretched, and changing **Render width**
+only trades bake time against detail. Older compositions keep their layer
+sizes; the first render-width change pins them (MCP drafts expose this as the
+composition's `source_pixel_units`). Overlays rendered at a mismatched size
+before this change were stretched vertically; bake them again.
 Frame inspection lists only the
 projectors selected for the effect.
 

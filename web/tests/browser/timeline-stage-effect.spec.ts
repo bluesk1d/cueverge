@@ -243,6 +243,41 @@ test("the whole house lights preset selects every LED surface by its segment nam
   await expect(page.getByRole("button", { name: /Use LED bake size/ })).toHaveCount(0);
 });
 
+test("changing the render width never resizes or stretches stage media", async ({ page }) => {
+  const state = await mockStageApi(page, draft(), [
+    { ...mockReadyAsset("flag-gif", "Flag gif", "image/gif"), metadata: { width: 192, height: 108 } },
+  ]);
+  await page.goto("/demo.html");
+  await page.getByRole("button", { name: "Shows", exact: true }).click();
+  await openTimelineEditor(page);
+  await openComposition(page, "flag");
+  await page.getByRole("button", { name: "Layout", exact: true }).click();
+  const box = page.getByLabel("Composition layout").getByLabel("Layout box Flag");
+  await expect(box).toBeVisible();
+  const before = (await box.boundingBox())!;
+
+  await openTimelineTool(page, "Render & bake");
+  const height = page.getByLabel("Render height", { exact: true });
+  // 10 x 6 composition: the raster follows its shape, so 1920 wide is 1152 high.
+  await expect(height).toHaveValue("1152");
+  await expect(height).toBeDisabled();
+  await page.getByLabel("Render width", { exact: true }).fill("960");
+  await expect(height).toHaveValue("576");
+  await expect(page.getByText(/render 960×576/)).toBeVisible();
+  const after = (await box.boundingBox())!;
+  expect(Math.abs(after.width - before.width)).toBeLessThan(1);
+  expect(Math.abs(after.height - before.height)).toBeLessThan(1);
+  expect(before.width / before.height).toBeCloseTo(192 / 108, 1);
+
+  await page.getByRole("button", { name: "Save timeline" }).click();
+  await expect.poll(() => state.saved).not.toBeNull();
+  const composition = (state.saved as unknown as {
+    editor_metadata: { compositions: Record<string, Record<string, unknown>> };
+  }).editor_metadata.compositions.flag;
+  expect(composition.source_pixel_units).toBeCloseTo(10 / 1920, 8);
+  expect(composition.render_settings).toMatchObject({ render_width: 960, render_height: 576 });
+});
+
 function projector(resource: string, extent: [number, number, number, number]) {
   return {
     resource, geometry_id: resource, native_width: 1280, native_height: 720,

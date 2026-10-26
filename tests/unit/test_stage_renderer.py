@@ -160,7 +160,8 @@ def test_installation_overlay_bakes_one_animation_for_projectors_and_leds(
     denominator: int,
     projector_count: int,
 ) -> None:
-    first = np.zeros((36, 128, 3), dtype=np.uint8)
+    # Fills the 8 x 4 stage at its shape-matching 128 x 64 render raster.
+    first = np.zeros((64, 128, 3), dtype=np.uint8)
     first[:, :64] = [255, 0, 0]
     first[:, 64:] = [0, 255, 0]
     second = np.zeros_like(first)
@@ -192,6 +193,7 @@ def test_installation_overlay_bakes_one_animation_for_projectors_and_leds(
     settings = cast(dict[str, object], composition["render_settings"])
     settings["frame_rate_numerator"] = numerator
     settings["frame_rate_denominator"] = denominator
+    settings["render_height"] = 64
     layers = cast(dict[str, list[dict[str, object]]], metadata["timeline_transform_layers"])
     layers["stage-composition"] = [
         {
@@ -1152,3 +1154,107 @@ def test_lights_only_bake_composes_empty_frames_once_with_identical_output(
     blank = reused[:6]
     assert blank != bytes(6)
     assert reused[14 * 6 : 15 * 6] != blank
+
+
+def _drawn_square_units(composition: dict[str, object]) -> tuple[float, float]:
+    from cueverge.gui.frame_compositor import (
+        PreparedVisualLayer,
+        to_working_rgba,
+        working_to_srgb8,
+    )
+    from cueverge.gui.stage_renderer import stage_raster_layers, stage_raster_size
+
+    source = to_working_rgba(
+        np.full((100, 100, 4), 255, np.uint8),
+        alpha_interpretation="straight",
+        source_color_space="srgb",
+    )
+    keyframe = {
+        "id": "key",
+        "time_ms": 0,
+        "position": [17.5, 10.5],
+        "scale": [1, 1],
+        "rotation_deg": 0,
+        "anchor": [0.5, 0.5],
+        "opacity": 1,
+        "crop": [0, 0, 0, 0],
+        "interpolation": {"kind": "hold"},
+    }
+    layer = PreparedVisualLayer(
+        id="square",
+        source=source,
+        source_kind="image",
+        start_ms=0,
+        duration_ms=1000,
+        in_point_ms=0,
+        z_index=0,
+        fade_in_ms=0,
+        fade_out_ms=0,
+        keyframes=(keyframe,),
+    )
+    width, height = stage_raster_size(composition)
+    layers = stage_raster_layers((layer,), composition, width, height)
+    frame = working_to_srgb8(
+        compose_visual_frame(
+            layers,
+            timestamp_ms=0,
+            output_width=width,
+            output_height=height,
+            background_rgb=(0, 0, 0),
+        )[0]
+    )
+    rows, columns = np.nonzero(frame[..., 0] > 128)
+    return (
+        (columns.max() - columns.min() + 1) * 35 / width,
+        (rows.max() - rows.min() + 1) * 21 / height,
+    )
+
+
+def test_stage_media_keeps_its_shape_and_size_at_any_render_size() -> None:
+    from cueverge.gui.render_jobs import _stage_raster_identity
+
+    def composition(
+        render_width: int, render_height: int, units: float | None
+    ) -> dict[str, object]:
+        value: dict[str, object] = {
+            "space_kind": "stage",
+            "width": 35,
+            "height": 21,
+            "render_settings": {"render_width": render_width, "render_height": render_height},
+        }
+        if units is not None:
+            value["source_pixel_units"] = units
+        return value
+
+    # Older composition whose stored height did not match its shape: no longer stretched.
+    legacy_width, legacy_height = _drawn_square_units(composition(1280, 720, None))
+    assert legacy_width == pytest.approx(legacy_height, rel=0.02)
+    assert _stage_raster_identity(composition(1280, 720, None)) == {"stage_raster": [1280, 768]}
+    # A matching legacy composition renders and caches exactly as before.
+    assert _stage_raster_identity(composition(1280, 768, None)) == {}
+    matched = _drawn_square_units(composition(1280, 768, None))
+    assert matched == pytest.approx((100 * 35 / 1280, 100 * 35 / 1280), rel=0.02)
+
+    # Pinned media size: the render width only changes sampling detail, not size or shape.
+    units = 35 / 1280
+    for render_width in (640, 1280, 1920):
+        drawn = _drawn_square_units(composition(render_width, 1, units))
+        assert drawn == pytest.approx((100 * units, 100 * units), rel=0.03)
+
+
+def test_source_pixel_units_are_validated_for_stage_compositions_only() -> None:
+    document = _draft()
+    compositions = cast(
+        dict[str, dict[str, object]],
+        cast(dict[str, object], document["editor_metadata"])["compositions"],
+    )
+    compositions["stage-composition"]["source_pixel_units"] = 35 / 1280
+    DraftProject.model_validate(document)
+    for invalid in (0, -1, True, "1"):
+        compositions["stage-composition"]["source_pixel_units"] = invalid
+        with pytest.raises(ValidationError, match="source_pixel_units"):
+            DraftProject.model_validate(document)
+    compositions["stage-composition"]["source_pixel_units"] = 1
+    compositions["stage-composition"]["space_kind"] = "projector_native"
+    with pytest.raises(ValidationError, match="only stage compositions"):
+        DraftProject.model_validate(document)

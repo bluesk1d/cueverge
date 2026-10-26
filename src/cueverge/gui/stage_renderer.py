@@ -14,6 +14,7 @@ from PIL import Image
 from cueverge.gui.asset_upload import AssetUploadService
 from cueverge.gui.contracts import DraftProject
 from cueverge.gui.frame_compositor import (
+    PreparedVisualLayer,
     compose_visual_frame,
     conform_preview_pixel_format,
     layer_source_time,
@@ -81,8 +82,7 @@ def prepare_stage_composition(
     if composition.get("space_kind") != "stage":
         raise ProjectorRenderError("stage runner requires a stage-space composition")
     settings = _mapping(composition.get("render_settings"))
-    render_width = _integer(settings.get("render_width"))
-    render_height = _integer(settings.get("render_height"))
+    render_width, render_height = stage_raster_size(composition)
     duration_ms = _integer(composition.get("duration_ms"))
     frame_rate_numerator = _integer(settings.get("frame_rate_numerator"))
     frame_rate_denominator = _integer(settings.get("frame_rate_denominator"))
@@ -100,20 +100,8 @@ def prepare_stage_composition(
     lights_only = is_lights_only_stage(composition)
     if lights_only and prepared.audio_layers:
         raise ProjectorRenderError("lights-only installation overlays cannot include audio layers")
-    stage_layers = tuple(
-        scale_layer_geometry(
-            replace(
-                layer,
-                keyframes=_scale_stage_keyframes(
-                    layer.keyframes,
-                    render_width / logical_width,
-                    render_height / logical_height,
-                ),
-            ),
-            render_width / logical_width,
-            render_height / logical_height,
-        )
-        for layer in prepared.visual_layers
+    stage_layers = stage_raster_layers(
+        prepared.visual_layers, composition, render_width, render_height
     )
     frame_count = max(
         1,
@@ -489,8 +477,7 @@ def preview_stage_lighting_samples(
     numerator = _integer(settings.get("frame_rate_numerator"))
     period = 1000 * _integer(settings.get("frame_rate_denominator"))
     frame_timestamp_ms = (timestamp_ms * numerator // period) * period // numerator
-    render_width = _integer(settings.get("render_width"))
-    render_height = _integer(settings.get("render_height"))
+    render_width, render_height = stage_raster_size(composition)
     logical_width = _number(composition.get("width"))
     logical_height = _number(composition.get("height"))
     raw_layers = _mapping(metadata.get("timeline_transform_layers")).get(composition_id, [])
@@ -501,20 +488,8 @@ def preview_stage_lighting_samples(
         raw_layers=raw_layers,
         assets=assets,
     )
-    stage_layers = tuple(
-        scale_layer_geometry(
-            replace(
-                layer,
-                keyframes=_scale_stage_keyframes(
-                    layer.keyframes,
-                    render_width / logical_width,
-                    render_height / logical_height,
-                ),
-            ),
-            render_width / logical_width,
-            render_height / logical_height,
-        )
-        for layer in prepared.visual_layers
+    stage_layers = stage_raster_layers(
+        prepared.visual_layers, composition, render_width, render_height
     )
     frame = working_to_srgb8(
         compose_visual_frame(
@@ -678,16 +653,70 @@ def preview_stage_composition_member(
     )
 
 
+def stage_raster_size(composition: Mapping[str, object]) -> tuple[int, int]:
+    """Raster a stage composition is drawn in: render width, height following its shape.
+
+    Keeping the composition's aspect ratio means one composition unit is the same number
+    of raster pixels on both axes, so media is never stretched by the render size.
+    """
+    settings = _mapping(composition.get("render_settings"))
+    width = _integer(settings.get("render_width"))
+    logical_width = _number(composition.get("width"))
+    logical_height = _number(composition.get("height"))
+    if logical_width <= 0 or logical_height <= 0:
+        raise ProjectorRenderError("stage composition size is invalid")
+    return width, max(1, round(width * logical_height / logical_width))
+
+
+def stage_layer_scale(composition: Mapping[str, object], raster_width: int) -> float:
+    """Raster pixels per source pixel at keyframe scale 1.
+
+    `source_pixel_units` fixes media size in composition units so the render size only sets
+    sampling detail; without it (older compositions) one source pixel is one raster pixel.
+    """
+    units = composition.get("source_pixel_units")
+    if isinstance(units, (int, float)) and not isinstance(units, bool) and units > 0:
+        return float(units) * raster_width / _number(composition.get("width"))
+    return 1.0
+
+
+def stage_raster_layers(
+    layers: Iterable[PreparedVisualLayer],
+    composition: Mapping[str, object],
+    raster_width: int,
+    raster_height: int,
+) -> tuple[PreparedVisualLayer, ...]:
+    """Convert composition-unit layer geometry into stage raster pixels."""
+    scale_x = raster_width / _number(composition.get("width"))
+    scale_y = raster_height / _number(composition.get("height"))
+    layer_scale = stage_layer_scale(composition, raster_width)
+    return tuple(
+        scale_layer_geometry(
+            replace(
+                layer,
+                keyframes=_scale_stage_keyframes(layer.keyframes, scale_x, scale_y, layer_scale),
+            ),
+            scale_x,
+            scale_y,
+        )
+        for layer in layers
+    )
+
+
 def _scale_stage_keyframes(
     keyframes: tuple[dict[str, object], ...],
     scale_x: float,
     scale_y: float,
+    layer_scale: float = 1.0,
 ) -> tuple[dict[str, object], ...]:
     scaled: list[dict[str, object]] = []
     for keyframe in keyframes:
         value = dict(keyframe)
         position = _pair(value.get("position"))
         value["position"] = [position[0] * scale_x, position[1] * scale_y]
+        if layer_scale != 1.0:
+            scale = _pair(value.get("scale"))
+            value["scale"] = [scale[0] * layer_scale, scale[1] * layer_scale]
         interpolation = dict(_mapping(value.get("interpolation")))
         for field in ("spatial_in", "spatial_out"):
             handle = interpolation.get(field)
