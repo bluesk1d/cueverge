@@ -45,7 +45,9 @@ is the `read` scope. Additional independent scopes are:
 
 - `draft_edit`: create isolated proposals; never changes the working draft.
 - `direct_edit`: save a working draft immediately as a new revision, without a
-  proposal or human approval/merge. Requires designer, publisher, or administrator
+  proposal or human approval/merge. Saving a draft identical to the current one
+  creates no revision (audited as `draft.update` `unchanged`), so revision-bound
+  bakes stay current. Requires designer, publisher, or administrator
   project access. Also permits queueing/canceling offline render jobs.
 - `simulation`: run bounded deterministic simulations, scene LED frames, and composition image previews
   without hardware.

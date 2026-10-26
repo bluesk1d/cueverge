@@ -319,7 +319,9 @@ def test_installation_overlay_bakes_one_animation_for_projectors_and_leds(
     repository.update_draft(
         project_id=stored.project.id,
         expected_revision=1,
-        draft=draft,
+        draft=draft.model_copy(
+            update={"editor_metadata": {**draft.editor_metadata, "note": "revision 2"}}
+        ),
         actor="admin",
         role=Role.ADMINISTRATOR,
         occurred_at="2026-10-21T18:01:00Z",
@@ -533,7 +535,9 @@ def test_lights_only_overlay_bakes_led_sequences_without_projector_video(
     repository.update_draft(
         project_id=stored.project.id,
         expected_revision=1,
-        draft=draft,
+        draft=draft.model_copy(
+            update={"editor_metadata": {**draft.editor_metadata, "note": "revision 2"}}
+        ),
         actor="admin",
         role=Role.ADMINISTRATOR,
         occurred_at="2026-10-21T18:01:00Z",

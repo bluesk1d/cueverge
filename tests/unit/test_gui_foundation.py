@@ -254,7 +254,9 @@ def test_mcp_rejected_and_stale_proposals_never_change_working_revision(
     services.repository.update_draft(
         project_id=project.project.id,
         expected_revision=1,
-        draft=project.draft,
+        draft=project.draft.model_copy(
+            update={"editor_metadata": {**project.draft.editor_metadata, "note": "edited"}}
+        ),
         actor="reviewer",
         role=Role.DESIGNER,
         occurred_at="2026-03-10T13:00:00+00:00",
@@ -1421,7 +1423,7 @@ def test_local_accounts_project_roles_collaboration_and_live_output(
     assert resolved.status_code == 200
     allowed_draft_update = reviewer.put(
         f"/api/gui/v1/projects/{project_id}/draft",
-        json=_draft(),
+        json=_draft(editor_metadata={"selected_scene": "ambient"}),
         headers=_mutation_headers(reviewer, if_match='"1"'),
     )
     assert allowed_draft_update.status_code == 200
@@ -1669,6 +1671,19 @@ def test_draft_revisions_are_durable_and_reject_stale_writes(tmp_path: Path) -> 
     assert updated.headers["etag"] == '"2"'
     assert updated.json()["revision"] == 2
 
+    unchanged = client.put(
+        f"/api/gui/v1/projects/{project_id}/draft",
+        json=changed,
+        headers=_mutation_headers(client, if_match='"2"'),
+    )
+    assert unchanged.status_code == 200
+    assert unchanged.headers["etag"] == '"2"'
+    assert unchanged.json()["revision"] == 2
+    assert [
+        item["revision"]
+        for item in client.get(f"/api/gui/v1/projects/{project_id}/revisions").json()
+    ] == [2, 1]
+
     stale = client.put(
         f"/api/gui/v1/projects/{project_id}/draft",
         json=_draft(editor_metadata={"selected_scene": "reaction"}),
@@ -1715,6 +1730,7 @@ def test_draft_revisions_are_durable_and_reject_stale_writes(tmp_path: Path) -> 
     } == {
         ("project.create", "success"),
         ("draft.update", "success"),
+        ("draft.update", "unchanged"),
         ("draft.update", "revision_conflict"),
         ("draft.restore", "success"),
         ("draft.restore", "revision_conflict"),

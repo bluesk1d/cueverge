@@ -3494,50 +3494,72 @@ class GuiRepository:
                         current_revision=project.head_revision,
                         conflicting_paths=conflicting_paths,
                     )
-                next_revision = project.head_revision + 1
-                connection.execute(
-                    """
-                    INSERT INTO revisions(
-                        project_id, revision, parent_revision, content_json,
-                        actor, transaction_kind, created_at
-                    ) VALUES (?, ?, ?, ?, ?, 'update', ?)
-                    """,
-                    (
-                        project_id,
-                        next_revision,
-                        project.head_revision,
-                        proposed_json,
-                        actor,
-                        occurred_at,
-                    ),
-                )
-                connection.execute(
-                    """
-                    UPDATE projects
-                    SET head_revision = ?, updated_at = ?
-                    WHERE id = ?
-                    """,
-                    (next_revision, occurred_at, project_id),
-                )
-                self._insert_audit(
-                    connection,
-                    actor=actor,
-                    action="draft.update",
-                    target=project_id,
-                    result="success",
-                    occurred_at=occurred_at,
-                    authorization_context={
-                        "role": role.value,
-                        "requested_revision": expected_revision,
-                        "created_revision": next_revision,
-                    },
-                )
-                connection.commit()
+                if proposed_json == current_json:
+                    # A save without changes keeps the head revision so revision-bound
+                    # work such as LED bakes and publication checks stays current.
+                    self._insert_audit(
+                        connection,
+                        actor=actor,
+                        action="draft.update",
+                        target=project_id,
+                        result="unchanged",
+                        occurred_at=occurred_at,
+                        authorization_context={
+                            "role": role.value,
+                            "requested_revision": expected_revision,
+                            "current_revision": project.head_revision,
+                        },
+                    )
+                    connection.commit()
+                    unchanged = True
+                else:
+                    unchanged = False
+                    next_revision = project.head_revision + 1
+                    connection.execute(
+                        """
+                        INSERT INTO revisions(
+                            project_id, revision, parent_revision, content_json,
+                            actor, transaction_kind, created_at
+                        ) VALUES (?, ?, ?, ?, ?, 'update', ?)
+                        """,
+                        (
+                            project_id,
+                            next_revision,
+                            project.head_revision,
+                            proposed_json,
+                            actor,
+                            occurred_at,
+                        ),
+                    )
+                    connection.execute(
+                        """
+                        UPDATE projects
+                        SET head_revision = ?, updated_at = ?
+                        WHERE id = ?
+                        """,
+                        (next_revision, occurred_at, project_id),
+                    )
+                    self._insert_audit(
+                        connection,
+                        actor=actor,
+                        action="draft.update",
+                        target=project_id,
+                        result="success",
+                        occurred_at=occurred_at,
+                        authorization_context={
+                            "role": role.value,
+                            "requested_revision": expected_revision,
+                            "created_revision": next_revision,
+                        },
+                    )
+                    connection.commit()
             except RevisionConflictError:
                 raise
             except BaseException:
                 connection.rollback()
                 raise
+        if unchanged:
+            return self.get_revision(project_id, project.head_revision)
         updated_project = StoredProject(
             id=project.id,
             name=project.name,

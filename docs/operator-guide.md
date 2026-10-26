@@ -1146,7 +1146,10 @@ For content that requires a baked render:
 4. Select the **Checksummed bake** and inspect **Editable source**,
    **Selected bake**, **Before / after**, or **Frame difference**.
 5. Check the reported source revision. Changes after a bake can make it stale;
-   render the new revision before publication.
+   render the new revision before publication. Saving without any change keeps
+   the current revision, so it does not make a bake stale. Replacing a media
+   asset's file does make LED and projector bakes that use it stale; bake again
+   after the replacement finishes processing.
 
 Browser editorial audio is for editing, not proof of venue output, audio
 latency, or multi-output synchronization. Qualify the actual baked media and
