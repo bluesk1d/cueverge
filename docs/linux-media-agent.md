@@ -125,6 +125,29 @@ Operators can also use **Start player** / **Stop player** on the device card.
 With the device's connection policy set to **On demand**, the player closes after
 10 idle minutes. The default `always` mode opens mpv when the agent starts.
 
+### Keeping the host awake
+
+Set `CUEVERGE_KEEP_AWAKE` in the agent environment so the media host doesn't sleep or
+blank the projector while the agent runs, including while an on-demand player is
+stopped:
+
+| Value | Effect |
+| --- | --- |
+| `off` (default) | Leaves GNOME's power settings alone. |
+| `system` | Blocks automatic sleep. The screen may still blank when idle. |
+| `display` | Blocks automatic sleep and screen blanking. Recommended for projectors. |
+
+The agent holds a `systemd-logind` sleep inhibitor and a GNOME session-manager
+inhibitor (or `org.freedesktop.ScreenSaver` on other desktops) over D-Bus. They
+belong to the agent process, so stopping or crashing the agent releases them.
+`systemd-inhibit --list` shows the `cueverge-media-agent` entry while it is held.
+`display` needs the desktop session bus, which the user service inherits from the
+logged-in session. If the session isn't ready yet, the agent retries every 30
+seconds. Device health shows **Keep awake** in the device details and warns on
+the device card when the host refused. The MCP `get_device_players` tool reports the same status.
+Inhibitors don't stop an explicit suspend, a lid close, or an administrator
+overriding them. Keep the GNOME settings below as a second safeguard.
+
 Before unattended use, reboot the media host and verify:
 
 1. Desktop login completes without interaction.
@@ -177,7 +200,8 @@ In GNOME Settings:
 1. Use **Join Displays**, not mirror mode, unless mirrored playback is
    intentionally desired.
 2. Set the projector's native resolution and refresh rate.
-3. Disable display blanking and automatic suspend for the show account.
+3. Disable display blanking and automatic suspend for the show account, or set
+   `CUEVERGE_KEEP_AWAKE=display` and still turn off automatic suspend as a backup.
 4. Decide deliberately whether automatic login is acceptable for the physical
    security of the media host.
 
@@ -251,6 +275,8 @@ journalctl -k --since today
       changes.
 - [ ] Disable suspend, screen blanking, notifications, and disruptive update
       prompts for the show account.
+- [ ] With `CUEVERGE_KEEP_AWAKE=display`, confirm `systemd-inhibit --list` shows
+      the agent and the device details report **Sleep and screen blanking blocked**.
 - [ ] Verify there is no visible desktop, cursor, window decoration, or
       compositor transition during playback.
 

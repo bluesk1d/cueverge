@@ -51,6 +51,19 @@ class ProtocolRange(DeviceProtocolModel):
 
 MediaFeature = Literal["seamless_transition", "repeat_count", "player_control"]
 PlayerState = Literal["stopped", "starting", "ready", "stopping", "failed"]
+KeepAwakeMode = Literal["system", "display"]
+
+
+class KeepAwakeStatus(DeviceProtocolModel):
+    """Host sleep prevention configured locally on a media agent with CUEVERGE_KEEP_AWAKE.
+
+    system blocks automatic sleep; display also blocks screen blanking. active is false when
+    the operating system or desktop refused the request; detail then explains why.
+    """
+
+    mode: KeepAwakeMode
+    active: bool
+    detail: str | None = Field(default=None, max_length=300)
 
 
 class MediaPlaybackCapability(DeviceProtocolModel):
@@ -316,6 +329,11 @@ class DeviceHello(DeviceProtocolModel):
         exclude_if=lambda value: value is None,
         description="Player process state for agents that advertise player_control.",
     )
+    keep_awake: KeepAwakeStatus | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="Host sleep prevention; omitted when the agent's keep-awake option is off.",
+    )
 
 
 class DevicePlayerCommand(DeviceProtocolModel):
@@ -369,6 +387,10 @@ class DeviceHeartbeat(DeviceProtocolModel):
         Annotated[float, Field(ge=0, le=1)],
     ] = Field(default_factory=dict)
     player_state: PlayerState | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
+    keep_awake: KeepAwakeStatus | None = Field(
         default=None,
         exclude_if=lambda value: value is None,
     )

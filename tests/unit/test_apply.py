@@ -25,6 +25,7 @@ from cueverge.gui.mcp_authoring import McpScope
 from cueverge.gui.passwords import hash_password
 from cueverge.gui.service import GuiServices
 from cueverge.lighting.sink import MemoryFrameSink, RenderedFrame
+from cueverge.protocol.device_v2 import KeepAwakeStatus
 from tests.unit.test_device_players import _connect
 from tests.unit.test_device_transport import _enrolled_device
 
@@ -642,6 +643,22 @@ def test_mcp_apply_monitor_and_explicit_live_transport_end_to_end(tmp_path: Path
         listed = tool(read, "get_device_players")["structuredContent"]
         assert listed["players"][0]["player_state"] == "stopped"
         assert listed["players"][0]["player_control"] is True
+        assert listed["players"][0]["keep_awake"] is None
+        assert players["keep_awake"]["configured_on_host"] == "CUEVERGE_KEEP_AWAKE"
+        assert players["keep_awake"]["controller_can_change"] is False
+        _connect(
+            services.repository,
+            services.device_sessions,
+            device_capabilities,
+            keep_awake=KeepAwakeStatus(mode="system", active=False, detail="logind refused"),
+        )
+        listed = tool(read, "get_device_players")["structuredContent"]
+        assert listed["players"][0]["keep_awake"] == {
+            "mode": "system",
+            "active": False,
+            "detail": "logind refused",
+        }
+        channel = _connect(services.repository, services.device_sessions, device_capabilities)
         device_id = listed["players"][0]["device_id"]
         for secret, confirm in ((read, True), (granted, False)):
             assert tool(

@@ -16,6 +16,7 @@ from cueverge.protocol.device_v2 import (
     DeviceHello,
     DeviceKind,
     DeviceWelcome,
+    KeepAwakeStatus,
     MediaPlaybackCapability,
     ProtocolRange,
 )
@@ -119,6 +120,8 @@ async def _presence_scenario() -> None:
     )
     client._heartbeat_sent = {}
     client.player_host = None
+    keep_awake = KeepAwakeStatus(mode="display", active=True)
+    client.keep_awake = SimpleNamespace(status=keep_awake)  # type: ignore[assignment]
     welcome = DeviceWelcome(
         device_id=DEVICE_ID,
         controller_epoch=uuid4(),
@@ -133,6 +136,7 @@ async def _presence_scenario() -> None:
     assert hello.device_id == DEVICE_ID
     assert hello.capabilities == _capabilities()
     assert hello.media_features == ("seamless_transition", "repeat_count")
+    assert hello.keep_awake == keep_awake
     assert client.media_client.agent_session_id == str(hello.device_session_id)
     assert client.media_client.controller_epoch == str(welcome.controller_epoch)
 

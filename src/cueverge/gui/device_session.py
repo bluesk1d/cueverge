@@ -11,6 +11,7 @@ from cueverge.protocol.device_v2 import (
     DeviceHeartbeatAck,
     DeviceHello,
     DeviceWelcome,
+    KeepAwakeStatus,
     PlayerState,
 )
 
@@ -33,6 +34,7 @@ class ActiveDeviceSession:
     channel: DeviceOutboundChannel | None = None
     player_control: bool = False
     player_state: PlayerState | None = None
+    keep_awake: KeepAwakeStatus | None = None
 
 
 class DeviceSessionRegistry:
@@ -63,6 +65,7 @@ class DeviceSessionRegistry:
                 last_seen_at=time.monotonic(),
                 player_control="player_control" in hello.media_features,
                 player_state=hello.player_state,
+                keep_awake=hello.keep_awake,
             )
         return DeviceWelcome(
             device_id=hello.device_id,
@@ -162,6 +165,7 @@ class DeviceSessionRegistry:
             session.output_scaling = dict(heartbeat.output_scaling)
             if heartbeat.player_state is not None:
                 session.player_state = heartbeat.player_state
+            session.keep_awake = heartbeat.keep_awake
         return DeviceHeartbeatAck(sequence=heartbeat.sequence, accepted=True)
 
     def set_player_state(self, device_id: UUID, session_id: UUID, state: PlayerState) -> None:
@@ -178,6 +182,13 @@ class DeviceSessionRegistry:
             if session is None:
                 return None
             return session.player_control, session.player_state
+
+    def keep_awake(self, device_id: UUID) -> KeepAwakeStatus | None:
+        """Keep-awake status of a connected agent; None when off, unreported or disconnected."""
+        self.expire_stale()
+        with self._lock:
+            session = self._sessions.get(device_id)
+            return session.keep_awake if session is not None else None
 
     def player_ready(self, device_id: UUID) -> bool:
         """Whether a connected device can play: agents without player control always can."""

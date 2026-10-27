@@ -11,7 +11,13 @@ from cueverge.core.loader import load_show_package
 from cueverge.gui.device_players import DevicePlayerError, DevicePlayerService
 from cueverge.gui.device_session import DeviceSessionRegistry
 from cueverge.gui.repository import GuiRepository
-from cueverge.protocol.device_v2 import DeviceHello, DevicePlayerAck, DevicePlayerCommand
+from cueverge.protocol.device_v2 import (
+    DeviceHeartbeat,
+    DeviceHello,
+    DevicePlayerAck,
+    DevicePlayerCommand,
+    KeepAwakeStatus,
+)
 from tests.unit.test_device_transport import (
     DEVICE_ID,
     NOW,
@@ -57,6 +63,7 @@ def _connect(
     player_control: bool = True,
     state: str = "stopped",
     fail_start: str | None = None,
+    keep_awake: KeepAwakeStatus | None = None,
 ) -> FakeAgentChannel:
     session_id = uuid4()
     hello = DeviceHello(
@@ -65,6 +72,7 @@ def _connect(
         capabilities=capabilities,
         media_features=("player_control",) if player_control else (),
         player_state=state if player_control else None,  # type: ignore[arg-type]
+        keep_awake=keep_awake,
     )
     sessions.connect(repository.get_device(str(DEVICE_ID)), hello)
     channel = FakeAgentChannel(sessions, fail_start=fail_start)
@@ -200,6 +208,7 @@ def test_gui_player_controls_are_audited_and_reported_in_topology(tmp_path: Path
     )
     assert node()["player_control"] is True
     assert node()["player_state"] == "stopped"
+    assert node()["keep_awake"] is None
     assert node()["diagnostic"] == "Opens when the show starts, or start it from the device card."
     started = client.post(url, json={"action": "start"}, headers=_mutation_headers(client))
     assert started.status_code == 200
@@ -230,3 +239,41 @@ def test_gui_player_controls_are_audited_and_reported_in_topology(tmp_path: Path
     assert ("device.player.start", "success") in actions
     assert ("device.player.stop", "success") in actions
     assert ("device.player.start", "error") in actions
+
+
+def test_keep_awake_is_reported_from_hello_and_heartbeats(tmp_path: Path) -> None:
+    repository, _, capabilities = _enrolled_device(tmp_path)
+    sessions = DeviceSessionRegistry()
+    refused = KeepAwakeStatus(mode="display", active=False, detail="no desktop session")
+    _connect(repository, sessions, capabilities, keep_awake=refused)
+    service = _service(repository, sessions)
+    assert sessions.keep_awake(DEVICE_ID) == refused
+    assert service.list()[0].keep_awake == refused
+
+    session_id = sessions._sessions[DEVICE_ID].session_id
+    granted = KeepAwakeStatus(mode="display", active=True)
+    heartbeat = DeviceHeartbeat(
+        device_id=DEVICE_ID,
+        device_session_id=session_id,
+        controller_epoch=sessions.controller_epoch,
+        sequence=0,
+        device_monotonic_ms=1,
+        keep_awake=granted,
+    )
+    assert sessions.heartbeat(heartbeat).accepted
+    assert service.list()[0].keep_awake == granted
+    assert sessions.heartbeat(
+        heartbeat.model_copy(update={"sequence": 1, "keep_awake": None})
+    ).accepted
+    assert sessions.keep_awake(DEVICE_ID) is None
+
+
+def test_keep_awake_is_omitted_on_the_wire_when_off(tmp_path: Path) -> None:
+    _, _, capabilities = _enrolled_device(tmp_path)
+    hello = DeviceHello(device_id=DEVICE_ID, device_session_id=uuid4(), capabilities=capabilities)
+    assert "keep_awake" not in hello.model_dump(mode="json")
+    status = KeepAwakeStatus(mode="system", active=True)
+    sent = hello.model_copy(update={"keep_awake": status}).model_dump_json()
+    assert DeviceHello.model_validate_json(sent).keep_awake == status
+    with pytest.raises(ValueError):
+        KeepAwakeStatus.model_validate({"mode": "always", "active": True})

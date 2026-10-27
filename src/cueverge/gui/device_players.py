@@ -13,6 +13,7 @@ from cueverge.protocol.device_v2 import (
     DeviceKind,
     DevicePlayerAck,
     DevicePlayerCommand,
+    KeepAwakeStatus,
     PlayerState,
 )
 
@@ -39,6 +40,7 @@ class DevicePlayerStatus:
     connected: bool
     player_control: bool
     player_state: PlayerState | None
+    keep_awake: KeepAwakeStatus | None = None
 
 
 class DevicePlayerService:
@@ -78,6 +80,7 @@ class DevicePlayerService:
                     connected=player is not None,
                     player_control=player is not None and player[0],
                     player_state=player[1] if player is not None else None,
+                    keep_awake=self.sessions.keep_awake(UUID(device.id)),
                 )
             )
         return tuple(statuses)

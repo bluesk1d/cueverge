@@ -5,6 +5,7 @@ from contextlib import suppress
 from cueverge.config import MediaAgentConfig
 from cueverge.media_agent.client import MediaAgentClient
 from cueverge.media_agent.device_presence import DevicePresenceClient
+from cueverge.media_agent.keep_awake import KeepAwake
 from cueverge.media_agent.mpv import MpvProcess, create_mpv_transport
 from cueverge.media_agent.player_host import PlayerHost
 
@@ -21,9 +22,12 @@ async def run() -> None:
         audio_delay_seconds=config.audio_delay_ms / 1000,
     )
     host = PlayerHost(process, lambda: create_mpv_transport(config.mpv_pipe), config.asset_root)
-    if config.player_mode == "always":
-        await host.start()
+    keep_awake = KeepAwake(config.keep_awake)
+    await keep_awake.start()
+    keep_awake_task = asyncio.create_task(keep_awake.maintain())
     try:
+        if config.player_mode == "always":
+            await host.start()
         media_client = MediaAgentClient(config, host)
         await DevicePresenceClient(
             config.device_transport_url,
@@ -31,9 +35,14 @@ async def run() -> None:
             reconnect_delay_ms=config.reconnect_delay_ms,
             media_client=media_client,
             player_host=host,
+            keep_awake=keep_awake,
         ).run_forever()
     finally:
+        keep_awake_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await keep_awake_task
         await host.stop_player()
+        await keep_awake.stop()
 
 
 def main() -> None:

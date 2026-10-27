@@ -5910,6 +5910,7 @@ def create_gui_router(services: GuiServices) -> APIRouter:
                 player_state=(
                     player_by_device[device.id][1] if device.id in player_by_device else None
                 ),
+                keep_awake=services.device_sessions.keep_awake(UUID(device.id)),
                 last_seen_age_ms=(
                     max(
                         0,

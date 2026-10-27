@@ -81,6 +81,30 @@ environment configuration. No speaker brand or particular audio route is require
 mpv's audio-delay setting. Positive values delay audio; negative values advance
 it. This is an installation calibration value and defaults to zero.
 
+### Keeping the host awake
+
+Set `CUEVERGE_KEEP_AWAKE` in the agent environment so Windows doesn't sleep or
+turn off the projector while the agent runs, including while an on-demand player
+is stopped:
+
+| Value | Effect |
+| --- | --- |
+| `off` (default) | Leaves the Windows power plan alone. |
+| `system` | Blocks idle sleep. The display may still turn off. |
+| `display` | Blocks idle sleep and display power-off. Recommended for projectors. |
+
+The agent calls `SetThreadExecutionState` with `ES_SYSTEM_REQUIRED` (and
+`ES_DISPLAY_REQUIRED` for `display`). The request belongs to the agent process,
+so stopping or crashing the agent releases it. `powercfg /requests` lists the
+Python process under SYSTEM (and DISPLAY) while the request is held. Device health shows
+**Keep awake** in the device details and warns on the device card if Windows
+refused. The MCP `get_device_players` tool reports the same status.
+
+This doesn't block a screen saver, the lock screen, a lid close, or
+**Start > Power > Sleep**. In **Settings > Personalization > Lock screen**, turn
+off the screen saver for the show account. Keep a power plan that never sleeps on
+mains power as a backup.
+
 For an interactive Windows deployment, use a Task Scheduler job for the logged-in
 user's interactive desktop. A process launched directly by OpenSSH runs in a
 non-interactive Windows session and cannot reliably create the projector GPU

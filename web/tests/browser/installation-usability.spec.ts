@@ -35,7 +35,10 @@ async function setup(page: Page, deviceFault = false, noPhoto = false) {
     if (path.endsWith("/runtime/status")) return route.fulfill({ json: demoRuntime });
     if (path.endsWith("/topology")) return route.fulfill({ json: deviceFault ? {
       ...demoTopology, nodes: demoTopology.nodes.map((node, index) =>
-        index === 1 ? { ...node, artifact_faults: ["Original simulated storage fault"], failed_transfers: 1 } : node),
+        index === 1 ? {
+          ...node, artifact_faults: ["Original simulated storage fault"], failed_transfers: 1,
+          keep_awake: { mode: "display", active: false, detail: "Simulated desktop session refusal" },
+        } : node),
     } : demoTopology });
     if (["POST", "PUT", "PATCH", "DELETE"].includes(request.method()) && request.headers()["x-csrf-token"] !== "setup-csrf") return route.fulfill({ status: 403 });
     if (path.endsWith("/front-photo/content") && request.method() === "PUT") {
@@ -247,9 +250,11 @@ test("device cards keep telemetry contextual while failures stay visible", async
   await page.getByRole("group", { name: "Installation workspace", exact: true }).getByRole("button", { name: "Devices", exact: true }).click();
   await expect(page.getByText("400 GB free of 500 GB", { exact: true })).toHaveCount(0);
   await expect(page.getByText("Original simulated storage fault", { exact: true })).toBeVisible();
+  await expect(page.getByText("This host may sleep or blank its screen: Simulated desktop session refusal", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Details for media-client-left", exact: true }).click();
   await expect(page.getByRole("dialog", { name: "Device details: media-client-left", exact: true })).toBeVisible();
   await expect(page.getByText("400 GB free of 500 GB", { exact: true })).toBeVisible();
+  await expect(page.getByText("Requested (display) but not active", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Close", exact: true }).click();
   await page.getByRole("button", { name: "Add a device", exact: true }).click();
   await expect(page.getByRole("textbox", { name: "Capability document", exact: true })).toBeHidden();

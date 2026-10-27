@@ -470,6 +470,9 @@ def create_mcp_app(services: GuiServices) -> Starlette:
         Requires read and this runtime's installation. States come from connected agents:
         stopped, starting, ready, stopping or failed. A ready player is not proof of
         visible output. Agents without player_control always run their player.
+        keep_awake is the host's sleep prevention ({mode: system|display, active, detail}),
+        set on the media host with CUEVERGE_KEEP_AWAKE; null when off, unreported or
+        disconnected. It is read-only here: the controller cannot change host power settings.
         """
         input_installation_token(McpScope.READ)
         return {
@@ -482,6 +485,11 @@ def create_mcp_app(services: GuiServices) -> Starlette:
                     "connected": status.connected,
                     "player_control": status.player_control,
                     "player_state": status.player_state,
+                    "keep_awake": (
+                        status.keep_awake.model_dump(mode="json")
+                        if status.keep_awake is not None
+                        else None
+                    ),
                 }
                 for status in services.device_players.list()
             ],
@@ -1688,6 +1696,12 @@ def create_mcp_app(services: GuiServices) -> Starlette:
                     "requires_loaded_project_match": True,
                     "show_start_starts_needed_players": True,
                     "on_demand_idle_stop_seconds": PLAYER_IDLE_STOP_SECONDS,
+                    "keep_awake": {
+                        "field": "keep_awake",
+                        "modes": ["system", "display"],
+                        "configured_on_host": "CUEVERGE_KEEP_AWAKE",
+                        "controller_can_change": False,
+                    },
                 },
                 "live_transport": {
                     "tool": "operate_loaded_show",

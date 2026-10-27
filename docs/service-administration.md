@@ -493,6 +493,11 @@ practice. An intentional on-demand disconnect is not evidence of readiness.
 For agents in on-demand player mode (`CUEVERGE_PLAYER_MODE=on_demand`), the
 **On demand** policy also lets the controller close the player after 10 idle
 minutes; **Continuous** leaves a started player running.
+Media hosts stay reachable and keep projectors lit only while the operating system
+stays awake. Set `CUEVERGE_KEEP_AWAKE=display` (or `system`) in the agent environment
+on each host. Its status appears as **Keep awake** in device details. This is a
+host-side setting that the controller can't change. See the Linux and Windows
+media agent guides.
 Run connection tests and inspect device lifecycle state before troubleshooting
 by address.
 

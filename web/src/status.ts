@@ -41,6 +41,22 @@ export function loadedShowName(runtime: RuntimeStatus | null): string | null {
   return loaded?.state === "loaded" ? loaded.project_name || null : null;
 }
 
+/** Device-details text for a media host's keep-awake option. */
+export function keepAwakeLabel(node: TopologyNode): string {
+  if (node.connection !== "connected") return "Not reported while disconnected";
+  const keepAwake = node.keep_awake;
+  if (!keepAwake) return "Off on this host";
+  const scope = keepAwake.mode === "display" ? "Sleep and screen blanking blocked" : "Sleep blocked";
+  return keepAwake.active ? scope : `Requested (${keepAwake.mode}) but not active`;
+}
+
+/** Warning when a media host asked to stay awake but its operating system refused. */
+export function keepAwakeWarning(node: TopologyNode): string | null {
+  const keepAwake = node.keep_awake;
+  if (node.connection !== "connected" || !keepAwake || keepAwake.active) return null;
+  return `This host may sleep or blank its screen: ${keepAwake.detail ?? "keep awake is not active."}`;
+}
+
 export function connectionStatus(node: TopologyNode): { tone: StatusTone; label: string } {
   if (node.connection === "connected") {
     if (node.kind === "direct_media_agent" && node.player_control && node.player_state !== "ready") {

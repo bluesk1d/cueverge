@@ -28,6 +28,13 @@ class MediaAgentConfig(RuntimeConfig):
             "until the controller starts the player."
         ),
     )
+    keep_awake: Literal["off", "system", "display"] = Field(
+        default="off",
+        description=(
+            "Hold a sleep inhibitor while the agent runs: system blocks automatic sleep; "
+            "display also blocks screen blanking."
+        ),
+    )
 
     @model_validator(mode="after")
     def validate_device_transport(self) -> "MediaAgentConfig":
@@ -56,6 +63,7 @@ class MediaAgentConfig(RuntimeConfig):
                 "device_transport_url": os.environ.get("CUEVERGE_DEVICE_TRANSPORT_URL"),
                 "device_credential_root": os.environ.get("CUEVERGE_DEVICE_CREDENTIAL_ROOT"),
                 "player_mode": os.environ.get("CUEVERGE_PLAYER_MODE", "always"),
+                "keep_awake": os.environ.get("CUEVERGE_KEEP_AWAKE", "off"),
             }
         )
 

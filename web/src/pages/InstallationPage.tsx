@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { connectionStatus } from "../status";
+import { connectionStatus, keepAwakeLabel, keepAwakeWarning } from "../status";
 import { InputSourcePanel } from "./InputSourcePanel";
 import { InstallationObjects } from "./InstallationObjects";
 import type { CSSProperties } from "react";
@@ -4229,6 +4229,7 @@ function NodeCard({
     }
   }
   const connection = connectionStatus(node);
+  const sleepWarning = keepAwakeWarning(node);
   const media = mediaCapability(node.capability_document);
   const cache = cacheCapability(node.capability_document);
   const timing = timingCapability(node.capability_document);
@@ -4264,6 +4265,7 @@ function NodeCard({
       {node.artifact_faults?.map((fault) => <p role="alert" key={fault}>{fault}</p>)}
       {(node.enrollment === "suspended" || node.enrollment === "revoked") && <small>{enrollmentLabel(node)}</small>}
       {node.diagnostic && <p role="status">{node.diagnostic}</p>}
+      {sleepWarning && <p role="alert">{sleepWarning}</p>}
       {canControlPlayer && (
         <button
           type="button"
@@ -4316,6 +4318,9 @@ function NodeCard({
             }
           />
           <Detail label="Software version" value={node.software_version ?? "Not reported"} />
+          {node.kind === "direct_media_agent" && (
+            <Detail label="Keep awake" value={keepAwakeLabel(node)} />
+          )}
           <Detail
             label="Media formats"
             value={

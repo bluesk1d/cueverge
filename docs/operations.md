@@ -281,7 +281,10 @@ to control another or unidentified show.
 
 `get_device_players` (read) lists enrolled media hosts with their resources,
 connection policy, connection, `player_control` and `player_state`
-(`stopped`, `starting`, `ready`, `stopping`, `failed`).
+(`stopped`, `starting`, `ready`, `stopping`, `failed`), plus `keep_awake`
+(`{mode, active, detail}` or null). `keep_awake` is set on each media host with
+`CUEVERGE_KEEP_AWAKE`, so it's read-only through MCP and the GUI. The GUI shows it as
+**Keep awake** in device details and warns on the device card when it isn't active.
 `control_device_player(device_id=..., action="start"|"stop",
 confirm_physical_output=True)` opens or closes a host's fullscreen player. It has
 the same `live_operation`, live-permission, loaded-project and confirmation

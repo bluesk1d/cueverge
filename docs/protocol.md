@@ -81,6 +81,15 @@ following. A late acknowledgement after the controller stopped waiting only
 updates state. Agents without `player_control` always run their player, and the
 controller treats them as ready.
 
+`device.hello` and every `device.heartbeat` may also carry `keep_awake`, the
+host's sleep prevention configured locally with `CUEVERGE_KEEP_AWAKE`:
+`{"mode": "system" | "display", "active": bool, "detail": str | null}`.
+`active` is false when the operating system or desktop refused, and `detail`
+then explains why. The field is omitted when the option is `off`, so agents
+using it need a controller that recognizes the field. Update the controller first, as with
+`media_features`. The controller only reports this status; it can't change host
+power settings.
+
 Valid heartbeats refresh both certificate-session presence and runtime
 liveness. A stale session is disconnected and cannot update or disconnect a
 replacement session. Losing the active clock source freezes time-following and

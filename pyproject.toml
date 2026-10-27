@@ -15,6 +15,7 @@ dependencies = [
   "av>=14,<17",
   "cryptography>=50,<51",
   "fastapi>=0.115,<1",
+  "jeepney>=0.9,<1 ; sys_platform == 'linux'",
   "mcp>=2.3,<3",
   "numpy>=2,<3",
   "pillow>=13,<14",
@@ -57,3 +58,7 @@ python_version = "3.12"
 strict = true
 packages = ["cueverge"]
 mypy_path = "src"
+
+[[tool.mypy.overrides]]
+module = ["jeepney", "jeepney.*"]
+ignore_missing_imports = true

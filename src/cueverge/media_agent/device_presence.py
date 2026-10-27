@@ -17,6 +17,7 @@ from websockets.exceptions import WebSocketException
 
 from cueverge.media_agent.client import MediaAgentClient
 from cueverge.media_agent.device_enrollment import StoredDeviceIdentity
+from cueverge.media_agent.keep_awake import KeepAwake
 from cueverge.media_agent.player_host import PlayerHost
 from cueverge.protocol.device_v2 import (
     DeviceArtifactActivateAck,
@@ -38,6 +39,7 @@ from cueverge.protocol.device_v2 import (
     DevicePlayerCommand,
     DeviceTimingReport,
     DeviceWelcome,
+    KeepAwakeStatus,
     PlayerState,
 )
 from cueverge.protocol.models import AgentCommand
@@ -68,9 +70,11 @@ class DevicePresenceClient:
         reconnect_delay_ms: int,
         media_client: MediaAgentClient,
         player_host: PlayerHost | None = None,
+        keep_awake: KeepAwake | None = None,
     ) -> None:
         self.transport_url = transport_url
         self.player_host = player_host
+        self.keep_awake = keep_awake
         self.credential_root = credential_root
         self.reconnect_delay_ms = reconnect_delay_ms
         self.media_client = media_client
@@ -118,6 +122,7 @@ class DevicePresenceClient:
             capabilities=self.identity.capabilities,
             media_features=self.media_client.media_features,
             player_state=self._player_state(),
+            keep_awake=self._keep_awake(),
         )
         await websocket.send(hello.model_dump_json())
         welcome = DeviceWelcome.model_validate_json(await websocket.recv())
@@ -428,6 +433,9 @@ class DevicePresenceClient:
     def _player_state(self) -> PlayerState | None:
         return self.player_host.state if self.player_host is not None else None
 
+    def _keep_awake(self) -> KeepAwakeStatus | None:
+        return self.keep_awake.status if self.keep_awake is not None else None
+
     async def _control_player(
         self,
         command: DevicePlayerCommand,
@@ -475,6 +483,7 @@ class DevicePresenceClient:
                 device_monotonic_ms=round(sent_monotonic_ms),
                 device_unix_ms=sent_unix_ms,
                 player_state=self._player_state(),
+                keep_awake=self._keep_awake(),
             )
             self._heartbeat_sent[sequence] = (sent_monotonic_ms, sent_unix_ms)
             async with send_lock:

@@ -29,7 +29,12 @@ from cueverge.core.models import (
 )
 from cueverge.gui.ambient_lighting import validate_ambient_lighting
 from cueverge.gui.spatial_effects import SpatialRipple
-from cueverge.protocol.device_v2 import DeviceCapabilityDocument, DeviceKind, PlayerState
+from cueverge.protocol.device_v2 import (
+    DeviceCapabilityDocument,
+    DeviceKind,
+    KeepAwakeStatus,
+    PlayerState,
+)
 
 
 class GuiModel(BaseModel):
@@ -2803,6 +2808,10 @@ class TopologyNodeResponse(GuiModel):
         description="Whether the connected agent lets the controller start and stop its player.",
     )
     player_state: PlayerState | None = None
+    keep_awake: KeepAwakeStatus | None = Field(
+        default=None,
+        description="Host sleep prevention set on the media agent; None when off or unreported.",
+    )
     capability_document: DeviceCapabilityDocument | None = None
     certificate_expires_at: str | None = None
     storage_total_bytes: int | None = Field(default=None, gt=0)

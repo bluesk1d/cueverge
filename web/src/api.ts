@@ -1598,6 +1598,7 @@ export interface TopologyNode {
   diagnostic?: string | null;
   player_control?: boolean | null;
   player_state?: PlayerState | null;
+  keep_awake?: KeepAwakeStatus | null;
   capability_document?: DeviceCapabilityDocument | null;
   certificate_expires_at?: string | null;
   storage_total_bytes?: number | null;
@@ -2974,6 +2975,13 @@ export async function testDeviceConnection(deviceId: string): Promise<DeviceConn
 }
 
 export type PlayerState = "stopped" | "starting" | "ready" | "stopping" | "failed";
+
+/** Sleep prevention set on the media host with CUEVERGE_KEEP_AWAKE; read-only here. */
+export interface KeepAwakeStatus {
+  mode: "system" | "display";
+  active: boolean;
+  detail?: string | null;
+}
 
 export async function controlDevicePlayer(
   deviceId: string,
