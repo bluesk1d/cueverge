@@ -14,6 +14,7 @@ from pydantic import ValidationError
 
 from cueverge.controller.runtime import ControllerRuntime
 from cueverge.core.models import ResourceKind
+from cueverge.gui.agent_settings import DeviceAgentSettingsService
 from cueverge.gui.agent_updates import AgentBundleCatalog
 from cueverge.gui.asset_upload import AssetUploadError, AssetUploadService
 from cueverge.gui.device_ca import DeviceCertificateAuthority
@@ -26,6 +27,7 @@ from cueverge.gui.repository import (
     ProjectNotFoundError,
 )
 from cueverge.protocol.device_v2 import (
+    DeviceAgentSettingsAck,
     DeviceAgentUpdateAck,
     DeviceArtifactActivateAck,
     DeviceArtifactCleanupAck,
@@ -95,6 +97,7 @@ def create_device_app(
     authority: DeviceCertificateAuthority | None = None,
     assets: AssetUploadService | None = None,
     agent_bundles: AgentBundleCatalog | None = None,
+    agent_settings: DeviceAgentSettingsService | None = None,
 ) -> FastAPI:
     app = FastAPI(
         title="Cueverge Device Transport",
@@ -305,6 +308,10 @@ def create_device_app(
                 observed_at_ms=_now_ms(),
             )
             await websocket.send_json(welcome.model_dump(mode="json"))
+            if agent_settings is not None and "agent_settings" in hello.media_features:
+                agent_settings.sync_on_connect(
+                    device.id, hello.agent_settings.revision if hello.agent_settings else None
+                )
             while True:
                 payload = await websocket.receive_json()
                 repository.authorize_device_certificate(
@@ -420,6 +427,14 @@ def create_device_app(
                         cleanup_ack.request_id,
                         cleanup_ack,
                     )
+                elif message_type == "device.agent.settings.ack":
+                    settings_ack = DeviceAgentSettingsAck.model_validate(payload)
+                    if settings_ack.state is not None:
+                        sessions.set_agent_settings_state(
+                            peer.device_id, session_id, settings_ack.state
+                        )
+                    with suppress(DeviceSessionError):
+                        sessions.acknowledge(UUID(device.id), settings_ack.request_id, settings_ack)
                 elif message_type == "device.agent.update.ack":
                     update_ack = DeviceAgentUpdateAck.model_validate(payload)
                     with suppress(DeviceSessionError):

@@ -234,7 +234,10 @@ in which no playing scene uses it. Every start and stop is audited as
 that host; fix it there, then start it again.
 
 **Device details** also show **Keep awake**, **Agent software** (running version
-and bundle) and **Agent updates**. A device card notes **Update available**,
+and bundle) and **Agent updates**, and an **Agent settings** section where
+administrators choose keep awake, player mode, projector display, audio output,
+audio delay and update rate for that host. **Host default** uses the value from
+the host's own configuration. A device card notes **Update available**,
 **Updating**, **Update failed** or **Update rolled back**. Administrators install
 updates from **Connect and manage devices > Agent software updates** with the
 show stopped in maintenance mode. Each host closes its player and restarts, and

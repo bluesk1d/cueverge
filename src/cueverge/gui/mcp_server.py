@@ -29,6 +29,7 @@ from starlette.responses import JSONResponse, Response
 
 from cueverge.controller.runtime import SEAMLESS_PRELOAD_LEAD_MS
 from cueverge.core.loader import ShowPackageError
+from cueverge.gui.agent_settings import AgentSettingsError
 from cueverge.gui.agent_updates import AgentUpdateError
 from cueverge.gui.apply import ApplyError, ApplyRequest
 from cueverge.gui.artifact_deployment import ArtifactDeploymentError
@@ -140,6 +141,7 @@ from cueverge.gui.stage_renderer import (
 )
 from cueverge.integrations.mqtt import MAX_INPUT_PAYLOAD_BYTES, MAX_INPUT_RECENT_EVENTS
 from cueverge.media_agent.launcher import TRIAL_SECONDS
+from cueverge.protocol.device_v2 import AgentSettings
 
 MAX_CONCURRENT_CALLS_PER_TOKEN = 4
 
@@ -548,6 +550,54 @@ def create_mcp_app(services: GuiServices) -> Starlette:
             "player_state": state,
             "hardware_operation_requested": True,
         }
+
+    @tool()
+    def get_device_agent_settings(device_id: str) -> dict[str, JsonValue]:
+        """Read a media host's agent settings: controller overrides and what it runs with.
+
+        Requires read and this runtime's installation. overrides are stored on the
+        controller (null = host default from the agent's env file); effective,
+        host_defaults, displays (likely --fs-screen indices) and audio_devices (mpv
+        names) come from the connected agent. sync: applied, pending, offline,
+        unsupported or failed. pending_player_restart lists saved settings the
+        running player doesn't use yet.
+        """
+        input_installation_token(McpScope.READ)
+        try:
+            return _bounded_result(services.agent_settings.view(device_id).model_dump(mode="json"))
+        except AgentSettingsError as error:
+            raise ToolError(str(error)) from error
+
+    @tool()
+    async def set_device_agent_settings(
+        device_id: str,
+        settings: dict[str, JsonValue],
+        expected_revision: int,
+    ) -> dict[str, JsonValue]:
+        """Replace a media host's controller-managed agent settings.
+
+        Requires explicit device_config, a current global administrator and this
+        runtime's installation. settings may set keep_awake (off/system/display),
+        player_mode (always/on_demand), fullscreen_screen (0-63), audio_device (an
+        mpv name from get_device_agent_settings), audio_delay_ms (-5000..5000) and
+        telemetry_hz (1-60); omitted or null fields use the host default. Pass the
+        revision you read as expected_revision. Audio and keep-awake apply live;
+        display changes restart the player only in maintenance mode with nothing
+        playing, otherwise they wait for the next player start. Offline hosts get
+        the settings when they connect. Audited as device.agent_settings.update.
+        """
+        token = input_installation_token(McpScope.DEVICE_CONFIG)
+        try:
+            parsed = AgentSettings.model_validate(settings)
+        except ValidationError as error:
+            raise ToolError(f"Invalid agent settings: {error}") from error
+        try:
+            result = await services.agent_settings.update(
+                device_id, parsed, expected_revision=expected_revision, actor=token.username
+            )
+        except AgentSettingsError as error:
+            raise ToolError(str(error)) from error
+        return _bounded_result(result.model_dump(mode="json"))
 
     @tool()
     def get_agent_updates() -> dict[str, JsonValue]:
@@ -1766,6 +1816,29 @@ def create_mcp_app(services: GuiServices) -> Starlette:
                         "controller_can_change": False,
                     },
                 },
+                "agent_settings": {
+                    "read_tool": "get_device_agent_settings",
+                    "update_tool": "set_device_agent_settings",
+                    "scope": "device_config",
+                    "role": "global administrator",
+                    "settings_schema": AgentSettings.model_json_schema(),
+                    "host_only_settings": [
+                        "CUEVERGE_ASSET_ROOT",
+                        "CUEVERGE_MPV_EXECUTABLE",
+                        "CUEVERGE_MPV_PIPE",
+                        "CUEVERGE_DEVICE_TRANSPORT_URL",
+                        "CUEVERGE_DEVICE_CREDENTIAL_ROOT",
+                    ],
+                    "live_settings": [
+                        "keep_awake",
+                        "audio_device",
+                        "audio_delay_ms",
+                        "telemetry_hz",
+                    ],
+                    "player_restart_settings": ["fullscreen_screen"],
+                    "player_restart_requires_idle_maintenance": True,
+                    "optimistic_revision": True,
+                },
                 "agent_updates": {
                     "read_tool": "get_agent_updates",
                     "update_tool": "update_device_agents",
@@ -1924,6 +1997,7 @@ def create_mcp_app(services: GuiServices) -> Starlette:
                     "ambient_lighting": True,
                     "device_player_control": True,
                     "managed_agent_updates": True,
+                    "managed_agent_settings": True,
                     "geometry_editing": False,
                     "live_media_rendering": False,
                 },

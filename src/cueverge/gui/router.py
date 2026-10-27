@@ -25,6 +25,7 @@ from pydantic import JsonValue, ValidationError
 
 from cueverge.controller.runtime import ShowMode
 from cueverge.core.loader import ShowPackageError, load_show_package
+from cueverge.gui.agent_settings import AgentSettingsError
 from cueverge.gui.agent_updates import AgentUpdateError, AgentUpdatePreconditionError
 from cueverge.gui.apply import ApplyError, ApplyRequest
 from cueverge.gui.artifact_deployment import ArtifactDeploymentError
@@ -93,6 +94,7 @@ from cueverge.gui.contracts import (
     CreateRenderJobRequest,
     CreateScenePresetRequest,
     CreateSceneRequest,
+    DeviceAgentSettingsResponse,
     DeviceArtifactResponse,
     DeviceConnectionPolicyResponse,
     DeviceConnectionTestResponse,
@@ -205,6 +207,7 @@ from cueverge.gui.contracts import (
     TopologyNodeResponse,
     TopologyResponse,
     UpdateAssetMetadataRequest,
+    UpdateDeviceAgentSettingsRequest,
     UpdateInstallationPhotoRequest,
     UpdateInstallationRequest,
     UpdateRevisionReleaseRequest,
@@ -5397,6 +5400,68 @@ def create_gui_router(services: GuiServices) -> APIRouter:
             authorization_context={"role": identity.role.value, "player_state": state},
         )
         return DevicePlayerResponse(device_id=device_id, player_state=state)
+
+    @router.get(
+        "/devices/{device_id}/agent-settings",
+        response_model=DeviceAgentSettingsResponse,
+        dependencies=[reader],
+    )
+    def device_agent_settings(device_id: str) -> DeviceAgentSettingsResponse:
+        try:
+            return services.agent_settings.view(device_id)
+        except AgentSettingsError as error:
+            raise HTTPException(
+                status_code=404,
+                detail={"code": "agent_settings_unavailable", "message": str(error)},
+            ) from error
+
+    @router.put(
+        "/devices/{device_id}/agent-settings",
+        response_model=DeviceAgentSettingsResponse,
+    )
+    async def update_device_agent_settings(
+        device_id: str,
+        body: UpdateDeviceAgentSettingsRequest,
+        identity: Annotated[AuthenticatedSession, administrator_mutation],
+    ) -> DeviceAgentSettingsResponse:
+        try:
+            return await services.agent_settings.update(
+                device_id,
+                body.settings,
+                expected_revision=body.expected_revision,
+                actor=identity.username,
+            )
+        except AgentSettingsError as error:
+            raise HTTPException(
+                status_code=409, detail={"code": "agent_settings_conflict", "message": str(error)}
+            ) from error
+
+    @router.post(
+        "/devices/{device_id}/agent-settings/apply",
+        response_model=DeviceAgentSettingsResponse,
+    )
+    async def apply_device_agent_settings(
+        device_id: str,
+        identity: Annotated[AuthenticatedSession, administrator_mutation],
+    ) -> DeviceAgentSettingsResponse:
+        try:
+            services.agent_settings.view(device_id)
+            await services.agent_settings.push(device_id)
+            result = services.agent_settings.view(device_id)
+        except AgentSettingsError as error:
+            raise HTTPException(
+                status_code=404,
+                detail={"code": "agent_settings_unavailable", "message": str(error)},
+            ) from error
+        services.repository.append_audit(
+            actor=identity.username,
+            action="device.agent_settings.apply",
+            target=device_id,
+            result="success" if result.sync == "applied" else "error",
+            occurred_at=_now_iso(),
+            authorization_context={"role": identity.role.value, "sync": result.sync},
+        )
+        return result
 
     @router.get(
         "/devices/agent-updates",

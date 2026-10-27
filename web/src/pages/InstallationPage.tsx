@@ -12,6 +12,7 @@ import type { CSSProperties } from "react";
 import { OutputTraversalPreview } from "../components/OutputTraversalPreview";
 import { GeometryCanvas } from "../components/GeometryCanvas";
 import { InstallationPhotoCard } from "../components/InstallationPhotoCard";
+import { AgentSettingsPanel } from "../components/AgentSettingsPanel";
 import { DetailsDialog } from "../components/DetailsDialog";
 import { StageMapPanel } from "../components/StageMapPanel";
 import { mapperDiagnostics } from "../components/mapper-diagnostics";
@@ -233,6 +234,7 @@ export function InstallationPage({
                     key={node.id}
                     node={node}
                     canOperate={session?.role === "administrator" || session?.role === "operator"}
+                    canAdminister={session?.role === "administrator"}
                     onRefresh={onRefresh}
                   />
                 ))}
@@ -4316,10 +4318,12 @@ function ConnectionPolicy({
 function NodeCard({
   node,
   canOperate = false,
+  canAdminister = false,
   onRefresh,
 }: {
   node: TopologyNode;
   canOperate?: boolean;
+  canAdminister?: boolean;
   onRefresh?: () => Promise<void> | void;
 }) {
   const [detailsOpen, setDetailsOpen] = useState(false);
@@ -4611,6 +4615,9 @@ function NodeCard({
             {node.diagnostic ?? "Controller-owned WLED output observed without changing state"}
           </p>
         </>
+      )}
+      {node.kind === "direct_media_agent" && (
+        <AgentSettingsPanel deviceId={node.id.replace("device:", "")} canEdit={canAdminister} />
       )}
       </DetailsDialog>}
     </article>

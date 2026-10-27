@@ -38,12 +38,33 @@ def test_off_reports_nothing_and_never_touches_the_host() -> None:
 
     async def scenario() -> None:
         assert await keep_awake.start() is None
-        await keep_awake.maintain()
+        task = asyncio.create_task(keep_awake.maintain())
+        await asyncio.sleep(0.05)
+        task.cancel()
         await keep_awake.stop()
 
+    keep_awake.retry_seconds = 0.01
     asyncio.run(scenario())
     assert keep_awake.status is None
     assert backend.calls == []
+
+
+def test_changing_mode_releases_and_reacquires() -> None:
+    backend = FakeBackend()
+    keep_awake = KeepAwake("off", backend)
+
+    async def scenario() -> None:
+        await keep_awake.start()
+        assert await keep_awake.change("display") == KeepAwakeStatus(mode="display", active=True)
+        assert await keep_awake.change("off") is None
+        await keep_awake.stop()
+
+    asyncio.run(scenario())
+    assert [call[:2] for call in backend.calls] == [
+        ("acquire", "display"),
+        ("release", None),
+        ("release", None),
+    ]
 
 
 def test_holds_and_releases_the_inhibitor_on_one_thread() -> None:

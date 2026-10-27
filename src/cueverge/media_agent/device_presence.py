@@ -15,6 +15,7 @@ from pydantic import AnyUrl, ValidationError
 from websockets.asyncio.client import ClientConnection, connect
 from websockets.exceptions import WebSocketException
 
+from cueverge.media_agent.agent_settings import AgentSettingsStore, discover_audio_devices
 from cueverge.media_agent.agent_update import (
     AgentInstallation,
     AgentRestartRequested,
@@ -25,7 +26,12 @@ from cueverge.media_agent.device_enrollment import StoredDeviceIdentity
 from cueverge.media_agent.keep_awake import KeepAwake
 from cueverge.media_agent.player_host import PlayerHost
 from cueverge.protocol.device_v2 import (
+    AgentAudioDevice,
+    AgentDisplay,
     AgentRelease,
+    AgentSettingsState,
+    DeviceAgentSettingsAck,
+    DeviceAgentSettingsCommand,
     DeviceAgentUpdateAck,
     DeviceAgentUpdateCommand,
     DeviceArtifactActivateAck,
@@ -81,11 +87,18 @@ class DevicePresenceClient:
         player_host: PlayerHost | None = None,
         keep_awake: KeepAwake | None = None,
         installation: AgentInstallation | None = None,
+        settings: AgentSettingsStore | None = None,
+        displays: tuple[AgentDisplay, ...] = (),
+        audio_devices: tuple[AgentAudioDevice, ...] = (),
     ) -> None:
         self.transport_url = transport_url
         self.player_host = player_host
         self.keep_awake = keep_awake
         self.installation = installation
+        self.settings = settings
+        self.displays = displays
+        self.audio_devices = audio_devices
+        self._settings_reported: str | None = None
         self.credential_root = credential_root
         self.reconnect_delay_ms = reconnect_delay_ms
         self.media_client = media_client
@@ -135,7 +148,9 @@ class DevicePresenceClient:
             player_state=self._player_state(),
             keep_awake=self._keep_awake(),
             agent_release=self._agent_release(),
+            agent_settings=self._settings_state(),
         )
+        self._settings_reported = _settings_key(hello.agent_settings)
         await websocket.send(hello.model_dump_json())
         welcome = DeviceWelcome.model_validate_json(await websocket.recv())
         if welcome.device_id != self.identity.device_id:
@@ -299,6 +314,12 @@ class DevicePresenceClient:
                 )
                 async with send_lock:
                     await websocket.send(cleanup_ack.model_dump_json())
+            elif message_type == "device.agent.settings":
+                settings_command = DeviceAgentSettingsCommand.model_validate(message)
+                _validate_deployment_command(settings_command, session_id, welcome)
+                settings_ack = await self._apply_settings(settings_command, session_id, welcome)
+                async with send_lock:
+                    await websocket.send(settings_ack.model_dump_json())
             elif message_type == "device.agent.update":
                 update_command = DeviceAgentUpdateCommand.model_validate(message)
                 _validate_deployment_command(update_command, session_id, welcome)
@@ -462,7 +483,98 @@ class DevicePresenceClient:
         features = tuple(self.media_client.media_features)
         if self.installation is not None and self.installation.managed:
             features += ("agent_update",)
+        if self.settings is not None:
+            features += ("agent_settings",)
         return features
+
+    def _settings_state(self) -> AgentSettingsState | None:
+        if self.settings is None:
+            return None
+        pending = (
+            self.player_host.pending_restart(self.settings.effective)
+            if self.player_host is not None
+            else ()
+        )
+        return self.settings.state(
+            pending_player_restart=pending,
+            displays=self.displays,
+            audio_devices=self.audio_devices,
+        )
+
+    def _changed_settings_state(self) -> AgentSettingsState | None:
+        state = self._settings_state()
+        key = _settings_key(state)
+        if key == self._settings_reported:
+            return None
+        self._settings_reported = key
+        return state
+
+    def _telemetry_hz(self) -> float:
+        if self.settings is not None:
+            return self.settings.effective.telemetry_hz
+        return self.media_client.config.telemetry_hz
+
+    async def _apply_settings(
+        self,
+        command: DeviceAgentSettingsCommand,
+        session_id: UUID,
+        welcome: DeviceWelcome,
+    ) -> DeviceAgentSettingsAck:
+        store = self.settings
+        if store is None:
+            return DeviceAgentSettingsAck(
+                request_id=command.request_id,
+                device_session_id=session_id,
+                controller_epoch=welcome.controller_epoch,
+                revision=command.revision,
+                status="error",
+                error="this agent doesn't accept controller settings",
+            )
+        try:
+            changed = await asyncio.to_thread(store.replace, command.revision, command.settings)
+        except OSError as error:
+            return DeviceAgentSettingsAck(
+                request_id=command.request_id,
+                device_session_id=session_id,
+                controller_epoch=welcome.controller_epoch,
+                revision=command.revision,
+                status="error",
+                error=f"couldn't save settings: {error}"[:500],
+            )
+        effective = store.effective
+        LOGGER.info(
+            "controller settings revision %s changed %s", command.revision, changed or "nothing"
+        )
+        if self.keep_awake is not None and "keep_awake" in changed:
+            await self.keep_awake.change(effective.keep_awake)
+        host = self.player_host
+        if host is not None:
+            host.configure(effective)
+            await host.apply_live(effective)
+            if command.allow_player_restart:
+                if host.pending_restart(effective):
+                    self.media_client._clear_playback()
+                    await host.restart()
+                elif (
+                    "player_mode" in changed
+                    and effective.player_mode == "always"
+                    and host.state in {"stopped", "failed"}
+                ):
+                    await host.start()
+        if "audio_device" in changed or not self.audio_devices:
+            self.audio_devices = await asyncio.to_thread(
+                discover_audio_devices, self.media_client.config.mpv_executable
+            )
+        state = self._settings_state()
+        self._settings_reported = _settings_key(state)
+        return DeviceAgentSettingsAck(
+            request_id=command.request_id,
+            device_session_id=session_id,
+            controller_epoch=welcome.controller_epoch,
+            revision=command.revision,
+            status="completed",
+            state=state,
+        )
 
     def _agent_release(self) -> AgentRelease | None:
         return self.installation.release() if self.installation is not None else None
@@ -548,6 +660,7 @@ class DevicePresenceClient:
                 player_state=self._player_state(),
                 keep_awake=self._keep_awake(),
                 agent_release=self._agent_release(),
+                agent_settings=self._changed_settings_state(),
             )
             self._heartbeat_sent[sequence] = (sent_monotonic_ms, sent_unix_ms)
             async with send_lock:
@@ -577,7 +690,7 @@ class DevicePresenceClient:
                 )
                 async with send_lock:
                     await websocket.send(message.model_dump_json())
-            await asyncio.sleep(1 / self.media_client.config.telemetry_hz)
+            await asyncio.sleep(1 / self._telemetry_hz())
 
     async def _inventory_once(
         self,
@@ -771,6 +884,7 @@ def _validate_deployment_command(
         | DeviceArtifactCleanupCommand
         | DevicePlayerCommand
         | DeviceAgentUpdateCommand
+        | DeviceAgentSettingsCommand
     ),
     session_id: UUID,
     welcome: DeviceWelcome,
@@ -896,3 +1010,7 @@ def _active_digest(asset_root: Path) -> str:
         return digest if isinstance(digest, str) else ""
     except (OSError, UnicodeError, json.JSONDecodeError):
         return ""
+
+
+def _settings_key(state: AgentSettingsState | None) -> str | None:
+    return state.model_dump_json() if state is not None else None

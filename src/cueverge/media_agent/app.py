@@ -4,6 +4,13 @@ import sys
 from contextlib import suppress
 
 from cueverge.config import MediaAgentConfig
+from cueverge.media_agent.agent_settings import (
+    SETTINGS_FILE,
+    AgentSettingsStore,
+    discover_audio_devices,
+    discover_displays,
+    host_defaults,
+)
 from cueverge.media_agent.agent_update import AgentInstallation, AgentRestartRequested
 from cueverge.media_agent.client import MediaAgentClient
 from cueverge.media_agent.device_presence import DevicePresenceClient
@@ -17,20 +24,21 @@ async def run() -> None:
     config = MediaAgentConfig.from_environment()
     if config.device_transport_url is None or config.device_credential_root is None:
         raise RuntimeError("media agent requires protocol-v2 device credentials")
-    process = MpvProcess(
-        executable=config.mpv_executable,
-        pipe_path=config.mpv_pipe,
-        fullscreen_screen=config.fullscreen_screen,
-        audio_device=config.audio_device,
-        audio_delay_seconds=config.audio_delay_ms / 1000,
+    settings = AgentSettingsStore(
+        config.device_credential_root / SETTINGS_FILE, host_defaults(config)
     )
+    effective = settings.effective
+    process = MpvProcess(executable=config.mpv_executable, pipe_path=config.mpv_pipe)
     host = PlayerHost(process, lambda: create_mpv_transport(config.mpv_pipe), config.asset_root)
-    keep_awake = KeepAwake(config.keep_awake)
+    host.configure(effective)
+    keep_awake = KeepAwake(effective.keep_awake)
     await keep_awake.start()
     keep_awake_task = asyncio.create_task(keep_awake.maintain())
     try:
-        if config.player_mode == "always":
+        if effective.player_mode == "always":
             await host.start()
+        displays = await asyncio.to_thread(discover_displays)
+        audio_devices = await asyncio.to_thread(discover_audio_devices, config.mpv_executable)
         media_client = MediaAgentClient(config, host)
         await DevicePresenceClient(
             config.device_transport_url,
@@ -40,6 +48,9 @@ async def run() -> None:
             player_host=host,
             keep_awake=keep_awake,
             installation=AgentInstallation.from_environment(),
+            settings=settings,
+            displays=displays,
+            audio_devices=audio_devices,
         ).run_forever()
     finally:
         keep_awake_task.cancel()

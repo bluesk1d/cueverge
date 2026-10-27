@@ -90,6 +90,16 @@ using it need a controller that recognizes the field. Update the controller firs
 `media_features`. The controller only reports this status; it can't change host
 power settings.
 
+Agents that list the `agent_settings` media feature report `agent_settings` in
+`device.hello` (and in a heartbeat when it changes): the applied controller
+`revision`, `effective` and `host_defaults` settings, `pending_player_restart`,
+and detected `displays` and mpv `audio_devices`. The controller sends
+`device.agent.settings` with a `revision`, the `settings` overrides (null fields
+use the host default) and `allow_player_restart`, set only in maintenance mode
+with nothing playing. The device stores the overrides, applies them, and answers
+`device.agent.settings.ack` with its new state. On connect, the controller resends
+stored settings whose revision differs from the reported one.
+
 Agents may report `agent_release` in `device.hello` and heartbeats:
 `{"version", "platform", "bundle_digest", "managed", "last_update"}`. It is the
 software actually running, unlike the enrolled capability document's

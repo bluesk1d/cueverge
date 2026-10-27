@@ -124,6 +124,10 @@ async def _presence_scenario() -> None:
     keep_awake = KeepAwakeStatus(mode="display", active=True)
     client.keep_awake = SimpleNamespace(status=keep_awake)  # type: ignore[assignment]
     client.installation = AgentInstallation(None, None)
+    client.settings = None
+    client.displays = ()
+    client.audio_devices = ()
+    client._settings_reported = None
     welcome = DeviceWelcome(
         device_id=DEVICE_ID,
         controller_epoch=uuid4(),

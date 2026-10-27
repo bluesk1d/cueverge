@@ -48,6 +48,7 @@ export function McpWorkspace({
     live_operation: canOperate,
     input_config: canConfigureInputs,
     device_update: canConfigureInputs,
+    device_config: canConfigureInputs,
     installation_edit: canConfigureInstallation,
     photo_replace: canConfigureInstallation,
   };
@@ -62,6 +63,7 @@ export function McpWorkspace({
           (scope !== "live_operation" || canOperate) &&
           (scope !== "input_config" || canConfigureInputs) &&
           (scope !== "device_update" || canConfigureInputs) &&
+          (scope !== "device_config" || canConfigureInputs) &&
           (scope !== "installation_edit" || canConfigureInstallation) &&
           (scope !== "photo_replace" || canConfigureInstallation),
       ),

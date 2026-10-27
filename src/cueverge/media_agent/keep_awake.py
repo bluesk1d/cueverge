@@ -74,11 +74,11 @@ class KeepAwake:
 
     async def maintain(self) -> None:
         """Retry a refused inhibitor, e.g. when the agent started before the desktop session."""
-        if self.setting == "off" or self._backend is None:
+        if self._backend is None:
             return
         while True:
             await asyncio.sleep(self.retry_seconds)
-            if not self._active:
+            if self.setting != "off" and not self._active:
                 await self._run(self._backend.release)
                 await self._acquire()
 
@@ -90,6 +90,15 @@ class KeepAwake:
         self._executor = None
         self._active = False
         LOGGER.info("keep awake released")
+
+    async def change(self, setting: KeepAwakeSetting) -> KeepAwakeStatus | None:
+        """Switch modes while running; maintain() keeps retrying a refused new mode."""
+        if setting == self.setting:
+            return self.status
+        if self._backend is not None and self._executor is not None:
+            await self._run(self._backend.release)
+        self.setting, self._active, self._detail = setting, False, None
+        return await self.start()
 
     async def _acquire(self) -> None:
         backend = self._backend

@@ -4,6 +4,7 @@ import ssl
 import uvicorn
 
 from cueverge.controller.runtime import ControllerRuntime
+from cueverge.gui.agent_settings import DeviceAgentSettingsService
 from cueverge.gui.agent_updates import AgentBundleCatalog
 from cueverge.gui.asset_upload import AssetUploadService
 from cueverge.gui.config import GuiConfig
@@ -30,6 +31,7 @@ class EmbeddedDeviceListener:
         sessions: DeviceSessionRegistry,
         runtime: ControllerRuntime,
         agent_bundles: AgentBundleCatalog | None = None,
+        agent_settings: DeviceAgentSettingsService | None = None,
     ) -> None:
         if not config.device_listener_enabled:
             raise ValueError("embedded device listener requires an enabled listener")
@@ -50,6 +52,7 @@ class EmbeddedDeviceListener:
                     authority,
                     AssetUploadService(config, repository),
                     agent_bundles,
+                    agent_settings,
                 ),
                 host=config.device_listener_host,
                 port=config.device_listener_port,

@@ -77,7 +77,8 @@ export type McpScope =
   | "input_config"
   | "installation_edit"
   | "photo_replace"
-  | "device_update";
+  | "device_update"
+  | "device_config";
 
 export interface InputSourceSettings {
   enabled: boolean;
@@ -3039,6 +3040,74 @@ export async function startAgentUpdates(deviceIds?: string[]): Promise<AgentUpda
     method: "POST",
     headers: mutationHeaders(),
     body: JSON.stringify(deviceIds ? { device_ids: deviceIds } : {}),
+  });
+}
+
+export type AgentSettingName =
+  | "keep_awake"
+  | "player_mode"
+  | "fullscreen_screen"
+  | "audio_device"
+  | "audio_delay_ms"
+  | "telemetry_hz";
+
+/** Controller overrides; null means use the host default from the agent's env file. */
+export interface AgentSettings {
+  keep_awake?: "off" | "system" | "display" | null;
+  player_mode?: "always" | "on_demand" | null;
+  fullscreen_screen?: number | null;
+  audio_device?: string | null;
+  audio_delay_ms?: number | null;
+  telemetry_hz?: number | null;
+}
+
+export interface AgentEffectiveSettings {
+  keep_awake: "off" | "system" | "display";
+  player_mode: "always" | "on_demand";
+  fullscreen_screen: number | null;
+  audio_device: string | null;
+  audio_delay_ms: number;
+  telemetry_hz: number;
+}
+
+export interface DeviceAgentSettings {
+  device_id: string;
+  display_name: string;
+  connected: boolean;
+  supported: boolean;
+  revision: number;
+  overrides: AgentSettings;
+  sync: "applied" | "pending" | "offline" | "unsupported" | "failed";
+  detail?: string | null;
+  applied_revision?: number | null;
+  effective?: AgentEffectiveSettings | null;
+  host_defaults?: AgentEffectiveSettings | null;
+  pending_player_restart: AgentSettingName[];
+  displays: { index: number; name: string; width?: number | null; height?: number | null; primary?: boolean | null }[];
+  audio_devices: { name: string; description: string }[];
+}
+
+export async function getDeviceAgentSettings(deviceId: string): Promise<DeviceAgentSettings> {
+  return request(`/api/gui/v1/devices/${encodeURIComponent(deviceId)}/agent-settings`);
+}
+
+export async function updateDeviceAgentSettings(
+  deviceId: string,
+  settings: AgentSettings,
+  expectedRevision: number,
+): Promise<DeviceAgentSettings> {
+  return request(`/api/gui/v1/devices/${encodeURIComponent(deviceId)}/agent-settings`, {
+    method: "PUT",
+    headers: mutationHeaders(),
+    body: JSON.stringify({ settings, expected_revision: expectedRevision }),
+  });
+}
+
+/** Resend saved settings; restarts the player for display changes in idle maintenance. */
+export async function applyDeviceAgentSettings(deviceId: string): Promise<DeviceAgentSettings> {
+  return request(`/api/gui/v1/devices/${encodeURIComponent(deviceId)}/agent-settings/apply`, {
+    method: "POST",
+    headers: mutationHeaders(),
   });
 }
 

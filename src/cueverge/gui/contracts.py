@@ -30,7 +30,13 @@ from cueverge.core.models import (
 from cueverge.gui.ambient_lighting import validate_ambient_lighting
 from cueverge.gui.spatial_effects import SpatialRipple
 from cueverge.protocol.device_v2 import (
+    AGENT_SETTING_NAMES,
+    AgentAudioDevice,
+    AgentDisplay,
+    AgentEffectiveSettings,
     AgentPlatform,
+    AgentSettingName,
+    AgentSettings,
     DeviceCapabilityDocument,
     DeviceKind,
     KeepAwakeStatus,
@@ -1221,6 +1227,7 @@ McpScopeValue = Literal[
     "installation_edit",
     "photo_replace",
     "device_update",
+    "device_config",
 ]
 
 
@@ -2821,6 +2828,39 @@ class StartAgentUpdatesRequest(GuiModel):
         default=None,
         description="Devices to update; omit to update every device with an update available.",
     )
+
+
+AgentSettingsSync = Literal["applied", "pending", "offline", "unsupported", "failed"]
+
+
+class DeviceAgentSettingsResponse(GuiModel):
+    """Controller overrides for a media agent and what the agent reports it runs with.
+
+    overrides are what the controller stores (null = host default from the agent's env
+    file). effective, host_defaults and the display/audio choices come from the
+    connected agent and are null while it is offline or too old to report them.
+    """
+
+    device_id: str
+    display_name: str
+    connected: bool
+    supported: bool
+    revision: int = Field(ge=0)
+    overrides: AgentSettings
+    sync: AgentSettingsSync
+    detail: str | None = None
+    applied_revision: int | None = Field(default=None, ge=0)
+    effective: AgentEffectiveSettings | None = None
+    host_defaults: AgentEffectiveSettings | None = None
+    pending_player_restart: tuple[AgentSettingName, ...] = ()
+    displays: tuple[AgentDisplay, ...] = ()
+    audio_devices: tuple[AgentAudioDevice, ...] = ()
+    editable_settings: tuple[AgentSettingName, ...] = AGENT_SETTING_NAMES
+
+
+class UpdateDeviceAgentSettingsRequest(GuiModel):
+    settings: AgentSettings
+    expected_revision: int = Field(ge=0)
 
 
 class TopologyNodeResponse(GuiModel):

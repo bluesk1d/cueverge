@@ -49,11 +49,89 @@ class ProtocolRange(DeviceProtocolModel):
         return self
 
 
-MediaFeature = Literal["seamless_transition", "repeat_count", "player_control", "agent_update"]
+MediaFeature = Literal[
+    "seamless_transition", "repeat_count", "player_control", "agent_update", "agent_settings"
+]
 AgentPlatform = Literal["linux_x86_64", "linux_aarch64", "windows_amd64"]
 SHA256_PATTERN = r"^[0-9a-f]{64}$"
 PlayerState = Literal["stopped", "starting", "ready", "stopping", "failed"]
 KeepAwakeMode = Literal["system", "display"]
+
+
+KeepAwakeSetting = Literal["off", "system", "display"]
+PlayerMode = Literal["always", "on_demand"]
+AgentSettingName = Literal[
+    "keep_awake",
+    "player_mode",
+    "fullscreen_screen",
+    "audio_device",
+    "audio_delay_ms",
+    "telemetry_hz",
+]
+AGENT_SETTING_NAMES: tuple[AgentSettingName, ...] = (
+    "keep_awake",
+    "player_mode",
+    "fullscreen_screen",
+    "audio_device",
+    "audio_delay_ms",
+    "telemetry_hz",
+)
+
+
+class AgentSettings(DeviceProtocolModel):
+    """Controller overrides for a media agent; a null field uses the host's env default."""
+
+    keep_awake: KeepAwakeSetting | None = None
+    player_mode: PlayerMode | None = None
+    fullscreen_screen: int | None = Field(default=None, ge=0, le=63)
+    audio_device: str | None = Field(default=None, min_length=1, max_length=512)
+    audio_delay_ms: int | None = Field(default=None, ge=-5000, le=5000)
+    telemetry_hz: float | None = Field(default=None, ge=1.0, le=60.0)
+
+
+class AgentEffectiveSettings(DeviceProtocolModel):
+    """Concrete settings an agent runs with; null display/audio means mpv's own default."""
+
+    keep_awake: KeepAwakeSetting = "off"
+    player_mode: PlayerMode = "always"
+    fullscreen_screen: int | None = Field(default=None, ge=0, le=63)
+    audio_device: str | None = Field(default=None, min_length=1, max_length=512)
+    audio_delay_ms: int = Field(default=0, ge=-5000, le=5000)
+    telemetry_hz: float = Field(default=15.0, ge=1.0, le=60.0)
+
+    def merged(self, overrides: AgentSettings) -> "AgentEffectiveSettings":
+        values = overrides.model_dump(exclude_none=True)
+        return self.model_copy(update=values)
+
+
+class AgentDisplay(DeviceProtocolModel):
+    """A display as the host reports it; index is the likely mpv --fs-screen value."""
+
+    index: int = Field(ge=0, le=63)
+    name: str = Field(min_length=1, max_length=128)
+    width: int | None = Field(default=None, gt=0)
+    height: int | None = Field(default=None, gt=0)
+    primary: bool | None = None
+
+
+class AgentAudioDevice(DeviceProtocolModel):
+    name: str = Field(min_length=1, max_length=512)
+    description: str = Field(default="", max_length=256)
+
+
+class AgentSettingsState(DeviceProtocolModel):
+    """What an agent runs with, its host defaults, and the choices the host offers.
+
+    revision is the controller settings revision applied (0 before any). Settings in
+    pending_player_restart are saved but take effect when the player next starts.
+    """
+
+    revision: int = Field(default=0, ge=0)
+    effective: AgentEffectiveSettings
+    host_defaults: AgentEffectiveSettings
+    pending_player_restart: tuple[AgentSettingName, ...] = ()
+    displays: tuple[AgentDisplay, ...] = Field(default=(), max_length=32)
+    audio_devices: tuple[AgentAudioDevice, ...] = Field(default=(), max_length=64)
 
 
 class KeepAwakeStatus(DeviceProtocolModel):
@@ -364,6 +442,11 @@ class DeviceHello(DeviceProtocolModel):
         exclude_if=lambda value: value is None,
         description="Running agent software; reported by agents that advertise agent_update.",
     )
+    agent_settings: AgentSettingsState | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="Effective settings and host choices; agents advertising agent_settings.",
+    )
 
 
 class DevicePlayerCommand(DeviceProtocolModel):
@@ -428,6 +511,46 @@ class DeviceHeartbeat(DeviceProtocolModel):
         default=None,
         exclude_if=lambda value: value is None,
     )
+    agent_settings: AgentSettingsState | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="Sent only when the agent's settings state changed since its last report.",
+    )
+
+
+class DeviceAgentSettingsCommand(DeviceProtocolModel):
+    """Replace the controller overrides of an agent that advertises agent_settings.
+
+    The agent stores them, applies what it can live, and restarts its player for the rest
+    only when allow_player_restart is true (the controller is in idle maintenance).
+    """
+
+    type: Literal["device.agent.settings"] = "device.agent.settings"
+    protocol_version: Literal[2] = DEVICE_PROTOCOL_VERSION
+    request_id: UUID
+    device_session_id: UUID
+    controller_epoch: UUID
+    revision: int = Field(ge=1)
+    settings: AgentSettings
+    allow_player_restart: bool = False
+
+
+class DeviceAgentSettingsAck(DeviceProtocolModel):
+    type: Literal["device.agent.settings.ack"] = "device.agent.settings.ack"
+    protocol_version: Literal[2] = DEVICE_PROTOCOL_VERSION
+    request_id: UUID
+    device_session_id: UUID
+    controller_epoch: UUID
+    revision: int = Field(ge=1)
+    status: Literal["completed", "error"]
+    state: AgentSettingsState | None = None
+    error: str | None = Field(default=None, max_length=500)
+
+    @model_validator(mode="after")
+    def validate_error(self) -> "DeviceAgentSettingsAck":
+        if (self.status == "error") != (self.error is not None):
+            raise ValueError("agent settings error detail must match status")
+        return self
 
 
 class DeviceAgentUpdateCommand(DeviceProtocolModel):

@@ -489,7 +489,10 @@ Use the platform checklist to qualify your media host and display before show us
 ### Connection policy, rotation, and retirement
 
 Use continuous versus on-demand connection expectations to match operational
-practice. An intentional on-demand disconnect is not evidence of readiness.
+practice. Per-host agent settings (keep awake, player mode, projector display,
+audio output and delay, update rate) are edited in **Device details > Agent
+settings**; the host's environment file supplies their defaults and keeps paths,
+credentials and the controller URL. An intentional on-demand disconnect is not evidence of readiness.
 For agents in on-demand player mode (`CUEVERGE_PLAYER_MODE=on_demand`), the
 **On demand** policy also lets the controller close the player after 10 idle
 minutes; **Continuous** leaves a started player running.
@@ -595,6 +598,8 @@ Separately authorized `apply_saved_show` loads a verified saved catalog;
 operator/admin live permission, loaded-project matching and physical confirmation.
 `control_device_player` starts or stops a media host's player under the same
 conditions; `get_device_players` (read) lists player state.
+`set_device_agent_settings` changes a media host's keep awake, player mode, display,
+audio and update rate; it requires the administrator-only `device_config` scope.
 `update_device_agents` installs the controller's agent bundle on media hosts; it
 requires the separately opted-in, administrator-only `device_update` scope,
 maintenance mode with no scene playing and `confirm_restart=True`.

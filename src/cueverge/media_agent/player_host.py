@@ -10,7 +10,12 @@ from typing import Protocol
 from cueverge.media_agent.client import EndBehavior, PlayerError, PlayerStatus
 from cueverge.media_agent.mpv import ConnectableMpvTransport, MpvClient, MpvError
 from cueverge.media_agent.mpv_player import MpvPlayer
-from cueverge.protocol.device_v2 import MediaFeature, PlayerState
+from cueverge.protocol.device_v2 import (
+    AgentEffectiveSettings,
+    AgentSettingName,
+    MediaFeature,
+    PlayerState,
+)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -46,6 +51,8 @@ class PlayerHost:
         self._lock = asyncio.Lock()
         self.state: PlayerState = "stopped"
         self.failure: str | None = None
+        # Display/audio values the running player uses, to tell what needs a restart.
+        self._running: dict[str, object] | None = None
 
     @property
     def entry(self) -> int:
@@ -74,6 +81,7 @@ class PlayerHost:
                 return self.state
             self._client = client
             self._player = MpvPlayer(client, self._asset_root)
+            self._running = self._launch_values()
             self.state = "ready"
             LOGGER.info("media player started")
             return self.state
@@ -93,8 +101,61 @@ class PlayerHost:
             await asyncio.to_thread(self._process.stop)
             self.state = "stopped"
             self.failure = None
+            self._running = None
             LOGGER.info("media player stopped")
             return self.state
+
+    def configure(self, settings: AgentEffectiveSettings) -> None:
+        """Set the display and audio options the next player launch uses."""
+        process = self._process
+        if hasattr(process, "fullscreen_screen"):
+            process.fullscreen_screen = settings.fullscreen_screen
+        if hasattr(process, "audio_device"):
+            process.audio_device = settings.audio_device
+        if hasattr(process, "audio_delay_seconds"):
+            process.audio_delay_seconds = settings.audio_delay_ms / 1000
+
+    async def apply_live(self, settings: AgentEffectiveSettings) -> None:
+        """Change audio output and delay on the running player without restarting it."""
+        client, running = self._client, self._running
+        if client is None or running is None or self.state != "ready":
+            return
+        try:
+            if running.get("audio_delay_ms") != settings.audio_delay_ms:
+                await client.command("set_property", "audio-delay", settings.audio_delay_ms / 1000)
+                running["audio_delay_ms"] = settings.audio_delay_ms
+            if running.get("audio_device") != settings.audio_device:
+                await client.command(
+                    "set_property", "audio-device", settings.audio_device or "auto"
+                )
+                running["audio_device"] = settings.audio_device
+        except (MpvError, OSError) as error:
+            LOGGER.warning("could not apply audio settings live: %s", error)
+
+    def pending_restart(self, settings: AgentEffectiveSettings) -> tuple[AgentSettingName, ...]:
+        """Saved settings the running player doesn't use yet."""
+        running = self._running
+        if running is None or self.state != "ready":
+            return ()
+        names: tuple[AgentSettingName, ...] = (
+            "fullscreen_screen",
+            "audio_device",
+            "audio_delay_ms",
+        )
+        return tuple(name for name in names if running.get(name) != getattr(settings, name))
+
+    async def restart(self) -> PlayerState:
+        await self.stop_player()
+        return await self.start()
+
+    def _launch_values(self) -> dict[str, object]:
+        process = self._process
+        delay = getattr(process, "audio_delay_seconds", 0.0)
+        return {
+            "fullscreen_screen": getattr(process, "fullscreen_screen", None),
+            "audio_device": getattr(process, "audio_device", None),
+            "audio_delay_ms": round(float(delay) * 1000),
+        }
 
     async def prepare(
         self,

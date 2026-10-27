@@ -18,6 +18,7 @@ from cueverge.gui.contracts import (
     Role,
 )
 from cueverge.protocol.device_v2 import (
+    AgentSettings,
     DeviceCapabilityDocument,
     DeviceKind,
     EnrollmentState,
@@ -230,6 +231,10 @@ class DeviceStateTransitionError(RuntimeError):
 
 class DeviceCertificateAuthorizationError(RuntimeError):
     pass
+
+
+class DeviceAgentSettingsConflictError(RuntimeError):
+    """The agent settings changed since the caller read them."""
 
 
 class ResourceAssignmentConflictError(RuntimeError):
@@ -474,6 +479,14 @@ class GuiRepository:
                         REFERENCES devices(id) ON DELETE CASCADE,
                     policy TEXT NOT NULL
                         CHECK (policy IN ('continuous', 'on_demand')),
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS device_agent_settings (
+                    device_id TEXT PRIMARY KEY
+                        REFERENCES devices(id) ON DELETE CASCADE,
+                    revision INTEGER NOT NULL CHECK (revision >= 1),
+                    settings_json TEXT NOT NULL,
+                    updated_by TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS device_artifact_status (
@@ -2802,6 +2815,71 @@ class GuiRepository:
                 occurred_at=occurred_at,
                 authorization_context={"policy": policy},
             )
+
+    def get_device_agent_settings(self, device_id: str) -> tuple[int, AgentSettings]:
+        """(revision, overrides); revision 0 means the controller never set any."""
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT revision, settings_json FROM device_agent_settings WHERE device_id = ?",
+                (device_id,),
+            ).fetchone()
+        if row is None:
+            return 0, AgentSettings()
+        return int(row["revision"]), AgentSettings.model_validate_json(str(row["settings_json"]))
+
+    def set_device_agent_settings(
+        self,
+        *,
+        device_id: str,
+        settings: AgentSettings,
+        expected_revision: int,
+        actor: str,
+        occurred_at: str,
+    ) -> int:
+        with self._connect() as connection:
+            if (
+                connection.execute("SELECT 1 FROM devices WHERE id = ?", (device_id,)).fetchone()
+                is None
+            ):
+                raise DeviceNotFoundError(device_id)
+            row = connection.execute(
+                "SELECT revision FROM device_agent_settings WHERE device_id = ?",
+                (device_id,),
+            ).fetchone()
+            current = int(row["revision"]) if row is not None else 0
+            if current != expected_revision:
+                raise DeviceAgentSettingsConflictError(
+                    f"settings are at revision {current}, not {expected_revision}"
+                )
+            revision = current + 1
+            settings_json = settings.model_dump_json()
+            connection.execute(
+                """
+                INSERT INTO device_agent_settings(
+                    device_id, revision, settings_json, updated_by, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(device_id) DO UPDATE SET
+                    revision = excluded.revision,
+                    settings_json = excluded.settings_json,
+                    updated_by = excluded.updated_by,
+                    updated_at = excluded.updated_at
+                """,
+                (device_id, revision, settings_json, actor, occurred_at),
+            )
+            self._insert_audit(
+                connection,
+                actor=actor,
+                action="device.agent_settings.update",
+                target=device_id,
+                result="success",
+                occurred_at=occurred_at,
+                authorization_context={
+                    "revision": revision,
+                    "settings": settings.model_dump(mode="json", exclude_none=True),
+                },
+            )
+        return revision
 
     def list_device_connection_policies(
         self,

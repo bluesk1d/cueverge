@@ -65,6 +65,7 @@ def create_app(
             configured_gui.device_sessions,
             controller,
             configured_gui.agent_updates.catalog,
+            configured_gui.agent_settings,
         )
         if configured_gui is not None and configured_gui.config.device_listener_enabled
         else None

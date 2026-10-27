@@ -27,6 +27,16 @@ async function setup(page: Page, deviceFault = false, noPhoto = false) {
     uploads: [] as Record<string, string>[], failSurfaceOnce: false,
     replacements: [] as Record<string, string>[],
     agentUpdateRequests: [] as unknown[],
+    agentSettingsRequests: [] as unknown[],
+    agentSettings: {
+      device_id: "demo-left", display_name: "media-client-left", connected: true, supported: true,
+      revision: 1, overrides: { keep_awake: "system" }, sync: "applied", detail: null, applied_revision: 1,
+      effective: { keep_awake: "system", player_mode: "always", fullscreen_screen: null, audio_device: null, audio_delay_ms: 0, telemetry_hz: 15 },
+      host_defaults: { keep_awake: "off", player_mode: "always", fullscreen_screen: null, audio_device: null, audio_delay_ms: 0, telemetry_hz: 15 },
+      pending_player_restart: [],
+      displays: [{ index: 0, name: "HDMI-A-1", width: 1920, height: 1080 }, { index: 1, name: "HDMI-A-2", width: 3840, height: 2160 }],
+      audio_devices: [{ name: "auto", description: "Autoselect device" }, { name: "pipewire/hdmi", description: "HDMI Output" }],
+    } as Record<string, unknown>,
     agentUpdates: {
       bundles: [{ platform: "linux_x86_64", version: "0.2.0", build: "rev42", digest_sha256: "c".repeat(64), size_bytes: 75_000_000 }],
       bundle_faults: [],
@@ -40,6 +50,19 @@ async function setup(page: Page, deviceFault = false, noPhoto = false) {
   };
   await page.route("**/api/gui/v1/**", async (route) => {
     const request = route.request(), path = new URL(request.url()).pathname;
+    if (path.endsWith("/agent-settings")) {
+      if (request.method() === "PUT") {
+        if (request.headers()["x-csrf-token"] !== "setup-csrf") return route.fulfill({ status: 403 });
+        const body = request.postDataJSON();
+        state.agentSettingsRequests.push(body);
+        state.agentSettings = {
+          ...state.agentSettings, revision: 2, applied_revision: 2, overrides: body.settings,
+          pending_player_restart: ["fullscreen_screen"],
+          detail: "Some settings apply when the player restarts.",
+        };
+      }
+      return route.fulfill({ json: state.agentSettings });
+    }
     if (path.endsWith("/devices/agent-updates")) {
       if (request.method() === "POST") {
         if (request.headers()["x-csrf-token"] !== "setup-csrf") return route.fulfill({ status: 403 });
@@ -297,6 +320,29 @@ test("administrators see agent updates and confirm before installing", async ({ 
   await expect(page.getByText(`0.1.0 (${"d".repeat(12)}) · Updating: Downloading and installing.`, { exact: true })).toBeVisible();
   expect(state.agentUpdateRequests).toEqual([{ device_ids: ["demo-left"] }]);
   await expect(page.getByRole("group", { name: "Confirm agent update", exact: true })).toHaveCount(0);
+});
+
+test("administrators edit media host settings from device details", async ({ page }) => {
+  const state = await setup(page);
+  await page.getByRole("group", { name: "Installation workspace", exact: true }).getByRole("button", { name: "Devices", exact: true }).click();
+  await page.getByRole("button", { name: "Details for media-client-left", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Device details: media-client-left", exact: true });
+  await expect(dialog.getByText("Applied on the host", { exact: true })).toBeVisible();
+  await expect(dialog.getByRole("combobox", { name: "Keep awake", exact: true })).toHaveValue("system");
+  await expect(dialog.getByRole("combobox", { name: "Player mode", exact: true }).locator("option").first()).toHaveText("Host default (Always open)");
+  const save = dialog.getByRole("button", { name: "Save agent settings", exact: true });
+  await expect(save).toBeDisabled();
+  await dialog.getByRole("combobox", { name: "Projector display", exact: true }).selectOption({ label: "1 · HDMI-A-2 · 3840×2160" });
+  await dialog.getByRole("combobox", { name: "Audio output", exact: true }).selectOption({ label: "HDMI Output" });
+  await dialog.getByRole("combobox", { name: "Keep awake", exact: true }).selectOption({ label: "Block sleep and screen blanking" });
+  await dialog.getByRole("spinbutton", { name: "Audio delay (ms)", exact: true }).fill("-40");
+  await save.click();
+  await expect(dialog.getByText("Waiting for a player restart: Projector display", { exact: true })).toBeVisible();
+  await expect(dialog.getByRole("button", { name: "Apply now", exact: true })).toBeVisible();
+  expect(state.agentSettingsRequests).toEqual([{
+    settings: { keep_awake: "display", fullscreen_screen: 1, audio_device: "pipewire/hdmi", audio_delay_ms: -40 },
+    expected_revision: 1,
+  }]);
 });
 
 test("compact setup fits a phone and the photo editor has accessible controls", async ({ page }) => {

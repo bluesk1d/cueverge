@@ -293,6 +293,19 @@ requirements as `operate_loaded_show`, and is audited as
 stopped players that the loaded show needs, and fails with the device's reason
 if one can't start. `get_capabilities` describes this under `device_players`.
 
+`get_device_agent_settings(device_id)` (read) returns a media host's controller
+overrides, its effective settings and host defaults, the detected `displays`
+(likely `--fs-screen` indices) and mpv `audio_devices`, any
+`pending_player_restart` settings and `sync` (`applied`, `pending`, `offline`,
+`unsupported`, `failed`). `set_device_agent_settings(device_id, settings,
+expected_revision)` replaces the overrides (`keep_awake`, `player_mode`,
+`fullscreen_screen`, `audio_device`, `audio_delay_ms`, `telemetry_hz`; omitted
+or null means host default). It requires the explicit `device_config` scope
+(global administrators only) and the revision you read. Display changes restart
+the player only in maintenance mode with nothing playing. Updates are audited as
+`device.agent_settings.update`. The GUI equivalent is **Device details > Agent
+settings**; `get_capabilities` describes it under `agent_settings`.
+
 `get_agent_updates` (read) lists each media host's running agent version, bundle
 digest and update state (`current`, `available`, `updating`, `failed`,
 `rolled_back`, `unmanaged`, `unsupported_platform`, `no_bundle`,

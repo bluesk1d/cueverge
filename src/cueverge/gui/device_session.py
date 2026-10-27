@@ -8,6 +8,7 @@ from uuid import UUID, uuid4
 from cueverge.gui.repository import StoredDevice
 from cueverge.protocol.device_v2 import (
     AgentRelease,
+    AgentSettingsState,
     DeviceHeartbeat,
     DeviceHeartbeatAck,
     DeviceHello,
@@ -38,6 +39,8 @@ class ActiveDeviceSession:
     keep_awake: KeepAwakeStatus | None = None
     agent_update: bool = False
     agent_release: AgentRelease | None = None
+    agent_settings: bool = False
+    agent_settings_state: AgentSettingsState | None = None
 
 
 class DeviceSessionRegistry:
@@ -71,6 +74,8 @@ class DeviceSessionRegistry:
                 keep_awake=hello.keep_awake,
                 agent_update="agent_update" in hello.media_features,
                 agent_release=hello.agent_release,
+                agent_settings="agent_settings" in hello.media_features,
+                agent_settings_state=hello.agent_settings,
             )
         return DeviceWelcome(
             device_id=hello.device_id,
@@ -173,6 +178,8 @@ class DeviceSessionRegistry:
             session.keep_awake = heartbeat.keep_awake
             if heartbeat.agent_release is not None:
                 session.agent_release = heartbeat.agent_release
+            if heartbeat.agent_settings is not None:
+                session.agent_settings_state = heartbeat.agent_settings
         return DeviceHeartbeatAck(sequence=heartbeat.sequence, accepted=True)
 
     def set_player_state(self, device_id: UUID, session_id: UUID, state: PlayerState) -> None:
@@ -205,6 +212,23 @@ class DeviceSessionRegistry:
             if session is None:
                 return None
             return session.agent_update, session.agent_release
+
+    def agent_settings(self, device_id: UUID) -> tuple[bool, AgentSettingsState | None] | None:
+        """(supports agent_settings, last reported state) for a connected device, else None."""
+        self.expire_stale()
+        with self._lock:
+            session = self._sessions.get(device_id)
+            if session is None:
+                return None
+            return session.agent_settings, session.agent_settings_state
+
+    def set_agent_settings_state(
+        self, device_id: UUID, session_id: UUID, state: AgentSettingsState
+    ) -> None:
+        with self._lock:
+            session = self._sessions.get(device_id)
+            if session is not None and session.session_id == session_id:
+                session.agent_settings_state = state
 
     def player_ready(self, device_id: UUID) -> bool:
         """Whether a connected device can play: agents without player control always can."""

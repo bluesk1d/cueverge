@@ -46,6 +46,7 @@ class McpScope(StrEnum):
     INSTALLATION_EDIT = "installation_edit"
     PHOTO_REPLACE = "photo_replace"
     DEVICE_UPDATE = "device_update"
+    DEVICE_CONFIG = "device_config"
 
 
 def allowed_mcp_scopes(
@@ -56,7 +57,7 @@ def allowed_mcp_scopes(
     effective_role = Role.ADMINISTRATOR if global_role is Role.ADMINISTRATOR else project_role
     scopes = {McpScope.READ}
     if global_role is Role.ADMINISTRATOR:
-        scopes.update({McpScope.INPUT_CONFIG, McpScope.DEVICE_UPDATE})
+        scopes.update({McpScope.INPUT_CONFIG, McpScope.DEVICE_UPDATE, McpScope.DEVICE_CONFIG})
     if global_role in {Role.DESIGNER, Role.PUBLISHER, Role.ADMINISTRATOR} and effective_role in {
         Role.DESIGNER,
         Role.PUBLISHER,

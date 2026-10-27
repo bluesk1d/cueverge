@@ -115,9 +115,26 @@ seconds, the launcher restarts the previous version and the device shows
 **Update rolled back** with the reason. Updates don't change mpv, Python or
 Windows.
 
+### Settings from the controller
+
+Administrators can change keep awake, player mode, the projector display, the
+audio output, the audio delay and the position update rate per device in
+**Installation > Devices > Device details > Agent settings** (or MCP
+`set_device_agent_settings`). The values in this host's environment file become
+the **Host default** for each field; a value set in the controller overrides
+it until reset to the default. The agent stores the controller's values beside
+its device credentials (`controller-settings.json`), so they still apply when the
+controller is unreachable, and reports the detected displays and mpv audio
+devices for the pick lists. Keep awake, audio and the update rate change
+immediately. A display change restarts the player when the controller is in
+maintenance mode with nothing playing; otherwise it waits for the next player
+start (**Apply now** retries). Paths, credentials and the controller URL stay in
+the environment file.
+
 ### Keeping the host awake
 
-Set `CUEVERGE_KEEP_AWAKE` in the agent environment so Windows doesn't sleep or
+Set **Keep awake** in the device's agent settings, or `CUEVERGE_KEEP_AWAKE` in the
+agent environment as the host default, so Windows doesn't sleep or
 turn off the projector while the agent runs, including while an on-demand player
 is stopped:
 
