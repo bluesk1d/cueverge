@@ -36,6 +36,7 @@ test("a lights-only scene opens on its composition and shows placements on the w
     "aria-selected",
     "true",
   );
+  await expect(tabs.getByRole("tab", { name: "Window overlay" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Undo timeline edit" })).toBeDisabled();
 
   await tabs.getByRole("tab", { name: "Whole scene" }).click();
@@ -67,6 +68,8 @@ test("scenes with media outputs open on the whole scene and list every placement
     "aria-selected",
     "true",
   );
+  await expect(tabs.getByRole("tab", { name: "Window overlay" })).toBeVisible();
+  await expect(tabs.getByRole("tab", { name: "Ship lights" })).toBeVisible();
   const lane = page.getByLabel("Track Compositions in this scene");
   await expect(lane.getByRole("button", { name: /^Open composition / })).toHaveCount(2);
   await expect(

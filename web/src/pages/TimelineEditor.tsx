@@ -1073,6 +1073,20 @@ export function TimelineEditor({
         : [],
     [compositionInstances, compositions, scene, sceneCompositions],
   );
+  const sceneTabCompositions = useMemo(
+    () =>
+      sceneScopedCompositions(
+        [
+          ...placedCompositions.map((item) => item.compositionId),
+          ...(scene ? (transformLayers[scene.id] ?? []) : [])
+            .filter((layer) => layer.kind === "composition")
+            .map((layer) => layer.source_id),
+        ],
+        compositions,
+        activeCompositionId,
+      ),
+    [activeCompositionId, compositions, placedCompositions, scene, transformLayers],
+  );
   const selectedTrack = tracks.find((track) => track.id === selectedTrackId);
   const selectedOutputRef = !composition && selectedTrack?.built_in &&
     (selectedTrack.kind === "media_output" || selectedTrack.kind === "lighting_output")
@@ -2256,7 +2270,7 @@ export function TimelineEditor({
         >
           Whole scene
         </button>
-        {Object.values(compositions).map((candidate) => (
+        {sceneTabCompositions.map((candidate) => (
           <button
             key={candidate.id}
             type="button"
@@ -11741,6 +11755,23 @@ function scenePlacedCompositions(
       durationMs: Math.round(compositions[instance.composition_id].duration_ms * instance.time_scale),
     })),
   ].sort((left, right) => left.startMs - right.startMs || left.key.localeCompare(right.key));
+}
+
+/** Compositions placed in a scene, their nested children, and the open one, in project order. */
+function sceneScopedCompositions(
+  placedIds: string[],
+  compositions: Record<string, Composition>,
+  activeCompositionId: string,
+): Composition[] {
+  const included = new Set<string>();
+  const pending = [...placedIds, activeCompositionId];
+  while (pending.length > 0) {
+    const id = pending.pop()!;
+    if (included.has(id) || !compositions[id]) continue;
+    included.add(id);
+    pending.push(...compositions[id].children);
+  }
+  return Object.values(compositions).filter((candidate) => included.has(candidate.id));
 }
 
 /** Open a scene without media outputs on its only composition, where its content is edited. */

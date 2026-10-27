@@ -1048,6 +1048,10 @@ unavailable; save or cancel first. Stale saves retain edits and report conflict.
    - **Tracks**: add audio-reference, fixture, group, or path tracks (bindings
      suggest installation fixtures, paths, and audio assets).
    - **Compositions**: create, open, nest, and add compositions to the scene.
+     Compositions are reusable across the show, but the composition tabs
+     above the viewer list only those this scene uses (roots, instances and
+     composition layers), their nested children, and the open composition.
+     Open any other composition from this tool tab.
      Each listed scene instance plays the composition once at its start
      offset; **Remove instance** deletes one placement. A composition placed
      twice at overlapping times cannot bake into the same LEDs, so remove the
