@@ -28,6 +28,7 @@ from cueverge.gui.config import GuiConfig
 from cueverge.gui.contracts import OperateActionRequest, Role, RuntimeStatusResponse
 from cueverge.gui.device_ca import DeviceCertificateAuthority
 from cueverge.gui.device_enrollment import DeviceEnrollmentService
+from cueverge.gui.device_players import DevicePlayerError, DevicePlayerService
 from cueverge.gui.device_session import DeviceSessionRegistry
 from cueverge.gui.endpoint_discovery import EndpointDiscoveryService
 from cueverge.gui.geometry_suggestions import GeometrySuggestionService
@@ -155,6 +156,7 @@ class GuiServices:
     simulation_scenarios: SimulationScenarioService
     input_source: InputSourceService
     apply: ApplyService
+    device_players: DevicePlayerService
     home_assistant: HomeAssistantBridge | None = None
 
     def runtime_snapshot(self) -> RuntimeStatusResponse:
@@ -199,6 +201,10 @@ class GuiServices:
         }:
             raise RuntimeError("A verified catalog must be recovered before playback.")
         if body.action == "start":
+            try:
+                await self.device_players.ensure_ready_for_loaded_show()
+            except DevicePlayerError as error:
+                raise RuntimeError(str(error)) from error
             await self.runtime.set_show_mode(ShowMode.AUTOMATIC)
             try:
                 if body.scene_id is not None:
@@ -441,6 +447,7 @@ class GuiServices:
                 repository, publication, runtime, authorize_apply, apply_dependencies
             ),
             input_source=input_source,
+            device_players=DevicePlayerService(repository, device_sessions, runtime),
             config=config,
             repository=repository,
             auth=AuthService(config, repository, collaboration),

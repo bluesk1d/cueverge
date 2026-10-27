@@ -1596,6 +1596,8 @@ export interface TopologyNode {
   signal_percent?: number | null;
   output_on?: boolean | null;
   diagnostic?: string | null;
+  player_control?: boolean | null;
+  player_state?: PlayerState | null;
   capability_document?: DeviceCapabilityDocument | null;
   certificate_expires_at?: string | null;
   storage_total_bytes?: number | null;
@@ -2969,6 +2971,19 @@ export async function testDeviceConnection(deviceId: string): Promise<DeviceConn
       headers: mutationHeaders(),
     },
   );
+}
+
+export type PlayerState = "stopped" | "starting" | "ready" | "stopping" | "failed";
+
+export async function controlDevicePlayer(
+  deviceId: string,
+  action: "start" | "stop",
+): Promise<{ device_id: string; player_state: PlayerState }> {
+  return request(`/api/gui/v1/devices/${encodeURIComponent(deviceId)}/player`, {
+    method: "POST",
+    headers: mutationHeaders(),
+    body: JSON.stringify({ action }),
+  });
 }
 
 export async function operate(

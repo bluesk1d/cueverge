@@ -102,8 +102,8 @@ marked. With an installation token:
 
 - Show-level tools (drafts, scenes, previews, publication, Apply) require
   `project_id`; omitting it returns an error that points to `list_shows`.
-- `get_capabilities`, `get_output_monitor` and `operate_loaded_show` default to
-  the show currently loaded on the display.
+- `get_capabilities`, `get_output_monitor`, `operate_loaded_show` and
+  `control_device_player` default to the show currently loaded on the display.
 - Installation-level tools (`get_runtime_status`, setup, stage map, inputs and
   Home Assistant) work without a show.
 - Each call is authorized against the user's **current** role and live-output
@@ -274,6 +274,17 @@ MCP token rate limits apply even though GUI monitoring polls at 2 Hz.
 When loaded project identity is unknown, use the authorized GUI Stop/Blackout
 or the site's physical safety procedure. MCP never weakens project isolation
 to control another or unidentified show.
+
+`get_device_players` (read) lists enrolled media hosts with their resources,
+connection policy, connection, `player_control` and `player_state`
+(`stopped`, `starting`, `ready`, `stopping`, `failed`).
+`control_device_player(device_id=..., action="start"|"stop",
+confirm_physical_output=True)` opens or closes a host's fullscreen player. It has
+the same `live_operation`, live-permission, loaded-project and confirmation
+requirements as `operate_loaded_show`, and is audited as
+`mcp.device.player.*`. A `start` action in `operate_loaded_show` also starts
+stopped players that the loaded show needs, and fails with the device's reason
+if one can't start. `get_capabilities` describes this under `device_players`.
 
 ### Photo-first installation setup
 

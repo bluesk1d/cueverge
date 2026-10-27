@@ -29,7 +29,7 @@ from cueverge.core.models import (
 )
 from cueverge.gui.ambient_lighting import validate_ambient_lighting
 from cueverge.gui.spatial_effects import SpatialRipple
-from cueverge.protocol.device_v2 import DeviceCapabilityDocument, DeviceKind
+from cueverge.protocol.device_v2 import DeviceCapabilityDocument, DeviceKind, PlayerState
 
 
 class GuiModel(BaseModel):
@@ -2798,6 +2798,11 @@ class TopologyNodeResponse(GuiModel):
     signal_percent: int | None = Field(default=None, ge=0, le=100)
     output_on: bool | None = None
     diagnostic: str | None = None
+    player_control: bool | None = Field(
+        default=None,
+        description="Whether the connected agent lets the controller start and stop its player.",
+    )
+    player_state: PlayerState | None = None
     capability_document: DeviceCapabilityDocument | None = None
     certificate_expires_at: str | None = None
     storage_total_bytes: int | None = Field(default=None, gt=0)
@@ -2933,6 +2938,15 @@ class DeviceConnectionPolicyResponse(GuiModel):
     device_id: str
     policy: Literal["continuous", "on_demand"]
     updated_at: str
+
+
+class DevicePlayerActionRequest(GuiModel):
+    action: Literal["start", "stop"]
+
+
+class DevicePlayerResponse(GuiModel):
+    device_id: str
+    player_state: PlayerState
 
 
 class SetDeviceEnrollmentStateRequest(GuiModel):

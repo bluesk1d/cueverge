@@ -2,8 +2,10 @@ import logging
 import time
 from asyncio import Lock
 from collections.abc import Iterator
+from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Literal
 from uuid import UUID
 
 from fastapi import FastAPI, Header, HTTPException, Request, WebSocket, WebSocketDisconnect
@@ -35,6 +37,7 @@ from cueverge.protocol.device_v2 import (
     DeviceKind,
     DeviceMediaCommand,
     DeviceMediaPosition,
+    DevicePlayerAck,
     DeviceTimingReport,
 )
 from cueverge.protocol.models import (
@@ -225,40 +228,21 @@ def create_device_app(
 
         await websocket.accept()
         session_id = None
+        target: _RuntimeTarget | None = None
         try:
             hello = DeviceHello.model_validate(await websocket.receive_json())
             if runtime is not None:
                 sessions.controller_epoch = UUID(runtime.controller_epoch)
             welcome = sessions.connect(device, hello)
             session_id = hello.device_session_id
-            runtime_agent_id = None
-            channel = None
+            target = None
             if runtime is not None and device.device_kind is DeviceKind.DIRECT_MEDIA_AGENT:
                 channel = DeviceCommandChannel(websocket, session_id)
                 sessions.attach_channel(UUID(device.id), session_id, channel)
-                runtime_agent_id = _assigned_agent_id(repository, runtime, device.id)
-                if runtime_agent_id is None:
-                    LOGGER.info(
-                        "authenticated device %s connected idle: loaded show has no media target",
-                        device.id,
-                    )
-                else:
-                    runtime_welcome = runtime.register_agent(
-                        AgentHello(
-                            agent_id=runtime_agent_id,
-                            agent_session_id=str(session_id),
-                            capabilities=_runtime_capabilities(hello),
-                        ),
-                        channel,
-                    )
-                    LOGGER.info(
-                        "registered authenticated device %s as runtime target %s",
-                        device.id,
-                        runtime_agent_id,
-                    )
-                    welcome = welcome.model_copy(
-                        update={"reconciliation": runtime_welcome.reconciliation}
-                    )
+                target = _RuntimeTarget(repository, runtime, sessions, device.id, hello, channel)
+                reconciliation = target.sync()
+                if reconciliation is not None:
+                    welcome = welcome.model_copy(update={"reconciliation": reconciliation})
             repository.mark_device_connected(
                 device_id=device.id,
                 session_id=str(session_id),
@@ -283,27 +267,16 @@ def create_device_app(
                             session_id=str(heartbeat.device_session_id),
                             observed_at_ms=_now_ms(),
                         )
-                        if runtime is not None and channel is not None and runtime_agent_id is None:
-                            # An idle agent joins the runtime once a loaded show gives it a target.
-                            runtime_agent_id = _assigned_agent_id(repository, runtime, device.id)
-                            if runtime_agent_id is not None:
-                                runtime.register_agent(
-                                    AgentHello(
-                                        agent_id=runtime_agent_id,
-                                        agent_session_id=str(session_id),
-                                        capabilities=_runtime_capabilities(hello),
-                                    ),
-                                    channel,
-                                )
-                                LOGGER.info(
-                                    "registered idle authenticated device %s as runtime target %s",
-                                    device.id,
-                                    runtime_agent_id,
-                                )
-                        if runtime is not None and runtime_agent_id is not None:
+                        if target is not None:
+                            target.sync()
+                        if (
+                            runtime is not None
+                            and target is not None
+                            and target.agent_id is not None
+                        ):
                             runtime.heartbeat(
                                 AgentHeartbeat(
-                                    agent_id=runtime_agent_id,
+                                    agent_id=target.agent_id,
                                     agent_session_id=str(heartbeat.device_session_id),
                                     controller_epoch=str(heartbeat.controller_epoch),
                                     sequence=heartbeat.sequence,
@@ -391,9 +364,19 @@ def create_device_app(
                         cleanup_ack.request_id,
                         cleanup_ack,
                     )
+                elif message_type == "device.player.ack":
+                    player_ack = DevicePlayerAck.model_validate(payload)
+                    sessions.set_player_state(peer.device_id, session_id, player_ack.player_state)
+                    if target is not None:
+                        # Register or release the runtime target before the requester resumes.
+                        target.sync()
+                    with suppress(DeviceSessionError):
+                        # A late acknowledgement after the request timed out is not a fault.
+                        sessions.acknowledge(UUID(device.id), player_ack.request_id, player_ack)
                 elif message_type == "device.command.ack" and runtime is not None:
-                    if runtime_agent_id is None:
+                    if target is None or target.agent_id is None:
                         raise ValueError("device has no runtime assignment")
+                    runtime_agent_id = target.agent_id
                     command_ack = DeviceCommandAck.model_validate(payload)
                     await runtime.acknowledge_command(
                         CommandAck(
@@ -407,8 +390,9 @@ def create_device_app(
                         )
                     )
                 elif message_type == "device.media.position" and runtime is not None:
-                    if runtime_agent_id is None:
+                    if target is None or target.agent_id is None:
                         raise ValueError("device has no runtime assignment")
+                    runtime_agent_id = target.agent_id
                     position = DeviceMediaPosition.model_validate(payload)
                     runtime.ingest(
                         MediaPosition(
@@ -465,12 +449,8 @@ def create_device_app(
             pass
         finally:
             if session_id is not None:
-                if runtime is not None and runtime_agent_id is not None and channel is not None:
-                    runtime.disconnect_agent(runtime_agent_id, channel)
-                    LOGGER.info(
-                        "disconnected authenticated runtime target %s",
-                        runtime_agent_id,
-                    )
+                if target is not None:
+                    target.release()
                 repository.mark_device_disconnected(
                     device_id=device.id,
                     session_id=str(session_id),
@@ -479,6 +459,72 @@ def create_device_app(
                 sessions.disconnect(peer.device_id, session_id)
 
     return app
+
+
+class _RuntimeTarget:
+    """Keeps an authenticated media agent registered with the runtime while it can play.
+
+    Agents that report player state are registered only while their player is ready, so a
+    presence-only connection never receives media commands.
+    """
+
+    def __init__(
+        self,
+        repository: GuiRepository,
+        runtime: ControllerRuntime,
+        sessions: DeviceSessionRegistry,
+        device_id: str,
+        hello: DeviceHello,
+        channel: DeviceCommandChannel,
+    ) -> None:
+        self.repository = repository
+        self.runtime = runtime
+        self.sessions = sessions
+        self.device_id = device_id
+        self.hello = hello
+        self.channel = channel
+        self.agent_id: str | None = None
+        self._idle_reason: str | None = None
+
+    def sync(self) -> Literal["idle", "continue", "stop"] | None:
+        ready = self.sessions.player_ready(UUID(self.device_id))
+        if self.agent_id is not None:
+            if not ready:
+                self.release()
+                self._log_idle("player is not running")
+            return None
+        if not ready:
+            self._log_idle("player is not running")
+            return None
+        agent_id = _assigned_agent_id(self.repository, self.runtime, self.device_id)
+        if agent_id is None:
+            self._log_idle("loaded show has no media target")
+            return None
+        welcome = self.runtime.register_agent(
+            AgentHello(
+                agent_id=agent_id,
+                agent_session_id=str(self.hello.device_session_id),
+                capabilities=_runtime_capabilities(self.hello),
+            ),
+            self.channel,
+        )
+        self.agent_id = agent_id
+        self._idle_reason = None
+        LOGGER.info(
+            "registered authenticated device %s as runtime target %s", self.device_id, agent_id
+        )
+        return welcome.reconciliation
+
+    def release(self) -> None:
+        if self.agent_id is not None:
+            self.runtime.disconnect_agent(self.agent_id, self.channel)
+            LOGGER.info("released authenticated runtime target %s", self.agent_id)
+            self.agent_id = None
+
+    def _log_idle(self, reason: str) -> None:
+        if reason != self._idle_reason:
+            self._idle_reason = reason
+            LOGGER.info("authenticated device %s connected idle: %s", self.device_id, reason)
 
 
 def _now_ms() -> int:
@@ -550,5 +596,5 @@ def _runtime_capabilities(hello: DeviceHello) -> tuple[str, ...]:
     }
     return (
         *(capability.kind for capability in hello.capabilities.capabilities),
-        *(features[feature] for feature in hello.media_features),
+        *(features[feature] for feature in hello.media_features if feature in features),
     )

@@ -95,6 +95,8 @@ from cueverge.gui.contracts import (
     DeviceConnectionPolicyResponse,
     DeviceConnectionTestResponse,
     DeviceEnrollmentStateResponse,
+    DevicePlayerActionRequest,
+    DevicePlayerResponse,
     DeviceTransferStatusResponse,
     DiscoveredEndpointResponse,
     DraftProject,
@@ -208,6 +210,7 @@ from cueverge.gui.contracts import (
 from cueverge.gui.contracts import (
     PixelPositionOverride as PixelPositionOverrideResponse,
 )
+from cueverge.gui.device_players import DevicePlayerError
 from cueverge.gui.device_session import DeviceSessionError
 from cueverge.gui.endpoint_discovery import EndpointDiscoveryError
 from cueverge.gui.geometry_suggestions import (
@@ -5353,6 +5356,45 @@ def create_gui_router(services: GuiServices) -> APIRouter:
             updated_at=occurred_at,
         )
 
+    @router.post(
+        "/devices/{device_id}/player",
+        response_model=DevicePlayerResponse,
+    )
+    async def control_device_player(
+        device_id: str,
+        body: DevicePlayerActionRequest,
+        identity: Annotated[AuthenticatedSession, live_output_mutation],
+    ) -> DevicePlayerResponse:
+        occurred_at = _now_iso()
+        try:
+            state = await (
+                services.device_players.start(device_id)
+                if body.action == "start"
+                else services.device_players.stop(device_id)
+            )
+        except DevicePlayerError as error:
+            services.repository.append_audit(
+                actor=identity.username,
+                action=f"device.player.{body.action}",
+                target=device_id,
+                result="error",
+                occurred_at=occurred_at,
+                authorization_context={"role": identity.role.value, "message": str(error)},
+            )
+            raise HTTPException(
+                status_code=409,
+                detail={"code": "player_control_failed", "message": str(error)},
+            ) from error
+        services.repository.append_audit(
+            actor=identity.username,
+            action=f"device.player.{body.action}",
+            target=device_id,
+            result="success",
+            occurred_at=occurred_at,
+            authorization_context={"role": identity.role.value, "player_state": state},
+        )
+        return DevicePlayerResponse(device_id=device_id, player_state=state)
+
     @router.put(
         "/devices/{device_id}/enrollment-state",
         response_model=DeviceEnrollmentStateResponse,
@@ -5741,6 +5783,11 @@ def create_gui_router(services: GuiServices) -> APIRouter:
             for scene in services.runtime.catalog.scenes.values()
             for media_output in scene.media_outputs
         }
+        player_by_device = {
+            device.id: player
+            for device in services.repository.list_devices()
+            if (player := services.device_sessions.player_status(UUID(device.id))) is not None
+        }
         observed_at_ms = time.time_ns() // 1_000_000
         nodes.extend(
             TopologyNodeResponse(
@@ -5855,6 +5902,13 @@ def create_gui_router(services: GuiServices) -> APIRouter:
                     device.device_kind,
                     durable_assignments.get(device.id, ()),
                     show_media_resources,
+                    player_by_device.get(device.id),
+                ),
+                player_control=(
+                    player_by_device[device.id][0] if device.id in player_by_device else None
+                ),
+                player_state=(
+                    player_by_device[device.id][1] if device.id in player_by_device else None
                 ),
                 last_seen_age_ms=(
                     max(
@@ -6734,10 +6788,18 @@ def _idle_media_diagnostic(
     device_kind: DeviceKind,
     assignments: Collection[StoredResourceAssignment],
     show_media_resources: set[str],
+    player: tuple[bool, str | None] | None = None,
 ) -> str | None:
-    """Explain why an assigned media agent has nothing to play in the loaded show."""
+    """Explain why an assigned media agent can't play: no show target or no running player."""
     if device_kind is not DeviceKind.DIRECT_MEDIA_AGENT:
         return None
+    if player is not None and player[0] and player[1] != "ready":
+        return {
+            "stopped": "Player stopped. Start it here or start the show.",
+            "starting": "Player starting.",
+            "stopping": "Player stopping.",
+            "failed": "Player failed to start. Check the media host, then start it again.",
+        }.get(player[1] or "", "Player state not reported yet.")
     resources = sorted(
         assignment.resource
         for assignment in assignments

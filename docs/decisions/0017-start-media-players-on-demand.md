@@ -1,6 +1,6 @@
 # ADR 0017: Start media players on demand over the device connection
 
-- Status: Proposed
+- Status: Accepted; implemented
 - Date: 2026-10-26
 - Related: [mTLS device identities](0015-use-mtls-device-identities.md),
   [session fencing](0004-session-fencing-and-reconciliation.md),
@@ -94,8 +94,24 @@ component and a **player** that it starts and stops on controller request.
   Windows and Linux startup changes, controller policy and state tracking,
   UI/MCP actions with tests, and documentation updates.
 
-## Interim measure
+## Implementation notes
 
-Until this is built, the Linux service template uses `Restart=always` with no
-start limit, so the combined agent comes back after any exit while the desktop
-session runs. An explicit `systemctl --user stop` is still honored.
+- One agent process hosts both parts. `PlayerHost` supervises mpv inside the agent,
+  which already runs in the desktop session, instead of a separate child program.
+  `CUEVERGE_PLAYER_MODE=always` (the default) opens the player at agent start, and
+  `on_demand` waits for the controller.
+- The feature is advertised as the `player_control` media feature in the hello
+  rather than as an enrolled capability, so existing enrollments stay valid. See
+  [protocol](../protocol.md) for the messages.
+- Continuous devices are not restarted automatically after an operator stops their
+  player. **Start** in Operate starts any stopped player the loaded show needs,
+  whatever the policy.
+- The on-demand idle timeout is 10 minutes and is not yet configurable.
+- Applying a show that restarts a running scene does not start players first.
+  Operators start them, or apply while stopped and then press **Start**.
+
+## Interim measure for Linux hosts
+
+The Linux service template also uses `Restart=always` with no start limit, so the
+agent comes back after any exit while the desktop session runs. An explicit
+`systemctl --user stop` is still honored.

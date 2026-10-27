@@ -49,7 +49,8 @@ class ProtocolRange(DeviceProtocolModel):
         return self
 
 
-MediaFeature = Literal["seamless_transition", "repeat_count"]
+MediaFeature = Literal["seamless_transition", "repeat_count", "player_control"]
+PlayerState = Literal["stopped", "starting", "ready", "stopping", "failed"]
 
 
 class MediaPlaybackCapability(DeviceProtocolModel):
@@ -310,6 +311,38 @@ class DeviceHello(DeviceProtocolModel):
             "they are reported per connection rather than in the enrolled capability document."
         ),
     )
+    player_state: PlayerState | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="Player process state for agents that advertise player_control.",
+    )
+
+
+class DevicePlayerCommand(DeviceProtocolModel):
+    """Start or stop the media player process of an agent that advertises player_control."""
+
+    type: Literal["device.player.start", "device.player.stop"]
+    protocol_version: Literal[2] = DEVICE_PROTOCOL_VERSION
+    request_id: UUID
+    device_session_id: UUID
+    controller_epoch: UUID
+
+
+class DevicePlayerAck(DeviceProtocolModel):
+    type: Literal["device.player.ack"] = "device.player.ack"
+    protocol_version: Literal[2] = DEVICE_PROTOCOL_VERSION
+    request_id: UUID
+    device_session_id: UUID
+    controller_epoch: UUID
+    status: Literal["completed", "error"]
+    player_state: PlayerState
+    error: str | None = Field(default=None, max_length=500)
+
+    @model_validator(mode="after")
+    def validate_error(self) -> "DevicePlayerAck":
+        if (self.status == "error") != (self.error is not None):
+            raise ValueError("player error detail must match status")
+        return self
 
 
 class DeviceWelcome(DeviceProtocolModel):
@@ -335,6 +368,10 @@ class DeviceHeartbeat(DeviceProtocolModel):
         str,
         Annotated[float, Field(ge=0, le=1)],
     ] = Field(default_factory=dict)
+    player_state: PlayerState | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
 
 
 class DeviceHeartbeatAck(DeviceProtocolModel):

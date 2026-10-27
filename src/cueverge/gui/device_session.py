@@ -11,6 +11,7 @@ from cueverge.protocol.device_v2 import (
     DeviceHeartbeatAck,
     DeviceHello,
     DeviceWelcome,
+    PlayerState,
 )
 
 
@@ -30,6 +31,8 @@ class ActiveDeviceSession:
     last_heartbeat_sequence: int = -1
     output_scaling: dict[str, float] = field(default_factory=dict)
     channel: DeviceOutboundChannel | None = None
+    player_control: bool = False
+    player_state: PlayerState | None = None
 
 
 class DeviceSessionRegistry:
@@ -58,6 +61,8 @@ class DeviceSessionRegistry:
                 device=device,
                 session_id=hello.device_session_id,
                 last_seen_at=time.monotonic(),
+                player_control="player_control" in hello.media_features,
+                player_state=hello.player_state,
             )
         return DeviceWelcome(
             device_id=hello.device_id,
@@ -155,7 +160,29 @@ class DeviceSessionRegistry:
             session.last_heartbeat_sequence = heartbeat.sequence
             session.last_seen_at = time.monotonic()
             session.output_scaling = dict(heartbeat.output_scaling)
+            if heartbeat.player_state is not None:
+                session.player_state = heartbeat.player_state
         return DeviceHeartbeatAck(sequence=heartbeat.sequence, accepted=True)
+
+    def set_player_state(self, device_id: UUID, session_id: UUID, state: PlayerState) -> None:
+        with self._lock:
+            session = self._sessions.get(device_id)
+            if session is not None and session.session_id == session_id:
+                session.player_state = state
+
+    def player_status(self, device_id: UUID) -> tuple[bool, PlayerState | None] | None:
+        """(player_control, player_state) for a connected device, or None when disconnected."""
+        self.expire_stale()
+        with self._lock:
+            session = self._sessions.get(device_id)
+            if session is None:
+                return None
+            return session.player_control, session.player_state
+
+    def player_ready(self, device_id: UUID) -> bool:
+        """Whether a connected device can play: agents without player control always can."""
+        status = self.player_status(device_id)
+        return status is not None and (not status[0] or status[1] == "ready")
 
     def output_scale(self, device_id: UUID, output_id: str) -> float | None:
         self.expire_stale()

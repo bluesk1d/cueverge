@@ -60,6 +60,7 @@ import {
   ResourceAssignment,
   Session,
   setDeviceConnectionPolicy,
+  controlDevicePlayer,
   setDeviceEnrollmentState,
   setResourceAssignment,
   testDeviceConnection,
@@ -218,7 +219,12 @@ export function InstallationPage({
               <NodeCard node={controller} />
               <div className="topology-tree__children">
                 {agents.map((node) => (
-                  <NodeCard key={node.id} node={node} />
+                  <NodeCard
+                    key={node.id}
+                    node={node}
+                    canOperate={session?.role === "administrator" || session?.role === "operator"}
+                    onRefresh={onRefresh}
+                  />
                 ))}
                 {outputs.map((node) => (
                   <NodeCard key={node.id} node={node} />
@@ -4191,8 +4197,37 @@ function ConnectionPolicy({
   );
 }
 
-function NodeCard({ node }: { node: TopologyNode }) {
+function NodeCard({
+  node,
+  canOperate = false,
+  onRefresh,
+}: {
+  node: TopologyNode;
+  canOperate?: boolean;
+  onRefresh?: () => Promise<void> | void;
+}) {
   const [detailsOpen, setDetailsOpen] = useState(false);
+  const [playerBusy, setPlayerBusy] = useState(false);
+  const [playerError, setPlayerError] = useState<string | null>(null);
+  const canControlPlayer =
+    canOperate &&
+    node.kind === "direct_media_agent" &&
+    node.connection === "connected" &&
+    node.player_control === true;
+  const playerRunning = node.player_state === "ready" || node.player_state === "starting";
+
+  async function changePlayer(action: "start" | "stop") {
+    setPlayerBusy(true);
+    setPlayerError(null);
+    try {
+      await controlDevicePlayer(node.id.replace("device:", ""), action);
+      await onRefresh?.();
+    } catch (error) {
+      setPlayerError(error instanceof Error ? error.message : `Could not ${action} the player.`);
+    } finally {
+      setPlayerBusy(false);
+    }
+  }
   const connection = connectionStatus(node);
   const media = mediaCapability(node.capability_document);
   const cache = cacheCapability(node.capability_document);
@@ -4229,6 +4264,17 @@ function NodeCard({ node }: { node: TopologyNode }) {
       {node.artifact_faults?.map((fault) => <p role="alert" key={fault}>{fault}</p>)}
       {(node.enrollment === "suspended" || node.enrollment === "revoked") && <small>{enrollmentLabel(node)}</small>}
       {node.diagnostic && <p role="status">{node.diagnostic}</p>}
+      {canControlPlayer && (
+        <button
+          type="button"
+          aria-label={`${playerRunning ? "Stop" : "Start"} player on ${node.label}`}
+          disabled={playerBusy}
+          onClick={() => void changePlayer(playerRunning ? "stop" : "start")}
+        >
+          {playerBusy ? "Working…" : playerRunning ? "Stop player" : "Start player"}
+        </button>
+      )}
+      {playerError && <p role="alert">{playerError}</p>}
       <button type="button" aria-label={`Details for ${node.label}`} onClick={() => setDetailsOpen(true)}>Device details</button>
       {detailsOpen && <DetailsDialog title={`Device details: ${node.label}`} onClose={() => setDetailsOpen(false)}>
       {(node.kind === "direct_media_agent" || node.kind === "downstream_controller") && (

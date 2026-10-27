@@ -6,6 +6,7 @@ from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
+from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
@@ -24,6 +25,8 @@ from cueverge.gui.mcp_authoring import McpScope
 from cueverge.gui.passwords import hash_password
 from cueverge.gui.service import GuiServices
 from cueverge.lighting.sink import MemoryFrameSink, RenderedFrame
+from tests.unit.test_device_players import _connect
+from tests.unit.test_device_transport import _enrolled_device
 
 PASSWORD = "original apply regression"
 PASSWORD_HASH = hash_password(PASSWORD)
@@ -630,6 +633,56 @@ def test_mcp_apply_monitor_and_explicit_live_transport_end_to_end(tmp_path: Path
         capabilities = tool(read, "get_capabilities")["structuredContent"]
         assert capabilities["output_monitor"]["capture_maximum_hz"] == 5
         assert capabilities["live_transport"]["physical_confirmation_required"]
+        players = capabilities["device_players"]
+        assert players["control_tool"] == "control_device_player"
+        assert players["scope"] == "live_operation"
+        assert capabilities["features"]["device_player_control"] is True
+        _, _, device_capabilities = _enrolled_device(tmp_path / "gui")
+        channel = _connect(services.repository, services.device_sessions, device_capabilities)
+        listed = tool(read, "get_device_players")["structuredContent"]
+        assert listed["players"][0]["player_state"] == "stopped"
+        assert listed["players"][0]["player_control"] is True
+        device_id = listed["players"][0]["device_id"]
+        for secret, confirm in ((read, True), (granted, False)):
+            assert tool(
+                secret,
+                "control_device_player",
+                device_id=device_id,
+                action="start",
+                confirm_physical_output=confirm,
+            )["isError"]
+        assert channel.commands == []
+        player = tool(
+            granted,
+            "control_device_player",
+            device_id=device_id,
+            action="start",
+            confirm_physical_output=True,
+        )
+        assert player["structuredContent"]["player_state"] == "ready", player
+        player = tool(
+            granted,
+            "control_device_player",
+            device_id=device_id,
+            action="stop",
+            confirm_physical_output=True,
+        )
+        assert player["structuredContent"]["player_state"] == "stopped", player
+        assert channel.commands == ["device.player.start", "device.player.stop"]
+        missing = tool(
+            granted,
+            "control_device_player",
+            device_id=str(uuid4()),
+            action="start",
+            confirm_physical_output=True,
+        )
+        assert "Device not found" in missing["content"][0]["text"]
+        audited = {
+            (event.action, event.result) for event in services.repository.list_audit_events()
+        }
+        assert ("mcp.device.player.start", "success") in audited
+        assert ("mcp.device.player.stop", "success") in audited
+        assert ("mcp.device.player.start", "error") in audited
         assert tool(
             read, "operate_loaded_show", request={"action": "start"}, confirm_physical_output=True
         )["isError"]

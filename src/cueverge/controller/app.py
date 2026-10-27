@@ -2,6 +2,7 @@ import asyncio
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import AsyncExitStack, asynccontextmanager
+from datetime import UTC, datetime
 from typing import Protocol
 
 from fastapi import FastAPI, Request
@@ -31,6 +32,7 @@ from cueverge.protocol.device_v2 import (
 
 LOGGER = logging.getLogger(__name__)
 ASSET_TRASH_SWEEP_INTERVAL_SECONDS = 3600
+IDLE_PLAYER_SWEEP_INTERVAL_SECONDS = 30
 
 
 class EventIngress(Protocol):
@@ -95,6 +97,11 @@ def create_app(
             if configured_gui is not None
             else None
         )
+        idle_player_sweeper = (
+            asyncio.create_task(_stop_idle_players(configured_gui))
+            if configured_gui is not None
+            else None
+        )
         try:
             async with AsyncExitStack() as stack:
                 if mcp_app is not None:
@@ -105,9 +112,10 @@ def create_app(
                 if configured_gui.home_assistant is not None:
                     await configured_gui.home_assistant.stop()
                 await configured_gui.apply.stop()
-            if asset_trash_sweeper is not None:
-                asset_trash_sweeper.cancel()
-                await asyncio.gather(asset_trash_sweeper, return_exceptions=True)
+            for sweeper in (asset_trash_sweeper, idle_player_sweeper):
+                if sweeper is not None:
+                    sweeper.cancel()
+                    await asyncio.gather(sweeper, return_exceptions=True)
             if asset_recovery is not None:
                 await asset_recovery
             if device_listener is not None:
@@ -186,6 +194,27 @@ async def _sweep_asset_trash(services: GuiServices) -> None:
         except Exception:
             LOGGER.exception("asset trash sweep failed")
         await asyncio.sleep(ASSET_TRASH_SWEEP_INTERVAL_SECONDS)
+
+
+async def _stop_idle_players(services: GuiServices) -> None:
+    """Stop on-demand media players that no playing scene has used for the idle period."""
+    while True:
+        await asyncio.sleep(IDLE_PLAYER_SWEEP_INTERVAL_SECONDS)
+        try:
+            stopped = await services.device_players.stop_idle_players()
+        except Exception:
+            LOGGER.exception("idle media player sweep failed")
+            continue
+        for name in stopped:
+            LOGGER.info("stopped idle on-demand media player on %s", name)
+            services.repository.append_audit(
+                actor="controller",
+                action="device.player.idle_stop",
+                target=name,
+                result="success",
+                occurred_at=datetime.now(UTC).isoformat(),
+                authorization_context={"policy": "on_demand"},
+            )
 
 
 def _configured_components() -> tuple[ControllerRuntime, EventIngress | None]:

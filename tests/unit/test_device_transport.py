@@ -331,6 +331,56 @@ def test_media_agent_mapped_to_two_runtime_targets_is_rejected(tmp_path: Path) -
     assert runtime.connected_agent_count == 0
 
 
+def test_player_control_agent_is_a_runtime_target_only_while_its_player_is_ready(
+    tmp_path: Path,
+) -> None:
+    repository, certificate_der, capabilities = _enrolled_device(tmp_path)
+    _assign(repository, "projector.right")
+    sessions = DeviceSessionRegistry()
+    runtime = ControllerRuntime(
+        catalog=load_show_package(_led_show_with_media_bindings(tmp_path, "projector.right"))
+    )
+    app = _with_peer_certificate(
+        create_device_app(repository, sessions, runtime),
+        certificate_der,
+    )
+    session_id = uuid4()
+    hello = _hello(session_id, capabilities)
+    hello.update({"media_features": ["player_control"], "player_state": "stopped"})
+
+    with TestClient(app).websocket_connect("/api/device/v2/agent/ws") as websocket:
+        websocket.send_json(hello)
+        welcome = websocket.receive_json()
+        assert welcome["type"] == "device.welcome"
+        assert runtime.connected_agent_count == 0
+        assert sessions.player_status(DEVICE_ID) == (True, "stopped")
+
+        for sequence, state, agents in ((1, "ready", 1), (2, "stopped", 0), (3, "ready", 1)):
+            heartbeat = _heartbeat(session_id, welcome["controller_epoch"], sequence)
+            heartbeat["player_state"] = state
+            websocket.send_json(heartbeat)
+            assert websocket.receive_json()["accepted"] is True
+            assert runtime.connected_agent_count == agents
+
+        websocket.send_json(
+            {
+                "type": "device.player.ack",
+                "protocol_version": 2,
+                "request_id": str(uuid4()),
+                "device_session_id": str(session_id),
+                "controller_epoch": welcome["controller_epoch"],
+                "status": "completed",
+                "player_state": "stopped",
+            }
+        )
+        websocket.send_json(_heartbeat(session_id, welcome["controller_epoch"], 4))
+        # A late player acknowledgement updates state without ending the session.
+        assert websocket.receive_json()["accepted"] is True
+        assert runtime.connected_agent_count == 0
+
+    assert runtime.connected_agent_count == 0
+
+
 def test_suspension_terminates_an_existing_session_on_next_message(
     tmp_path: Path,
 ) -> None:

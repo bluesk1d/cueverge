@@ -21,6 +21,13 @@ class MediaAgentConfig(RuntimeConfig):
     audio_delay_ms: int = Field(default=0, ge=-5000, le=5000)
     device_transport_url: AnyUrl | None = None
     device_credential_root: Path | None = None
+    player_mode: Literal["always", "on_demand"] = Field(
+        default="always",
+        description=(
+            "always starts mpv with the agent; on_demand keeps only device presence running "
+            "until the controller starts the player."
+        ),
+    )
 
     @model_validator(mode="after")
     def validate_device_transport(self) -> "MediaAgentConfig":
@@ -48,6 +55,7 @@ class MediaAgentConfig(RuntimeConfig):
                 "audio_delay_ms": int(os.environ.get("CUEVERGE_AUDIO_DELAY_MS", "0")),
                 "device_transport_url": os.environ.get("CUEVERGE_DEVICE_TRANSPORT_URL"),
                 "device_credential_root": os.environ.get("CUEVERGE_DEVICE_CREDENTIAL_ROOT"),
+                "player_mode": os.environ.get("CUEVERGE_PLAYER_MODE", "always"),
             }
         )
 

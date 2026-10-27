@@ -5,12 +5,14 @@ from contextlib import suppress
 from cueverge.config import MediaAgentConfig
 from cueverge.media_agent.client import MediaAgentClient
 from cueverge.media_agent.device_presence import DevicePresenceClient
-from cueverge.media_agent.mpv import MpvClient, MpvProcess, create_mpv_transport
-from cueverge.media_agent.mpv_player import MpvPlayer
+from cueverge.media_agent.mpv import MpvProcess, create_mpv_transport
+from cueverge.media_agent.player_host import PlayerHost
 
 
 async def run() -> None:
     config = MediaAgentConfig.from_environment()
+    if config.device_transport_url is None or config.device_credential_root is None:
+        raise RuntimeError("media agent requires protocol-v2 device credentials")
     process = MpvProcess(
         executable=config.mpv_executable,
         pipe_path=config.mpv_pipe,
@@ -18,25 +20,20 @@ async def run() -> None:
         audio_device=config.audio_device,
         audio_delay_seconds=config.audio_delay_ms / 1000,
     )
-    transport = create_mpv_transport(config.mpv_pipe)
-    mpv = MpvClient(transport)
-    process.start()
+    host = PlayerHost(process, lambda: create_mpv_transport(config.mpv_pipe), config.asset_root)
+    if config.player_mode == "always":
+        await host.start()
     try:
-        await transport.connect()
-        mpv.start_reader()
-        player = MpvPlayer(mpv, config.asset_root)
-        if config.device_transport_url is None or config.device_credential_root is None:
-            raise RuntimeError("media agent requires protocol-v2 device credentials")
-        media_client = MediaAgentClient(config, player)
+        media_client = MediaAgentClient(config, host)
         await DevicePresenceClient(
             config.device_transport_url,
             config.device_credential_root,
             reconnect_delay_ms=config.reconnect_delay_ms,
             media_client=media_client,
+            player_host=host,
         ).run_forever()
     finally:
-        await mpv.close()
-        process.stop()
+        await host.stop_player()
 
 
 def main() -> None:

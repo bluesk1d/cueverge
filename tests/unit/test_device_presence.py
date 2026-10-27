@@ -118,6 +118,7 @@ async def _presence_scenario() -> None:
         media_features=("seamless_transition", "repeat_count"),
     )
     client._heartbeat_sent = {}
+    client.player_host = None
     welcome = DeviceWelcome(
         device_id=DEVICE_ID,
         controller_epoch=uuid4(),

@@ -17,6 +17,7 @@ from websockets.exceptions import WebSocketException
 
 from cueverge.media_agent.client import MediaAgentClient
 from cueverge.media_agent.device_enrollment import StoredDeviceIdentity
+from cueverge.media_agent.player_host import PlayerHost
 from cueverge.protocol.device_v2 import (
     DeviceArtifactActivateAck,
     DeviceArtifactActivateCommand,
@@ -33,8 +34,11 @@ from cueverge.protocol.device_v2 import (
     DeviceHello,
     DeviceMediaCommand,
     DeviceMediaPosition,
+    DevicePlayerAck,
+    DevicePlayerCommand,
     DeviceTimingReport,
     DeviceWelcome,
+    PlayerState,
 )
 from cueverge.protocol.models import AgentCommand
 
@@ -63,8 +67,10 @@ class DevicePresenceClient:
         *,
         reconnect_delay_ms: int,
         media_client: MediaAgentClient,
+        player_host: PlayerHost | None = None,
     ) -> None:
         self.transport_url = transport_url
+        self.player_host = player_host
         self.credential_root = credential_root
         self.reconnect_delay_ms = reconnect_delay_ms
         self.media_client = media_client
@@ -111,6 +117,7 @@ class DevicePresenceClient:
             device_session_id=session_id,
             capabilities=self.identity.capabilities,
             media_features=self.media_client.media_features,
+            player_state=self._player_state(),
         )
         await websocket.send(hello.model_dump_json())
         welcome = DeviceWelcome.model_validate_json(await websocket.recv())
@@ -203,6 +210,12 @@ class DevicePresenceClient:
                 )
                 async with send_lock:
                     await websocket.send(response.model_dump_json())
+            elif message_type in {"device.player.start", "device.player.stop"}:
+                player_command = DevicePlayerCommand.model_validate(message)
+                _validate_deployment_command(player_command, session_id, welcome)
+                player_ack = await self._control_player(player_command, session_id, welcome)
+                async with send_lock:
+                    await websocket.send(player_ack.model_dump_json())
             elif message_type == "device.artifact.stage":
                 stage_command = DeviceArtifactStageCommand.model_validate(message)
                 _validate_deployment_command(stage_command, session_id, welcome)
@@ -412,6 +425,36 @@ class DevicePresenceClient:
                 removed.append(digest)
         return tuple(removed), tuple(rejected)
 
+    def _player_state(self) -> PlayerState | None:
+        return self.player_host.state if self.player_host is not None else None
+
+    async def _control_player(
+        self,
+        command: DevicePlayerCommand,
+        session_id: UUID,
+        welcome: DeviceWelcome,
+    ) -> DevicePlayerAck:
+        host = self.player_host
+        if host is None:
+            state: PlayerState = "ready"
+            error: str | None = "this agent cannot start or stop its player"
+        elif command.type == "device.player.start":
+            state = await host.start()
+            error = host.failure if state != "ready" else None
+        else:
+            self.media_client._clear_playback()
+            state = await host.stop_player()
+            error = None
+        LOGGER.info("controller requested %s: player %s", command.type, state)
+        return DevicePlayerAck(
+            request_id=command.request_id,
+            device_session_id=session_id,
+            controller_epoch=welcome.controller_epoch,
+            status="error" if error else "completed",
+            player_state=state,
+            error=error[:500] if error else None,
+        )
+
     async def _heartbeat_loop(
         self,
         websocket: ClientConnection,
@@ -431,6 +474,7 @@ class DevicePresenceClient:
                 sequence=sequence,
                 device_monotonic_ms=round(sent_monotonic_ms),
                 device_unix_ms=sent_unix_ms,
+                player_state=self._player_state(),
             )
             self._heartbeat_sent[sequence] = (sent_monotonic_ms, sent_unix_ms)
             async with send_lock:
@@ -649,15 +693,18 @@ def _sha256_file(path: Path) -> str:
 
 def _validate_deployment_command(
     command: (
-        DeviceArtifactStageCommand | DeviceArtifactActivateCommand | DeviceArtifactCleanupCommand
+        DeviceArtifactStageCommand
+        | DeviceArtifactActivateCommand
+        | DeviceArtifactCleanupCommand
+        | DevicePlayerCommand
     ),
     session_id: UUID,
     welcome: DeviceWelcome,
 ) -> None:
     if command.device_session_id != session_id:
-        raise DevicePresenceError("artifact command device session was fenced")
+        raise DevicePresenceError("controller command device session was fenced")
     if command.controller_epoch != welcome.controller_epoch:
-        raise DevicePresenceError("artifact command controller epoch was fenced")
+        raise DevicePresenceError("controller command controller epoch was fenced")
 
 
 def _update_cache_state(

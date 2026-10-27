@@ -69,6 +69,7 @@ from cueverge.gui.contracts import (
     StageReferenceRequest,
     UpdateRevisionReleaseRequest,
 )
+from cueverge.gui.device_players import PLAYER_IDLE_STOP_SECONDS, DevicePlayerError
 from cueverge.gui.device_session import DeviceSessionError
 from cueverge.gui.home_assistant import HomeAssistantError
 from cueverge.gui.input_sources import InputSourceError
@@ -461,6 +462,80 @@ def create_mcp_app(services: GuiServices) -> Starlette:
                 "hardware_operation_requested": True,
             }
         )
+
+    @tool()
+    def get_device_players() -> dict[str, JsonValue]:
+        """List media hosts whose player the controller can start and stop, with live state.
+
+        Requires read and this runtime's installation. States come from connected agents:
+        stopped, starting, ready, stopping or failed. A ready player is not proof of
+        visible output. Agents without player_control always run their player.
+        """
+        input_installation_token(McpScope.READ)
+        return {
+            "players": [
+                {
+                    "device_id": status.device_id,
+                    "name": status.display_name,
+                    "resources": list(status.resources),
+                    "connection_policy": status.connection_policy,
+                    "connected": status.connected,
+                    "player_control": status.player_control,
+                    "player_state": status.player_state,
+                }
+                for status in services.device_players.list()
+            ],
+            "hardware_commands_sent": False,
+        }
+
+    @tool()
+    async def control_device_player(
+        device_id: str,
+        action: Literal["start", "stop"],
+        confirm_physical_output: bool = False,
+    ) -> dict[str, JsonValue]:
+        """Start or stop the fullscreen media player on a connected media host.
+
+        Requires explicit live_operation, current operator/admin with live-output
+        permission, the loaded show's project and physical confirmation, like
+        operate_loaded_show. Starting opens mpv on the projector; stopping ends playback on
+        that host. Starting the show also starts players its projectors need, and on-demand
+        players stop after 10 idle minutes.
+        """
+        token = input_installation_token(McpScope.LIVE_OPERATION, project="loaded")
+        if services.runtime.loaded_catalog.get("project_id") != token.project_id:
+            raise ToolError("This token does not own the currently loaded show")
+        if not confirm_physical_output:
+            raise ToolError("Explicit physical-output confirmation is required")
+        try:
+            state = await (
+                services.device_players.start(device_id)
+                if action == "start"
+                else services.device_players.stop(device_id)
+            )
+        except DevicePlayerError as error:
+            services.repository.append_audit(
+                actor=token.username,
+                action=f"mcp.device.player.{action}",
+                target=device_id,
+                result="error",
+                occurred_at=_now_iso(),
+                authorization_context={"error": str(error), "token_id": token.id},
+            )
+            raise ToolError(str(error)) from error
+        services.repository.append_audit(
+            actor=token.username,
+            action=f"mcp.device.player.{action}",
+            target=device_id,
+            result="success",
+            occurred_at=_now_iso(),
+            authorization_context={"token_id": token.id, "scope": "live_operation"},
+        )
+        return {
+            "device_id": device_id,
+            "player_state": state,
+            "hardware_operation_requested": True,
+        }
 
     @tool()
     def get_installation_setup(
@@ -1547,6 +1622,7 @@ def create_mcp_app(services: GuiServices) -> Starlette:
                         "get_capabilities",
                         "get_output_monitor",
                         "operate_loaded_show",
+                        "control_device_player",
                     ],
                     "installation_level_tools_without_project": [
                         "list_shows",
@@ -1601,6 +1677,17 @@ def create_mcp_app(services: GuiServices) -> Starlette:
                     "physical_output_verified": False,
                     "hardware_commands_sent": False,
                     "requires_loaded_project_match": True,
+                },
+                "device_players": {
+                    "read_tool": "get_device_players",
+                    "control_tool": "control_device_player",
+                    "scope": "live_operation",
+                    "actions": ["start", "stop"],
+                    "states": ["stopped", "starting", "ready", "stopping", "failed"],
+                    "physical_confirmation_required": True,
+                    "requires_loaded_project_match": True,
+                    "show_start_starts_needed_players": True,
+                    "on_demand_idle_stop_seconds": PLAYER_IDLE_STOP_SECONDS,
                 },
                 "live_transport": {
                     "tool": "operate_loaded_show",
@@ -1745,6 +1832,7 @@ def create_mcp_app(services: GuiServices) -> Starlette:
                     "asset_trash": True,
                     "asset_replacement": True,
                     "ambient_lighting": True,
+                    "device_player_control": True,
                     "geometry_editing": False,
                     "live_media_rendering": False,
                 },
@@ -1765,6 +1853,8 @@ def create_mcp_app(services: GuiServices) -> Starlette:
                     "media_drift_correction": False,
                 },
                 "tools": {
+                    "device_players": "get_device_players",
+                    "control_device_player": "control_device_player",
                     "installation_objects": "get_installation_objects",
                     "stage_map": "get_stage_map",
                     "update_stage_reference": "update_stage_reference",

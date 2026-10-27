@@ -27,6 +27,7 @@ The same authenticated socket carries:
 - `device.media.command`;
 - `device.command.ack`;
 - `device.media.position`;
+- `device.player.start`, `device.player.stop` and `device.player.ack`;
 - two-phase credential rotation requests and responses.
 
 Every operational message is fenced by the device session UUID and controller
@@ -64,6 +65,21 @@ rather than trust, so they are reported per connection and are not part of the
 enrolled capability document. Devices without them keep the stop, prepare and
 play sequence, and refuse repeat counts. Update the controller before media
 agents: an older controller rejects a hello that includes `media_features`.
+
+Agents that list the `player_control` feature keep device presence separate from
+their media player. `device.hello` and every `device.heartbeat` report
+`player_state`: `stopped`, `starting`, `ready`, `stopping`, or `failed`. The
+controller registers such an agent as a runtime media target only while its
+player is `ready`. When the player stops or fails, it releases the target the same
+way as a disconnect.
+
+`device.player.start` and `device.player.stop` carry a request UUID and are
+fenced by device session and controller epoch. The device answers with
+`device.player.ack`: `status` is `completed` or `error` (with an `error` detail),
+plus the resulting `player_state`. Stopping clears any playback the agent was
+following. A late acknowledgement after the controller stopped waiting only
+updates state. Agents without `player_control` always run their player, and the
+controller treats them as ready.
 
 Valid heartbeats refresh both certificate-session presence and runtime
 liveness. A stale session is disconnected and cannot update or disconnect a

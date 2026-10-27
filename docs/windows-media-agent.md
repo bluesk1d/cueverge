@@ -77,22 +77,53 @@ non-interactive Windows session and cannot reliably create the projector GPU
 swapchain. Remote administration therefore starts and stops the scheduled task
 rather than hosting the media process in the SSH session.
 
-On a multi-purpose laptop, register this task without boot or logon triggers.
-Start it only while preparing for a show and stop it after the show:
+### On-demand player on a multi-purpose laptop
+
+Set `CUEVERGE_PLAYER_MODE=on_demand` in the agent environment. The agent then
+starts at logon without opening mpv, keeps its authenticated controller
+connection, and shows up in Device Health as **Connected · player stopped**.
+The controller opens the fullscreen player when:
+
+- an operator selects **Start player** on the device card (or uses the MCP
+  `control_device_player` tool);
+- **Start** in Operate needs a projector that the device is assigned to.
+
+**Stop player** closes it again. When the device's connection policy is **On
+demand**, the controller also stops the player after 10 minutes in which no
+playing scene uses it. Applying a show that restarts a running scene does not
+start stopped players; start them first, or apply while stopped and then use
+**Start**.
+
+Register the task with a logon trigger, a hidden window and automatic restart,
+for example:
 
 ```powershell
-C:\Cueverge\start-agent.ps1
-C:\Cueverge\stop-agent.ps1
+$action = New-ScheduledTaskAction -Execute 'powershell.exe' `
+    -Argument '-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File C:\Cueverge\run-agent.ps1'
+$trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
+$principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
+$settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew `
+    -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 999 `
+    -RestartInterval (New-TimeSpan -Minutes 1) `
+    -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+Register-ScheduledTask -TaskName 'Cueverge Media Agent' -Action $action `
+    -Trigger $trigger -Principal $principal -Settings $settings -Force
 ```
 
-A dedicated appliance may use an automatic interactive-logon trigger, but that
-is an installation-specific choice and must not be assumed by the generic
-agent.
+`C:\Cueverge\start-agent.ps1` and `stop-agent.ps1` still start and stop the
+whole agent, for example around maintenance.
+
+Without on-demand mode, the agent opens the player as soon as it starts. On a
+laptop used for other things, register that task without triggers and start it
+only while preparing for a show. A dedicated appliance may use an automatic
+interactive-logon trigger with either mode; that is an installation-specific
+choice, not a default of the generic agent.
 
 Agent startup probes the configured Cueverge IPC pipe before launching mpv and
 adopts an existing responsive player rather than spawning another instance.
-The on-demand stop script terminates only mpv processes whose command line
-uses Cueverge's named pipe.
+Stopping the player quits it over that pipe, including an adopted one. The stop
+script terminates only mpv processes whose command line uses Cueverge's named
+pipe.
 
 Rotate the media-host credential while its agent task is stopped, then use
 `C:\Cueverge\start-agent.ps1` to activate the replacement certificate:

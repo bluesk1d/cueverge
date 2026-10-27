@@ -214,6 +214,16 @@ a show that uses its projector is applied; no restart is needed. A host whose
 assignments map to two different media targets is still refused, and the
 controller log names the reason.
 
+Media hosts running the agent in on-demand player mode stay connected without a
+player window and show **Connected · player stopped**. Operators and
+administrators can use **Start player** / **Stop player** on the device card.
+**Start** in Operate opens every stopped player the loaded show needs and
+refuses to start, naming the device, if one fails. With the device's connection
+policy set to **On demand**, the controller closes its player after 10 minutes
+in which no playing scene uses it. Every start and stop is audited as
+`device.player.*`. **Connected · player failed** means mpv couldn't start on
+that host; fix it there, then start it again.
+
 ### 3. Optionally add or replace reference photos
 
 1. Open **Installation > Photos & Layout** and choose **Add photo**.

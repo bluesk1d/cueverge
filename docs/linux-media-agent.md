@@ -119,6 +119,12 @@ stopped until the next start or login. Hosts installed from an older template
 (`Restart=on-failure`) only restarted after crashes; update the unit, then run
 `systemctl --user daemon-reload`.
 
+Set `CUEVERGE_PLAYER_MODE=on_demand` to keep only the controller connection
+running and let the controller open mpv when a show needs this projector.
+Operators can also use **Start player** / **Stop player** on the device card.
+With the device's connection policy set to **On demand**, the player closes after
+10 idle minutes. The default `always` mode opens mpv when the agent starts.
+
 Before unattended use, reboot the media host and verify:
 
 1. Desktop login completes without interaction.

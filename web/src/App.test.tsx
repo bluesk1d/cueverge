@@ -733,6 +733,74 @@ test("shows a connected media host as idle with the reason when the show doesn't
   expect(screen.getByText(reason)).toBeInTheDocument();
 });
 
+test("operators start and stop an on-demand media player from its device card", async () => {
+  const fetchMock = vi
+    .spyOn(globalThis, "fetch")
+    .mockImplementation(() => jsonResponse({ device_id: "demo-left", player_state: "ready" }));
+  const onRefresh = vi.fn();
+  const topology = {
+    ...demoTopology,
+    nodes: demoTopology.nodes.map((node) =>
+      node.id === "device:demo-left"
+        ? {
+            ...node,
+            player_control: true,
+            player_state: "stopped" as const,
+            diagnostic: "Player stopped. Start it here or start the show.",
+          }
+        : node,
+    ),
+  };
+  render(
+    <InstallationPage
+      initialSection="devices"
+      installation={demoInstallation}
+      topology={topology}
+      installationError={false}
+      topologyError={false}
+      loading={false}
+      session={{ username: "operator", role: "operator" }}
+      onRefresh={onRefresh}
+    />,
+  );
+
+  expect(screen.getAllByText("Connected · player stopped").length).toBeGreaterThan(0);
+  fireEvent.click(screen.getByRole("button", { name: "Start player on media-client-left" }));
+  await waitFor(() => expect(onRefresh).toHaveBeenCalled());
+  const [url, init] = fetchMock.mock.calls.find(([target]) =>
+    String(target).includes("/player"),
+  )!;
+  expect(String(url)).toBe("/api/gui/v1/devices/demo-left/player");
+  expect(init?.method).toBe("POST");
+  expect(init?.body).toBe(JSON.stringify({ action: "start" }));
+  expect(
+    screen.queryByRole("button", { name: "Start player on media-client-right" }),
+  ).not.toBeInTheDocument();
+});
+
+test("viewers don't get player controls", () => {
+  render(
+    <InstallationPage
+      initialSection="devices"
+      installation={demoInstallation}
+      topology={{
+        ...demoTopology,
+        nodes: demoTopology.nodes.map((node) =>
+          node.id === "device:demo-left"
+            ? { ...node, player_control: true, player_state: "ready" as const }
+            : node,
+        ),
+      }}
+      installationError={false}
+      topologyError={false}
+      loading={false}
+      session={{ username: "viewer", role: "viewer" }}
+    />,
+  );
+
+  expect(screen.queryByRole("button", { name: /player on media-client-left/ })).not.toBeInTheDocument();
+});
+
 test("does not infer status when the runtime request fails", () => {
   vi.spyOn(globalThis, "fetch").mockImplementation(() => jsonResponse([]));
   render(

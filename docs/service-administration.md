@@ -490,6 +490,9 @@ Use the platform checklist to qualify your media host and display before show us
 
 Use continuous versus on-demand connection expectations to match operational
 practice. An intentional on-demand disconnect is not evidence of readiness.
+For agents in on-demand player mode (`CUEVERGE_PLAYER_MODE=on_demand`), the
+**On demand** policy also lets the controller close the player after 10 idle
+minutes; **Continuous** leaves a started player running.
 Run connection tests and inspect device lifecycle state before troubleshooting
 by address.
 
@@ -585,6 +588,8 @@ alone deploys media artifacts, not the running controller scene catalog.
 Separately authorized `apply_saved_show` loads a verified saved catalog;
 `operate_loaded_show` requires explicitly opted-in `live_operation`, current
 operator/admin live permission, loaded-project matching and physical confirmation.
+`control_device_player` starts or stops a media host's player under the same
+conditions; `get_device_players` (read) lists player state.
 Neither grants device enrollment or access administration.
 
 Global administrators can also issue installation-scoped MCP tokens under
