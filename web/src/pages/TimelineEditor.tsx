@@ -2935,6 +2935,14 @@ export function TimelineEditor({
                       <select
                         aria-label="Source alpha interpretation"
                         disabled={!canEdit}
+                        title={
+                          {
+                            opaque: "Opaque",
+                            straight: "Straight alpha",
+                            premultiplied: "Premultiplied alpha",
+                            black_transparent: "Black is transparent (screen)",
+                          }[selectedTransformLayer.alpha_interpretation ?? "straight"]
+                        }
                         value={selectedTransformLayer.alpha_interpretation ?? "straight"}
                         onChange={(event) =>
                           updateTransformLayer(selectedTransformLayer.id, (layer) => ({
@@ -2950,13 +2958,6 @@ export function TimelineEditor({
                         <option value="black_transparent">Black is transparent (screen)</option>
                       </select>
                     </label>
-                    {selectedTransformLayer.alpha_interpretation === "black_transparent" && (
-                      <small>
-                        Brightness becomes coverage: black areas let the lighting or layers
-                        underneath show through, like a screen blend. Re-bake LED overlays after
-                        changing this.
-                      </small>
-                    )}
                     <label>
                       Source color space
                       <select
@@ -2996,6 +2997,13 @@ export function TimelineEditor({
                         <option value="native">Native size</option>
                       </select>
                     </label>
+                    {selectedTransformLayer.alpha_interpretation === "black_transparent" && (
+                      <small className="timeline-transform-note">
+                        Black is transparent: brightness becomes coverage, so black areas let the
+                        lighting or layers underneath show through, like a screen blend. Re-bake
+                        LED overlays after changing this.
+                      </small>
+                    )}
                   </>
                 )}
                 <label>

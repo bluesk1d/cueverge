@@ -2488,6 +2488,12 @@ p {
   grid-column: 1 / -1;
 }
 
+.timeline-transform-note {
+  grid-column: 1 / -1;
+  color: var(--cv-text-faint);
+  line-height: 1.4;
+}
+
 .timeline-item--invalid {
   border-color: var(--cv-danger) !important;
   box-shadow: 0 0 0 1px var(--cv-danger);
