@@ -293,7 +293,9 @@ journalctl -k --since today
 - [ ] Add distinct logical projector resources to `installation.json`.
 - [ ] Convert one placeholder scene to schema version 2 with both media
       outputs and an explicit required clock source.
-- [ ] Confirm both agents appear in `connected_agents`.
+- [ ] Confirm both agents appear in `connected_agents`. An agent whose
+      projector the loaded show doesn't use stays connected and idle (shown as
+      **Connected · idle**) and joins once such a show is applied.
 - [ ] Confirm status lists a distinct playback session for each output.
 - [ ] Confirm both agents receive `prepare` before either receives `play`.
 - [ ] Confirm pause, resume, seek, replacement, blackout, and stop fan out.

@@ -164,7 +164,14 @@ export function OverviewPage({
                           <strong>{humanize(resource.resource)}</strong>
                           <small>{node?.label ?? resource.target ?? resource.resource}</small>
                         </span>
-                        <StatusText tone={outputError ? "danger" : status.tone}>
+                        <StatusText
+                          tone={outputError ? "danger" : status.tone}
+                          detail={
+                            !outputError && node?.kind === "direct_media_agent"
+                              ? node.diagnostic ?? undefined
+                              : undefined
+                          }
+                        >
                           {outputError ? "Output error" : status.label}
                         </StatusText>
                       </li>

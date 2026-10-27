@@ -5736,6 +5736,11 @@ def create_gui_router(services: GuiServices) -> APIRouter:
             for status in services.repository.list_device_artifact_statuses()
         }
         connection_policies = services.repository.list_device_connection_policies()
+        show_media_resources = {
+            media_output.definition.resource
+            for scene in services.runtime.catalog.scenes.values()
+            for media_output in scene.media_outputs
+        }
         observed_at_ms = time.time_ns() // 1_000_000
         nodes.extend(
             TopologyNodeResponse(
@@ -5846,6 +5851,11 @@ def create_gui_router(services: GuiServices) -> APIRouter:
                     else None
                 ),
                 connection_policy=connection_policies.get(device.id, "continuous"),
+                diagnostic=_idle_media_diagnostic(
+                    device.device_kind,
+                    durable_assignments.get(device.id, ()),
+                    show_media_resources,
+                ),
                 last_seen_age_ms=(
                     max(
                         0,
@@ -6718,6 +6728,24 @@ def _device_compatibility(
         if assignment.capability_kind not in allowed_capabilities:
             return "conflict"
     return "compatible"
+
+
+def _idle_media_diagnostic(
+    device_kind: DeviceKind,
+    assignments: Collection[StoredResourceAssignment],
+    show_media_resources: set[str],
+) -> str | None:
+    """Explain why an assigned media agent has nothing to play in the loaded show."""
+    if device_kind is not DeviceKind.DIRECT_MEDIA_AGENT:
+        return None
+    resources = sorted(
+        assignment.resource
+        for assignment in assignments
+        if assignment.capability_kind == "media_playback"
+    )
+    if not resources or show_media_resources.intersection(resources):
+        return None
+    return f"Idle: the loaded show doesn't use {', '.join(resources)}."
 
 
 def _device_compatibility_detail(

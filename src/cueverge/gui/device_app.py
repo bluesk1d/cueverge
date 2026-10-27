@@ -11,6 +11,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import ValidationError
 
 from cueverge.controller.runtime import ControllerRuntime
+from cueverge.core.models import ResourceKind
 from cueverge.gui.asset_upload import AssetUploadError, AssetUploadService
 from cueverge.gui.device_ca import DeviceCertificateAuthority
 from cueverge.gui.device_session import DeviceSessionError, DeviceSessionRegistry
@@ -233,25 +234,31 @@ def create_device_app(
             runtime_agent_id = None
             channel = None
             if runtime is not None and device.device_kind is DeviceKind.DIRECT_MEDIA_AGENT:
-                runtime_agent_id = _assigned_agent_id(repository, runtime, device.id)
                 channel = DeviceCommandChannel(websocket, session_id)
                 sessions.attach_channel(UUID(device.id), session_id, channel)
-                runtime_welcome = runtime.register_agent(
-                    AgentHello(
-                        agent_id=runtime_agent_id,
-                        agent_session_id=str(session_id),
-                        capabilities=_runtime_capabilities(hello),
-                    ),
-                    channel,
-                )
-                LOGGER.info(
-                    "registered authenticated device %s as runtime target %s",
-                    device.id,
-                    runtime_agent_id,
-                )
-                welcome = welcome.model_copy(
-                    update={"reconciliation": runtime_welcome.reconciliation}
-                )
+                runtime_agent_id = _assigned_agent_id(repository, runtime, device.id)
+                if runtime_agent_id is None:
+                    LOGGER.info(
+                        "authenticated device %s connected idle: loaded show has no media target",
+                        device.id,
+                    )
+                else:
+                    runtime_welcome = runtime.register_agent(
+                        AgentHello(
+                            agent_id=runtime_agent_id,
+                            agent_session_id=str(session_id),
+                            capabilities=_runtime_capabilities(hello),
+                        ),
+                        channel,
+                    )
+                    LOGGER.info(
+                        "registered authenticated device %s as runtime target %s",
+                        device.id,
+                        runtime_agent_id,
+                    )
+                    welcome = welcome.model_copy(
+                        update={"reconciliation": runtime_welcome.reconciliation}
+                    )
             repository.mark_device_connected(
                 device_id=device.id,
                 session_id=str(session_id),
@@ -276,6 +283,23 @@ def create_device_app(
                             session_id=str(heartbeat.device_session_id),
                             observed_at_ms=_now_ms(),
                         )
+                        if runtime is not None and channel is not None and runtime_agent_id is None:
+                            # An idle agent joins the runtime once a loaded show gives it a target.
+                            runtime_agent_id = _assigned_agent_id(repository, runtime, device.id)
+                            if runtime_agent_id is not None:
+                                runtime.register_agent(
+                                    AgentHello(
+                                        agent_id=runtime_agent_id,
+                                        agent_session_id=str(session_id),
+                                        capabilities=_runtime_capabilities(hello),
+                                    ),
+                                    channel,
+                                )
+                                LOGGER.info(
+                                    "registered idle authenticated device %s as runtime target %s",
+                                    device.id,
+                                    runtime_agent_id,
+                                )
                         if runtime is not None and runtime_agent_id is not None:
                             runtime.heartbeat(
                                 AgentHeartbeat(
@@ -434,7 +458,8 @@ def create_device_app(
             DeviceSessionError,
             ValidationError,
             ValueError,
-        ):
+        ) as error:
+            LOGGER.warning("device %s session rejected: %s", peer.device_id, error)
             await websocket.close(code=4403, reason="device session is not authorized")
         except WebSocketDisconnect:
             pass
@@ -488,7 +513,13 @@ def _assigned_agent_id(
     repository: GuiRepository,
     runtime: ControllerRuntime,
     device_id: str,
-) -> str:
+) -> str | None:
+    """The runtime agent for a device's media assignment, or None while it has no target.
+
+    Scene media outputs take precedence; otherwise the loaded installation's media-agent
+    binding names the target, so an assigned agent stays registered when the loaded show
+    doesn't use its output.
+    """
     resources = {
         assignment.resource
         for assignment in repository.list_resource_assignments()
@@ -500,9 +531,15 @@ def _assigned_agent_id(
         for output in scene.media_outputs
         if output.definition.resource in resources
     }
-    if len(agent_ids) != 1:
-        raise ValueError("device must have exactly one active media assignment")
-    return next(iter(agent_ids))
+    if not agent_ids:
+        agent_ids = {
+            binding.target
+            for binding in runtime.catalog.installation.resources
+            if binding.resource in resources and binding.kind is ResourceKind.MEDIA_AGENT
+        }
+    if len(agent_ids) > 1:
+        raise ValueError("device media assignments map to more than one runtime target")
+    return next(iter(agent_ids), None)
 
 
 def _runtime_capabilities(hello: DeviceHello) -> tuple[str, ...]:

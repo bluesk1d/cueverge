@@ -30,7 +30,11 @@ export function controllerStatus(
 }
 
 export function connectionStatus(node: TopologyNode): { tone: StatusTone; label: string } {
-  if (node.connection === "connected") return { tone: "success", label: "Connected" };
+  if (node.connection === "connected") {
+    return node.kind === "direct_media_agent" && node.diagnostic
+      ? { tone: "success", label: "Connected · idle" }
+      : { tone: "success", label: "Connected" };
+  }
   if (node.connection === "disconnected") {
     return node.connection_policy === "on_demand"
       ? { tone: "neutral", label: "Offline · on demand" }

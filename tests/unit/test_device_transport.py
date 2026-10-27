@@ -1,5 +1,7 @@
 import asyncio
 import hashlib
+import json
+import shutil
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -16,6 +18,7 @@ from starlette.testclient import WebSocketDisconnect
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from cueverge.controller.runtime import ControllerRuntime
+from cueverge.core.loader import load_show_package
 from cueverge.gui.artifact_deployment import ArtifactDeploymentError
 from cueverge.gui.contracts import Role
 from cueverge.gui.device_app import create_device_app
@@ -39,6 +42,7 @@ from cueverge.protocol.device_v2 import (
 DEVICE_ID = UUID("9c004799-7704-48f1-b5f4-f083628c7faa")
 NOW = datetime(2026, 10, 13, 17, 0, tzinfo=UTC)
 TOKEN = "pairing-token-that-is-never-stored-in-plaintext"
+SHOWS = Path(__file__).resolve().parents[2] / "shows"
 
 
 def test_published_media_download_requires_peer_and_assignment_and_supports_ranges(
@@ -256,6 +260,77 @@ def test_downstream_session_does_not_register_as_media_agent(tmp_path: Path) -> 
         assert runtime.connected_agent_count == 0
 
 
+def test_media_agent_idles_until_a_loaded_show_targets_its_assignment(tmp_path: Path) -> None:
+    repository, certificate_der, capabilities = _enrolled_device(tmp_path)
+    _assign(repository, "projector.right")
+    runtime = ControllerRuntime(catalog=load_show_package(SHOWS / "led-only-demo"))
+    app = _with_peer_certificate(
+        create_device_app(repository, DeviceSessionRegistry(), runtime),
+        certificate_der,
+    )
+    session_id = uuid4()
+
+    with TestClient(app).websocket_connect("/api/device/v2/agent/ws") as websocket:
+        websocket.send_json(_hello(session_id, capabilities))
+        welcome = websocket.receive_json()
+        assert welcome["type"] == "device.welcome"
+        websocket.send_json(_heartbeat(session_id, welcome["controller_epoch"], 1))
+        assert websocket.receive_json()["accepted"] is True
+        assert runtime.connected_agent_count == 0
+
+        runtime.catalog = load_show_package(SHOWS / "multi-output-demo")
+        websocket.send_json(_heartbeat(session_id, welcome["controller_epoch"], 2))
+        assert websocket.receive_json()["accepted"] is True
+        assert runtime.status()["connected_agents"] == ["fake-media-right"]
+
+    assert runtime.connected_agent_count == 0
+
+
+def test_media_agent_registers_from_installation_binding_when_no_scene_uses_it(
+    tmp_path: Path,
+) -> None:
+    repository, certificate_der, capabilities = _enrolled_device(tmp_path)
+    _assign(repository, "projector.right")
+    runtime = ControllerRuntime(
+        catalog=load_show_package(_led_show_with_media_bindings(tmp_path, "projector.right"))
+    )
+    app = _with_peer_certificate(
+        create_device_app(repository, DeviceSessionRegistry(), runtime),
+        certificate_der,
+    )
+
+    with TestClient(app).websocket_connect("/api/device/v2/agent/ws") as websocket:
+        websocket.send_json(_hello(uuid4(), capabilities))
+        welcome = websocket.receive_json()
+        assert welcome["type"] == "device.welcome"
+        assert welcome["reconciliation"] == "idle"
+        assert runtime.status()["connected_agents"] == ["client-projector.right"]
+
+
+def test_media_agent_mapped_to_two_runtime_targets_is_rejected(tmp_path: Path) -> None:
+    repository, certificate_der, capabilities = _enrolled_device(tmp_path)
+    _assign(repository, "projector.left")
+    _assign(repository, "projector.right")
+    runtime = ControllerRuntime(
+        catalog=load_show_package(
+            _led_show_with_media_bindings(tmp_path, "projector.left", "projector.right")
+        )
+    )
+    app = _with_peer_certificate(
+        create_device_app(repository, DeviceSessionRegistry(), runtime),
+        certificate_der,
+    )
+
+    with (
+        pytest.raises(WebSocketDisconnect) as disconnected,
+        TestClient(app).websocket_connect("/api/device/v2/agent/ws") as websocket,
+    ):
+        websocket.send_json(_hello(uuid4(), capabilities))
+        websocket.receive_json()
+    assert disconnected.value.code == 4403
+    assert runtime.connected_agent_count == 0
+
+
 def test_suspension_terminates_an_existing_session_on_next_message(
     tmp_path: Path,
 ) -> None:
@@ -397,3 +472,41 @@ def _with_peer_certificate(app: ASGIApp, certificate_der: bytes) -> ASGIApp:
         await app(updated_scope, receive, send)
 
     return wrapped
+
+
+def _assign(repository: GuiRepository, resource: str) -> None:
+    repository.set_resource_assignment(
+        resource=resource,
+        device_id=str(DEVICE_ID),
+        capability_kind="media_playback",
+        device_output=None,
+        expected_revision=None,
+        actor="admin",
+        role=Role.ADMINISTRATOR,
+        occurred_at=NOW.isoformat(),
+    )
+
+
+def _heartbeat(session_id: UUID, controller_epoch: str, sequence: int) -> dict[str, Any]:
+    return {
+        "type": "device.heartbeat",
+        "protocol_version": 2,
+        "device_id": str(DEVICE_ID),
+        "device_session_id": str(session_id),
+        "controller_epoch": controller_epoch,
+        "sequence": sequence,
+        "device_monotonic_ms": 100 * sequence,
+    }
+
+
+def _led_show_with_media_bindings(tmp_path: Path, *resources: str) -> Path:
+    """The LED-only demo with media-agent bindings that no scene uses."""
+    show = tmp_path / "show"
+    shutil.copytree(SHOWS / "led-only-demo", show)
+    installation = json.loads((show / "installation.json").read_text())
+    installation["resources"].extend(
+        {"resource": resource, "kind": "media_agent", "target": f"client-{resource}"}
+        for resource in resources
+    )
+    (show / "installation.json").write_text(json.dumps(installation))
+    return show

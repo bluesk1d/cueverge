@@ -706,6 +706,33 @@ test("shows supported runtime facts and honest unsupported states", () => {
   expect(screen.getByText("Unknown")).toBeInTheDocument();
 });
 
+test("shows a connected media host as idle with the reason when the show doesn't use it", () => {
+  vi.spyOn(globalThis, "fetch").mockImplementation(() => jsonResponse([]));
+  const reason = "Idle: the loaded show doesn't use projector.left.";
+  render(
+    <OverviewPage
+      installation={demoInstallation}
+      runtime={demoRuntime}
+      topology={{
+        ...demoTopology,
+        nodes: demoTopology.nodes.map((node) =>
+          node.id === "device:demo-left" ? { ...node, diagnostic: reason } : node,
+        ),
+      }}
+      runtimeFreshness="fresh"
+      topologyFreshness="fresh"
+      onNavigate={vi.fn()}
+      activity={demoActivity}
+      installationError={false}
+      runtimeError={false}
+      loading={false}
+    />,
+  );
+
+  expect(screen.getByText("Connected · idle")).toBeInTheDocument();
+  expect(screen.getByText(reason)).toBeInTheDocument();
+});
+
 test("does not infer status when the runtime request fails", () => {
   vi.spyOn(globalThis, "fetch").mockImplementation(() => jsonResponse([]));
   render(

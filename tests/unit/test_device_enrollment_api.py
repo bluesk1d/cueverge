@@ -10,6 +10,7 @@ from pydantic import SecretStr, ValidationError
 
 from cueverge.controller.app import create_app
 from cueverge.controller.runtime import ControllerRuntime
+from cueverge.core.loader import load_show_package
 from cueverge.core.models import ResourceBinding, ResourceKind
 from cueverge.gui.config import GuiConfig
 from cueverge.gui.contracts import Role
@@ -204,6 +205,18 @@ def test_administrator_can_create_token_and_enroll_device_once(tmp_path: Path) -
     assert enrolled_node["enrollment"] == "enrolled"
     assert enrolled_node["compatibility"] == "compatible"
     assert enrolled_node["assigned_resources"] == [media_resource["resource"]]
+    assert enrolled_node["diagnostic"] is None
+    runtime.catalog = load_show_package(Path("shows/led-only-demo"))
+    idle_node = next(
+        node
+        for node in client.get("/api/gui/v1/topology").json()["nodes"]
+        if node["id"] == f"device:{credential['device_id']}"
+    )
+    assert idle_node["connection"] == "connected"
+    assert idle_node["diagnostic"] == (
+        f"Idle: the loaded show doesn't use {media_resource['resource']}."
+    )
+    runtime.catalog = load_show_package(Path("shows/demo"))
     assert enrolled_node["capability_document"]["capabilities"][0]["kind"] == "media_playback"
     assert enrolled_node["capability_document"]["capabilities"][0]["codecs"] == ["h264"]
     observed_expiry = datetime.fromisoformat(enrolled_node["certificate_expires_at"])

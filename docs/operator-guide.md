@@ -207,6 +207,13 @@ topology, with fresh connection/capability information. Independently check
 video, audio, and pixels; "not independently detectable" is not a fault to
 hide or a health check to waive.
 
+A media host whose assigned projector the loaded show doesn't use still
+connects and shows **Connected · idle** with the reason (for example "Idle: the
+loaded show doesn't use projector.right"). It joins playback automatically once
+a show that uses its projector is applied; no restart is needed. A host whose
+assignments map to two different media targets is still refused, and the
+controller log names the reason.
+
 ### 3. Optionally add or replace reference photos
 
 1. Open **Installation > Photos & Layout** and choose **Add photo**.
