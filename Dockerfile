@@ -23,6 +23,17 @@ COPY pyproject.toml uv.lock README.md ./
 COPY src/ src/
 RUN uv sync --locked --no-dev --no-editable
 
+# Offline media agent bundles the controller serves for managed agent updates.
+FROM python-build AS agent-bundles
+
+ARG CUEVERGE_BUILD_LABEL=image
+ARG CUEVERGE_AGENT_PLATFORMS="linux_x86_64 linux_aarch64 windows_amd64"
+RUN set -eu; \
+    platforms=""; \
+    for platform in ${CUEVERGE_AGENT_PLATFORMS}; do platforms="$platforms --platform $platform"; done; \
+    /build/.venv/bin/python -m cueverge.agent_bundle --output /build/agent-bundles \
+      --project /build --build "${CUEVERGE_BUILD_LABEL}" $platforms
+
 FROM ${PYTHON_IMAGE} AS runtime
 
 ARG INSTALL_CLAMAV=false
@@ -48,6 +59,7 @@ RUN groupadd --system cueverge \
 WORKDIR /opt/cueverge
 COPY --from=python-build /build/.venv /opt/cueverge/.venv
 COPY --from=web-build /build/web/dist /opt/cueverge/web/dist
+COPY --from=agent-bundles /build/agent-bundles /opt/cueverge/agent-bundles
 COPY shows/demo /opt/cueverge/shows/demo
 COPY docker/entrypoint.sh /usr/local/bin/cueverge-entrypoint
 
@@ -56,7 +68,8 @@ ENV PATH="/opt/cueverge/.venv/bin:${PATH}" \
     PYTHONDONTWRITEBYTECODE=1 \
     CUEVERGE_SHOW_PACKAGE=/opt/cueverge/shows/demo \
     CUEVERGE_GUI_DATA_ROOT=/var/lib/cueverge/gui \
-    CUEVERGE_GUI_WEB_ROOT=/opt/cueverge/web/dist
+    CUEVERGE_GUI_WEB_ROOT=/opt/cueverge/web/dist \
+    CUEVERGE_AGENT_BUNDLE_ROOT=/opt/cueverge/agent-bundles
 
 VOLUME ["/var/lib/cueverge"]
 EXPOSE 8000 7443

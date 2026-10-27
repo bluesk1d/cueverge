@@ -10,7 +10,7 @@ from dataclasses import asdict, replace
 from datetime import UTC, datetime
 from io import BytesIO
 from threading import Lock
-from typing import Annotated, Any, Literal, TypeVar, cast
+from typing import Annotated, Any, Literal, TypeVar, cast, get_args
 from urllib.parse import urlsplit
 
 from mcp.server import MCPServer
@@ -29,6 +29,7 @@ from starlette.responses import JSONResponse, Response
 
 from cueverge.controller.runtime import SEAMLESS_PRELOAD_LEAD_MS
 from cueverge.core.loader import ShowPackageError
+from cueverge.gui.agent_updates import AgentUpdateError
 from cueverge.gui.apply import ApplyError, ApplyRequest
 from cueverge.gui.artifact_deployment import ArtifactDeploymentError
 from cueverge.gui.asset_upload import (
@@ -46,7 +47,9 @@ from cueverge.gui.composition_authoring import (
     remove_composition_from_scene as remove_draft_composition_from_scene,
 )
 from cueverge.gui.contracts import (
+    UPDATABLE_AGENT_STATES,
     AddSceneOutputRequest,
+    AgentUpdateState,
     AmbientLightingPreviewRequest,
     ConfigureInputSourceRequest,
     CreateSceneRequest,
@@ -136,6 +139,7 @@ from cueverge.gui.stage_renderer import (
     preview_stage_lighting_samples,
 )
 from cueverge.integrations.mqtt import MAX_INPUT_PAYLOAD_BYTES, MAX_INPUT_RECENT_EVENTS
+from cueverge.media_agent.launcher import TRIAL_SECONDS
 
 MAX_CONCURRENT_CALLS_PER_TOKEN = 4
 
@@ -544,6 +548,65 @@ def create_mcp_app(services: GuiServices) -> Starlette:
             "player_state": state,
             "hardware_operation_requested": True,
         }
+
+    @tool()
+    def get_agent_updates() -> dict[str, JsonValue]:
+        """List media agent software versions and the update bundles this controller offers.
+
+        Requires read and this runtime's installation. Per device state: current,
+        available, updating, failed, rolled_back, unmanaged (not installed with
+        cueverge-agent-install), unsupported_platform, no_bundle or disconnected.
+        Versions come from connected agents, not the enrolled capability document.
+        """
+        input_installation_token(McpScope.READ)
+        return _bounded_result(services.agent_updates.overview().model_dump(mode="json"))
+
+    @tool()
+    async def update_device_agents(
+        device_ids: list[str] | None = None,
+        confirm_restart: bool = False,
+    ) -> dict[str, JsonValue]:
+        """Install this controller's agent bundle on media hosts and restart their agents.
+
+        Requires explicit device_update, a current global administrator and this
+        runtime's installation, plus confirm_restart=True: each agent stops its player
+        and reconnects within minutes. Omit device_ids to update every device whose
+        state is available, failed or rolled_back. Requires maintenance mode with no
+        scene playing. Returns immediately; poll get_agent_updates. A new version that
+        doesn't reach the controller is rolled back on the host. Audited as
+        mcp.device.agent_update.start.
+        """
+        token = input_installation_token(McpScope.DEVICE_UPDATE)
+        if not confirm_restart:
+            raise ToolError("Explicit confirm_restart=True is required")
+        try:
+            started = await services.agent_updates.start(device_ids)
+        except AgentUpdateError as error:
+            services.repository.append_audit(
+                actor=token.username,
+                action="mcp.device.agent_update.start",
+                target=",".join(device_ids or ("all",)),
+                result="error",
+                occurred_at=_now_iso(),
+                authorization_context={"error": str(error), "token_id": token.id},
+            )
+            raise ToolError(str(error)) from error
+        for status in started:
+            services.repository.append_audit(
+                actor=token.username,
+                action="mcp.device.agent_update.start",
+                target=status.device_id,
+                result="success",
+                occurred_at=_now_iso(),
+                authorization_context={"token_id": token.id, "scope": "device_update"},
+            )
+        return _bounded_result(
+            {
+                "started": [status.device_id for status in started],
+                "updates": services.agent_updates.overview().model_dump(mode="json"),
+                "hardware_operation_requested": bool(started),
+            }
+        )
 
     @tool()
     def get_installation_setup(
@@ -1703,6 +1766,19 @@ def create_mcp_app(services: GuiServices) -> Starlette:
                         "controller_can_change": False,
                     },
                 },
+                "agent_updates": {
+                    "read_tool": "get_agent_updates",
+                    "update_tool": "update_device_agents",
+                    "scope": "device_update",
+                    "role": "global administrator",
+                    "states": list(get_args(AgentUpdateState)),
+                    "updatable_states": sorted(UPDATABLE_AGENT_STATES),
+                    "requires_idle_maintenance": True,
+                    "restart_confirmation_required": True,
+                    "trial_rollback_seconds": TRIAL_SECONDS,
+                    "bundle_platforms": sorted(services.agent_updates.catalog.bundles),
+                    "host_setup": "cueverge-agent-install (once per media host)",
+                },
                 "live_transport": {
                     "tool": "operate_loaded_show",
                     "scope": "live_operation",
@@ -1847,6 +1923,7 @@ def create_mcp_app(services: GuiServices) -> Starlette:
                     "asset_replacement": True,
                     "ambient_lighting": True,
                     "device_player_control": True,
+                    "managed_agent_updates": True,
                     "geometry_editing": False,
                     "live_media_rendering": False,
                 },

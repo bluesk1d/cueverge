@@ -7,6 +7,7 @@ from uuid import UUID, uuid4
 
 from cueverge.gui.repository import StoredDevice
 from cueverge.protocol.device_v2 import (
+    AgentRelease,
     DeviceHeartbeat,
     DeviceHeartbeatAck,
     DeviceHello,
@@ -35,6 +36,8 @@ class ActiveDeviceSession:
     player_control: bool = False
     player_state: PlayerState | None = None
     keep_awake: KeepAwakeStatus | None = None
+    agent_update: bool = False
+    agent_release: AgentRelease | None = None
 
 
 class DeviceSessionRegistry:
@@ -66,6 +69,8 @@ class DeviceSessionRegistry:
                 player_control="player_control" in hello.media_features,
                 player_state=hello.player_state,
                 keep_awake=hello.keep_awake,
+                agent_update="agent_update" in hello.media_features,
+                agent_release=hello.agent_release,
             )
         return DeviceWelcome(
             device_id=hello.device_id,
@@ -166,6 +171,8 @@ class DeviceSessionRegistry:
             if heartbeat.player_state is not None:
                 session.player_state = heartbeat.player_state
             session.keep_awake = heartbeat.keep_awake
+            if heartbeat.agent_release is not None:
+                session.agent_release = heartbeat.agent_release
         return DeviceHeartbeatAck(sequence=heartbeat.sequence, accepted=True)
 
     def set_player_state(self, device_id: UUID, session_id: UUID, state: PlayerState) -> None:
@@ -189,6 +196,15 @@ class DeviceSessionRegistry:
         with self._lock:
             session = self._sessions.get(device_id)
             return session.keep_awake if session is not None else None
+
+    def agent_release(self, device_id: UUID) -> tuple[bool, AgentRelease | None] | None:
+        """(supports agent_update, running release) for a connected device, else None."""
+        self.expire_stale()
+        with self._lock:
+            session = self._sessions.get(device_id)
+            if session is None:
+                return None
+            return session.agent_update, session.agent_release
 
     def player_ready(self, device_id: UUID) -> bool:
         """Whether a connected device can play: agents without player control always can."""

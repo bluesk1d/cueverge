@@ -1304,6 +1304,7 @@ def test_device_session_registry_meets_hundred_client_budget(tmp_path: Path) -> 
                 media_features=(),
                 player_state=None,
                 keep_awake=None,
+                agent_release=None,
             ),
         )
         services.device_sessions.connect(device, hello)

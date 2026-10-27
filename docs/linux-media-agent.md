@@ -21,6 +21,10 @@ uv sync --all-groups --python 3.12
 uv run cueverge-media-agent
 ```
 
+For unattended hosts, set up controller-managed updates once (see
+[Controller-managed updates](#controller-managed-updates)). The checkout is then
+needed only for enrollment and that one-time install.
+
 The default Linux IPC path is `/tmp/cueverge-mpv.sock`; override it with
 `CUEVERGE_MPV_PIPE` when multiple agent processes share a host. The agent
 launches mpv with `--input-ipc-server` and connects after mpv creates the Unix
@@ -124,6 +128,37 @@ running and let the controller open mpv when a show needs this projector.
 Operators can also use **Start player** / **Stop player** on the device card.
 With the device's connection policy set to **On demand**, the player closes after
 10 idle minutes. The default `always` mode opens mpv when the agent starts.
+
+### Controller-managed updates
+
+After the host is enrolled, install the controller's agent bundle under the
+launcher once. Run it from the checkout with the agent's private environment
+loaded so it can use the device credentials:
+
+```bash
+set -a; . ~/.config/cueverge/media-agent.env; set +a
+uv run cueverge-agent-install
+```
+
+It downloads this controller's `linux_x86_64` or `linux_aarch64` bundle over the
+device's mTLS identity, verifies its SHA-256 digest, unpacks it into
+`~/.local/share/cueverge/agent/versions/<digest>/`, runs an import self-check, and
+copies `launcher.py` beside it. Set `CUEVERGE_AGENT_HOME` to use another
+directory, or pass `--bundle FILE` to install a bundle copied by hand. The
+supplied service template already runs the launcher with
+`uv run --no-project --python 3.12`; a host installed from an older template
+needs that `ExecStart` line, then `systemctl --user daemon-reload` and a restart.
+`uv` provisions Python 3.12 when the system Python differs.
+
+From then on, a global administrator updates the agent from **Installation >
+Devices > Connect and manage devices > Agent software updates** (or MCP
+`update_device_agents`) while the controller is in maintenance mode with no
+scene playing. The agent stops its player, installs the controller's bundle and
+restarts into it. If the new version exits or can't reach the controller within
+180 seconds, the launcher restarts the previous version and the device shows
+**Update rolled back** with the reason. `~/.local/share/cueverge/agent/state.json`
+records the current, previous and trial versions. Updates don't change mpv,
+Python or the operating system; keep those current with the distribution.
 
 ### Keeping the host awake
 
@@ -321,6 +356,8 @@ journalctl -k --since today
 - [ ] Run the agent manually from a GNOME terminal.
 - [ ] Verify prepare, play, pause, seek, resume, stop, and completion.
 - [ ] Install the user service and XDG autostart templates.
+- [ ] Run `cueverge-agent-install` and confirm the device's agent updates show
+      **Up to date**.
 - [ ] Reboot and confirm exactly one media-agent process starts.
 - [ ] Confirm repeated agent restarts retain exactly one mpv process; startup
       adopts a responsive player already serving the configured IPC socket.

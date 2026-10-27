@@ -28,6 +28,8 @@ dependencies = [
 cueverge-media-agent = "cueverge.media_agent.app:main"
 cueverge-device-enroll = "cueverge.media_agent.device_enrollment:main"
 cueverge-device-rotate = "cueverge.media_agent.device_rotation:main"
+cueverge-agent-install = "cueverge.media_agent.agent_install:main"
+cueverge-agent-bundle-build = "cueverge.agent_bundle:main"
 cueverge-gui-hash-password = "cueverge.gui.passwords:main"
 
 [dependency-groups]

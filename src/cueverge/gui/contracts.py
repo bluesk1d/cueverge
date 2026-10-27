@@ -30,6 +30,7 @@ from cueverge.core.models import (
 from cueverge.gui.ambient_lighting import validate_ambient_lighting
 from cueverge.gui.spatial_effects import SpatialRipple
 from cueverge.protocol.device_v2 import (
+    AgentPlatform,
     DeviceCapabilityDocument,
     DeviceKind,
     KeepAwakeStatus,
@@ -1219,6 +1220,7 @@ McpScopeValue = Literal[
     "input_config",
     "installation_edit",
     "photo_replace",
+    "device_update",
 ]
 
 
@@ -2770,6 +2772,57 @@ class MaintenancePreviewResponse(GuiModel):
     expires_at: str
 
 
+AgentUpdateState = Literal[
+    "current",
+    "available",
+    "updating",
+    "failed",
+    "rolled_back",
+    "unmanaged",
+    "unsupported_platform",
+    "no_bundle",
+    "disconnected",
+]
+UPDATABLE_AGENT_STATES: frozenset[str] = frozenset({"available", "failed", "rolled_back"})
+
+
+class AgentBundleResponse(GuiModel):
+    platform: AgentPlatform
+    version: str
+    build: str
+    digest_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    size_bytes: int = Field(gt=0)
+
+
+class DeviceAgentUpdateResponse(GuiModel):
+    """Running media agent software compared with the bundle this controller offers."""
+
+    device_id: str
+    display_name: str
+    connected: bool
+    state: AgentUpdateState
+    detail: str | None = None
+    managed: bool = False
+    platform: AgentPlatform | None = None
+    running_version: str | None = None
+    running_digest: str | None = None
+    available: AgentBundleResponse | None = None
+
+
+class AgentUpdatesResponse(GuiModel):
+    bundles: tuple[AgentBundleResponse, ...]
+    bundle_faults: tuple[str, ...] = ()
+    devices: tuple[DeviceAgentUpdateResponse, ...]
+    requires: str = "maintenance mode with no scene playing; global administrator"
+
+
+class StartAgentUpdatesRequest(GuiModel):
+    device_ids: tuple[str, ...] | None = Field(
+        default=None,
+        description="Devices to update; omit to update every device with an update available.",
+    )
+
+
 class TopologyNodeResponse(GuiModel):
     id: str
     label: str
@@ -2812,6 +2865,7 @@ class TopologyNodeResponse(GuiModel):
         default=None,
         description="Host sleep prevention set on the media agent; None when off or unreported.",
     )
+    agent_update: DeviceAgentUpdateResponse | None = None
     capability_document: DeviceCapabilityDocument | None = None
     certificate_expires_at: str | None = None
     storage_total_bytes: int | None = Field(default=None, gt=0)

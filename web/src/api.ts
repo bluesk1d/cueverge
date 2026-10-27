@@ -76,7 +76,8 @@ export type McpScope =
   | "live_operation"
   | "input_config"
   | "installation_edit"
-  | "photo_replace";
+  | "photo_replace"
+  | "device_update";
 
 export interface InputSourceSettings {
   enabled: boolean;
@@ -1599,6 +1600,7 @@ export interface TopologyNode {
   player_control?: boolean | null;
   player_state?: PlayerState | null;
   keep_awake?: KeepAwakeStatus | null;
+  agent_update?: DeviceAgentUpdate | null;
   capability_document?: DeviceCapabilityDocument | null;
   certificate_expires_at?: string | null;
   storage_total_bytes?: number | null;
@@ -2981,6 +2983,63 @@ export interface KeepAwakeStatus {
   mode: "system" | "display";
   active: boolean;
   detail?: string | null;
+}
+
+export type AgentPlatform = "linux_x86_64" | "linux_aarch64" | "windows_amd64";
+
+export type AgentUpdateState =
+  | "current"
+  | "available"
+  | "updating"
+  | "failed"
+  | "rolled_back"
+  | "unmanaged"
+  | "unsupported_platform"
+  | "no_bundle"
+  | "disconnected";
+
+export interface AgentBundle {
+  platform: AgentPlatform;
+  version: string;
+  build: string;
+  digest_sha256: string;
+  size_bytes: number;
+}
+
+/** Running media agent software compared with the bundle this controller offers. */
+export interface DeviceAgentUpdate {
+  device_id: string;
+  display_name: string;
+  connected: boolean;
+  state: AgentUpdateState;
+  detail?: string | null;
+  managed: boolean;
+  platform?: AgentPlatform | null;
+  running_version?: string | null;
+  running_digest?: string | null;
+  available?: AgentBundle | null;
+}
+
+export interface AgentUpdates {
+  bundles: AgentBundle[];
+  bundle_faults: string[];
+  devices: DeviceAgentUpdate[];
+  requires: string;
+}
+
+export const UPDATABLE_AGENT_STATES: AgentUpdateState[] = ["available", "failed", "rolled_back"];
+
+export async function getAgentUpdates(): Promise<AgentUpdates> {
+  return request("/api/gui/v1/devices/agent-updates");
+}
+
+/** Start agent updates; omit deviceIds to update every device with an update available. */
+export async function startAgentUpdates(deviceIds?: string[]): Promise<AgentUpdates> {
+  return request("/api/gui/v1/devices/agent-updates", {
+    method: "POST",
+    headers: mutationHeaders(),
+    body: JSON.stringify(deviceIds ? { device_ids: deviceIds } : {}),
+  });
 }
 
 export async function controlDevicePlayer(

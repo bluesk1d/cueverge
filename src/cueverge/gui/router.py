@@ -25,6 +25,7 @@ from pydantic import JsonValue, ValidationError
 
 from cueverge.controller.runtime import ShowMode
 from cueverge.core.loader import ShowPackageError, load_show_package
+from cueverge.gui.agent_updates import AgentUpdateError, AgentUpdatePreconditionError
 from cueverge.gui.apply import ApplyError, ApplyRequest
 from cueverge.gui.artifact_deployment import ArtifactDeploymentError
 from cueverge.gui.artifact_preview import (
@@ -54,6 +55,7 @@ from cueverge.gui.contracts import (
     ActivationRequest,
     ActivityEventResponse,
     AddSceneOutputRequest,
+    AgentUpdatesResponse,
     AmbientLightingPreviewRequest,
     ApplyScenePresetRequest,
     ArtifactDeploymentResponse,
@@ -194,6 +196,7 @@ from cueverge.gui.contracts import (
     StageMapResponse,
     StageReferenceRequest,
     StageRegionResponse,
+    StartAgentUpdatesRequest,
     StartOutputTestRequest,
     StartTimingCalibrationRequest,
     SyncAdmissionResponse,
@@ -5395,6 +5398,56 @@ def create_gui_router(services: GuiServices) -> APIRouter:
         )
         return DevicePlayerResponse(device_id=device_id, player_state=state)
 
+    @router.get(
+        "/devices/agent-updates",
+        response_model=AgentUpdatesResponse,
+        dependencies=[reader],
+    )
+    def agent_updates() -> AgentUpdatesResponse:
+        return services.agent_updates.overview()
+
+    @router.post(
+        "/devices/agent-updates",
+        response_model=AgentUpdatesResponse,
+    )
+    async def start_agent_updates(
+        body: StartAgentUpdatesRequest,
+        identity: Annotated[AuthenticatedSession, administrator_mutation],
+    ) -> AgentUpdatesResponse:
+        occurred_at = _now_iso()
+        try:
+            started = await services.agent_updates.start(body.device_ids)
+        except AgentUpdateError as error:
+            services.repository.append_audit(
+                actor=identity.username,
+                action="device.agent_update.start",
+                target=",".join(body.device_ids or ("all",)),
+                result="error",
+                occurred_at=occurred_at,
+                authorization_context={"role": identity.role.value, "message": str(error)},
+            )
+            code = (
+                "agent_update_requires_idle_maintenance"
+                if isinstance(error, AgentUpdatePreconditionError)
+                else "agent_update_unavailable"
+            )
+            raise HTTPException(
+                status_code=409, detail={"code": code, "message": str(error)}
+            ) from error
+        for status in started:
+            services.repository.append_audit(
+                actor=identity.username,
+                action="device.agent_update.start",
+                target=status.device_id,
+                result="success",
+                occurred_at=occurred_at,
+                authorization_context={
+                    "role": identity.role.value,
+                    "bundle_digest": status.available.digest_sha256 if status.available else None,
+                },
+            )
+        return services.agent_updates.overview()
+
     @router.put(
         "/devices/{device_id}/enrollment-state",
         response_model=DeviceEnrollmentStateResponse,
@@ -5788,6 +5841,9 @@ def create_gui_router(services: GuiServices) -> APIRouter:
             for device in services.repository.list_devices()
             if (player := services.device_sessions.player_status(UUID(device.id))) is not None
         }
+        agent_update_by_device = {
+            status.device_id: status for status in services.agent_updates.statuses()
+        }
         observed_at_ms = time.time_ns() // 1_000_000
         nodes.extend(
             TopologyNodeResponse(
@@ -5911,6 +5967,7 @@ def create_gui_router(services: GuiServices) -> APIRouter:
                     player_by_device[device.id][1] if device.id in player_by_device else None
                 ),
                 keep_awake=services.device_sessions.keep_awake(UUID(device.id)),
+                agent_update=agent_update_by_device.get(device.id),
                 last_seen_age_ms=(
                     max(
                         0,

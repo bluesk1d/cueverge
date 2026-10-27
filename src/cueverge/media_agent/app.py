@@ -1,11 +1,14 @@
 import asyncio
 import logging
+import sys
 from contextlib import suppress
 
 from cueverge.config import MediaAgentConfig
+from cueverge.media_agent.agent_update import AgentInstallation, AgentRestartRequested
 from cueverge.media_agent.client import MediaAgentClient
 from cueverge.media_agent.device_presence import DevicePresenceClient
 from cueverge.media_agent.keep_awake import KeepAwake
+from cueverge.media_agent.launcher import RESTART_EXIT_CODE
 from cueverge.media_agent.mpv import MpvProcess, create_mpv_transport
 from cueverge.media_agent.player_host import PlayerHost
 
@@ -36,6 +39,7 @@ async def run() -> None:
             media_client=media_client,
             player_host=host,
             keep_awake=keep_awake,
+            installation=AgentInstallation.from_environment(),
         ).run_forever()
     finally:
         keep_awake_task.cancel()
@@ -50,5 +54,13 @@ def main() -> None:
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
-    with suppress(KeyboardInterrupt):
-        asyncio.run(run())
+    try:
+        with suppress(KeyboardInterrupt):
+            asyncio.run(run())
+    except AgentRestartRequested:
+        logging.getLogger(__name__).info("restarting into the updated agent")
+        sys.exit(RESTART_EXIT_CODE)
+
+
+if __name__ == "__main__":
+    main()

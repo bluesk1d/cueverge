@@ -4,12 +4,16 @@ import ssl
 import uvicorn
 
 from cueverge.controller.runtime import ControllerRuntime
+from cueverge.gui.agent_updates import AgentBundleCatalog
 from cueverge.gui.asset_upload import AssetUploadService
 from cueverge.gui.config import GuiConfig
 from cueverge.gui.device_app import create_device_app
 from cueverge.gui.device_ca import DeviceCertificateAuthority
 from cueverge.gui.device_session import DeviceSessionRegistry
-from cueverge.gui.device_uvicorn import PeerCertificateWebSocketProtocol
+from cueverge.gui.device_uvicorn import (
+    PeerCertificateHttpProtocol,
+    PeerCertificateWebSocketProtocol,
+)
 from cueverge.gui.repository import GuiRepository
 
 
@@ -25,6 +29,7 @@ class EmbeddedDeviceListener:
         repository: GuiRepository,
         sessions: DeviceSessionRegistry,
         runtime: ControllerRuntime,
+        agent_bundles: AgentBundleCatalog | None = None,
     ) -> None:
         if not config.device_listener_enabled:
             raise ValueError("embedded device listener requires an enabled listener")
@@ -39,10 +44,16 @@ class EmbeddedDeviceListener:
         self.server = _EmbeddedServer(
             uvicorn.Config(
                 create_device_app(
-                    repository, sessions, runtime, authority, AssetUploadService(config, repository)
+                    repository,
+                    sessions,
+                    runtime,
+                    authority,
+                    AssetUploadService(config, repository),
+                    agent_bundles,
                 ),
                 host=config.device_listener_host,
                 port=config.device_listener_port,
+                http=PeerCertificateHttpProtocol,
                 ws=PeerCertificateWebSocketProtocol,
                 lifespan="off",
                 log_level="info",

@@ -1,5 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { connectionStatus, keepAwakeLabel, keepAwakeWarning } from "../status";
+import {
+  agentSoftwareLabel,
+  agentUpdateLabel,
+  connectionStatus,
+  keepAwakeLabel,
+  keepAwakeWarning,
+} from "../status";
 import { InputSourcePanel } from "./InputSourcePanel";
 import { InstallationObjects } from "./InstallationObjects";
 import type { CSSProperties } from "react";
@@ -20,6 +26,7 @@ import {
 } from "lucide-react";
 
 import {
+  AgentUpdates,
   AssetRecord,
   assetArtifactUrl,
   deleteInstallationGeometry,
@@ -61,6 +68,9 @@ import {
   Session,
   setDeviceConnectionPolicy,
   controlDevicePlayer,
+  getAgentUpdates,
+  startAgentUpdates,
+  UPDATABLE_AGENT_STATES,
   setDeviceEnrollmentState,
   setResourceAssignment,
   testDeviceConnection,
@@ -3810,6 +3820,7 @@ function DeviceManagement({
             <p className="muted">Device enrollment is disabled on this controller. The host administrator must enable verified TLS enrollment and the authenticated device listener before pairing.</p>
           )}
         </section></details>}
+        {canAdminister && <AgentSoftwareUpdates onRefresh={onRefresh} />}
         {canAdminister && <details><summary>Connection expectations</summary><section aria-labelledby="connection-policy-title">
           <h3 id="connection-policy-title">Connection expectations</h3>
           <div className="policy-list">
@@ -3986,6 +3997,111 @@ function ConnectionTest({ node }: { node: TopologyNode }) {
       )}
       {error && <p role="alert">Connection test could not be completed.</p>}
     </div>
+  );
+}
+
+function AgentSoftwareUpdates({ onRefresh }: { onRefresh?: () => Promise<void> | void }) {
+  const [updates, setUpdates] = useState<AgentUpdates | null>(null);
+  const [confirming, setConfirming] = useState<string[] | "all" | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const updating = updates?.devices.some((device) => device.state === "updating") ?? false;
+
+  const load = useCallback(async () => {
+    try {
+      setUpdates(await getAgentUpdates());
+    } catch {
+      setError("Agent update status could not be loaded.");
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  useEffect(() => {
+    if (!updating) return;
+    const timer = window.setInterval(() => {
+      void load();
+      void onRefresh?.();
+    }, 3_000);
+    return () => window.clearInterval(timer);
+  }, [updating, load, onRefresh]);
+
+  const updatable = updates?.devices.filter((device) => UPDATABLE_AGENT_STATES.includes(device.state)) ?? [];
+
+  async function start(target: string[] | "all") {
+    setBusy(true);
+    setError(null);
+    try {
+      setUpdates(await startAgentUpdates(target === "all" ? undefined : target));
+      setConfirming(null);
+      await onRefresh?.();
+    } catch (failure) {
+      setError(failure instanceof Error ? failure.message : "Agent updates could not start.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const confirmCount = confirming === "all" ? updatable.length : confirming?.length ?? 0;
+  return (
+    <details className="device-management__wide"><summary>Agent software updates{updatable.length ? ` (${updatable.length} available)` : ""}</summary>
+      <section className="device-management__wide" aria-labelledby="agent-updates-title">
+        <h3 id="agent-updates-title">Agent software updates</h3>
+        <p className="muted">
+          Media hosts install the agent version bundled with this controller. Switch to
+          maintenance mode and stop the show first: each agent closes its player, restarts,
+          and rolls back automatically if the new version can't reconnect.
+        </p>
+        {updates?.bundles.length ? (
+          <p>
+            Offered: {updates.bundles.map((bundle) => `${bundle.platform} ${bundle.version} · ${bundle.build}`).join("; ")}
+          </p>
+        ) : updates ? (
+          <p className="muted">This controller has no agent bundles. Set CUEVERGE_AGENT_BUNDLE_ROOT or use the controller image.</p>
+        ) : null}
+        {updates?.bundle_faults.map((fault) => <p role="alert" key={fault}>{fault}</p>)}
+        <div className="policy-list">
+          {updates?.devices.map((device) => (
+            <div className="policy-row" key={device.device_id}>
+              <div>
+                <strong>{device.display_name}</strong>
+                <small>{agentSoftwareLabel(device)} · {agentUpdateLabel(device)}</small>
+              </div>
+              {UPDATABLE_AGENT_STATES.includes(device.state) && (
+                <button
+                  type="button"
+                  aria-label={`Update agent on ${device.display_name}`}
+                  disabled={busy || confirming !== null}
+                  onClick={() => setConfirming([device.device_id])}
+                >
+                  Update agent
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+        {updatable.length > 1 && (
+          <button type="button" disabled={busy || confirming !== null} onClick={() => setConfirming("all")}>
+            Update all agents ({updatable.length})
+          </button>
+        )}
+        {confirming && (
+          <div role="group" aria-label="Confirm agent update">
+            <p>
+              Update {confirmCount} {confirmCount === 1 ? "agent" : "agents"}? Their players stop and
+              the agents restart. Projectors stay dark until the show starts again.
+            </p>
+            <button type="button" className="primary-button" disabled={busy} onClick={() => void start(confirming)}>
+              {busy ? "Starting…" : "Install and restart"}
+            </button>
+            <button type="button" disabled={busy} onClick={() => setConfirming(null)}>Cancel</button>
+          </div>
+        )}
+        {error && <p role="alert">{error}</p>}
+      </section>
+    </details>
   );
 }
 
@@ -4266,6 +4382,9 @@ function NodeCard({
       {(node.enrollment === "suspended" || node.enrollment === "revoked") && <small>{enrollmentLabel(node)}</small>}
       {node.diagnostic && <p role="status">{node.diagnostic}</p>}
       {sleepWarning && <p role="alert">{sleepWarning}</p>}
+      {node.agent_update && ["available", "updating", "failed", "rolled_back"].includes(node.agent_update.state) && (
+        <p role="status">{agentUpdateLabel(node.agent_update)}</p>
+      )}
       {canControlPlayer && (
         <button
           type="button"
@@ -4319,7 +4438,11 @@ function NodeCard({
           />
           <Detail label="Software version" value={node.software_version ?? "Not reported"} />
           {node.kind === "direct_media_agent" && (
-            <Detail label="Keep awake" value={keepAwakeLabel(node)} />
+            <>
+              <Detail label="Keep awake" value={keepAwakeLabel(node)} />
+              <Detail label="Agent software" value={agentSoftwareLabel(node.agent_update)} />
+              <Detail label="Agent updates" value={agentUpdateLabel(node.agent_update)} />
+            </>
           )}
           <Detail
             label="Media formats"

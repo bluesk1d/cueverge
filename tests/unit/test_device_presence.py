@@ -5,6 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from uuid import UUID, uuid4
 
+from cueverge.media_agent.agent_update import AgentInstallation
 from cueverge.media_agent.device_enrollment import StoredDeviceIdentity
 from cueverge.media_agent.device_presence import (
     DevicePresenceClient,
@@ -122,6 +123,7 @@ async def _presence_scenario() -> None:
     client.player_host = None
     keep_awake = KeepAwakeStatus(mode="display", active=True)
     client.keep_awake = SimpleNamespace(status=keep_awake)  # type: ignore[assignment]
+    client.installation = AgentInstallation(None, None)
     welcome = DeviceWelcome(
         device_id=DEVICE_ID,
         controller_epoch=uuid4(),
@@ -137,6 +139,7 @@ async def _presence_scenario() -> None:
     assert hello.capabilities == _capabilities()
     assert hello.media_features == ("seamless_transition", "repeat_count")
     assert hello.keep_awake == keep_awake
+    assert hello.agent_release is not None and not hello.agent_release.managed
     assert client.media_client.agent_session_id == str(hello.device_session_id)
     assert client.media_client.controller_epoch == str(welcome.controller_epoch)
 
@@ -148,3 +151,53 @@ def _capabilities() -> DeviceCapabilityDocument:
         software_version="0.1.0",
         capabilities=(MediaPlaybackCapability(codecs=("h264",), containers=("mp4",)),),
     )
+
+
+def test_failed_agent_update_reports_error_and_restores_the_player() -> None:
+    from cueverge.media_agent.agent_update import AgentUpdateError
+    from cueverge.protocol.device_v2 import DeviceAgentUpdateCommand
+
+    calls: list[str] = []
+
+    class Host:
+        state = "ready"
+
+        async def stop_player(self) -> str:
+            calls.append("stop")
+            return "stopped"
+
+        async def start(self) -> str:
+            calls.append("start")
+            return "ready"
+
+    class FailingInstallation:
+        managed = True
+
+        def install(self, command: object, context: object) -> None:
+            raise AgentUpdateError("disk full")
+
+    client = object.__new__(DevicePresenceClient)
+    client.player_host = Host()  # type: ignore[assignment]
+    client.installation = FailingInstallation()  # type: ignore[assignment]
+    client.ssl_context = None  # type: ignore[assignment]
+    client.media_client = SimpleNamespace(_clear_playback=lambda: calls.append("clear"))
+    welcome = DeviceWelcome(
+        device_id=DEVICE_ID,
+        controller_epoch=uuid4(),
+        heartbeat_interval_ms=1,
+        heartbeat_timeout_ms=100,
+    )
+    session_id = uuid4()
+    command = DeviceAgentUpdateCommand(
+        request_id=uuid4(),
+        device_session_id=session_id,
+        controller_epoch=welcome.controller_epoch,
+        version="0.2.0",
+        platform="linux_x86_64",
+        digest_sha256="c" * 64,
+        size_bytes=10,
+        download_url="https://controller:7443/api/device/v2/agent-bundles/" + "c" * 64,
+    )
+    ack = asyncio.run(client._update_agent(command, session_id, welcome))
+    assert (ack.status, ack.error) == ("error", "disk full")
+    assert calls == ["clear", "stop", "start"]

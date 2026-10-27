@@ -15,11 +15,19 @@ from pydantic import AnyUrl, ValidationError
 from websockets.asyncio.client import ClientConnection, connect
 from websockets.exceptions import WebSocketException
 
+from cueverge.media_agent.agent_update import (
+    AgentInstallation,
+    AgentRestartRequested,
+    AgentUpdateError,
+)
 from cueverge.media_agent.client import MediaAgentClient
 from cueverge.media_agent.device_enrollment import StoredDeviceIdentity
 from cueverge.media_agent.keep_awake import KeepAwake
 from cueverge.media_agent.player_host import PlayerHost
 from cueverge.protocol.device_v2 import (
+    AgentRelease,
+    DeviceAgentUpdateAck,
+    DeviceAgentUpdateCommand,
     DeviceArtifactActivateAck,
     DeviceArtifactActivateCommand,
     DeviceArtifactCleanupAck,
@@ -40,6 +48,7 @@ from cueverge.protocol.device_v2 import (
     DeviceTimingReport,
     DeviceWelcome,
     KeepAwakeStatus,
+    MediaFeature,
     PlayerState,
 )
 from cueverge.protocol.models import AgentCommand
@@ -71,10 +80,12 @@ class DevicePresenceClient:
         media_client: MediaAgentClient,
         player_host: PlayerHost | None = None,
         keep_awake: KeepAwake | None = None,
+        installation: AgentInstallation | None = None,
     ) -> None:
         self.transport_url = transport_url
         self.player_host = player_host
         self.keep_awake = keep_awake
+        self.installation = installation
         self.credential_root = credential_root
         self.reconnect_delay_ms = reconnect_delay_ms
         self.media_client = media_client
@@ -120,9 +131,10 @@ class DevicePresenceClient:
             device_id=self.identity.device_id,
             device_session_id=session_id,
             capabilities=self.identity.capabilities,
-            media_features=self.media_client.media_features,
+            media_features=self._media_features(),
             player_state=self._player_state(),
             keep_awake=self._keep_awake(),
+            agent_release=self._agent_release(),
         )
         await websocket.send(hello.model_dump_json())
         welcome = DeviceWelcome.model_validate_json(await websocket.recv())
@@ -130,6 +142,8 @@ class DevicePresenceClient:
             raise DevicePresenceError("controller welcomed a different device identity")
         self.media_client.agent_session_id = str(session_id)
         self.media_client.controller_epoch = str(welcome.controller_epoch)
+        if self.installation is not None:
+            await asyncio.to_thread(self.installation.confirm)
         if welcome.reconciliation == "stop":
             await self.media_client.player.stop()
             self.media_client._clear_playback()
@@ -285,6 +299,14 @@ class DevicePresenceClient:
                 )
                 async with send_lock:
                     await websocket.send(cleanup_ack.model_dump_json())
+            elif message_type == "device.agent.update":
+                update_command = DeviceAgentUpdateCommand.model_validate(message)
+                _validate_deployment_command(update_command, session_id, welcome)
+                update_ack = await self._update_agent(update_command, session_id, welcome)
+                async with send_lock:
+                    await websocket.send(update_ack.model_dump_json())
+                if update_ack.status == "restarting":
+                    raise AgentRestartRequested(update_command.digest_sha256)
             else:
                 raise DevicePresenceError(f"unsupported controller message: {message_type}")
 
@@ -436,6 +458,47 @@ class DevicePresenceClient:
     def _keep_awake(self) -> KeepAwakeStatus | None:
         return self.keep_awake.status if self.keep_awake is not None else None
 
+    def _media_features(self) -> tuple[MediaFeature, ...]:
+        features = tuple(self.media_client.media_features)
+        if self.installation is not None and self.installation.managed:
+            features += ("agent_update",)
+        return features
+
+    def _agent_release(self) -> AgentRelease | None:
+        return self.installation.release() if self.installation is not None else None
+
+    async def _update_agent(
+        self,
+        command: DeviceAgentUpdateCommand,
+        session_id: UUID,
+        welcome: DeviceWelcome,
+    ) -> DeviceAgentUpdateAck:
+        error: str | None = None
+        if self.installation is None:
+            error = "this agent can't install updates"
+        else:
+            host = self.player_host
+            was_running = host is not None and host.state == "ready"
+            if host is not None:
+                # Free the projector and host memory before unpacking and self-checking.
+                self.media_client._clear_playback()
+                await host.stop_player()
+            try:
+                await asyncio.to_thread(self.installation.install, command, self.ssl_context)
+            except (AgentUpdateError, OSError, ValueError) as failure:
+                error = str(failure)[:500]
+                LOGGER.error("agent update failed: %s", error)
+                if host is not None and was_running:
+                    await host.start()
+        return DeviceAgentUpdateAck(
+            request_id=command.request_id,
+            device_session_id=session_id,
+            controller_epoch=welcome.controller_epoch,
+            digest_sha256=command.digest_sha256,
+            status="error" if error else "restarting",
+            error=error,
+        )
+
     async def _control_player(
         self,
         command: DevicePlayerCommand,
@@ -484,6 +547,7 @@ class DevicePresenceClient:
                 device_unix_ms=sent_unix_ms,
                 player_state=self._player_state(),
                 keep_awake=self._keep_awake(),
+                agent_release=self._agent_release(),
             )
             self._heartbeat_sent[sequence] = (sent_monotonic_ms, sent_unix_ms)
             async with send_lock:
@@ -706,6 +770,7 @@ def _validate_deployment_command(
         | DeviceArtifactActivateCommand
         | DeviceArtifactCleanupCommand
         | DevicePlayerCommand
+        | DeviceAgentUpdateCommand
     ),
     session_id: UUID,
     welcome: DeviceWelcome,

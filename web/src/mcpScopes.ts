@@ -12,4 +12,5 @@ export const optionalScopes: { value: McpScope; label: string }[] = [
   { value: "input_config", label: "Configure installation camera connections (administrator; real events can trigger shows)" },
   { value: "installation_edit", label: "Edit installation photo descriptions (installation author; does not grant device control)" },
   { value: "photo_replace", label: "Replace reference photos using this project's image assets (keeps geometry; no device control)" },
+  { value: "device_update", label: "Install controller agent updates on media hosts (administrator; restarts agents in maintenance)" },
 ];

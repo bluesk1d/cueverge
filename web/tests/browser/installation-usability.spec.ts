@@ -26,9 +26,31 @@ async function setup(page: Page, deviceFault = false, noPhoto = false) {
     descriptions: [] as Record<string, unknown>[], geometryMethods: [] as string[],
     uploads: [] as Record<string, string>[], failSurfaceOnce: false,
     replacements: [] as Record<string, string>[],
+    agentUpdateRequests: [] as unknown[],
+    agentUpdates: {
+      bundles: [{ platform: "linux_x86_64", version: "0.2.0", build: "rev42", digest_sha256: "c".repeat(64), size_bytes: 75_000_000 }],
+      bundle_faults: [],
+      requires: "maintenance mode with no scene playing; global administrator",
+      devices: [{
+        device_id: "demo-left", display_name: "media-client-left", connected: true, state: "available",
+        managed: true, platform: "linux_x86_64", running_version: "0.1.0", running_digest: "d".repeat(64),
+        available: { platform: "linux_x86_64", version: "0.2.0", build: "rev42", digest_sha256: "c".repeat(64), size_bytes: 75_000_000 },
+      }],
+    } as Record<string, unknown>,
   };
   await page.route("**/api/gui/v1/**", async (route) => {
     const request = route.request(), path = new URL(request.url()).pathname;
+    if (path.endsWith("/devices/agent-updates")) {
+      if (request.method() === "POST") {
+        if (request.headers()["x-csrf-token"] !== "setup-csrf") return route.fulfill({ status: 403 });
+        state.agentUpdateRequests.push(request.postDataJSON());
+        const devices = (state.agentUpdates.devices as Record<string, unknown>[]).map((device) => ({
+          ...device, state: "updating", detail: "Downloading and installing.",
+        }));
+        state.agentUpdates = { ...state.agentUpdates, devices };
+      }
+      return route.fulfill({ json: state.agentUpdates });
+    }
     if (path.endsWith("/auth/session")) return route.fulfill({ json: { username: "admin", role: "administrator" } });
     if (path.endsWith("/installation")) return route.fulfill({ json: demoInstallation });
     if (path.endsWith("/installations")) return route.fulfill({ json: demoInstallations });
@@ -255,9 +277,26 @@ test("device cards keep telemetry contextual while failures stay visible", async
   await expect(page.getByRole("dialog", { name: "Device details: media-client-left", exact: true })).toBeVisible();
   await expect(page.getByText("400 GB free of 500 GB", { exact: true })).toBeVisible();
   await expect(page.getByText("Requested (display) but not active", { exact: true })).toBeVisible();
+  await expect(page.getByText("Agent software", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Close", exact: true }).click();
   await page.getByRole("button", { name: "Add a device", exact: true }).click();
   await expect(page.getByRole("textbox", { name: "Capability document", exact: true })).toBeHidden();
+});
+
+test("administrators see agent updates and confirm before installing", async ({ page }) => {
+  const state = await setup(page);
+  await page.getByRole("group", { name: "Installation workspace", exact: true }).getByRole("button", { name: "Devices", exact: true }).click();
+  await page.getByText("Agent software updates (1 available)", { exact: true }).click();
+  await expect(page.getByText("Offered: linux_x86_64 0.2.0 · rev42", { exact: true })).toBeVisible();
+  await expect(page.getByText(`0.1.0 (${"d".repeat(12)}) · Update available (0.2.0 · rev42)`, { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Update agent on media-client-left", exact: true }).click();
+  const confirm = page.getByRole("group", { name: "Confirm agent update", exact: true });
+  await expect(confirm.getByText(/Update 1 agent\? Their players stop/)).toBeVisible();
+  expect(state.agentUpdateRequests).toEqual([]);
+  await confirm.getByRole("button", { name: "Install and restart", exact: true }).click();
+  await expect(page.getByText(`0.1.0 (${"d".repeat(12)}) · Updating: Downloading and installing.`, { exact: true })).toBeVisible();
+  expect(state.agentUpdateRequests).toEqual([{ device_ids: ["demo-left"] }]);
+  await expect(page.getByRole("group", { name: "Confirm agent update", exact: true })).toHaveCount(0);
 });
 
 test("compact setup fits a phone and the photo editor has accessible controls", async ({ page }) => {

@@ -1,4 +1,4 @@
-import type { RuntimeStatus, TopologyNode } from "./api";
+import type { DeviceAgentUpdate, RuntimeStatus, TopologyNode } from "./api";
 import type { StatusTone } from "./components/ui";
 
 export const STATUS_REFRESH_MS = 2000;
@@ -39,6 +39,30 @@ export function sceneLabel(runtime: RuntimeStatus | null, sceneId: string | null
 export function loadedShowName(runtime: RuntimeStatus | null): string | null {
   const loaded = runtime?.loaded_catalog;
   return loaded?.state === "loaded" ? loaded.project_name || null : null;
+}
+
+/** Short version label: "0.1.0 · build 20261027 (3f2a1b9c0d1e)". */
+export function agentSoftwareLabel(update: DeviceAgentUpdate | null | undefined): string {
+  if (!update?.running_version) return "Not reported";
+  const digest = update.running_digest ? ` (${update.running_digest.slice(0, 12)})` : " (source checkout)";
+  return `${update.running_version}${digest}`;
+}
+
+/** Plain-language agent update state with its reason when there is one. */
+export function agentUpdateLabel(update: DeviceAgentUpdate | null | undefined): string {
+  if (!update) return "Not reported";
+  const label = {
+    current: "Up to date",
+    available: `Update available${update.available ? ` (${update.available.version} · ${update.available.build})` : ""}`,
+    updating: "Updating",
+    failed: "Update failed",
+    rolled_back: "Update rolled back",
+    unmanaged: "Manual updates only",
+    unsupported_platform: "No updates for this platform",
+    no_bundle: "No update bundle for this platform",
+    disconnected: "Not reported while disconnected",
+  }[update.state];
+  return update.detail ? `${label}: ${update.detail}` : label;
 }
 
 /** Device-details text for a media host's keep-awake option. */

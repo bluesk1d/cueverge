@@ -18,6 +18,7 @@ from cueverge.controller.runtime import (
 from cueverge.core.encounter import EventOutcome, ObservedEventOutcome
 from cueverge.core.events import ExternalEvent
 from cueverge.core.models import SceneCatalog
+from cueverge.gui.agent_updates import AgentBundleCatalog, DeviceAgentUpdateService
 from cueverge.gui.apply import ApplyService
 from cueverge.gui.artifact_deployment import ArtifactDeploymentService
 from cueverge.gui.asset_upload import AssetUploadService
@@ -157,6 +158,7 @@ class GuiServices:
     input_source: InputSourceService
     apply: ApplyService
     device_players: DevicePlayerService
+    agent_updates: DeviceAgentUpdateService
     home_assistant: HomeAssistantBridge | None = None
 
     def runtime_snapshot(self) -> RuntimeStatusResponse:
@@ -448,6 +450,13 @@ class GuiServices:
             ),
             input_source=input_source,
             device_players=DevicePlayerService(repository, device_sessions, runtime),
+            agent_updates=DeviceAgentUpdateService(
+                repository,
+                device_sessions,
+                runtime,
+                AgentBundleCatalog(config.agent_bundle_root),
+                config.device_listener_public_url,
+            ),
             config=config,
             repository=repository,
             auth=AuthService(config, repository, collaboration),

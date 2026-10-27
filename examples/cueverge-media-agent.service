@@ -8,9 +8,12 @@ StartLimitIntervalSec=0
 
 [Service]
 Type=simple
-WorkingDirectory=%h/cueverge
+WorkingDirectory=%h
 EnvironmentFile=%h/.config/cueverge/media-agent.env
-ExecStart=%h/.local/bin/uv run --project %h/cueverge cueverge-media-agent
+# The launcher runs the controller-managed agent installed by cueverge-agent-install.
+# For an unmanaged source checkout use instead:
+# ExecStart=%h/.local/bin/uv run --project %h/cueverge cueverge-media-agent
+ExecStart=%h/.local/bin/uv run --no-project --python 3.12 %h/.local/share/cueverge/agent/launcher.py
 Restart=always
 RestartSec=5
 TimeoutStopSec=10

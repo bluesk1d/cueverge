@@ -49,7 +49,9 @@ class ProtocolRange(DeviceProtocolModel):
         return self
 
 
-MediaFeature = Literal["seamless_transition", "repeat_count", "player_control"]
+MediaFeature = Literal["seamless_transition", "repeat_count", "player_control", "agent_update"]
+AgentPlatform = Literal["linux_x86_64", "linux_aarch64", "windows_amd64"]
+SHA256_PATTERN = r"^[0-9a-f]{64}$"
 PlayerState = Literal["stopped", "starting", "ready", "stopping", "failed"]
 KeepAwakeMode = Literal["system", "display"]
 
@@ -310,6 +312,29 @@ class DeviceIdentity(DeviceProtocolModel):
         return self
 
 
+class AgentUpdateResult(DeviceProtocolModel):
+    """Outcome of the most recent controller-managed update, recorded by the agent launcher."""
+
+    bundle_digest: str = Field(pattern=SHA256_PATTERN)
+    outcome: Literal["installed", "rolled_back"]
+    detail: str | None = Field(default=None, max_length=500)
+    finished_at_unix_ms: int = Field(ge=0)
+
+
+class AgentRelease(DeviceProtocolModel):
+    """The agent software actually running, as opposed to the enrolled capability document.
+
+    bundle_digest is the SHA-256 of the controller-supplied bundle the agent runs, or null for
+    agents run from a source checkout. managed is true when a launcher can install updates.
+    """
+
+    version: str = Field(min_length=1, max_length=128)
+    platform: AgentPlatform | None = None
+    bundle_digest: str | None = Field(default=None, pattern=SHA256_PATTERN)
+    managed: bool = False
+    last_update: AgentUpdateResult | None = None
+
+
 class DeviceHello(DeviceProtocolModel):
     type: Literal["device.hello"] = "device.hello"
     protocol_version: Literal[2] = DEVICE_PROTOCOL_VERSION
@@ -333,6 +358,11 @@ class DeviceHello(DeviceProtocolModel):
         default=None,
         exclude_if=lambda value: value is None,
         description="Host sleep prevention; omitted when the agent's keep-awake option is off.",
+    )
+    agent_release: AgentRelease | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="Running agent software; reported by agents that advertise agent_update.",
     )
 
 
@@ -394,6 +424,54 @@ class DeviceHeartbeat(DeviceProtocolModel):
         default=None,
         exclude_if=lambda value: value is None,
     )
+    agent_release: AgentRelease | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
+
+
+class DeviceAgentUpdateCommand(DeviceProtocolModel):
+    """Install a controller-supplied agent bundle, then restart into it as a trial.
+
+    Sent only to agents that advertise agent_update. The device downloads download_url over
+    its mTLS identity and must verify size_bytes and digest_sha256 before installing.
+    """
+
+    type: Literal["device.agent.update"] = "device.agent.update"
+    protocol_version: Literal[2] = DEVICE_PROTOCOL_VERSION
+    request_id: UUID
+    device_session_id: UUID
+    controller_epoch: UUID
+    version: str = Field(min_length=1, max_length=128)
+    platform: AgentPlatform
+    digest_sha256: str = Field(pattern=SHA256_PATTERN)
+    size_bytes: int = Field(gt=0)
+    download_url: AnyUrl
+
+    @model_validator(mode="after")
+    def validate_download_url(self) -> "DeviceAgentUpdateCommand":
+        if self.download_url.scheme != "https":
+            raise ValueError("agent bundle download URL must use https")
+        return self
+
+
+class DeviceAgentUpdateAck(DeviceProtocolModel):
+    """restarting: installed and verified; the agent is about to exit into the new version."""
+
+    type: Literal["device.agent.update.ack"] = "device.agent.update.ack"
+    protocol_version: Literal[2] = DEVICE_PROTOCOL_VERSION
+    request_id: UUID
+    device_session_id: UUID
+    controller_epoch: UUID
+    digest_sha256: str = Field(pattern=SHA256_PATTERN)
+    status: Literal["restarting", "error"]
+    error: str | None = Field(default=None, max_length=500)
+
+    @model_validator(mode="after")
+    def validate_error(self) -> "DeviceAgentUpdateAck":
+        if (self.status == "error") != (self.error is not None):
+            raise ValueError("agent update error detail must match status")
+        return self
 
 
 class DeviceHeartbeatAck(DeviceProtocolModel):

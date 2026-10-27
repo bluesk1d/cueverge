@@ -293,6 +293,21 @@ requirements as `operate_loaded_show`, and is audited as
 stopped players that the loaded show needs, and fails with the device's reason
 if one can't start. `get_capabilities` describes this under `device_players`.
 
+`get_agent_updates` (read) lists each media host's running agent version, bundle
+digest and update state (`current`, `available`, `updating`, `failed`,
+`rolled_back`, `unmanaged`, `unsupported_platform`, `no_bundle`,
+`disconnected`) with the bundles this controller offers.
+`update_device_agents(device_ids=None, confirm_restart=True)` installs the
+controller's bundle on the listed devices, or on every device whose state is
+`available`, `failed` or `rolled_back`. It requires the explicit
+`device_update` scope (global administrators only), the runtime installation,
+and maintenance mode with no scene playing. It returns immediately; poll
+`get_agent_updates`. Agents restart, and the host launcher rolls back a version
+that can't reconnect within 180 seconds. Starts are audited as
+`mcp.device.agent_update.start`. The GUI equivalent is **Installation > Devices >
+Connect and manage devices > Agent software updates**; `get_capabilities`
+describes this under `agent_updates`.
+
 ### Photo-first installation setup
 
 The installation workspace separates **Photos & Layout**, **Devices**, and

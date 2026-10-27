@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import type { TopologyNode } from "./api";
-import { keepAwakeLabel, keepAwakeWarning } from "./status";
+import type { DeviceAgentUpdate } from "./api";
+import { agentSoftwareLabel, agentUpdateLabel, keepAwakeLabel, keepAwakeWarning } from "./status";
 
 function mediaHost(overrides: Partial<TopologyNode> = {}): TopologyNode {
   return {
@@ -47,5 +48,33 @@ describe("keep awake status", () => {
     const offline = { ...refused, connection: "disconnected" as const };
     expect(keepAwakeLabel(offline)).toBe("Not reported while disconnected");
     expect(keepAwakeWarning(offline)).toBeNull();
+  });
+});
+
+describe("agent update labels", () => {
+  const update: DeviceAgentUpdate = {
+    device_id: "left",
+    display_name: "Left",
+    connected: true,
+    state: "available",
+    managed: true,
+    running_version: "0.1.0",
+    running_digest: "a".repeat(64),
+    available: { platform: "linux_x86_64", version: "0.2.0", build: "rev42", digest_sha256: "b".repeat(64), size_bytes: 1 },
+  };
+
+  it("names the running build and what is offered", () => {
+    expect(agentSoftwareLabel(update)).toBe(`0.1.0 (${"a".repeat(12)})`);
+    expect(agentSoftwareLabel({ ...update, running_digest: null })).toBe("0.1.0 (source checkout)");
+    expect(agentSoftwareLabel(null)).toBe("Not reported");
+    expect(agentUpdateLabel(update)).toBe("Update available (0.2.0 · rev42)");
+  });
+
+  it("explains failures and hosts that need a one-time install", () => {
+    expect(agentUpdateLabel({ ...update, state: "rolled_back", detail: "Exited with code 1." })).toBe(
+      "Update rolled back: Exited with code 1.",
+    );
+    expect(agentUpdateLabel({ ...update, state: "unmanaged", managed: false })).toBe("Manual updates only");
+    expect(agentUpdateLabel(undefined)).toBe("Not reported");
   });
 });

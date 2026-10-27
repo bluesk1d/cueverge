@@ -595,6 +595,9 @@ Separately authorized `apply_saved_show` loads a verified saved catalog;
 operator/admin live permission, loaded-project matching and physical confirmation.
 `control_device_player` starts or stops a media host's player under the same
 conditions; `get_device_players` (read) lists player state.
+`update_device_agents` installs the controller's agent bundle on media hosts; it
+requires the separately opted-in, administrator-only `device_update` scope,
+maintenance mode with no scene playing and `confirm_restart=True`.
 Neither grants device enrollment or access administration.
 
 Global administrators can also issue installation-scoped MCP tokens under
@@ -680,6 +683,41 @@ candidate against the preserved state, and check readiness, login, projects,
 jobs, enrollment, and device reconnection. Repository migrations run during
 service creation; do not assume an older image can read an upgraded database.
 Recover an older version with its matching pre-upgrade snapshot when necessary.
+
+### Media agent updates
+
+The controller image includes an offline media agent bundle for `linux_x86_64`,
+`linux_aarch64` and `windows_amd64` hosts under `CUEVERGE_AGENT_BUNDLE_ROOT`
+(`/opt/cueverge/agent-bundles`). Docker build arguments `CUEVERGE_BUILD_LABEL`
+(shown to operators, for example a git revision) and `CUEVERGE_AGENT_PLATFORMS`
+control them. Source deployments build bundles with
+`uv run cueverge-agent-bundle-build --output DIR --build LABEL` and set
+`CUEVERGE_AGENT_BUNDLE_ROOT=DIR`. Bundle faults, such as two bundles for one
+platform, appear in the update panel.
+
+Prepare each media host once with `cueverge-agent-install` (see the
+[Linux](linux-media-agent.md#controller-managed-updates) and
+[Windows](windows-media-agent.md#controller-managed-updates) guides). After
+upgrading the controller:
+
+1. Confirm devices reconnect. Hosts showing **Update available** run an older
+   agent than this controller offers.
+2. Switch to maintenance mode and stop the show.
+3. In **Installation > Devices > Connect and manage devices > Agent software
+   updates**, update one host and confirm it returns **Up to date**, then use
+   **Update all agents**. MCP `get_agent_updates` and `update_device_agents`
+   (administrator-only `device_update` scope, `confirm_restart=True`) do the same.
+4. Investigate **Update failed** or **Update rolled back** before retrying. The
+   launcher restores the previous version on the host automatically; its log is
+   in the service journal or task output and `state.json` in the agent home.
+
+Starts are audited as `device.agent_update.start` (GUI) or
+`mcp.device.agent_update.start`, and each host's install outcome as
+`device.agent_update.install`. Hosts still run from a checkout show
+**Manual updates only**. The update trusts the enrolled controller: anyone who
+controls the controller image can run code on prepared media hosts, so protect
+image provenance as carefully as device CA keys. See
+[ADR 0018](decisions/0018-update-media-agents-from-the-controller.md).
 
 ## Backup and recovery
 

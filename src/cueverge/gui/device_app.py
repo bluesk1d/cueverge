@@ -14,6 +14,7 @@ from pydantic import ValidationError
 
 from cueverge.controller.runtime import ControllerRuntime
 from cueverge.core.models import ResourceKind
+from cueverge.gui.agent_updates import AgentBundleCatalog
 from cueverge.gui.asset_upload import AssetUploadError, AssetUploadService
 from cueverge.gui.device_ca import DeviceCertificateAuthority
 from cueverge.gui.device_session import DeviceSessionError, DeviceSessionRegistry
@@ -25,6 +26,7 @@ from cueverge.gui.repository import (
     ProjectNotFoundError,
 )
 from cueverge.protocol.device_v2 import (
+    DeviceAgentUpdateAck,
     DeviceArtifactActivateAck,
     DeviceArtifactCleanupAck,
     DeviceArtifactInventory,
@@ -92,6 +94,7 @@ def create_device_app(
     runtime: ControllerRuntime | None = None,
     authority: DeviceCertificateAuthority | None = None,
     assets: AssetUploadService | None = None,
+    agent_bundles: AgentBundleCatalog | None = None,
 ) -> FastAPI:
     app = FastAPI(
         title="Cueverge Device Transport",
@@ -145,6 +148,59 @@ def create_device_app(
             _file_chunks(member.path, start),
             status_code=status_code,
             media_type="video/mp4",
+            headers=headers,
+        )
+
+    def _authorize_media_agent(request: Request) -> None:
+        peer = peer_device_certificate(request.scope)
+        device = repository.authorize_device_certificate(
+            device_id=str(peer.device_id),
+            certificate_serial=peer.serial,
+            certificate_fingerprint_sha256=peer.fingerprint_sha256,
+        )
+        if device.device_kind is not DeviceKind.DIRECT_MEDIA_AGENT:
+            raise ValueError("agent bundles are for direct media agents")
+
+    @app.get("/api/device/v2/agent-bundles")
+    async def agent_bundle_metadata(request: Request, platform: str) -> dict[str, object]:
+        try:
+            _authorize_media_agent(request)
+        except (ValueError, DeviceCertificateAuthorizationError):
+            raise HTTPException(status_code=403, detail="agent bundle access denied") from None
+        bundle = agent_bundles.bundles.get(platform) if agent_bundles else None  # type: ignore[call-overload]
+        if bundle is None:
+            raise HTTPException(status_code=404, detail="no agent bundle for this platform")
+        return {
+            **bundle.response().model_dump(mode="json"),
+            "download_path": f"/api/device/v2/agent-bundles/{bundle.digest_sha256}",
+        }
+
+    @app.get("/api/device/v2/agent-bundles/{digest}")
+    async def agent_bundle(
+        digest: str,
+        request: Request,
+        range_header: str | None = Header(default=None, alias="Range"),
+    ) -> StreamingResponse:
+        try:
+            _authorize_media_agent(request)
+            bundle = agent_bundles.by_digest(digest) if agent_bundles else None
+            if bundle is None:
+                raise ValueError("unknown agent bundle")
+        except (ValueError, DeviceCertificateAuthorizationError):
+            raise HTTPException(status_code=403, detail="agent bundle access denied") from None
+        start = _range_start(range_header, bundle.size_bytes)
+        headers = {
+            "Accept-Ranges": "bytes",
+            "Content-Length": str(bundle.size_bytes - start),
+            "ETag": f'"sha256:{bundle.digest_sha256}"',
+            "Cache-Control": "private, immutable",
+        }
+        if start:
+            headers["Content-Range"] = f"bytes {start}-{bundle.size_bytes - 1}/{bundle.size_bytes}"
+        return StreamingResponse(
+            _file_chunks(bundle.path, start),
+            status_code=206 if start else 200,
+            media_type="application/zip",
             headers=headers,
         )
 
@@ -364,6 +420,10 @@ def create_device_app(
                         cleanup_ack.request_id,
                         cleanup_ack,
                     )
+                elif message_type == "device.agent.update.ack":
+                    update_ack = DeviceAgentUpdateAck.model_validate(payload)
+                    with suppress(DeviceSessionError):
+                        sessions.acknowledge(UUID(device.id), update_ack.request_id, update_ack)
                 elif message_type == "device.player.ack":
                     player_ack = DevicePlayerAck.model_validate(payload)
                     sessions.set_player_state(peer.device_id, session_id, player_ack.player_state)

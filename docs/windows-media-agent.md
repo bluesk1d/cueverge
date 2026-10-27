@@ -81,6 +81,40 @@ environment configuration. No speaker brand or particular audio route is require
 mpv's audio-delay setting. Positive values delay audio; negative values advance
 it. This is an installation calibration value and defaults to zero.
 
+### Controller-managed updates
+
+After the host is enrolled, install the controller's agent bundle under the
+launcher once, from the checkout and with the agent's environment variables set
+(at least `CUEVERGE_DEVICE_TRANSPORT_URL` and `CUEVERGE_DEVICE_CREDENTIAL_ROOT`):
+
+```powershell
+uv run cueverge-agent-install
+```
+
+It downloads this controller's `windows_amd64` bundle over the device's mTLS
+identity, verifies its SHA-256 digest, unpacks it into
+`%LOCALAPPDATA%\Cueverge\agent\versions\<digest>\`, runs an import self-check,
+and copies `launcher.py` beside it. `CUEVERGE_AGENT_HOME` selects another
+directory and `--bundle FILE` installs a bundle copied by hand. Then make the
+scheduled task's `run-agent.ps1` load the private environment file and start the
+launcher instead of `cueverge-media-agent`, for example:
+
+```powershell
+Get-Content C:\Cueverge\media-agent.env | Where-Object { $_ -match '^[A-Z_]+=' } |
+    ForEach-Object { $name, $value = $_ -split '=', 2; Set-Item "Env:$name" $value }
+uv run --no-project --python 3.12 "$env:LOCALAPPDATA\Cueverge\agent\launcher.py"
+```
+
+The launcher puts the agent in a Windows job object, so ending the task also
+ends the agent. A global administrator then updates the agent from **Installation >
+Devices > Connect and manage devices > Agent software updates** (or MCP
+`update_device_agents`) while the controller is in maintenance mode with no
+scene playing. The agent stops its player, installs the bundle and restarts
+into it. If the new version exits or can't reach the controller within 180
+seconds, the launcher restarts the previous version and the device shows
+**Update rolled back** with the reason. Updates don't change mpv, Python or
+Windows.
+
 ### Keeping the host awake
 
 Set `CUEVERGE_KEEP_AWAKE` in the agent environment so Windows doesn't sleep or

@@ -90,6 +90,21 @@ using it need a controller that recognizes the field. Update the controller firs
 `media_features`. The controller only reports this status; it can't change host
 power settings.
 
+Agents may report `agent_release` in `device.hello` and heartbeats:
+`{"version", "platform", "bundle_digest", "managed", "last_update"}`. It is the
+software actually running, unlike the enrolled capability document's
+`software_version`. `bundle_digest` is null for an agent run from a source
+checkout, and `last_update` is the launcher's latest `installed` or
+`rolled_back` result. Launcher-managed agents also list the `agent_update` media
+feature. Only those receive `device.agent.update` with the bundle `version`,
+`platform`, `digest_sha256`, `size_bytes` and an HTTPS `download_url` on the
+device listener. The device downloads it with its mTLS identity, verifies size
+and digest, installs and self-checks it, then answers
+`device.agent.update.ack` with `status` `restarting` (or `error` with detail)
+before exiting into the new version. The controller then waits for a hello whose
+`agent_release.bundle_digest` matches. See
+[ADR 0018](decisions/0018-update-media-agents-from-the-controller.md).
+
 Valid heartbeats refresh both certificate-session presence and runtime
 liveness. A stale session is disconnected and cannot update or disconnect a
 replacement session. Losing the active clock source freezes time-following and

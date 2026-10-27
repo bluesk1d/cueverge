@@ -233,6 +233,14 @@ in which no playing scene uses it. Every start and stop is audited as
 `device.player.*`. **Player failed** means mpv couldn't start on
 that host; fix it there, then start it again.
 
+**Device details** also show **Keep awake**, **Agent software** (running version
+and bundle) and **Agent updates**. A device card notes **Update available**,
+**Updating**, **Update failed** or **Update rolled back**. Administrators install
+updates from **Connect and manage devices > Agent software updates** with the
+show stopped in maintenance mode. Each host closes its player and restarts, and
+it returns to its previous version automatically if the new one can't reconnect.
+See [Media agent updates](service-administration.md#media-agent-updates).
+
 ### 3. Optionally add or replace reference photos
 
 1. Open **Installation > Photos & Layout** and choose **Add photo**.

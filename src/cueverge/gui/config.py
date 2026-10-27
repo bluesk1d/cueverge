@@ -33,6 +33,7 @@ class GuiConfig(BaseModel):
     asset_max_bytes: int = Field(default=10_000_000_000, gt=0)
     asset_store_quota_bytes: int = Field(default=100_000_000_000, gt=0)
     asset_chunk_max_bytes: int = Field(default=8_388_608, gt=0, le=67_108_864)
+    agent_bundle_root: Path | None = None
 
     @model_validator(mode="after")
     def validate_origins(self) -> "GuiConfig":
@@ -147,5 +148,8 @@ class GuiConfig(BaseModel):
             ),
             asset_chunk_max_bytes=int(
                 os.environ.get("CUEVERGE_GUI_ASSET_CHUNK_MAX_BYTES", "8388608")
+            ),
+            agent_bundle_root=(
+                Path(value) if (value := os.environ.get("CUEVERGE_AGENT_BUNDLE_ROOT")) else None
             ),
         )

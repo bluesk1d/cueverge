@@ -646,6 +646,14 @@ def test_mcp_apply_monitor_and_explicit_live_transport_end_to_end(tmp_path: Path
         assert listed["players"][0]["keep_awake"] is None
         assert players["keep_awake"]["configured_on_host"] == "CUEVERGE_KEEP_AWAKE"
         assert players["keep_awake"]["controller_can_change"] is False
+        updates = capabilities["agent_updates"]
+        assert (updates["read_tool"], updates["update_tool"]) == (
+            "get_agent_updates",
+            "update_device_agents",
+        )
+        assert updates["scope"] == "device_update"
+        assert updates["requires_idle_maintenance"] is True
+        assert capabilities["features"]["managed_agent_updates"] is True
         _connect(
             services.repository,
             services.device_sessions,
