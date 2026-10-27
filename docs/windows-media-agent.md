@@ -5,7 +5,17 @@ initiates an outbound WebSocket connection to the controller.
 
 ## Prerequisites
 
-1. Install a current mpv build and record its version/source.
+1. Install a current mpv build and record its version/source. Official mpv
+   Windows builds are unsigned, so **Smart App Control** (and other app control
+   policies) blocks them. Check **Windows Security > App & browser control**.
+   If it's on, either install a Microsoft Store mpv package, which the Store
+   signs (for example the community-maintained "mpv (Unofficial)",
+   `winget install --id 9P3JFR0CLLL6 --source msstore`), and set
+   `CUEVERGE_MPV_EXECUTABLE` to its `%LOCALAPPDATA%\Microsoft\WindowsApps\mpv.exe`
+   alias, or turn Smart App Control off, which can't be undone without
+   reinstalling Windows. Store packages may lag official mpv releases and come
+   from their packager, not the mpv project. The agent reports these blocks as
+   "Windows Smart App Control or an app control policy blocked mpv".
 2. Place show media in a local asset directory. Agent commands carry only
    package-relative asset IDs; traversal outside this root is rejected.
 3. Run `mpv --audio-device=help` and choose the intended audio output if mpv does
@@ -81,7 +91,7 @@ rather than hosting the media process in the SSH session.
 
 Set `CUEVERGE_PLAYER_MODE=on_demand` in the agent environment. The agent then
 starts at logon without opening mpv, keeps its authenticated controller
-connection, and shows up in Device Health as **Connected · player stopped**.
+connection, and shows up in Device Health as **Player stopped**.
 The controller opens the fullscreen player when:
 
 - an operator selects **Start player** on the device card (or uses the MCP

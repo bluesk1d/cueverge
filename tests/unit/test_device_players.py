@@ -200,7 +200,7 @@ def test_gui_player_controls_are_audited_and_reported_in_topology(tmp_path: Path
     )
     assert node()["player_control"] is True
     assert node()["player_state"] == "stopped"
-    assert node()["diagnostic"] == "Player stopped. Start it here or start the show."
+    assert node()["diagnostic"] == "Opens when the show starts, or start it from the device card."
     started = client.post(url, json={"action": "start"}, headers=_mutation_headers(client))
     assert started.status_code == 200
     assert started.json() == {"device_id": str(DEVICE_ID), "player_state": "ready"}

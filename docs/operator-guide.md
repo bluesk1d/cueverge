@@ -217,20 +217,20 @@ video, audio, and pixels; "not independently detectable" is not a fault to
 hide or a health check to waive.
 
 A media host whose assigned projector the loaded show doesn't use still
-connects and shows **Connected · idle** with the reason (for example "Idle: the
-loaded show doesn't use projector.right"). It joins playback automatically once
+connects and shows **Connected · idle**, with the reason under the device name
+(for example "The loaded show doesn't use projector.right."). It joins playback automatically once
 a show that uses its projector is applied; no restart is needed. A host whose
 assignments map to two different media targets is still refused, and the
 controller log names the reason.
 
 Media hosts running the agent in on-demand player mode stay connected without a
-player window and show **Connected · player stopped**. Operators and
+player window and show **Player stopped**. Operators and
 administrators can use **Start player** / **Stop player** on the device card.
 **Start** in Operate opens every stopped player the loaded show needs and
 refuses to start, naming the device, if one fails. With the device's connection
 policy set to **On demand**, the controller closes its player after 10 minutes
 in which no playing scene uses it. Every start and stop is audited as
-`device.player.*`. **Connected · player failed** means mpv couldn't start on
+`device.player.*`. **Player failed** means mpv couldn't start on
 that host; fix it there, then start it again.
 
 ### 3. Optionally add or replace reference photos

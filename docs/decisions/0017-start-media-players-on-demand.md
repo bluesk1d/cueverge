@@ -71,7 +71,7 @@ component and a **player** that it starts and stops on controller request.
   player** action on the device card and as MCP operator tools. Both use the
   existing role checks, CSRF protection, revision and arming rules, and audit
   logging. Device Health shows player state separately from connection state:
-  "Connected · player stopped" is not "ready".
+  "Player stopped" is connected but not "ready".
 - Presence-only connections stay authorized even when the loaded show doesn't
   use the device. The idle-connection behavior already provides this.
 

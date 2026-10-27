@@ -1098,7 +1098,8 @@ p {
 
 .device-list li {
   display: grid;
-  grid-template-columns: 30px minmax(0, 1fr) minmax(110px, auto);
+  /* A fixed status column keeps dots and labels aligned from row to row. */
+  grid-template-columns: 30px minmax(0, 1fr) minmax(0, 13.5rem);
   align-items: center;
   gap: 9px;
   min-height: 45px;
@@ -1135,6 +1136,12 @@ p {
 .device-list__identity small {
   color: var(--cv-text-faint);
   font-size: 11px;
+}
+
+.device-list__identity .device-list__note {
+  color: var(--cv-text-muted);
+  white-space: normal;
+  line-height: 1.35;
 }
 
 .resource-list li {

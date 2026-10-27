@@ -6795,10 +6795,10 @@ def _idle_media_diagnostic(
         return None
     if player is not None and player[0] and player[1] != "ready":
         return {
-            "stopped": "Player stopped. Start it here or start the show.",
-            "starting": "Player starting.",
-            "stopping": "Player stopping.",
-            "failed": "Player failed to start. Check the media host, then start it again.",
+            "stopped": "Opens when the show starts, or start it from the device card.",
+            "starting": "Opening the player on the media host.",
+            "stopping": "Closing the player on the media host.",
+            "failed": "The player couldn't open. Check the media host, then start it again.",
         }.get(player[1] or "", "Player state not reported yet.")
     resources = sorted(
         assignment.resource
@@ -6807,7 +6807,7 @@ def _idle_media_diagnostic(
     )
     if not resources or show_media_resources.intersection(resources):
         return None
-    return f"Idle: the loaded show doesn't use {', '.join(resources)}."
+    return f"The loaded show doesn't use {', '.join(resources)}."
 
 
 def _device_compatibility_detail(

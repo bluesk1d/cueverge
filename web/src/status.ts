@@ -45,8 +45,10 @@ export function connectionStatus(node: TopologyNode): { tone: StatusTone; label:
   if (node.connection === "connected") {
     if (node.kind === "direct_media_agent" && node.player_control && node.player_state !== "ready") {
       return node.player_state === "failed"
-        ? { tone: "danger", label: "Connected · player failed" }
-        : { tone: "neutral", label: `Connected · player ${node.player_state ?? "state unknown"}` };
+        ? { tone: "danger", label: "Player failed" }
+        : node.player_state
+          ? { tone: "neutral", label: `Player ${node.player_state}` }
+          : { tone: "neutral", label: "Player state unknown" };
     }
     return node.kind === "direct_media_agent" && node.diagnostic
       ? { tone: "success", label: "Connected · idle" }

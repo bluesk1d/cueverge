@@ -219,15 +219,13 @@ export function OverviewPage({
                         <span className="device-list__identity">
                           <strong>{humanize(resource.resource)}</strong>
                           <small>{node?.label ?? resource.target ?? resource.resource}</small>
+                          {!outputError && node?.kind === "direct_media_agent" && node.diagnostic && (
+                            <small className="device-list__note" title={node.diagnostic}>
+                              {node.diagnostic}
+                            </small>
+                          )}
                         </span>
-                        <StatusText
-                          tone={outputError ? "danger" : status.tone}
-                          detail={
-                            !outputError && node?.kind === "direct_media_agent"
-                              ? node.diagnostic ?? undefined
-                              : undefined
-                          }
-                        >
+                        <StatusText tone={outputError ? "danger" : status.tone}>
                           {outputError ? "Output error" : status.label}
                         </StatusText>
                       </li>

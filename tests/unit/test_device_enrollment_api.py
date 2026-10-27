@@ -213,9 +213,7 @@ def test_administrator_can_create_token_and_enroll_device_once(tmp_path: Path) -
         if node["id"] == f"device:{credential['device_id']}"
     )
     assert idle_node["connection"] == "connected"
-    assert idle_node["diagnostic"] == (
-        f"Idle: the loaded show doesn't use {media_resource['resource']}."
-    )
+    assert idle_node["diagnostic"] == (f"The loaded show doesn't use {media_resource['resource']}.")
     runtime.catalog = load_show_package(Path("shows/demo"))
     assert enrolled_node["capability_document"]["capabilities"][0]["kind"] == "media_playback"
     assert enrolled_node["capability_document"]["capabilities"][0]["codecs"] == ["h264"]

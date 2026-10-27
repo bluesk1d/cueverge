@@ -97,6 +97,21 @@ def test_player_host_reports_start_failure_and_can_retry(tmp_path: Path) -> None
     asyncio.run(scenario())
 
 
+def test_player_host_explains_windows_app_control_blocks(tmp_path: Path) -> None:
+    class BlockedProcess(FakeProcess):
+        def start(self) -> None:
+            error = OSError("An Application Control policy has blocked this file")
+            error.winerror = 4551  # type: ignore[attr-defined]
+            raise error
+
+    host = PlayerHost(BlockedProcess(), FakeTransport, tmp_path)
+
+    assert asyncio.run(host.start()) == "failed"
+    assert host.failure is not None
+    assert "Smart App Control" in host.failure
+    assert "CUEVERGE_MPV_EXECUTABLE" in host.failure
+
+
 def test_presence_acknowledges_player_start_and_stop() -> None:
     async def scenario() -> None:
         session_id = uuid4()

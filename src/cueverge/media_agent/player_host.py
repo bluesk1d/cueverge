@@ -69,7 +69,7 @@ class PlayerHost:
                     await client.close()
                 await asyncio.to_thread(self._process.stop)
                 self.state = "failed"
-                self.failure = str(error)
+                self.failure = _start_failure(error)
                 LOGGER.error("media player failed to start: %s", error)
                 return self.state
             self._client = client
@@ -163,3 +163,16 @@ class PlayerHost:
             self.failure = message
             self._player = None
             self._client = None
+
+
+# Windows ERROR_APPLICATION_CONTROL_POLICY_BLOCKED (Smart App Control / App Control for Business).
+_APPLICATION_CONTROL_BLOCKED = 4551
+
+
+def _start_failure(error: Exception) -> str:
+    if getattr(error, "winerror", None) == _APPLICATION_CONTROL_BLOCKED:
+        return (
+            "Windows Smart App Control or an app control policy blocked mpv. Install a signed "
+            "mpv build and point CUEVERGE_MPV_EXECUTABLE at it (see the Windows media agent guide)."
+        )
+    return str(error)

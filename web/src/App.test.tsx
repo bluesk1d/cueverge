@@ -740,7 +740,7 @@ test("names the loaded show and active scene instead of the scene ID", () => {
 
 test("shows a connected media host as idle with the reason when the show doesn't use it", () => {
   vi.spyOn(globalThis, "fetch").mockImplementation(() => jsonResponse([]));
-  const reason = "Idle: the loaded show doesn't use projector.left.";
+  const reason = "The loaded show doesn't use projector.left.";
   render(
     <OverviewPage
       installation={demoInstallation}
@@ -778,7 +778,7 @@ test("operators start and stop an on-demand media player from its device card", 
             ...node,
             player_control: true,
             player_state: "stopped" as const,
-            diagnostic: "Player stopped. Start it here or start the show.",
+            diagnostic: "Opens when the show starts, or start it from the device card.",
           }
         : node,
     ),
@@ -796,7 +796,7 @@ test("operators start and stop an on-demand media player from its device card", 
     />,
   );
 
-  expect(screen.getAllByText("Connected · player stopped").length).toBeGreaterThan(0);
+  expect(screen.getAllByText("Player stopped").length).toBeGreaterThan(0);
   fireEvent.click(screen.getByRole("button", { name: "Start player on media-client-left" }));
   await waitFor(() => expect(onRefresh).toHaveBeenCalled());
   const [url, init] = fetchMock.mock.calls.find(([target]) =>
