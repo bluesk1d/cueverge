@@ -535,10 +535,55 @@ p {
   background: var(--cv-sidebar);
 }
 
-.overview-hero__photo > img {
+.overview-hero__photo > img,
+.overview-hero__frame > img {
+  display: block;
   width: 100%;
   height: 260px;
   object-fit: cover;
+}
+
+.overview-hero__frame {
+  position: relative;
+  align-self: start;
+  min-width: 0;
+  isolation: isolate;
+}
+
+/* Shares the cover-fitted image box; the viewBox crops the 1000×600 frame to match. */
+.overview-hero__leds {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  mix-blend-mode: screen;
+}
+
+.overview-hero__live-badge {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgb(0 0 0 / 60%);
+  color: var(--cv-text);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.overview-hero__live {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.overview-hero__live > small {
+  flex: 1 1 100%;
+  color: var(--cv-text-muted);
 }
 
 .overview-hero__identity {
@@ -560,6 +605,7 @@ p {
 .overview-actions button,
 .overview-panel-action,
 .overview-hero__placeholder button,
+.overview-hero__live button,
 .snapshot-notice button,
 .account-details button {
   min-height: 38px;

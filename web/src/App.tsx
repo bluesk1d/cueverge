@@ -88,7 +88,7 @@ import {
 import { OverviewPage } from "./pages/OverviewPage";
 import { InstallationPage } from "./pages/InstallationPage";
 import { useLiveStatus } from "./useLiveStatus";
-import { SnapshotFreshness, STATUS_TIMEOUT_MS } from "./status";
+import { sceneLabel, SnapshotFreshness, STATUS_TIMEOUT_MS } from "./status";
 
 const ShowPlan = lazy(() => import("./pages/ShowPlan").then((module) => ({ default: module.ShowPlan })));
 const VisitorInteractions = lazy(() => import("./pages/VisitorInteractions").then((module) => ({ default: module.VisitorInteractions })));
@@ -2131,7 +2131,7 @@ export function OperatePage({
   const [chosenScene, setChosenScene] = useState("");
   const sceneOptions = runtime?.status.operations.scene_options;
   const startingScene = chosenScene || runtime?.status.operations.starting_scene_id || sceneOptions?.[0]?.id;
-  const activeSceneName = sceneOptions?.find((value) => value.id === runtime?.status.active_scene)?.name ?? runtime?.status.active_scene;
+  const activeSceneName = sceneLabel(runtime, runtime?.status.active_scene);
   const canOperate = session.role === "operator" || session.role === "administrator";
   const playbackUnavailable = runtimeFreshness !== "fresh" || Boolean(runtime?.apply_job);
   const unavailableRequiredDevice =
@@ -2260,12 +2260,12 @@ export function OperatePage({
             </div>
             <div>
               <dt>Active scene</dt>
-              <dd>{runtime.status.active_scene ?? "None"}</dd>
+              <dd title={runtime.status.active_scene ?? undefined}>{activeSceneName ?? "None"}</dd>
             </div>
             <div>
               <dt>Next scene</dt>
               <dd>{runtime.status.next_scene
-                ? `${sceneOptions?.find((value) => value.id === runtime.status.next_scene?.scene_id)?.name ?? runtime.status.next_scene.scene_id} · preloaded on ${runtime.status.next_scene.preloaded_outputs.join(", ")}${runtime.status.next_scene.automatic_cut ? " · cuts at the end of the clock media" : ""}`
+                ? `${sceneLabel(runtime, runtime.status.next_scene.scene_id)} · preloaded on ${runtime.status.next_scene.preloaded_outputs.join(", ")}${runtime.status.next_scene.automatic_cut ? " · cuts at the end of the clock media" : ""}`
                 : "Not preloaded"}</dd>
             </div>
             <div>

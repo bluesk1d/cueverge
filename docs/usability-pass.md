@@ -1839,7 +1839,10 @@ All seven Overview/header/navigation recommendations were approved on
 ### Proposed acceptance and first-pass completion boundary
 
 - Overview shows the existing installation photo and does not invent a loaded
-  release or claim that a stopped show is running.
+  release or claim that a stopped show is running. Playback names the loaded
+  show and scene from controller-reported catalog data, and while current
+  playback has LED outputs the photo overlays last-sent LED samples from the
+  read-only output monitor (pausable, never a camera/physical claim).
 - A stale successful snapshot cannot remain visually indistinguishable from
   fresh status. Page changes do not produce unexplained conflicting health.
 - Within the initial desktop viewport, users can identify playback state,

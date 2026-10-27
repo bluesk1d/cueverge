@@ -11,8 +11,10 @@ import {
   Topology,
 } from "../api";
 import type { Workspace } from "../components/AppShell";
+import { LiveLedOverlay, mapMonitorLeds, useLedPhotoMapping } from "../components/LiveLedOverlay";
 import { EmptyState, ErrorState, Panel, Skeleton, StatusText, WorkspaceHeader } from "../components/ui";
-import { connectionStatus, controllerStatus, SnapshotFreshness } from "../status";
+import { useOutputMonitor } from "../components/useOutputMonitor";
+import { connectionStatus, controllerStatus, loadedShowName, sceneLabel, SnapshotFreshness } from "../status";
 
 export function OverviewPage({
   installation,
@@ -46,10 +48,13 @@ export function OverviewPage({
   const [photo, setPhoto] = useState<InstallationPhoto | null>(null);
   const [photoLoading, setPhotoLoading] = useState(true);
   const [photoError, setPhotoError] = useState(false);
+  const [photoSize, setPhotoSize] = useState<{ width: number; height: number } | null>(null);
+  const [livePaused, setLivePaused] = useState(false);
   const installationId = installation?.installation_id;
   useEffect(() => {
     setPhoto(null);
     setPhotoError(false);
+    setPhotoSize(null);
     if (!installationId) {
       setPhotoLoading(false);
       return;
@@ -71,6 +76,30 @@ export function OverviewPage({
     : "Checking playback";
   const playbackLabel = current ? playback
     : runtime ? `Last known: ${playback}` : runtimeError ? "Playback unavailable" : "Checking playback";
+  const showName = loadedShowName(runtime);
+  const activeScene = runtime?.status.active_scene ?? null;
+  const sceneName = sceneLabel(runtime, activeScene);
+
+  const liveEligible = current && playing && runtime.status.lighting_outputs.length > 0 && photo !== null && !photoError;
+  const liveEnabled = liveEligible && !livePaused;
+  const monitor = useOutputMonitor({ enabled: liveEnabled });
+  const clearMonitor = monitor.clear;
+  useEffect(() => { if (!liveEnabled) clearMonitor(); }, [liveEnabled, clearMonitor]);
+  const mapping = useLedPhotoMapping(installationId, liveEnabled, refreshKey);
+  const snapshot = monitor.snapshot;
+  const generationMatches = snapshot !== null &&
+    snapshot.loaded_catalog?.generation === runtime?.loaded_catalog?.generation;
+  const liveLeds = liveEnabled && snapshot && generationMatches && !monitor.error && photo
+    ? mapMonitorLeds(mapping, photo.id, snapshot.outputs) : [];
+  const liveStale = snapshot?.outputs.some((value) => value.stale || value.held || value.error) ?? false;
+  const liveStatus = !liveEligible ? null
+    : livePaused ? "Live preview paused"
+      : monitor.error ? "Live preview unavailable · showing the photo only"
+        : !snapshot || !mapping.loaded ? "Starting live preview…"
+          : !generationMatches ? "Live preview waiting for current controller status"
+            : liveLeds.length === 0 ? "Live preview: no mapped LEDs on this photo"
+              : liveStale ? "Live · LED colors may be out of date"
+                : "Live · last sent LED colors, not a camera feed";
   const groups = groupActivity(activity.filter(
     (event) => event.category !== "security" || event.action.startsWith("package.") || activityFailure(event),
   )).slice(0, 4);
@@ -93,11 +122,22 @@ export function OverviewPage({
           {photoLoading || (loading && !installation) ? <Skeleton /> : photoError || (installationError && !installation) ? (
             <ErrorState title="Photo unavailable" description="The installation photo could not be loaded." />
           ) : photo ? (
-            <img
-              src={installationPhotoUrl(photo.id, photo.revision)}
-              alt={`${photo.name} · ${photo.viewpoint}`}
-              onError={() => setPhotoError(true)}
-            />
+            <div className="overview-hero__frame">
+              <img
+                src={installationPhotoUrl(photo.id, photo.revision)}
+                alt={`${photo.name} · ${photo.viewpoint}`}
+                onLoad={(event) => setPhotoSize({
+                  width: event.currentTarget.naturalWidth, height: event.currentTarget.naturalHeight,
+                })}
+                onError={() => setPhotoError(true)}
+              />
+              {liveLeds.length > 0 && (
+                <>
+                  <LiveLedOverlay leds={liveLeds} natural={photoSize} />
+                  <span className="overview-hero__live-badge" aria-hidden="true">Live</span>
+                </>
+              )}
+            </div>
           ) : (
             <div className="overview-hero__placeholder">
               <ImageOff aria-hidden="true" size={28} />
@@ -114,11 +154,27 @@ export function OverviewPage({
           <StatusText tone={current && playing ? runtime.status.degraded ? "warning" : "success" : "neutral"}>
             {playbackLabel}
           </StatusText>
-          {runtime?.status.active_scene && (
-            <p>{current ? "Scene" : "Last known scene"}: <strong>{runtime.status.active_scene}</strong></p>
+          {activeScene && (
+            <p>{current ? "Showing" : "Last known"}:{" "}
+              <strong title={sceneName !== activeScene ? `Scene ID: ${activeScene}` : undefined}>
+                {showName ? `${showName} · ${sceneName}` : sceneName}
+              </strong>
+            </p>
           )}
           {current && runtime.status.estimated_position_ms !== null && playing && (
             <p>Position {formatDuration(runtime.status.estimated_position_ms)}</p>
+          )}
+          {liveStatus && (
+            <div className="overview-hero__live" role="status">
+              <small>
+                {liveStatus}
+                {!livePaused && !monitor.error && (runtime?.status.media_outputs.length ?? 0) > 0 && " · projector video isn't shown"}
+              </small>
+              {monitor.error && !livePaused && <button onClick={monitor.retry}>Retry live preview</button>}
+              <button onClick={() => setLivePaused((value) => !value)}>
+                {livePaused ? "Resume live preview" : "Pause live preview"}
+              </button>
+            </div>
           )}
           <StatusText tone={health.tone}>{health.label}</StatusText>
           {runtime && (
@@ -217,13 +273,18 @@ export function OverviewPage({
       <details className="overview-details">
         <summary>System details</summary>
         <dl className="detail-list">
-          <div><dt>Loaded show</dt><dd>Show identity unavailable</dd></div>
+          <div><dt>Loaded show</dt><dd>{showName
+            ? `${showName}${runtime?.loaded_catalog?.revision != null ? ` · version ${runtime.loaded_catalog.revision}` : ""}`
+            : runtime?.loaded_catalog?.state === "recovery_required" ? "Recovery required" : "Show identity unavailable"}</dd></div>
+          {activeScene && sceneName !== activeScene && <div><dt>Scene ID</dt><dd>{activeScene}</dd></div>}
           <div><dt>Configured media outputs</dt><dd>{resources.filter((resource) => resource.kind === "media_agent").length}</dd></div>
           <div><dt>Configured LED pixels</dt><dd>{resources.reduce((count, resource) => count + (resource.pixel_count ?? 0), 0).toLocaleString()}</dd></div>
           <div><dt>Package schema</dt><dd>{installation?.package_schema ?? "Unavailable"}</dd></div>
           <div><dt>Controller detail</dt><dd>{runtime?.status.degraded_reason ?? "No additional detail reported"}</dd></div>
         </dl>
-        <p>The controller has not reported a loaded show name. Saved edits are separate from what is running.</p>
+        <p>{showName
+          ? "This is the copy running on the controller. Saved edits are separate from what is running."
+          : "The controller has not reported a loaded show name. Saved edits are separate from what is running."}</p>
       </details>
     </>
   );

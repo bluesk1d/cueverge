@@ -29,6 +29,18 @@ export function controllerStatus(
     : { tone: "success", label: "Controller connected" };
 }
 
+/** Loaded-catalog scene name for a scene ID, falling back to the ID when unreported. */
+export function sceneLabel(runtime: RuntimeStatus | null, sceneId: string | null | undefined): string | null {
+  if (!sceneId) return null;
+  return runtime?.status.operations.scene_options?.find((value) => value.id === sceneId)?.name || sceneId;
+}
+
+/** Name of the verified loaded show, or null for legacy/unreported catalogs. */
+export function loadedShowName(runtime: RuntimeStatus | null): string | null {
+  const loaded = runtime?.loaded_catalog;
+  return loaded?.state === "loaded" ? loaded.project_name || null : null;
+}
+
 export function connectionStatus(node: TopologyNode): { tone: StatusTone; label: string } {
   if (node.connection === "connected") {
     if (node.kind === "direct_media_agent" && node.player_control && node.player_state !== "ready") {

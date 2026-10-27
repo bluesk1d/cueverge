@@ -239,7 +239,11 @@ handover is reported, never disguised as a successfully loaded bootstrap show.
 ### Read-only output monitor and explicit transport
 
 **Operate > Open output monitor** polls at most 2 Hz, without overlapping
-requests, only while open and the tab is visible. It observes the last successful
+requests, only while open and the tab is visible. **Overview** reuses the same
+poller automatically while status is current and a scene with LED outputs is
+playing (operators can pause it); it draws mapped samples on the hero photo and
+falls back to the plain photo on monitor failure or loaded-generation mismatch.
+It observes the last successful
 sink send, including scene, safe-state, blackout and physical-test frames. It
 does not render a second show or send hardware commands. Capture is hard-capped
 at 5 Hz, retains the latest frame for at most 32 resources, and returns at most

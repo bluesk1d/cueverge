@@ -97,6 +97,15 @@ was connected. Empty, disconnected, and blocked states are intentional.*
 
 - **Overview:** a saved installation photo, current or explicitly last-known
   playback, equipment connections, useful destinations, and compact activity.
+  Playback names the loaded show and scene (for example
+  *Halloween2026 · Ship ambient external*); the scene ID remains available in
+  the tooltip and **System details**. While a scene with LED outputs is playing
+  and status is current, the photo automatically overlays the last successfully
+  sent LED colors at their mapped positions (**Live** badge). It uses the same
+  read-only output monitor as Operate, at most 2 requests/second, and stops on
+  Stop, stale status or a hidden tab. Choose **Pause live preview** to keep the
+  plain photo. It is not a camera feed, does not show projector video and falls
+  back to the plain photo if the monitor is unavailable.
   Open **Setup checklist** or **System details** for optional setup facts.
 - **Installation:** camera inputs/connections, topology, photos, mapper, device management, assignments,
   logical object inventory, and connection diagnostics.

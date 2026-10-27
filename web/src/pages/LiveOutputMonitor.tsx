@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
-import { getOutputMonitor, OutputMonitor, RuntimeStatus } from "../api";
+import { useState } from "react";
+import { RuntimeStatus } from "../api";
 import { ScenePreview } from "./SceneWorkspace";
 import { ErrorState, Panel } from "../components/ui";
+import { useOutputMonitor } from "../components/useOutputMonitor";
 
 const noNames = () => {};
 const noFailure = () => {};
@@ -10,44 +11,9 @@ export function LiveOutputMonitor({ installationId, runtime }: {
   installationId?: string; runtime: RuntimeStatus | null;
 }) {
   const [enabled, setEnabled] = useState(false);
-  const [snapshot, setSnapshot] = useState<OutputMonitor | null>(null);
   const [resource, setResource] = useState("");
   const [offset, setOffset] = useState(0);
-  const [error, setError] = useState<string | null>(null);
-  const [retry, setRetry] = useState(0);
-  useEffect(() => {
-    if (!enabled) return;
-    let current = true;
-    let pending = false;
-    let timer: number | undefined;
-    let abort = new AbortController();
-    const read = async () => {
-      if (!current || pending || document.hidden) return;
-      pending = true;
-      abort = new AbortController();
-      const timeout = window.setTimeout(() => abort.abort(), 8000);
-      try {
-        const result = await getOutputMonitor(resource || undefined, offset, abort.signal);
-        if (current) { setSnapshot(result); setError(null); }
-      } catch (failure) {
-        if (current) setError(failure instanceof Error ? failure.message : "Output monitor timed out.");
-      } finally {
-        window.clearTimeout(timeout); pending = false;
-        if (current && !document.hidden) timer = window.setTimeout(read, 500);
-      }
-    };
-    const visibility = () => {
-      window.clearTimeout(timer);
-      if (document.hidden) abort.abort();
-      else void read();
-    };
-    void read();
-    document.addEventListener("visibilitychange", visibility);
-    return () => {
-      current = false; abort.abort(); window.clearTimeout(timer);
-      document.removeEventListener("visibilitychange", visibility);
-    };
-  }, [enabled, resource, offset, retry]);
+  const { snapshot, error, retry, clear } = useOutputMonitor({ enabled, resource, offset });
   const generationMatches = snapshot?.loaded_catalog?.generation === runtime?.loaded_catalog?.generation;
   const outputs = snapshot?.outputs ?? [];
   return <Panel className="live-output-monitor" title="Intended output monitor"
@@ -58,12 +24,12 @@ export function LiveOutputMonitor({ installationId, runtime }: {
       <details><summary>What does this monitor show?</summary>
         <p>These are successfully sent controller frames, not a camera feed or electrical measurement. Held colors can remain on LEDs after Stop when no safe-state look is configured. Unmapped LEDs and unsupported physical feedback are not invented.</p>
       </details>
-      <label>LED output<select value={resource} onChange={(event) => { setResource(event.target.value); setOffset(0); setSnapshot(null); }}>
+      <label>LED output<select value={resource} onChange={(event) => { setResource(event.target.value); setOffset(0); clear(); }}>
         <option value="">All loaded LED outputs</option>
         {runtime?.status.lighting_outputs.map((value) => <option key={value.resource} value={value.resource}>{value.resource}</option>)}
         {runtime?.status.operations.output_resources?.filter((value) => !runtime.status.lighting_outputs.some((item) => item.resource === value.resource)).map((value) => <option key={value.resource} value={value.resource}>{value.resource}</option>)}
       </select></label>
-      {error && <><ErrorState title="Output monitor unavailable" description={`${error} Last displayed samples are not current.`} /><button onClick={() => setRetry((value) => value + 1)}>Retry output monitor</button></>}
+      {error && <><ErrorState title="Output monitor unavailable" description={`${error} Last displayed samples are not current.`} /><button onClick={retry}>Retry output monitor</button></>}
       {snapshot && <small>Observation received {new Date(snapshot.observed_at).toLocaleTimeString()} · {snapshot.outputs.reduce((total, value) => total + value.colors.length, 0)} / {snapshot.maximum_samples} maximum sampled LEDs. {snapshot.truncated_resources > 0 && `${snapshot.truncated_resources} additional outputs exceed this view's resource budget.`}</small>}
       {snapshot && !generationMatches && <p role="alert">Loaded identity changed or the status snapshot is older than these samples. Refresh controller status; do not interpret this as the current saved show.</p>}
       {outputs.map((value) => <article key={value.resource}>

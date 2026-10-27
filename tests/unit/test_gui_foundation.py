@@ -3945,6 +3945,12 @@ def test_mcp_runtime_snapshot_is_read_only_installation_bound_and_honest(
                 "generation": None,
                 "error": None,
             }
+            options = snapshot["status"]["operations"]["scene_options"]
+            assert {option["id"]: option["name"] for option in options} == {
+                scene.definition.id: scene.definition.name
+                for scene in runtime.catalog.scenes.values()
+            }
+            assert options
             _login(client)
             rest = client.get("/api/gui/v1/runtime/status")
             assert rest.status_code == 200

@@ -706,6 +706,38 @@ test("shows supported runtime facts and honest unsupported states", () => {
   expect(screen.getByText("Unknown")).toBeInTheDocument();
 });
 
+test("names the loaded show and active scene instead of the scene ID", () => {
+  vi.spyOn(globalThis, "fetch").mockImplementation(() => jsonResponse([]));
+  const runtime = structuredClone(demoRuntime);
+  runtime.loaded_catalog = {
+    state: "loaded", project_id: "halloween", project_name: "Halloween2026", revision: 57,
+    digest_sha256: "a".repeat(64), loaded_at: "2026-10-27T00:58:16Z", generation: "generation-1",
+  };
+  runtime.status.active_scene = "scene-cc28de60";
+  runtime.status.operations.scene_options = [{ id: "scene-cc28de60", name: "Ship ambient external", ready: true }];
+  render(
+    <OverviewPage
+      installation={demoInstallation}
+      runtime={runtime}
+      topology={demoTopology}
+      runtimeFreshness="fresh"
+      topologyFreshness="fresh"
+      onNavigate={vi.fn()}
+      installationError={false}
+      runtimeError={false}
+      loading={false}
+    />,
+  );
+  const summary = screen.getByRole("region", { name: "Installation summary" });
+  expect(within(summary).getByText("Halloween2026 · Ship ambient external")).toHaveAttribute(
+    "title", "Scene ID: scene-cc28de60",
+  );
+  expect(within(summary).queryByText(/scene-cc28de60/)).toBeNull();
+  expect(screen.getByText("Halloween2026 · version 57")).toBeInTheDocument();
+  expect(screen.getByText("scene-cc28de60")).toBeInTheDocument();
+  expect(screen.queryByText("Show identity unavailable")).toBeNull();
+});
+
 test("shows a connected media host as idle with the reason when the show doesn't use it", () => {
   vi.spyOn(globalThis, "fetch").mockImplementation(() => jsonResponse([]));
   const reason = "Idle: the loaded show doesn't use projector.left.";
