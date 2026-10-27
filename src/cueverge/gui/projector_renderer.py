@@ -9,6 +9,7 @@ import numpy as np
 from cueverge.gui.asset_upload import AssetUploadService
 from cueverge.gui.contracts import DraftProject
 from cueverge.gui.frame_compositor import (
+    ALPHA_INTERPRETATIONS,
     AlphaInterpretation,
     AudioLayerBuffer,
     ByteImage,
@@ -340,7 +341,7 @@ def _boolean(value: object) -> bool:
 def _alpha_interpretation(
     value: object,
 ) -> AlphaInterpretation:
-    if value not in {"opaque", "straight", "premultiplied"}:
+    if value not in ALPHA_INTERPRETATIONS:
         raise ProjectorRenderError("alpha interpretation is invalid")
     return cast(AlphaInterpretation, value)
 

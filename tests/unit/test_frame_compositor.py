@@ -103,6 +103,22 @@ def test_gif_frames_preserve_disposal_transparency_variable_timing_and_looping(
     assert not render(400, "once")[..., :3].any()
 
 
+def test_black_transparent_keys_coverage_on_brightness_and_matches_over_black() -> None:
+    source = np.array([[[0, 0, 0, 255], [255, 64, 0, 255], [128, 128, 128, 255]]], dtype=np.uint8)
+    keyed = to_working_rgba(
+        source, alpha_interpretation="black_transparent", source_color_space="srgb"
+    )
+    opaque = to_working_rgba(source, alpha_interpretation="opaque", source_color_space="srgb")
+
+    assert keyed[0, 0, 3] == 0
+    assert keyed[0, 1, 3] == 1
+    assert np.isclose(keyed[0, 2, 3], 128 / 255)
+    assert np.all(keyed[..., :3] <= keyed[..., 3:4])
+    black = np.zeros_like(keyed)
+    black[..., 3] = 1
+    assert np.allclose(composite_over(black, keyed), composite_over(black, opaque), atol=1e-6)
+
+
 def test_straight_and_premultiplied_sources_match_in_working_space() -> None:
     straight = np.array([[[255, 0, 0, 128]]], dtype=np.uint8)
     premultiplied = np.array([[[128, 0, 0, 128]]], dtype=np.uint8)

@@ -1043,9 +1043,14 @@ not receive editable composition state.
 Projector compositions declare render-pipeline revision 1, integer rational
 frame rate, native logical resolution, linear-sRGB working color,
 premultiplied working alpha, and Lanczos or bicubic scaling. Each visual source
-declares whether it is opaque, straight-alpha, or premultiplied-alpha, its
+declares whether it is opaque, straight-alpha, premultiplied-alpha, or
+black-transparent, its
 source color space (`sRGB`, `BT.709`, or linear sRGB), and fit/fill/stretch/native
-scaling behavior. Audio layers explicitly carry no visual conformance fields.
+scaling behavior. Black-transparent (`black_transparent`) sources take their
+alpha from the brightest encoded color channel and keep their color, so they
+are unchanged over black, black drops out, and four-channel LED coverage bakes
+lay them over the lighting underneath like a screen blend. Audio layers
+explicitly carry no visual conformance fields.
 
 Preview and future bake jobs consume the same compiled `render_conformance`
 record. Decoders must convert source alpha/color into the premultiplied linear

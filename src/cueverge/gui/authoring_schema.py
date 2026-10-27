@@ -184,7 +184,17 @@ class MediaLayer(MetadataSchema):
     fade_in_ms: int = Field(ge=0)
     fade_out_ms: int = Field(ge=0)
     playback: Literal["hold", "loop", "once"] = "hold"
-    alpha_interpretation: Literal["opaque", "straight", "premultiplied"] | None
+    alpha_interpretation: (
+        Literal["opaque", "straight", "premultiplied", "black_transparent"] | None
+    ) = Field(
+        description=(
+            "Visual layers only; audio uses null. opaque ignores source alpha; straight and "
+            "premultiplied read the source alpha channel. black_transparent derives coverage "
+            "from the brightest channel so black drops out: it looks the same over black, and "
+            "in LED overlay bakes it acts like a screen blend over the ambient/scene lighting "
+            "underneath (use for effects rendered on black without an alpha channel)."
+        )
+    )
     source_color_space: Literal["srgb", "bt709", "linear_srgb"] | None
     scaling_behavior: Literal["fit", "fill", "stretch", "native"] | None
     audio: AudioMix | None = None

@@ -237,7 +237,7 @@ type TransformLayer = {
     solo: boolean;
     mix_order: number;
   } | null;
-  alpha_interpretation: "opaque" | "straight" | "premultiplied" | null;
+  alpha_interpretation: "opaque" | "straight" | "premultiplied" | "black_transparent" | null;
   source_color_space: "srgb" | "bt709" | "linear_srgb" | null;
   scaling_behavior: "fit" | "fill" | "stretch" | "native" | null;
   keyframes: TransformKeyframe[];
@@ -2947,8 +2947,16 @@ export function TimelineEditor({
                         <option value="opaque">Opaque</option>
                         <option value="straight">Straight alpha</option>
                         <option value="premultiplied">Premultiplied alpha</option>
+                        <option value="black_transparent">Black is transparent (screen)</option>
                       </select>
                     </label>
+                    {selectedTransformLayer.alpha_interpretation === "black_transparent" && (
+                      <small>
+                        Brightness becomes coverage: black areas let the lighting or layers
+                        underneath show through, like a screen blend. Re-bake LED overlays after
+                        changing this.
+                      </small>
+                    )}
                     <label>
                       Source color space
                       <select
@@ -10674,7 +10682,8 @@ function transformLayerMap(value: unknown): Record<string, TransformLayer[]> {
                       kind === "audio"
                         ? null
                         : layer.alpha_interpretation === "opaque" ||
-                            layer.alpha_interpretation === "premultiplied"
+                            layer.alpha_interpretation === "premultiplied" ||
+                            layer.alpha_interpretation === "black_transparent"
                           ? layer.alpha_interpretation
                           : "straight",
                     source_color_space:

@@ -1272,9 +1272,47 @@ def test_source_pixel_units_are_validated_for_stage_compositions_only() -> None:
 def test_undrawn_leds_show_ambient_lighting_unless_background_is_chosen(
     tmp_path: Path, led_background: str
 ) -> None:
-    image = tmp_path / "half.png"
     pixels = np.zeros((36, 128, 4), dtype=np.uint8)
     pixels[:, :64] = [255, 0, 0, 255]
+    sequence, rendered = _bake_half_image_over_blue_ambient(
+        tmp_path, pixels, led_background=led_background, alpha_interpretation="straight"
+    )
+    assert sequence["channels"] == (4 if led_background == "ambient" else 3)
+    assert rendered[8][0] > 0 and rendered[8][1:] == (0, 0)
+    assert rendered[2] == ((0, 0, 255) if led_background == "ambient" else (0, 0, 0))
+    # LEDs the composition never maps keep the ambient underneath.
+    assert rendered[0] == (0, 0, 255)
+
+
+@pytest.mark.parametrize("alpha_interpretation", ["straight", "black_transparent"])
+def test_black_is_transparent_lets_ambient_show_through_opaque_black_media(
+    tmp_path: Path, alpha_interpretation: str
+) -> None:
+    # Opaque media rendered on black, like an effect clip without an alpha channel.
+    pixels = np.zeros((36, 128, 4), dtype=np.uint8)
+    pixels[..., 3] = 255
+    pixels[:, :64, 0] = 255
+    sequence, rendered = _bake_half_image_over_blue_ambient(
+        tmp_path, pixels, led_background="ambient", alpha_interpretation=alpha_interpretation
+    )
+    assert sequence["channels"] == 4
+    # Full-brightness effect pixels still replace the lighting underneath (brightness-limited).
+    assert rendered[8][0] > 0 and rendered[8][1:] == (0, 0)
+    assert rendered[2] == (
+        (0, 0, 255) if alpha_interpretation == "black_transparent" else (0, 0, 0)
+    )
+    assert rendered[0] == (0, 0, 255)
+
+
+def _bake_half_image_over_blue_ambient(
+    tmp_path: Path,
+    pixels: np.ndarray,
+    *,
+    led_background: str,
+    alpha_interpretation: str,
+) -> tuple[dict[str, object], list[tuple[int, int, int]]]:
+    """Bake an LED-only overlay of `pixels` over blue ambient; LED 8 is left, LED 2 right."""
+    image = tmp_path / "half.png"
     Image.fromarray(pixels, mode="RGBA").save(image)
     assets = cast(AssetUploadService, _FixtureAssets({"ghost": ("image/png", image)}))
     document = _draft()
@@ -1292,6 +1330,7 @@ def test_undrawn_leds_show_ambient_lighting_unless_background_is_chosen(
     composition["stage_lighting_surfaces"] = ["stage-pixels", "right-pixels"]
     composition["led_background"] = led_background
     layer = _visual_layer()
+    layer["alpha_interpretation"] = alpha_interpretation
     cast(list[dict[str, object]], layer["keyframes"])[0]["opacity"] = 1
     layers = cast(dict[str, list[dict[str, object]]], metadata["timeline_transform_layers"])
     layers["stage-composition"] = [layer]
@@ -1346,7 +1385,6 @@ def test_undrawn_leds_show_ambient_lighting_unless_background_is_chosen(
         output_directory=tmp_path / "renders",
     )
     sequence = cast(list[dict[str, object]], manifest["lighting_sequences"])[0]
-    assert sequence["channels"] == (4 if led_background == "ambient" else 3)
     artifact = tmp_path / "renders" / str(manifest["activation_identity"])
     compiled = DraftCompiler(tmp_path / "compiled").compile(
         project_id="demo-project",
@@ -1363,7 +1401,77 @@ def test_undrawn_leds_show_ambient_lighting_unless_background_is_chosen(
         duration_ms=1000,
         scene_id="ambient",
     )
-    assert rendered[8][0] > 0 and rendered[8][1:] == (0, 0)
-    assert rendered[2] == ((0, 0, 255) if led_background == "ambient" else (0, 0, 0))
-    # LEDs the composition never maps keep the ambient underneath.
-    assert rendered[0] == (0, 0, 255)
+    return sequence, list(rendered)
+
+
+def test_mcp_discovers_and_authors_black_transparent_media_layers(tmp_path: Path) -> None:
+    from datetime import UTC, datetime
+
+    from fastapi.testclient import TestClient
+
+    from cueverge.controller.app import create_app
+    from cueverge.gui.mcp_authoring import McpScope
+    from tests.unit.test_gui_foundation import _mcp_fixture, _mcp_token, _mcp_tool
+
+    runtime, services, _ = _mcp_fixture(tmp_path)
+    original = _draft()
+    project = services.repository.create_project(
+        name="Black is transparent fixture",
+        draft=DraftProject.model_validate(original),
+        actor="admin",
+        role=Role.ADMINISTRATOR,
+        occurred_at=datetime.now(UTC).isoformat(),
+    )
+    project_id = project.project.id
+    editor = _mcp_token(services, project_id, (McpScope.READ, McpScope.DIRECT_EDIT))
+    proposer = _mcp_token(services, project_id, (McpScope.READ, McpScope.DRAFT_EDIT))
+    reader = _mcp_token(services, project_id, (McpScope.READ,))
+
+    def with_alpha(value: str) -> dict[str, Any]:
+        document = copy.deepcopy(original)
+        metadata = cast(dict[str, Any], document["editor_metadata"])
+        metadata["timeline_transform_layers"]["stage-composition"][0]["alpha_interpretation"] = (
+            value
+        )
+        return document
+
+    with TestClient(
+        create_app(runtime, gui_services=services), base_url="http://localhost"
+    ) as client:
+        schema = _mcp_tool(client, reader, "get_authoring_schema")["structuredContent"]
+        alpha = schema["$defs"]["MediaLayer"]["properties"]["alpha_interpretation"]
+        assert "black_transparent" in json.dumps(alpha["anyOf"])
+        assert "screen blend" in alpha["description"]
+        proposed = _mcp_tool(
+            client,
+            proposer,
+            "propose_project_revision",
+            base_revision=1,
+            title="Key plasma on black",
+            kind="timeline_change",
+            proposed_draft=with_alpha("black_transparent"),
+        )
+        assert proposed["isError"] is False
+        for token, value in ((editor, "screen"), (reader, "black_transparent")):
+            assert (
+                _mcp_tool(
+                    client,
+                    token,
+                    "update_project_draft",
+                    base_revision=1,
+                    draft=with_alpha(value),
+                )["isError"]
+                is True
+            )
+        assert services.repository.get_revision(project_id).revision == 1
+        updated = _mcp_tool(
+            client,
+            editor,
+            "update_project_draft",
+            base_revision=1,
+            draft=with_alpha("black_transparent"),
+        )
+        assert updated["isError"] is False
+        stored = services.repository.get_revision(project_id).draft.editor_metadata
+        layer = stored["timeline_transform_layers"]["stage-composition"][0]
+        assert layer["alpha_interpretation"] == "black_transparent"

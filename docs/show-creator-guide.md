@@ -289,6 +289,12 @@ How scenes override the ambient:
   **Final output background** to paint every selected LED with the background
   color instead. Re-bake after changing this option. LED bakes made before this
   option existed must be re-baked once.
+- Media counts as drawn wherever it is opaque, including black pixels. For
+  effects rendered on black without an alpha channel (sparks, plasma, fire),
+  set the media layer's **Source alpha** to **Black is transparent (screen)**:
+  brightness becomes coverage, so black lets the ambient show through and
+  dim areas blend over it like a screen blend. It looks unchanged over black
+  on projectors. Re-bake the composition afterward.
 - LEDs a scene doesn't light at all keep the ambient.
 
 The ambient's phase follows the controller clock, so it doesn't restart when a

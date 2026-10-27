@@ -56,7 +56,15 @@ test("transform layers persist independent axes crop and Bezier controls", async
   ).toBeVisible();
   await page
     .getByLabel("Source alpha interpretation")
+    .selectOption("black_transparent");
+  await expect(page.getByText(/black areas let the lighting or layers/)).toBeVisible();
+  await page
+    .getByLabel("Source alpha interpretation")
     .selectOption("premultiplied");
+  await expect(page.getByText(/black areas let the lighting or layers/)).toHaveCount(0);
+  await page
+    .getByLabel("Source alpha interpretation")
+    .selectOption("black_transparent");
   await page.getByLabel("Source color space").selectOption("bt709");
   await page.getByLabel("Source scaling behavior").selectOption("fill");
 
@@ -152,7 +160,7 @@ test("transform layers persist independent axes crop and Bezier controls", async
     track_id: "media:left-window",
     start_ms: 250,
     duration_ms: 1000,
-    alpha_interpretation: "premultiplied",
+    alpha_interpretation: "black_transparent",
     source_color_space: "bt709",
     scaling_behavior: "fill",
   });
@@ -217,6 +225,7 @@ test("transform layers persist independent axes crop and Bezier controls", async
     }),
   ).toBeVisible();
   await expect(page.getByLabel("Media layer start")).toHaveValue("250");
+  await expect(page.getByLabel("Source alpha interpretation")).toHaveValue("black_transparent");
 });
 
 function response(revision: number, document: Record<string, unknown>) {

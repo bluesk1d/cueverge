@@ -1036,7 +1036,10 @@ resources, compositions, scenes, duplicate IDs, or cues outside the cycle are
 rejected with a validation error. Stage compositions accept
 `led_background: "ambient" | "background"` to choose whether undrawn LEDs show
 the ambient (four-channel coverage bake) or the background color. Changing it
-requires a re-bake.
+requires a re-bake. Opaque media covers LEDs even where it is black; set a
+media layer's `alpha_interpretation` to `black_transparent` to derive coverage
+from its brightest channel so black drops out and the layer blends over the
+ambient like a screen blend (re-bake afterward).
 
 `preview_scene_lighting` includes the ambient beneath scene outputs and reports
 LED resources the scene doesn't light as `ambient:<resource>` outputs (the safe

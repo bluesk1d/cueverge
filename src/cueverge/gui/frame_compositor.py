@@ -10,7 +10,10 @@ import numpy as np
 from numpy.typing import NDArray
 from PIL import Image, ImageSequence
 
-AlphaInterpretation = Literal["opaque", "straight", "premultiplied"]
+AlphaInterpretation = Literal["opaque", "straight", "premultiplied", "black_transparent"]
+ALPHA_INTERPRETATIONS: frozenset[str] = frozenset(
+    {"opaque", "straight", "premultiplied", "black_transparent"}
+)
 SourceColorSpace = Literal["srgb", "bt709", "linear_srgb"]
 FloatImage = NDArray[np.float32]
 ByteImage = NDArray[np.uint8]
@@ -630,6 +633,15 @@ def to_working_rgba(
             where=alpha > np.float32(1e-8),
         )
     linear = _decode_transfer(color, source_color_space)
+    if alpha_interpretation == "black_transparent":
+        # Coverage follows the brightest encoded channel: identical over black, black drops
+        # out, and LED overlays then behave like a screen blend over the lighting underneath.
+        # Encoded >= linear in [0, 1], so the color stays a valid premultiplied value.
+        key = np.max(color, axis=2, keepdims=True)
+        return np.concatenate((linear * alpha, key * alpha), axis=2).astype(
+            np.float32,
+            copy=False,
+        )
     return np.concatenate((linear * alpha, alpha), axis=2).astype(
         np.float32,
         copy=False,

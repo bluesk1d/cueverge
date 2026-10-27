@@ -783,7 +783,8 @@ def _validate_transform_layers(
                 ):
                     raise ValueError("audio layers cannot define visual conformance")
             elif (
-                alpha_interpretation not in {"opaque", "straight", "premultiplied"}
+                alpha_interpretation
+                not in {"opaque", "straight", "premultiplied", "black_transparent"}
                 or source_color_space not in {"srgb", "bt709", "linear_srgb"}
                 or scaling_behavior not in {"fit", "fill", "stretch", "native"}
             ):
