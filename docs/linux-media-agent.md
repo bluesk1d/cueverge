@@ -112,6 +112,13 @@ systemctl --user stop cueverge-media-agent.service
 systemctl --user restart cueverge-media-agent.service
 ```
 
+The template uses `Restart=always` with no start limit, so the agent comes back
+within a few seconds after any exit, including a clean one, for as long as the
+desktop session runs. An explicit `systemctl --user stop` is honored and stays
+stopped until the next start or login. Hosts installed from an older template
+(`Restart=on-failure`) only restarted after crashes; update the unit, then run
+`systemctl --user daemon-reload`.
+
 Before unattended use, reboot the media host and verify:
 
 1. Desktop login completes without interaction.

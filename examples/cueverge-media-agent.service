@@ -3,14 +3,16 @@ Description=Cueverge media agent
 After=graphical-session.target network-online.target
 Wants=network-online.target
 PartOf=graphical-session.target
+# Keep retrying; an explicit "systemctl --user stop" is still honored.
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
 WorkingDirectory=%h/cueverge
 EnvironmentFile=%h/.config/cueverge/media-agent.env
 ExecStart=%h/.local/bin/uv run --project %h/cueverge cueverge-media-agent
-Restart=on-failure
-RestartSec=2
+Restart=always
+RestartSec=5
 TimeoutStopSec=10
 
 [Install]
