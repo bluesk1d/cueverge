@@ -4329,6 +4329,25 @@ function NodeCard({
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [playerBusy, setPlayerBusy] = useState(false);
   const [playerError, setPlayerError] = useState<string | null>(null);
+  const [confirmingUpdate, setConfirmingUpdate] = useState(false);
+  const [updateBusy, setUpdateBusy] = useState(false);
+  const [updateError, setUpdateError] = useState<string | null>(null);
+  const canUpdateAgent =
+    canAdminister && !!node.agent_update && UPDATABLE_AGENT_STATES.includes(node.agent_update.state);
+
+  async function updateAgent() {
+    setUpdateBusy(true);
+    setUpdateError(null);
+    try {
+      await startAgentUpdates([node.id.replace("device:", "")]);
+      setConfirmingUpdate(false);
+      await onRefresh?.();
+    } catch (error) {
+      setUpdateError(error instanceof Error ? error.message : "The agent update could not start.");
+    } finally {
+      setUpdateBusy(false);
+    }
+  }
   const canControlPlayer =
     canOperate &&
     node.kind === "direct_media_agent" &&
@@ -4400,6 +4419,28 @@ function NodeCard({
         </button>
       )}
       {playerError && <p role="alert">{playerError}</p>}
+      {canUpdateAgent && !confirmingUpdate && (
+        <button
+          type="button"
+          aria-label={`Update agent on ${node.label}`}
+          onClick={() => setConfirmingUpdate(true)}
+        >
+          Update agent
+        </button>
+      )}
+      {confirmingUpdate && (
+        <div role="group" aria-label={`Confirm agent update on ${node.label}`}>
+          <p>
+            Install {node.agent_update?.available?.version ?? "the controller's version"} on {node.label}?
+            Its player stops and the agent restarts. Requires maintenance mode with nothing playing.
+          </p>
+          <button type="button" className="primary-button" disabled={updateBusy} onClick={() => void updateAgent()}>
+            {updateBusy ? "Starting…" : "Install and restart"}
+          </button>
+          <button type="button" disabled={updateBusy} onClick={() => setConfirmingUpdate(false)}>Cancel</button>
+        </div>
+      )}
+      {updateError && <p role="alert">{updateError}</p>}
       <button type="button" aria-label={`Details for ${node.label}`} onClick={() => setDetailsOpen(true)}>Device details</button>
       {detailsOpen && <DetailsDialog title={`Device details: ${node.label}`} onClose={() => setDetailsOpen(false)}>
       {(node.kind === "direct_media_agent" || node.kind === "downstream_controller") && (

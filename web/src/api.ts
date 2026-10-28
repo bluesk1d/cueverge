@@ -3040,7 +3040,7 @@ export async function startAgentUpdates(deviceIds?: string[]): Promise<AgentUpda
     method: "POST",
     headers: mutationHeaders(),
     body: JSON.stringify(deviceIds ? { device_ids: deviceIds } : {}),
-  });
+  }, true);
 }
 
 export type AgentSettingName =
@@ -3100,7 +3100,7 @@ export async function updateDeviceAgentSettings(
     method: "PUT",
     headers: mutationHeaders(),
     body: JSON.stringify({ settings, expected_revision: expectedRevision }),
-  });
+  }, true);
 }
 
 /** Resend saved settings; restarts the player for display changes in idle maintenance. */
@@ -3108,7 +3108,7 @@ export async function applyDeviceAgentSettings(deviceId: string): Promise<Device
   return request(`/api/gui/v1/devices/${encodeURIComponent(deviceId)}/agent-settings/apply`, {
     method: "POST",
     headers: mutationHeaders(),
-  });
+  }, true);
 }
 
 export async function controlDevicePlayer(

@@ -239,7 +239,8 @@ administrators choose keep awake, player mode, projector display, audio output,
 audio delay and update rate for that host. **Host default** uses the value from
 the host's own configuration. A device card notes **Update available**,
 **Updating**, **Update failed** or **Update rolled back**. Administrators install
-updates from **Connect and manage devices > Agent software updates** with the
+an update with **Update agent** on the device card, or update several hosts from
+**Connect and manage devices > Agent software updates**, with the
 show stopped in maintenance mode. Each host closes its player and restarts, and
 it returns to its previous version automatically if the new one can't reconnect.
 See [Media agent updates](service-administration.md#media-agent-updates).

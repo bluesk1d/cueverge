@@ -27,6 +27,7 @@ async function setup(page: Page, deviceFault = false, noPhoto = false) {
     uploads: [] as Record<string, string>[], failSurfaceOnce: false,
     replacements: [] as Record<string, string>[],
     agentUpdateRequests: [] as unknown[],
+    rejectAgentUpdateOnce: false,
     agentSettingsRequests: [] as unknown[],
     agentSettings: {
       device_id: "demo-left", display_name: "media-client-left", connected: true, supported: true,
@@ -66,6 +67,13 @@ async function setup(page: Page, deviceFault = false, noPhoto = false) {
     if (path.endsWith("/devices/agent-updates")) {
       if (request.method() === "POST") {
         if (request.headers()["x-csrf-token"] !== "setup-csrf") return route.fulfill({ status: 403 });
+        if (state.rejectAgentUpdateOnce) {
+          state.rejectAgentUpdateOnce = false;
+          return route.fulfill({ status: 409, json: { detail: {
+            code: "agent_update_requires_idle_maintenance",
+            message: "Switch to maintenance mode and stop the show before updating media agents.",
+          } } });
+        }
         state.agentUpdateRequests.push(request.postDataJSON());
         const devices = (state.agentUpdates.devices as Record<string, unknown>[]).map((device) => ({
           ...device, state: "updating", detail: "Downloading and installing.",
@@ -83,6 +91,11 @@ async function setup(page: Page, deviceFault = false, noPhoto = false) {
         index === 1 ? {
           ...node, artifact_faults: ["Original simulated storage fault"], failed_transfers: 1,
           keep_awake: { mode: "display", active: false, detail: "Simulated desktop session refusal" },
+          agent_update: {
+            device_id: "demo-left", display_name: "media-client-left", connected: true, state: "available",
+            managed: true, platform: "linux_x86_64", running_version: "0.1.0", running_digest: "d".repeat(64),
+            available: { platform: "linux_x86_64", version: "0.2.0", build: "rev42", digest_sha256: "c".repeat(64), size_bytes: 1 },
+          },
         } : node),
     } : demoTopology });
     if (["POST", "PUT", "PATCH", "DELETE"].includes(request.method()) && request.headers()["x-csrf-token"] !== "setup-csrf") return route.fulfill({ status: 403 });
@@ -291,7 +304,7 @@ test("a mapping failure retries the saved object rather than creating duplicates
 });
 
 test("device cards keep telemetry contextual while failures stay visible", async ({ page }) => {
-  await setup(page, true);
+  const state = await setup(page, true);
   await page.getByRole("group", { name: "Installation workspace", exact: true }).getByRole("button", { name: "Devices", exact: true }).click();
   await expect(page.getByText("400 GB free of 500 GB", { exact: true })).toHaveCount(0);
   await expect(page.getByText("Original simulated storage fault", { exact: true })).toBeVisible();
@@ -302,6 +315,14 @@ test("device cards keep telemetry contextual while failures stay visible", async
   await expect(page.getByText("Requested (display) but not active", { exact: true })).toBeVisible();
   await expect(page.getByText("Agent software", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Close", exact: true }).click();
+  await expect(page.getByText("Update available (0.2.0 · rev42)", { exact: true }).first()).toBeVisible();
+  await page.getByRole("button", { name: "Update agent on media-client-left", exact: true }).click();
+  const confirmUpdate = page.getByRole("group", { name: "Confirm agent update on media-client-left", exact: true });
+  await expect(confirmUpdate.getByText(/Install 0\.2\.0 on media-client-left\?/)).toBeVisible();
+  expect(state.agentUpdateRequests).toEqual([]);
+  await confirmUpdate.getByRole("button", { name: "Install and restart", exact: true }).click();
+  await expect(confirmUpdate).toHaveCount(0);
+  expect(state.agentUpdateRequests).toEqual([{ device_ids: ["demo-left"] }]);
   await page.getByRole("button", { name: "Add a device", exact: true }).click();
   await expect(page.getByRole("textbox", { name: "Capability document", exact: true })).toBeHidden();
 });
@@ -316,6 +337,12 @@ test("administrators see agent updates and confirm before installing", async ({ 
   const confirm = page.getByRole("group", { name: "Confirm agent update", exact: true });
   await expect(confirm.getByText(/Update 1 agent\? Their players stop/)).toBeVisible();
   expect(state.agentUpdateRequests).toEqual([]);
+  state.rejectAgentUpdateOnce = true;
+  await confirm.getByRole("button", { name: "Install and restart", exact: true }).click();
+  await expect(page.getByText(
+    "Cueverge API request failed (409): Switch to maintenance mode and stop the show before updating media agents.",
+    { exact: true },
+  )).toBeVisible();
   await confirm.getByRole("button", { name: "Install and restart", exact: true }).click();
   await expect(page.getByText(`0.1.0 (${"d".repeat(12)}) · Updating: Downloading and installing.`, { exact: true })).toBeVisible();
   expect(state.agentUpdateRequests).toEqual([{ device_ids: ["demo-left"] }]);
