@@ -60,7 +60,11 @@ controller rejects the new hello field. With these features, mpv:
   `media telemetry recovered` when reads succeed again. Earlier builds stopped
   telemetry until the agent reconnected, which left the controller holding the
   scene with `telemetry_stale` while the clock device had already continued into
-  the next scene.
+  the next scene;
+- holds looping media and repeat counts to wall-clock time: mpv loses a little
+  time at every wrap to the start, so the agent nudges `speed` by up to ±4%
+  (seeking past 500 ms of error) to keep the loop on its starting beat. See
+  [synchronization](synchronization.md).
 
 When validating hardware, confirm the cut between two scenes on the actual
 projector: there should be no black frame between the last frame of one clip

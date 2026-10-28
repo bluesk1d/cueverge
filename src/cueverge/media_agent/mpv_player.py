@@ -1,4 +1,6 @@
 import asyncio
+import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, cast
@@ -9,6 +11,13 @@ from cueverge.protocol.device_v2 import MediaFeature
 from cueverge.protocol.models import PlaybackState
 
 EndBehavior = Literal["stop", "hold_last_frame", "loop"]
+
+# mpv loses a little time every time looping or repeating media wraps to its start, so
+# the player keeps such media on its own wall clock by nudging playback speed.
+PACE_DEADBAND_MS = 8
+PACE_HORIZON_MS = 1000
+PACE_MAX_ADJUSTMENT = 0.04
+PACE_SEEK_THRESHOLD_MS = 500
 
 
 @dataclass
@@ -32,6 +41,10 @@ class MpvPlayer:
     _queued: _PlaylistItem | None = None
     _queued_auto_advance: bool = False
     _pending_advance_cleanup: bool = field(default=False, repr=False)
+    monotonic: Callable[[], float] = field(default=time.monotonic, repr=False)
+    # (monotonic seconds, position ms) the current playback is held to; set on first sample.
+    _pace_anchor: tuple[float, int] | None = field(default=None, repr=False)
+    _speed: float = field(default=1.0, repr=False)
 
     async def prepare(
         self,
@@ -60,6 +73,7 @@ class MpvPlayer:
         await self._command("set_property", "vid", "auto")
         await self._command("loadfile", str(asset), "replace")
         await self._command("set_property", "pause", True)
+        await self._reset_pace()
         if end_behavior == "loop":
             duration = await self._wait_for_duration()
             await self._command("set_property", "ab-loop-a", 0)
@@ -123,6 +137,7 @@ class MpvPlayer:
         self.entry += 1
         self._last_position_ms = 0
         self._last_duration_ms = None
+        await self._reset_pace()
         try:
             await self._command("playlist-remove", 0)
         except PlayerError:
@@ -141,15 +156,21 @@ class MpvPlayer:
         raise PlayerError("mpv did not report loop duration within 10 seconds")
 
     async def play(self) -> None:
+        self._pace_anchor = None
         await self._command("set_property", "pause", False)
 
     async def pause(self) -> None:
         await self._command("set_property", "pause", True)
+        await self._reset_pace()
 
     async def resume(self) -> None:
         await self.play()
 
     async def seek(self, position_ms: int) -> None:
+        self._pace_anchor = None
+        await self._seek(position_ms)
+
+    async def _seek(self, position_ms: int) -> None:
         item = self._current
         if item is not None and item.repeat_count and self._last_duration_ms:
             single = max(1, self._last_duration_ms // item.repeat_count)
@@ -164,6 +185,7 @@ class MpvPlayer:
         await self._command("stop")
         self._current = None
         self._queued = None
+        await self._reset_pace()
 
     async def status(self) -> PlayerStatus:
         idle = await self._property("idle-active")
@@ -230,6 +252,8 @@ class MpvPlayer:
                     # A held end stands in for "stop" while the next scene waits to advance.
                     await self._command("set_property", "vid", "no")
                     item.blanked = True
+        if state is PlaybackState.PLAYING and item is not None and single_ms:
+            await self._keep_pace(item, position_ms, single_ms, duration_ms)
         self._last_position_ms = position_ms
         self._last_duration_ms = duration_ms
         return PlayerStatus(
@@ -239,6 +263,51 @@ class MpvPlayer:
             duration_ms=duration_ms,
             entry=self.entry,
         )
+
+    async def _keep_pace(
+        self,
+        item: _PlaylistItem,
+        position_ms: int,
+        single_ms: int,
+        duration_ms: int | None,
+    ) -> None:
+        """Hold looping or repeating media to wall-clock time despite the time lost at wraps."""
+        looping = item.end_behavior == "loop"
+        if not looping and (item.repeat_count or 0) <= 1:
+            return
+        now = self.monotonic()
+        if self._pace_anchor is None:
+            self._pace_anchor = (now, position_ms)
+            return
+        anchor_at, anchor_ms = self._pace_anchor
+        expected_ms = anchor_ms + (now - anchor_at) * 1000
+        if not looping and duration_ms is not None and expected_ms >= duration_ms:
+            return
+        error_ms = expected_ms - position_ms
+        if looping:
+            error_ms = (error_ms + single_ms / 2) % single_ms - single_ms / 2
+        if abs(error_ms) > PACE_SEEK_THRESHOLD_MS:
+            target_ms = round(expected_ms % single_ms if looping else expected_ms)
+            await self._set_speed(1.0)
+            await self._seek(target_ms)
+            return
+        speed = 1.0
+        if abs(error_ms) > PACE_DEADBAND_MS:
+            adjustment = max(
+                -PACE_MAX_ADJUSTMENT,
+                min(PACE_MAX_ADJUSTMENT, error_ms / PACE_HORIZON_MS),
+            )
+            speed = round(1.0 + adjustment, 3)
+        await self._set_speed(speed)
+
+    async def _set_speed(self, speed: float) -> None:
+        if speed != self._speed:
+            await self._command("set_property", "speed", speed)
+            self._speed = speed
+
+    async def _reset_pace(self) -> None:
+        self._pace_anchor = None
+        await self._set_speed(1.0)
 
     async def _property(self, name: str) -> Any:
         try:

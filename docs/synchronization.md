@@ -34,3 +34,13 @@ scene time. Their reported positions are used for drift diagnostics only;
 there is no ongoing drift correction or physical synchronization guarantee.
 Use media-synchronized mode for lighting that must follow buffering or actual
 playback. Agent loss never automatically changes clock authority.
+
+Independently of scene mode, mpv media agents hold media with `end_behavior:
+loop` or a `repeat_count` above 1 to their own wall clock. mpv loses some time
+every time such media wraps to its start, which otherwise adds up to a steady
+drift (several milliseconds per second for short loops). The agent anchors
+playback on its first position sample after play, resume, seek or a file
+change, then nudges mpv's `speed` by up to ±4% to cancel the error and seeks
+when it exceeds 500 ms. Its reported `playback_rate` shows the adjusted speed.
+Single-play media is not adjusted, and outputs are never corrected against each
+other.

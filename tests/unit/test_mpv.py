@@ -412,3 +412,129 @@ def test_player_refuses_automatic_advance_after_looping_media(tmp_path: Path) ->
             await player.queue("a.mp4", "stop", None, True)
 
     asyncio.run(scenario())
+
+
+class _Clock:
+    def __init__(self) -> None:
+        self.now = 100.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+def _speeds(fake: "ScriptedMpvClient") -> list[object]:
+    return [command[2] for command in fake.commands if command[:2] == ("set_property", "speed")]
+
+
+def test_looping_media_catches_up_time_lost_at_each_wrap(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        (tmp_path / "beat.mp4").write_bytes(b"a")
+        fake = ScriptedMpvClient()
+        clock = _Clock()
+        player = MpvPlayer(fake, tmp_path, monotonic=clock)  # type: ignore[arg-type]
+        await player.prepare("beat.mp4", "loop")
+        await player.play()
+
+        fake.properties["time-pos"] = 0.0
+        await player.status()
+        assert _speeds(fake) == []
+
+        # The wrap back to the start cost 30 ms of wall-clock time.
+        clock.now += 4.5
+        fake.properties["time-pos"] = 0.47
+        await player.status()
+        assert _speeds(fake) == [1.03]
+
+        clock.now += 0.5
+        fake.properties["time-pos"] = 0.995
+        await player.status()
+        assert _speeds(fake) == [1.03, 1.0]
+
+        # Running ahead slows down by the same rule.
+        clock.now += 2.0
+        fake.properties["time-pos"] = 3.02
+        await player.status()
+        assert _speeds(fake) == [1.03, 1.0, 0.98]
+        assert not any(command[0] == "seek" for command in fake.commands)
+
+    asyncio.run(scenario())
+
+
+def test_large_loop_error_seeks_back_onto_the_beat(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        (tmp_path / "beat.mp4").write_bytes(b"a")
+        fake = ScriptedMpvClient()
+        clock = _Clock()
+        player = MpvPlayer(fake, tmp_path, monotonic=clock)  # type: ignore[arg-type]
+        await player.prepare("beat.mp4", "loop")
+        await player.play()
+        await player.status()
+
+        clock.now += 3.0
+        fake.properties["time-pos"] = 2.2
+        await player.status()
+        assert ("seek", 3.0, "absolute+exact") in fake.commands
+        assert _speeds(fake) == []
+
+    asyncio.run(scenario())
+
+
+def test_pause_and_seek_restart_pacing_and_restore_normal_speed(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        (tmp_path / "beat.mp4").write_bytes(b"a")
+        fake = ScriptedMpvClient()
+        clock = _Clock()
+        player = MpvPlayer(fake, tmp_path, monotonic=clock)  # type: ignore[arg-type]
+        await player.prepare("beat.mp4", "loop")
+        await player.play()
+        await player.status()
+        clock.now += 1.0
+        fake.properties["time-pos"] = 0.95
+        await player.status()
+        assert _speeds(fake) == [1.04]
+
+        await player.pause()
+        assert _speeds(fake) == [1.04, 1.0]
+        clock.now += 10.0
+        await player.resume()
+        fake.properties["time-pos"] = 0.95
+        await player.status()
+        clock.now += 0.5
+        fake.properties["time-pos"] = 1.45
+        await player.status()
+        assert _speeds(fake) == [1.04, 1.0]
+
+        await player.seek(3000)
+        clock.now += 0.5
+        fake.properties["time-pos"] = 3.0
+        await player.status()
+        assert _speeds(fake) == [1.04, 1.0]
+
+    asyncio.run(scenario())
+
+
+def test_repeat_counts_keep_pace_but_single_plays_are_left_alone(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        (tmp_path / "clip.mp4").write_bytes(b"a")
+        fake = ScriptedMpvClient()
+        clock = _Clock()
+        player = MpvPlayer(fake, tmp_path, monotonic=clock)  # type: ignore[arg-type]
+        await player.prepare("clip.mp4", "hold_last_frame")
+        await player.play()
+        await player.status()
+        clock.now += 1.0
+        fake.properties["time-pos"] = 0.9
+        await player.status()
+        assert _speeds(fake) == []
+
+        await player.prepare("clip.mp4", "hold_last_frame", 3)
+        await player.play()
+        fake.properties["time-pos"] = 3.9
+        await player.status()
+        clock.now += 0.2
+        fake.properties["time-pos"] = 0.05
+        repeated = await player.status()
+        assert repeated.position_ms == 4050
+        assert _speeds(fake) == [1.04]
+
+    asyncio.run(scenario())

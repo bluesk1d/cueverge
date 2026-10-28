@@ -484,7 +484,10 @@ lower it to make it earlier: use the −100/−10/+10/+100 buttons, type a value
 or focus a row and press ← → (Shift for 100 ms). LED changes show on the next
 flash; projector changes restart the loop so every projector starts together
 again, and **Resync projectors** does the same on demand. Each projector row
-shows its drift from the beat when the client reports its position.
+shows its drift from the beat when the client reports its position. The drift
+should stay steady at the client's start offset: clients hold the looping clip
+to their own clock, so a drift that keeps growing means the client is running
+an agent from before that fix and should be updated from the device card.
 Administrators also see each client's **Client audio delay** (the agent's
 audio delay setting) to line the click up with its picture; that change is
 saved to the client immediately.
