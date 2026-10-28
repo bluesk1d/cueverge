@@ -64,8 +64,9 @@ controller rejects the new hello field. With these features, mpv:
   the next scene;
 - holds looping media and repeat counts to wall-clock time: mpv loses a little
   time at every wrap to the start, so the agent nudges `speed` by up to ±4%
-  (seeking past 500 ms of error) to keep the loop on its starting beat. See
-  [synchronization](synchronization.md).
+  (seeking past 500 ms of error) to keep the loop on its starting beat, and
+  ends loops on the last whole video frame so untrimmed audio priming cannot
+  lengthen them. See [synchronization](synchronization.md).
 
 When validating hardware, confirm the cut between two scenes on the actual
 projector: there should be no black frame between the last frame of one clip

@@ -15,7 +15,7 @@ from cueverge.media_agent.mpv import (
     create_mpv_transport,
     resolve_local_asset,
 )
-from cueverge.media_agent.mpv_player import MpvPlayer
+from cueverge.media_agent.mpv_player import MpvPlayer, _loop_end
 from cueverge.protocol.models import PlaybackState
 
 
@@ -267,6 +267,7 @@ def test_player_configures_exact_end_behavior(
             *(
                 [
                     ("get_property", "duration"),
+                    ("get_property", "container-fps"),
                     ("set_property", "ab-loop-a", 0),
                     ("set_property", "ab-loop-b", 3.0),
                 ]
@@ -291,6 +292,7 @@ class ScriptedMpvClient:
             "time-pos": 0.0,
             "pause": False,
             "duration": 4.0,
+            "container-fps": 30.0,
             "speed": 1.0,
             "eof-reached": False,
             "playlist-pos": 0,
@@ -434,28 +436,45 @@ def test_looping_media_catches_up_time_lost_at_each_wrap(tmp_path: Path) -> None
         player = MpvPlayer(fake, tmp_path, monotonic=clock)  # type: ignore[arg-type]
         await player.prepare("beat.mp4", "loop")
         await player.play()
-
-        fake.properties["time-pos"] = 0.0
         await player.status()
-        assert _speeds(fake) == []
 
-        # The wrap back to the start cost 30 ms of wall-clock time.
+        # The wrap back to the start cost 60 ms of wall-clock time.
         clock.now += 4.5
-        fake.properties["time-pos"] = 0.47
+        fake.properties["time-pos"] = 0.44
         await player.status()
-        assert _speeds(fake) == [1.03]
+        assert _speeds(fake) == [1.04]
 
-        clock.now += 0.5
-        fake.properties["time-pos"] = 0.995
-        await player.status()
-        assert _speeds(fake) == [1.03, 1.0]
+        # Back on the beat: the smoothed error decays and normal speed returns.
+        for _ in range(30):
+            clock.now += 0.1
+            fake.properties["time-pos"] = (clock.now - 100.0) % 4.0
+            await player.status()
+        assert _speeds(fake)[-1] == 1.0
+        assert not any(command[0] == "seek" for command in fake.commands)
 
         # Running ahead slows down by the same rule.
-        clock.now += 2.0
-        fake.properties["time-pos"] = 3.02
-        await player.status()
-        assert _speeds(fake) == [1.03, 1.0, 0.98]
-        assert not any(command[0] == "seek" for command in fake.commands)
+        for _ in range(10):
+            clock.now += 0.1
+            fake.properties["time-pos"] = (clock.now - 100.0) % 4.0 + 0.2
+            await player.status()
+        assert _speeds(fake)[-1] < 1.0
+
+    asyncio.run(scenario())
+
+
+def test_small_position_noise_does_not_change_speed(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        (tmp_path / "beat.mp4").write_bytes(b"a")
+        fake = ScriptedMpvClient()
+        clock = _Clock()
+        player = MpvPlayer(fake, tmp_path, monotonic=clock)  # type: ignore[arg-type]
+        await player.prepare("beat.mp4", "loop")
+        await player.play()
+        for index in range(120):
+            fake.properties["time-pos"] = (clock.now - 100.0) % 4.0 + (0.025 if index % 2 else 0)
+            await player.status()
+            clock.now += 1 / 15
+        assert _speeds(fake) == []
 
     asyncio.run(scenario())
 
@@ -489,7 +508,7 @@ def test_pause_and_seek_restart_pacing_and_restore_normal_speed(tmp_path: Path) 
         await player.play()
         await player.status()
         clock.now += 1.0
-        fake.properties["time-pos"] = 0.95
+        fake.properties["time-pos"] = 0.9
         await player.status()
         assert _speeds(fake) == [1.04]
 
@@ -497,10 +516,10 @@ def test_pause_and_seek_restart_pacing_and_restore_normal_speed(tmp_path: Path) 
         assert _speeds(fake) == [1.04, 1.0]
         clock.now += 10.0
         await player.resume()
-        fake.properties["time-pos"] = 0.95
+        fake.properties["time-pos"] = 0.9
         await player.status()
         clock.now += 0.5
-        fake.properties["time-pos"] = 1.45
+        fake.properties["time-pos"] = 1.4
         await player.status()
         assert _speeds(fake) == [1.04, 1.0]
 
@@ -538,3 +557,56 @@ def test_repeat_counts_keep_pace_but_single_plays_are_left_alone(tmp_path: Path)
         assert _speeds(fake) == [1.04]
 
     asyncio.run(scenario())
+
+
+def test_loops_end_on_the_last_whole_video_frame(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        (tmp_path / "beat.mp4").write_bytes(b"a")
+        fake = ScriptedMpvClient()
+        # Untrimmed AAC priming runs the file 21 ms past its last video frame.
+        fake.properties["duration"] = 2.021333
+        player = MpvPlayer(fake, tmp_path)  # type: ignore[arg-type]
+        await player.prepare("beat.mp4", "loop")
+        assert ("set_property", "ab-loop-b", 2.0) in fake.commands
+        await player.play()
+        fake.properties["time-pos"] = 1.5
+        status = await player.status()
+        assert status.duration_ms == 2000
+
+    asyncio.run(scenario())
+
+
+def test_looping_media_continued_into_from_the_queue_gets_a_frame_aligned_loop(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        (tmp_path / "a.mp4").write_bytes(b"a")
+        (tmp_path / "beat.mp4").write_bytes(b"b")
+        fake = ScriptedMpvClient()
+        player = MpvPlayer(fake, tmp_path)  # type: ignore[arg-type]
+        await player.prepare("a.mp4", "hold_last_frame")
+        await player.queue("beat.mp4", "loop", None, False)
+        await player.advance()
+        fake.commands.clear()
+        fake.properties.update({"duration": 2.021333, "time-pos": 0.1})
+        status = await player.status()
+        assert ("set_property", "ab-loop-a", 0) in fake.commands
+        assert ("set_property", "ab-loop-b", 2.0) in fake.commands
+        assert status.duration_ms == 2000
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    ("duration", "fps", "end"),
+    [
+        (2.0, 30.0, 2.0),
+        (2.021333, 30.0, 2.0),
+        (1.99999, 30.0, 2.0),
+        (36.2, 25.0, 36.2),
+        (2.0, None, 2.0),
+        (0.01, 30.0, 0.01),
+    ],
+)
+def test_loop_end_rounds_to_whole_frames(duration: float, fps: float | None, end: float) -> None:
+    assert _loop_end(duration, fps) == pytest.approx(end)

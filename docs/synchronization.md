@@ -40,7 +40,16 @@ loop` or a `repeat_count` above 1 to their own wall clock. mpv loses some time
 every time such media wraps to its start, which otherwise adds up to a steady
 drift (several milliseconds per second for short loops). The agent anchors
 playback on its first position sample after play, resume, seek or a file
-change, then nudges mpv's `speed` by up to ±4% to cancel the error and seeks
-when it exceeds 500 ms. Its reported `playback_rate` shows the adjusted speed.
+change, smooths the error (positions arrive in whole video frames), then nudges
+mpv's `speed` in 0.5% steps by up to ±4% once the error passes 30 ms, returns to
+normal speed under 10 ms, and seeks when it exceeds 500 ms. Its reported
+`playback_rate` shows the adjusted speed.
+
+A loop ends on the file's last whole video frame. Some mpv/FFmpeg builds ignore
+the MP4 edit list that trims AAC encoder priming, so they report the file about
+21 ms longer than its video; looping on that length made every loop late by the
+difference (about 10 ms/s on the 2 s calibration clip). The agent reports the
+frame-aligned loop length as `duration_ms`, which the controller also uses to
+count loops of looping clock media.
 Single-play media is not adjusted, and outputs are never corrected against each
 other.

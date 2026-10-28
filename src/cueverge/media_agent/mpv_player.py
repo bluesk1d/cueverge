@@ -14,10 +14,18 @@ EndBehavior = Literal["stop", "hold_last_frame", "loop"]
 
 # mpv loses a little time every time looping or repeating media wraps to its start, so
 # the player keeps such media on its own wall clock by nudging playback speed.
-PACE_DEADBAND_MS = 8
+PACE_START_MS = 30
+PACE_STOP_MS = 10
 PACE_HORIZON_MS = 1000
 PACE_MAX_ADJUSTMENT = 0.04
 PACE_SEEK_THRESHOLD_MS = 500
+# Positions arrive in whole video frames, so the pacing error is smoothed and the speed
+# moves in coarse steps rather than chasing every sample.
+PACE_SMOOTHING = 0.1
+PACE_SPEED_STEP = 0.005
+# Audio priming or padding can run past the last video frame; a loop ends on a whole
+# frame unless the file runs on by more than this fraction of a frame.
+LOOP_FRAME_TOLERANCE = 0.25
 
 
 @dataclass
@@ -27,6 +35,7 @@ class _PlaylistItem:
     play_index: int = 0
     last_raw_position_ms: int = 0
     blanked: bool = False
+    loop_ms: int | None = None
 
 
 @dataclass
@@ -44,6 +53,7 @@ class MpvPlayer:
     monotonic: Callable[[], float] = field(default=time.monotonic, repr=False)
     # (monotonic seconds, position ms) the current playback is held to; set on first sample.
     _pace_anchor: tuple[float, int] | None = field(default=None, repr=False)
+    _pace_error_ms: float | None = field(default=None, repr=False)
     _speed: float = field(default=1.0, repr=False)
 
     async def prepare(
@@ -74,14 +84,13 @@ class MpvPlayer:
         await self._command("loadfile", str(asset), "replace")
         await self._command("set_property", "pause", True)
         await self._reset_pace()
+        item = _PlaylistItem(end_behavior, repeat_count)
         if end_behavior == "loop":
-            duration = await self._wait_for_duration()
-            await self._command("set_property", "ab-loop-a", 0)
-            await self._command("set_property", "ab-loop-b", duration)
+            await self._set_loop_range(item, await self._wait_for_duration())
         else:
             await self._command("set_property", "ab-loop-a", "no")
             await self._command("set_property", "ab-loop-b", "no")
-        self._current = _PlaylistItem(end_behavior, repeat_count)
+        self._current = item
         self._queued = None
         self.entry += 1
 
@@ -142,6 +151,17 @@ class MpvPlayer:
             await self._command("playlist-remove", 0)
         except PlayerError:
             self._pending_advance_cleanup = True
+
+    async def _set_loop_range(self, item: _PlaylistItem, duration: float) -> None:
+        """Loop between the first and last whole video frames of the file."""
+        try:
+            fps = await self._property("container-fps")
+        except PlayerError:
+            fps = None
+        end = _loop_end(duration, float(fps) if isinstance(fps, int | float) else None)
+        await self._command("set_property", "ab-loop-a", 0)
+        await self._command("set_property", "ab-loop-b", end)
+        item.loop_ms = round(end * 1000)
 
     async def _wait_for_duration(self) -> float:
         for _ in range(200):
@@ -228,6 +248,12 @@ class MpvPlayer:
         )
         raw_ms = max(0, round(position * 1000))
         item = self._current
+        if item is not None and item.end_behavior == "loop":
+            if item.loop_ms is None and isinstance(duration, int | float) and duration > 0:
+                # Looping media continued into from the queue starts on mpv's own loop.
+                await self._set_loop_range(item, float(duration))
+            if item.loop_ms is not None:
+                single_ms = item.loop_ms
         position_ms = raw_ms
         duration_ms = single_ms
         if item is not None and item.repeat_count:
@@ -278,26 +304,34 @@ class MpvPlayer:
         now = self.monotonic()
         if self._pace_anchor is None:
             self._pace_anchor = (now, position_ms)
+            self._pace_error_ms = None
             return
         anchor_at, anchor_ms = self._pace_anchor
         expected_ms = anchor_ms + (now - anchor_at) * 1000
         if not looping and duration_ms is not None and expected_ms >= duration_ms:
             return
-        error_ms = expected_ms - position_ms
+        sample_ms = expected_ms - position_ms
         if looping:
-            error_ms = (error_ms + single_ms / 2) % single_ms - single_ms / 2
+            sample_ms = (sample_ms + single_ms / 2) % single_ms - single_ms / 2
+        previous = self._pace_error_ms
+        error_ms = (
+            sample_ms if previous is None else previous + PACE_SMOOTHING * (sample_ms - previous)
+        )
+        self._pace_error_ms = error_ms
         if abs(error_ms) > PACE_SEEK_THRESHOLD_MS:
             target_ms = round(expected_ms % single_ms if looping else expected_ms)
             await self._set_speed(1.0)
             await self._seek(target_ms)
+            self._pace_error_ms = None
             return
         speed = 1.0
-        if abs(error_ms) > PACE_DEADBAND_MS:
+        threshold = PACE_STOP_MS if self._speed != 1.0 else PACE_START_MS
+        if abs(error_ms) > threshold:
             adjustment = max(
                 -PACE_MAX_ADJUSTMENT,
                 min(PACE_MAX_ADJUSTMENT, error_ms / PACE_HORIZON_MS),
             )
-            speed = round(1.0 + adjustment, 3)
+            speed = round(1.0 + round(adjustment / PACE_SPEED_STEP) * PACE_SPEED_STEP, 3)
         await self._set_speed(speed)
 
     async def _set_speed(self, speed: float) -> None:
@@ -307,6 +341,7 @@ class MpvPlayer:
 
     async def _reset_pace(self) -> None:
         self._pace_anchor = None
+        self._pace_error_ms = None
         await self._set_speed(1.0)
 
     async def _property(self, name: str) -> Any:
@@ -326,6 +361,16 @@ class MpvPlayer:
             return await self.client.named_command(name, **arguments)
         except MpvError as error:
             raise PlayerError(str(error)) from error
+
+
+def _loop_end(duration: float, fps: float | None) -> float:
+    if fps is None or fps <= 0:
+        return duration
+    frames = duration * fps
+    whole = round(frames)
+    if abs(frames - whole) > LOOP_FRAME_TOLERANCE:
+        whole = int(frames)
+    return whole / fps if whole > 0 else duration
 
 
 def _loop_file(end_behavior: EndBehavior, repeat_count: int | None) -> str:
