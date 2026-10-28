@@ -68,6 +68,8 @@ from cueverge.gui.contracts import (
     AssetSceneReferenceResponse,
     AssetUploadResponse,
     AuditEventResponse,
+    BakeRequirementResponse,
+    BakeRequirementsResponse,
     BeginAssetReplacementRequest,
     BeginAssetUploadRequest,
     BrowserErrorRequest,
@@ -3050,6 +3052,29 @@ def create_gui_router(services: GuiServices) -> APIRouter:
     )
     def render_jobs(project_id: str) -> list[RenderJobResponse]:
         return [_render_job(job) for job in services.render_jobs.list(project_id)]
+
+    @router.get(
+        "/projects/{project_id}/bake-requirements",
+        response_model=BakeRequirementsResponse,
+        dependencies=[project_reader],
+    )
+    def bake_requirements(
+        project_id: str,
+        revision: Annotated[int | None, Query(ge=1)] = None,
+    ) -> BakeRequirementsResponse:
+        try:
+            stored = services.repository.get_revision(project_id, revision)
+            requirements = services.publication.bake_requirements(project_id, stored.revision)
+        except ProjectNotFoundError as error:
+            raise HTTPException(status_code=404, detail={"code": "project_not_found"}) from error
+        return BakeRequirementsResponse(
+            project_id=project_id,
+            revision=stored.revision,
+            ready=all(item.state == "current" for item in requirements),
+            bakes=tuple(
+                BakeRequirementResponse.model_validate(asdict(item)) for item in requirements
+            ),
+        )
 
     @router.get(
         "/projects/{project_id}/lighting-bakes",

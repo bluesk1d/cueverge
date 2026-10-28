@@ -333,6 +333,18 @@ def authoring_schema() -> dict[str, Any]:
             "status_tool": "get_apply_jobs",
             "cancel_tool": "cancel_apply",
             "saved_is_not_loaded": True,
+            "bakes_missing_or_stale_first": True,
+            "bake_requirements_tool": "get_bake_requirements",
+            "states": [
+                "preparing",
+                "baking",
+                "publishing",
+                "staging",
+                "handover",
+                "completed",
+                "failed",
+                "cancelled",
+            ],
         },
         "monitor": {
             "tool": "get_output_monitor",

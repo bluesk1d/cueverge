@@ -8,7 +8,8 @@ import { ErrorState } from "../components/ui";
 
 const terminal = new Set<ApplyJob["state"]>(["completed", "failed", "cancelled"]);
 const phases: Record<ApplyJob["state"], string> = {
-  preparing: "Checking the saved show", publishing: "Packaging the show",
+  preparing: "Checking the saved show", baking: "Baking media that changed",
+  publishing: "Packaging the show",
   staging: "Sending files to devices", handover: "Pausing briefly and loading the show",
   completed: "Applied", failed: "Applying needs attention", cancelled: "Applying cancelled",
 };
@@ -65,13 +66,16 @@ export function ApplyPanel({ draft, canApply, runtime, runtimeFresh = false }: {
     {!runtimeFresh && <small>Couldn't confirm what the display is running right now. Applying will check again first.</small>}
     <div className="show-actions">
       <button className="primary-button" disabled={!canApply || busy} onClick={() => { setRestore(null); setOpen(true); }}>Apply saved changes</button>
-      {job && !terminal.has(job.state) && ["preparing", "publishing", "staging"].includes(job.state) && <button disabled={!canApply || job.cancel_requested} onClick={async () => {
+      {job && !terminal.has(job.state) && ["preparing", "baking", "publishing", "staging"].includes(job.state) && <button disabled={!canApply || job.cancel_requested} onClick={async () => {
         try { setJob(await cancelApply(draft.project.id, job.id)); }
         catch (failure) { setError(failure instanceof Error ? failure.message : "Cancellation failed."); }
       }}>{job.cancel_requested ? "Cancellation requested" : "Cancel preparation"}</button>}
     </div>
     {!canApply && <small>Applying needs publisher or administrator access, permission to change the live display, and no unsaved edits.</small>}
     {job && <p role="status">{phases[job.state]}{job.state === "completed" ? job.running ? " · restarted from the beginning" : " · playback remains stopped" : ""}</p>}
+    {job?.state === "baking" && job.bakes && <ul className="apply-panel__bakes" aria-label="Bakes in progress">
+      {job.bakes.map((bake) => <li key={bake.id}>{bake.label}: {bake.state === "completed" ? "done" : bake.state === "running" ? `${Math.round(bake.progress * 100)}%` : bake.state}</li>)}
+    </ul>}
     {job?.error && <ErrorState title="Applying didn't finish" description={job.error} />}
     {job?.warnings?.map((value) => <p role="status" key={value}>{value}</p>)}
     {error && <><ErrorState title="Couldn't get applying status" description={`${error} Refresh before trying again.`} /><button onClick={() => { setError(null); setRetry((value) => value + 1); }}>Refresh status</button></>}

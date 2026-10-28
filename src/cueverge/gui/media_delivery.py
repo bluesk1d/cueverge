@@ -10,14 +10,15 @@ from pydantic import AnyUrl, TypeAdapter, ValidationError
 
 from cueverge.gui.artifact_deployment import ArtifactDeploymentError
 from cueverge.gui.contracts import DraftProject
+from cueverge.gui.scene_output_bakes import scene_output_bakes
 from cueverge.gui.stage_renderer import bakes_lighting_only
 from cueverge.protocol.device_v2 import DeviceArtifactStageAck, DeviceArtifactStageCommand
 
 if TYPE_CHECKING:
-    from cueverge.gui.asset_upload import AssetUploadService
+    from cueverge.gui.asset_upload import AssetUploadService, StoredAsset
     from cueverge.gui.device_session import DeviceSessionRegistry
     from cueverge.gui.render_jobs import RenderJobService
-    from cueverge.gui.repository import GuiRepository
+    from cueverge.gui.repository import GuiRepository, StoredResourceAssignment
 
 
 def media_members(
@@ -39,6 +40,7 @@ def media_members(
     }
     available = jobs.list(project_id)
     assignments = {item.resource: item for item in repository.list_resource_assignments()}
+    scene_outputs = {(item.scene_id, item.output_id): item for item in scene_output_bakes(draft)}
     members: list[dict[str, object]] = []
     for scene in draft.scenes:
         values = roots.get(scene.id, []) if isinstance(roots, dict) else []
@@ -93,10 +95,53 @@ def media_members(
                     for value in raw_members
                     if isinstance(value, dict) and value.get("resource") == output.resource
                 )
+            scene_output = scene_outputs.get((scene.id, str(output_id)))
+            if scene_output is not None:
+                job = next(
+                    (
+                        item
+                        for item in available
+                        if item.composition_id == scene_output.composition_id
+                        and item.source_revision == revision
+                        and item.state == "completed"
+                        and item.artifact_id
+                    ),
+                    None,
+                )
+                if job is None or job.artifact_id is None:
+                    raise ArtifactDeploymentError(
+                        f"{scene_output.label} has whole-scene audio layers that need a bake"
+                    )
+                if scene_output.asset_id is not None:
+                    _require_device_format(
+                        assets.get_original(scene_output.asset_id)[0],
+                        output,
+                        assignments,
+                        repository,
+                    )
+                manifest = repository.get_render_artifact_manifest(job.artifact_id)
+                raw_members = manifest.get("members")
+                if not isinstance(raw_members, list):
+                    raise ArtifactDeploymentError("Baked media member manifest is invalid")
+                choices.extend(
+                    {
+                        "render_artifact_id": job.artifact_id,
+                        "source_asset_id": None,
+                        "digest_sha256": value["digest_sha256"],
+                        "size_bytes": value["size_bytes"],
+                    }
+                    for value in raw_members
+                    if isinstance(value, dict) and value.get("resource") == output.resource
+                )
             if len(choices) > 1:
                 raise ArtifactDeploymentError(
                     "Multiple baked roots target one media output; "
                     "bake a combined native composition before Apply"
+                    + (
+                        ", or move the whole-scene layers into that composition"
+                        if scene_output is not None
+                        else ""
+                    )
                 )
             if choices:
                 selected = choices[0]
@@ -110,38 +155,7 @@ def media_members(
                     raise ArtifactDeploymentError(
                         "Media asset is outside this project or is not verified"
                     )
-                metadata = asset.metadata or {}
-                formats = metadata.get("format_name")
-                codecs = metadata.get("video_codecs", [])
-                assignment = assignments.get(output.resource)
-                if assignment is None and getattr(output, "required", True):
-                    raise ArtifactDeploymentError(f"Media output {output.resource} is unassigned")
-                device = repository.get_device(assignment.device_id) if assignment else None
-                from cueverge.protocol.device_v2 import MediaPlaybackCapability
-
-                capability = (
-                    next(
-                        (
-                            item
-                            for item in device.capabilities.capabilities
-                            if isinstance(item, MediaPlaybackCapability)
-                        ),
-                        None,
-                    )
-                    if device
-                    else None
-                )
-                if getattr(output, "required", True) and (
-                    capability is None
-                    or not isinstance(formats, str)
-                    or not set(formats.split(",")).intersection(capability.containers)
-                    or not isinstance(codecs, list)
-                    or not set(codecs).issubset(capability.codecs)
-                ):
-                    raise ArtifactDeploymentError(
-                        "Original media format is not declared by its device; "
-                        "bake a compatible native output before Apply"
-                    )
+                _require_device_format(asset, output, assignments, repository)
                 if hashlib.sha256(path.read_bytes()).hexdigest() != asset.digest_sha256:
                     raise ArtifactDeploymentError("Media asset checksum changed")
                 selected = {
@@ -168,6 +182,49 @@ def media_members(
                 }
             )
     return members
+
+
+def _require_device_format(
+    asset: "StoredAsset",
+    output: object,
+    assignments: dict[str, "StoredResourceAssignment"],
+    repository: "GuiRepository",
+) -> None:
+    """The output's media container and video codecs must be ones its device declares."""
+    from cueverge.protocol.device_v2 import MediaPlaybackCapability
+
+    resource = str(getattr(output, "resource", ""))
+    required = getattr(output, "required", True)
+    metadata = asset.metadata or {}
+    formats = metadata.get("format_name")
+    codecs = metadata.get("video_codecs", [])
+    assignment = assignments.get(resource)
+    if assignment is None and required:
+        raise ArtifactDeploymentError(f"Media output {resource} is unassigned")
+    device = repository.get_device(assignment.device_id) if assignment else None
+    capability = (
+        next(
+            (
+                item
+                for item in device.capabilities.capabilities
+                if isinstance(item, MediaPlaybackCapability)
+            ),
+            None,
+        )
+        if device
+        else None
+    )
+    if required and (
+        capability is None
+        or not isinstance(formats, str)
+        or not set(formats.split(",")).intersection(capability.containers)
+        or not isinstance(codecs, list)
+        or not set(codecs).issubset(capability.codecs)
+    ):
+        raise ArtifactDeploymentError(
+            "Original media format is not declared by its device; "
+            "bake a compatible native output before Apply"
+        )
 
 
 def published_media_member(

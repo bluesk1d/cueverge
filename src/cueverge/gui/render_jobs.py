@@ -25,6 +25,13 @@ from cueverge.gui.projector_overlap import (
 )
 from cueverge.gui.projector_renderer import ProjectorRenderError, render_projector_composition
 from cueverge.gui.repository import GuiRepository
+from cueverge.gui.scene_output_bakes import (
+    SceneOutputBakeError,
+    find_scene_output_bake,
+    is_scene_output_id,
+    render_scene_output,
+    scene_output_cache_payload,
+)
 from cueverge.gui.stage_coverage import StageCoverage, StageCoverageService
 from cueverge.gui.stage_renderer import (
     bakes_lighting_only,
@@ -150,12 +157,12 @@ class RenderJobService:
         revision = self.repository.get_revision(project_id)
         if expected_revision is not None and revision.revision != expected_revision:
             raise RenderJobError("working revision changed; fetch project context before baking")
-        inputs = self._render_inputs(
-            revision.draft.editor_metadata,
-            composition_id,
-            project_id,
+        inputs = self._job_inputs(revision.draft, composition_id, project_id)
+        reserved_bytes = (
+            self._scene_output_reservation(inputs.composition)
+            if is_scene_output_id(composition_id)
+            else _estimate_reservation(inputs.composition)
         )
-        reserved_bytes = _estimate_reservation(inputs.composition)
         if reserved_bytes > MAX_RENDER_RESERVATION_BYTES:
             raise RenderJobError("render exceeds the 10 GiB temporary reservation cap")
         available = shutil.disk_usage(self.output_root).free
@@ -339,7 +346,19 @@ class RenderJobService:
             composition = _mapping(
                 _mapping(revision.draft.editor_metadata.get("compositions")).get(job.composition_id)
             )
-            if composition.get("space_kind") == "lighting_surface":
+            if is_scene_output_id(job.composition_id):
+                inputs = self._job_inputs(revision.draft, job.composition_id, job.project_id)
+                if job.cache_key not in _bake_keys(inputs, job.project_id, job.source_revision):
+                    raise RenderJobError("scene output changed after the bake was queued")
+                manifest = render_scene_output(
+                    project_id=job.project_id,
+                    source_revision=job.source_revision,
+                    draft=revision.draft,
+                    composition_id=job.composition_id,
+                    assets=self.assets,
+                    output_directory=self.output_root / "sets",
+                )
+            elif composition.get("space_kind") == "lighting_surface":
                 inputs = self._render_inputs(
                     revision.draft.editor_metadata,
                     job.composition_id,
@@ -517,6 +536,25 @@ class RenderJobService:
                 (job_id,),
             ).fetchone()
         return bool(row["cancel_requested"]) if row is not None else True
+
+    def _job_inputs(
+        self, draft: DraftProject, composition_id: str, project_id: str
+    ) -> RenderInputs:
+        """Render inputs for a composition or a scene output with scene-level layers."""
+        if not is_scene_output_id(composition_id):
+            return self._render_inputs(draft.editor_metadata, composition_id, project_id)
+        try:
+            bake = find_scene_output_bake(draft, composition_id)
+            composition, checksums = scene_output_cache_payload(bake, self.assets, project_id)
+        except (SceneOutputBakeError, AssetUploadError) as error:
+            raise RenderJobError(str(error)) from error
+        return RenderInputs(composition, checksums, {})
+
+    def _scene_output_reservation(self, composition: Mapping[str, object]) -> int:
+        asset = self.assets.get_asset(_string(composition.get("asset_id")))
+        duration_ms = _integer((asset.metadata or {}).get("duration_ms") or 0)
+        # Copied video plus decoded float32 stereo for the soundtrack, layers and mix.
+        return (asset.size_bytes or 0) * 2 + duration_ms * 48 * 2 * 4 * 4
 
     def _render_inputs(
         self,

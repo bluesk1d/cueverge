@@ -33,6 +33,8 @@ import {
   StageLightingPreview,
 } from "../api";
 import { VirtualizedList } from "../components/VirtualizedList";
+import { SceneOutputBakes } from "../components/SceneOutputBakes";
+import { NumericInput } from "../components/NumericInput";
 import { SurfaceMediaOverlay } from "../components/SurfaceMediaOverlay";
 import { DetailsDialog } from "../components/DetailsDialog";
 import { SceneHouseView } from "../components/SceneHouseView";
@@ -2242,12 +2244,11 @@ export function TimelineEditor({
         </output>
         <label>
           Go to (ms)
-          <input
+          <NumericInput
             aria-label="Scrub position"
             max={localOffset + duration}
             min={localOffset}
             step={snapMs}
-            type="number"
             value={playhead}
             onChange={(event) => setPlayhead(snapped(Number(event.target.value)))}
           />
@@ -2717,13 +2718,12 @@ export function TimelineEditor({
                     return (
                       <label>
                         Plays
-                        <input
+                        <NumericInput
                           aria-label="Layer plays"
                           disabled={!canEdit}
                           min="1"
                           max="10000"
                           step="1"
-                          type="number"
                           value={Number.isInteger(exact) ? exact : ""}
                           placeholder={exact.toFixed(2)}
                           onChange={(event) => {
@@ -2768,13 +2768,12 @@ export function TimelineEditor({
                   )}
                 <label>
                   Layer duration
-                  <input
+                  <NumericInput
                     aria-label="Media layer duration"
                     disabled={!canEdit}
                     max={duration - selectedTransformLayer.start_ms}
                     min="1"
                     step={snapMs}
-                    type="number"
                     value={selectedTransformLayer.duration_ms}
                     onChange={(event) =>
                       updateTransformLayer(selectedTransformLayer.id, (layer) => {
@@ -2800,11 +2799,10 @@ export function TimelineEditor({
                 </label>
                 <label>
                   Source in
-                  <input
+                  <NumericInput
                     aria-label="Layer source in"
                     disabled={!canEdit}
                     min="0"
-                    type="number"
                     value={selectedTransformLayer.in_point_ms}
                     onChange={(event) =>
                       updateTransformLayer(selectedTransformLayer.id, (layer) => {
@@ -2820,11 +2818,10 @@ export function TimelineEditor({
                 </label>
                 <label>
                   Source out
-                  <input
+                  <NumericInput
                     aria-label="Layer source out"
                     disabled={!canEdit}
                     min={selectedTransformLayer.in_point_ms + 1}
-                    type="number"
                     value={selectedTransformLayer.out_point_ms}
                     onChange={(event) =>
                       updateTransformLayer(selectedTransformLayer.id, (layer) => {
@@ -2847,10 +2844,9 @@ export function TimelineEditor({
                 </label>
                 <label>
                   Visual order
-                  <input
+                  <NumericInput
                     aria-label="Layer visual order"
                     disabled={!canEdit}
-                    type="number"
                     value={selectedTransformLayer.z_index}
                     onChange={(event) =>
                       updateTransformLayer(selectedTransformLayer.id, (layer) => ({
@@ -2862,11 +2858,10 @@ export function TimelineEditor({
                 </label>
                 <label>
                   Fade in
-                  <input
+                  <NumericInput
                     aria-label="Layer fade in"
                     disabled={!canEdit}
                     min="0"
-                    type="number"
                     value={selectedTransformLayer.fade_in_ms}
                     onChange={(event) =>
                       updateTransformLayer(selectedTransformLayer.id, (layer) => ({
@@ -2878,11 +2873,10 @@ export function TimelineEditor({
                 </label>
                 <label>
                   Fade out
-                  <input
+                  <NumericInput
                     aria-label="Layer fade out"
                     disabled={!canEdit}
                     min="0"
-                    type="number"
                     value={selectedTransformLayer.fade_out_ms}
                     onChange={(event) =>
                       updateTransformLayer(selectedTransformLayer.id, (layer) => ({
@@ -2896,13 +2890,12 @@ export function TimelineEditor({
                   <>
                     <label>
                       Audio gain
-                      <input
+                      <NumericInput
                         aria-label="Audio gain"
                         disabled={!canEdit}
                         max="24"
                         min="-96"
                         step="0.1"
-                        type="number"
                         value={selectedTransformLayer.audio.gain_db}
                         onChange={(event) =>
                           updateTransformLayer(selectedTransformLayer.id, (layer) => ({
@@ -2919,11 +2912,10 @@ export function TimelineEditor({
                     </label>
                     <label>
                       Audio mix order
-                      <input
+                      <NumericInput
                         aria-label="Audio mix order"
                         disabled={!canEdit}
                         min="0"
-                        type="number"
                         value={selectedTransformLayer.audio.mix_order}
                         onChange={(event) =>
                           updateTransformLayer(selectedTransformLayer.id, (layer) => ({
@@ -3098,13 +3090,12 @@ export function TimelineEditor({
                   <div className="timeline-keyframe-properties">
                     <label>
                       Keyframe time
-                      <input
+                      <NumericInput
                         aria-label="Transform keyframe time"
                         disabled={!canEdit}
                         max={selectedTransformLayer.duration_ms}
                         min="0"
                         step={snapMs}
-                        type="number"
                         value={selectedTransformKeyframe.time_ms}
                         onChange={(event) =>
                           updateTransformKeyframe(
@@ -3328,8 +3319,7 @@ export function TimelineEditor({
                         <>
                           <label>
                             Media start delay (ms)
-                            <input
-                              type="number"
+                            <NumericInput
                               min="0"
                               max="5000"
                               step="1"
@@ -4013,13 +4003,12 @@ export function TimelineEditor({
                 ).map(([label, field, minimum, maximum, step]) => (
                   <label key={field}>
                     {label}
-                    <input
+                    <NumericInput
                       aria-label={`Lighting ${label.toLocaleLowerCase()}`}
                       disabled={!canEdit}
                       max={maximum}
                       min={minimum}
                       step={step}
-                      type="number"
                       value={composition.lighting_settings[field]}
                       onChange={(event) =>
                         setCompositions((current) => ({
@@ -4143,12 +4132,11 @@ export function TimelineEditor({
                     ).map(([label, field, minimum, maximum]) => (
                       <label key={field}>
                         {label}
-                        <input
+                        <NumericInput
                           aria-label={`Lighting layer ${label.toLocaleLowerCase()}`}
                           max={maximum}
                           min={minimum}
                           step={field === "opacity" ? 0.01 : 1}
-                          type="number"
                           disabled={
                             selectedLightingLayer.persistent &&
                             (field === "start_ms" || field === "duration_ms")
@@ -4491,11 +4479,10 @@ export function TimelineEditor({
                 </label>
                 <label>
                   Duration (ms)
-                  <input
+                  <NumericInput
                     aria-label="New media layer duration"
                     min="1"
                     step={snapMs}
-                    type="number"
                     value={newTransformDuration}
                     onChange={(event) =>
                       setNewTransformDuration(Number(event.target.value))
@@ -4724,13 +4711,12 @@ export function TimelineEditor({
                       </label>
                       <label>
                         Duration
-                        <input
+                        <NumericInput
                           aria-label={`Lighting cue duration ${cue.name}`}
                           disabled={!canEdit}
                           max={duration - effectiveTime}
                           min="1"
                           step={snapMs}
-                          type="number"
                           value={cue.lighting.duration_ms}
                           onChange={(event) =>
                             updateLightingCue(cue.id, (lighting) => ({
@@ -4845,13 +4831,12 @@ export function TimelineEditor({
                       </label>
                       <label>
                         Brightness
-                        <input
+                        <NumericInput
                           aria-label={`Lighting cue brightness ${cue.name}`}
                           disabled={!canEdit}
                           max="1"
                           min="0"
                           step="0.01"
-                          type="number"
                           value={cue.lighting.brightness}
                           onChange={(event) =>
                             updateLightingCue(cue.id, (lighting) => ({
@@ -4863,13 +4848,12 @@ export function TimelineEditor({
                       </label>
                       <label>
                         End brightness
-                        <input
+                        <NumericInput
                           aria-label={`Lighting cue end brightness ${cue.name}`}
                           disabled={!canEdit}
                           max="1"
                           min="0"
                           step="0.01"
-                          type="number"
                           value={cue.lighting.end_brightness ?? cue.lighting.brightness}
                           onChange={(event) =>
                             updateLightingCue(cue.id, (lighting) => ({
@@ -4912,13 +4896,12 @@ export function TimelineEditor({
                       ).map(([label, field, minimum, maximum, step]) => (
                         <label key={field}>
                           {label}
-                          <input
+                          <NumericInput
                             aria-label={`Lighting cue ${label.toLocaleLowerCase()} ${cue.name}`}
                             disabled={!canEdit}
                             max={maximum}
                             min={minimum}
                             step={step}
-                            type="number"
                             value={cue.lighting![field]}
                             onChange={(event) =>
                               updateLightingCue(cue.id, (lighting) => ({
@@ -5043,11 +5026,10 @@ export function TimelineEditor({
                 </label>
                 <label>
                   Offset from marker (ms)
-                  <input
+                  <NumericInput
                     aria-label="New synchronized cue marker offset"
                     disabled={!newCueMarkerId}
                     step={snapMs}
-                    type="number"
                     value={newCueOffset}
                     onChange={(event) => setNewCueOffset(Number(event.target.value))}
                   />
@@ -5055,11 +5037,10 @@ export function TimelineEditor({
                 {newCueKind === "lighting" && (
                   <label>
                     Duration (ms)
-                    <input
+                    <NumericInput
                       aria-label="New lighting cue duration"
                       min="1"
                       step={snapMs}
-                      type="number"
                       value={newCueDuration}
                       onChange={(event) => setNewCueDuration(Number(event.target.value))}
                     />
@@ -5226,10 +5207,9 @@ export function TimelineEditor({
               ))}
               <label>
                 Shift by (ms)
-                <input
+                <NumericInput
                   aria-label="Compound shift milliseconds"
                   step={snapMs}
-                  type="number"
                   value={compoundShiftMs}
                   onChange={(event) => setCompoundShiftMs(Number(event.target.value))}
                 />
@@ -5611,11 +5591,10 @@ export function TimelineEditor({
                 </datalist>
                 <label>
                   Width
-                  <input
+                  <NumericInput
                     aria-label="New composition width"
                     min="0.001"
                     step="any"
-                    type="number"
                     value={newCompositionWidth}
                     onChange={(event) =>
                       setNewCompositionWidth(Number(event.target.value))
@@ -5624,11 +5603,10 @@ export function TimelineEditor({
                 </label>
                 <label>
                   Height
-                  <input
+                  <NumericInput
                     aria-label="New composition height"
                     min="0.001"
                     step="any"
-                    type="number"
                     value={newCompositionHeight}
                     onChange={(event) =>
                       setNewCompositionHeight(Number(event.target.value))
@@ -5637,10 +5615,9 @@ export function TimelineEditor({
                 </label>
                 <label>
                   Duration (ms)
-                  <input
+                  <NumericInput
                     aria-label="New composition duration"
                     min="1"
-                    type="number"
                     value={newCompositionDuration}
                     onChange={(event) =>
                       setNewCompositionDuration(Number(event.target.value))
@@ -5649,10 +5626,9 @@ export function TimelineEditor({
                 </label>
                 <label>
                   Local time offset (ms)
-                  <input
+                  <NumericInput
                     aria-label="New composition local offset"
                     min="0"
-                    type="number"
                     value={newCompositionOffset}
                     onChange={(event) =>
                       setNewCompositionOffset(Number(event.target.value))
@@ -5730,10 +5706,9 @@ export function TimelineEditor({
                 </button>
                 <label>
                   Starts at (ms)
-                  <input
+                  <NumericInput
                     aria-label="Instance start offset"
                     min="0"
-                    type="number"
                     value={instanceStartOffset}
                     onChange={(event) =>
                       setInstanceStartOffset(Number(event.target.value))
@@ -5742,12 +5717,11 @@ export function TimelineEditor({
                 </label>
                 <label>
                   Speed
-                  <input
+                  <NumericInput
                     aria-label="Instance time scale"
                     min="0.01"
                     max="16"
                     step="0.01"
-                    type="number"
                     value={instanceTimeScale}
                     onChange={(event) =>
                       setInstanceTimeScale(Number(event.target.value))
@@ -5756,20 +5730,18 @@ export function TimelineEditor({
                 </label>
                 <label>
                   Stage X
-                  <input
+                  <NumericInput
                     aria-label="Instance stage X"
                     step="any"
-                    type="number"
                     value={instanceX}
                     onChange={(event) => setInstanceX(Number(event.target.value))}
                   />
                 </label>
                 <label>
                   Stage Y
-                  <input
+                  <NumericInput
                     aria-label="Instance stage Y"
                     step="any"
-                    type="number"
                     value={instanceY}
                     onChange={(event) => setInstanceY(Number(event.target.value))}
                   />
@@ -5826,16 +5798,28 @@ export function TimelineEditor({
         )}
         {toolTab === "render" && (
           <>
+            {!composition && scene && (
+              <SceneOutputBakes
+                projectId={projectId}
+                sceneId={scene.id}
+                revision={draft.revision}
+                canEdit={canEdit}
+                dirty={timelineDirty}
+                renderJobs={renderJobs}
+                onJobCreated={(job) =>
+                  setRenderJobs((current) => [job, ...current.filter((item) => item.id !== job.id)])
+                }
+              />
+            )}
             {composition && composition.space_kind !== "lighting_surface" && (
               <div className="timeline-render-conformance">
                 <strong>Render conformance · pipeline revision 1</strong>
                 <label>
                   Render width
-                  <input
+                  <NumericInput
                     aria-label="Render width"
                     disabled={!canEdit}
                     min="1"
-                    type="number"
                     value={composition.render_settings.render_width}
                     onChange={(event) => {
                       const renderWidth = Number(event.target.value);
@@ -5858,7 +5842,7 @@ export function TimelineEditor({
                 </label>
                 <label>
                   Render height
-                  <input
+                  <NumericInput
                     aria-label="Render height"
                     disabled={!canEdit || composition.space_kind === "stage"}
                     title={
@@ -5867,7 +5851,6 @@ export function TimelineEditor({
                         : undefined
                     }
                     min="1"
-                    type="number"
                     value={
                       composition.space_kind === "stage"
                         ? stageRenderHeight(
@@ -5893,11 +5876,10 @@ export function TimelineEditor({
                 </label>
                 <label>
                   Frame-rate numerator
-                  <input
+                  <NumericInput
                     aria-label="Render frame-rate numerator"
                     disabled={!canEdit}
                     min="1"
-                    type="number"
                     value={composition.render_settings.frame_rate_numerator}
                     onChange={(event) =>
                       setCompositions((current) => ({
@@ -5915,11 +5897,10 @@ export function TimelineEditor({
                 </label>
                 <label>
                   Frame-rate denominator
-                  <input
+                  <NumericInput
                     aria-label="Render frame-rate denominator"
                     disabled={!canEdit}
                     min="1"
-                    type="number"
                     value={composition.render_settings.frame_rate_denominator}
                     onChange={(event) =>
                       setCompositions((current) => ({
@@ -6064,11 +6045,10 @@ export function TimelineEditor({
                 </label>
                 <label>
                   Maximum video bitrate
-                  <input
+                  <NumericInput
                     aria-label="Maximum video bitrate"
                     disabled={!canEdit}
                     min="500"
-                    type="number"
                     value={
                       composition.render_settings.output_profile
                         .max_video_bitrate_kbps
@@ -6093,13 +6073,12 @@ export function TimelineEditor({
                 </label>
                 <label>
                   Loudness target
-                  <input
+                  <NumericInput
                     aria-label="Loudness target"
                     disabled={!canEdit}
                     max="-5"
                     min="-40"
                     step="0.1"
-                    type="number"
                     value={
                       composition.render_settings.output_profile
                         .loudness_target_lufs
@@ -6124,11 +6103,10 @@ export function TimelineEditor({
                 </label>
                 <label>
                   Keyframe interval
-                  <input
+                  <NumericInput
                     aria-label="Keyframe interval"
                     disabled={!canEdit}
                     min="1"
-                    type="number"
                     value={
                       composition.render_settings.output_profile
                         .keyframe_interval_frames
@@ -6227,11 +6205,10 @@ export function TimelineEditor({
                       </small>
                       <label>
                         Start error ms
-                        <input
+                        <NumericInput
                           aria-label="Rehearsal start error"
                           min="0"
                           step="0.1"
-                          type="number"
                           value={rehearsalStartError}
                           onChange={(event) =>
                             setRehearsalStartError(Number(event.target.value))
@@ -6240,11 +6217,10 @@ export function TimelineEditor({
                       </label>
                       <label>
                         Drift ms/min
-                        <input
+                        <NumericInput
                           aria-label="Rehearsal drift"
                           min="0"
                           step="0.1"
-                          type="number"
                           value={rehearsalDrift}
                           onChange={(event) =>
                             setRehearsalDrift(Number(event.target.value))
@@ -6253,10 +6229,9 @@ export function TimelineEditor({
                       </label>
                       <label>
                         Measurement duration seconds
-                        <input
+                        <NumericInput
                           aria-label="Rehearsal duration"
                           min="1"
-                          type="number"
                           value={rehearsalDuration}
                           onChange={(event) =>
                             setRehearsalDuration(Number(event.target.value))
@@ -6735,10 +6710,9 @@ export function TimelineEditor({
           </label>
           <label>
             Duration (ms)
-            <input
+            <NumericInput
               aria-label="Preset composition duration"
               min="1"
-              type="number"
               value={presetDuration}
               onChange={(event) => setPresetDuration(Number(event.target.value))}
             />
@@ -6810,12 +6784,11 @@ export function TimelineEditor({
               </label>
               <label>
                 Composition duration (seconds)
-                <input
+                <NumericInput
                   aria-label="Composition duration (seconds)"
                   disabled={!canEdit}
                   min="0.001"
                   step="0.001"
-                  type="number"
                   value={composition.duration_ms / 1000}
                   onChange={(event) =>
                     setCompositionDuration(composition.id, Math.round(Number(event.target.value) * 1000))
@@ -6855,12 +6828,11 @@ export function TimelineEditor({
             <strong>Scene scheduling and output policy</strong>
             <label>
               Scene duration (seconds)
-              <input
+              <NumericInput
                 aria-label="Scene duration (seconds)"
                 disabled={!canEdit}
                 min="0.001"
                 step="0.001"
-                type="number"
                 value={scenePolicy.duration_ms / 1000}
                 onChange={(event) => setSceneDuration(Math.round(Number(event.target.value) * 1000))}
               />
@@ -6871,12 +6843,11 @@ export function TimelineEditor({
             </label>
             <label>
               Scene priority
-              <input
+              <NumericInput
                 aria-label="Scene priority"
                 disabled={!canEdit}
                 max="100"
                 min="0"
-                type="number"
                 value={scenePolicy.priority}
                 onChange={(event) =>
                   setScenePolicy((current) => ({
@@ -6955,11 +6926,10 @@ export function TimelineEditor({
             </label>
             <label>
               Request TTL
-              <input
+              <NumericInput
                 aria-label="Request TTL"
                 disabled={!canEdit}
                 min="1"
-                type="number"
                 value={scenePolicy.request_ttl_ms}
                 onChange={(event) =>
                   setScenePolicy((current) => ({
@@ -7051,12 +7021,11 @@ export function TimelineEditor({
                     </label>
                     <label>
                       Start calibration offset
-                      <input
+                      <NumericInput
                         aria-label={`Media calibration offset ${output.id}`}
                         disabled={!canEdit}
                         max="5000"
                         min="0"
-                        type="number"
                         value={scenePolicy.media_offsets[output.id] ?? 0}
                         onChange={(event) =>
                           setScenePolicy((current) => ({
@@ -7100,12 +7069,11 @@ export function TimelineEditor({
                         </label>
                         <label>
                           Timing calibration offset
-                          <input
+                          <NumericInput
                             aria-label={`Lighting calibration offset ${outputId}`}
                             disabled={!canEdit}
                             max="5000"
                             min="-5000"
-                            type="number"
                             value={scenePolicy.lighting_offsets[outputId] ?? 0}
                             onChange={(event) =>
                               setScenePolicy((current) => ({
@@ -7290,11 +7258,10 @@ function ScrubField({
         {label}
       </span>
       <span className="scrub-field__control">
-        <input
+        <NumericInput
           aria-label={ariaLabel}
           disabled={disabled}
           step="any"
-          type="number"
           value={draft ?? String(roundTo(value, precision))}
           onChange={(event) => {
             setDraft(event.target.value);
@@ -7582,9 +7549,8 @@ function TimeNumberInput({
 }) {
   const [draft, setDraft] = useState<string | null>(null);
   return (
-    <input
+    <NumericInput
       {...rest}
-      type="number"
       min={min}
       max={max}
       value={draft ?? String(value)}
@@ -8546,14 +8512,13 @@ function NumberVectorEditor({
     <fieldset className="timeline-vector-editor">
       <legend>{label}</legend>
       {value.map((item, index) => (
-        <input
+        <NumericInput
           aria-label={`${label} ${index + 1}`}
           disabled={disabled}
           key={index}
           max={max}
           min={min}
           step="any"
-          type="number"
           value={item}
           onChange={(event) =>
             onChange(
@@ -9400,9 +9365,8 @@ function StageLayerShape({
         <>
           <label>
             Soft edge ({mapperExport?.stage?.unit ?? "stage units"})
-            <input
+            <NumericInput
               aria-label="Layer mask soft edge"
-              type="number"
               min="0"
               step="any"
               disabled={!canEdit}
@@ -10631,8 +10595,8 @@ function RippleEffectEditor({
       {(["speed", "ring_width"] as const).map((field) => (
         <label key={field}>
           {field === "speed" ? "Speed (units/second)" : "Ring width (units)"}
-          <input
-            aria-label={`Ripple ${field}`} type="number" min="0.001" step="0.1"
+          <NumericInput
+            aria-label={`Ripple ${field}`} min="0.001" step="0.1"
             value={effect[field]}
             onChange={(event) => onChange({ ...effect, [field]: Number(event.target.value) })}
           />
@@ -10647,8 +10611,8 @@ function RippleEffectEditor({
       </label>
       <label>
         Repeat interval ms (0 = once)
-        <input
-          aria-label="Ripple repeat interval" type="number" min="0" value={effect.repeat_ms ?? 0}
+        <NumericInput
+          aria-label="Ripple repeat interval" min="0" value={effect.repeat_ms ?? 0}
           onChange={(event) => onChange({ ...effect, repeat_ms: Number(event.target.value) || null })}
         />
       </label>
@@ -12124,9 +12088,8 @@ function MediaOutputRepeatControls({
     <>
       <label>
         Plays
-        <input
+        <NumericInput
           aria-label="Media plays"
-          type="number"
           min="1"
           max="10000"
           step="1"

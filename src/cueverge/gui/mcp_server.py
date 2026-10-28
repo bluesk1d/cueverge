@@ -1573,7 +1573,9 @@ def create_mcp_app(services: GuiServices) -> Starlette:
 
         Live operation: requires publish AND activate, current publisher/admin and
         live-output grant, installation binding and explicit interruption confirmation.
-        Approval is explicit for this revision only. Playing restarts the selected/
+        Approval is explicit for this revision only. First bakes every missing or stale
+        composition and whole-scene output (job state baking, with per-bake progress in
+        bakes); a bake that fails or can't run fails Apply. Playing restarts the selected/
         starting scene from zero; paused/stopped stays stopped. Inspect the durable
         job and observed loaded identity, not an artifact activation label.
         """
@@ -1785,6 +1787,8 @@ def create_mcp_app(services: GuiServices) -> Starlette:
                     "approval": "explicit_exact_revision",
                     "save_applies_live": False,
                     "loaded_identity": "controller_acknowledged_catalog_generation",
+                    "bakes_missing_or_stale_first": True,
+                    "bake_requirements_tool": "get_bake_requirements",
                 },
                 "output_monitor": {
                     "tool": "get_output_monitor",
@@ -1998,6 +2002,8 @@ def create_mcp_app(services: GuiServices) -> Starlette:
                     "device_player_control": True,
                     "managed_agent_updates": True,
                     "managed_agent_settings": True,
+                    "scene_output_audio_bakes": True,
+                    "apply_bakes_missing_or_stale": True,
                     "geometry_editing": False,
                     "live_media_rendering": False,
                 },
@@ -2646,11 +2652,39 @@ def create_mcp_app(services: GuiServices) -> Starlette:
         return _image_result(image, diagnostics)
 
     @tool()
+    def get_bake_requirements(revision: int | None = None) -> dict[str, JsonValue]:
+        """List every bake a saved revision needs before publish/Apply, with its state.
+
+        Requires read. Each entry's id is a composition ID or, for audio layers placed on
+        a scene's media output track (whole-scene timeline), scene-output:<scene>:<output>.
+        state: current, missing, queued, running, failed or unavailable (error explains,
+        e.g. visual layers on a whole-scene output track). Pass an id to create_render_job.
+        apply_saved_show bakes anything not current before publishing.
+        """
+        token = _authorize(services, McpScope.READ)
+        try:
+            stored = services.repository.get_revision(token.project_id, revision)
+            requirements = services.publication.bake_requirements(token.project_id, stored.revision)
+        except ProjectNotFoundError as error:
+            raise ToolError(str(error)) from error
+        return _bounded_result(
+            {
+                "project_id": token.project_id,
+                "revision": stored.revision,
+                "ready": all(item.state == "current" for item in requirements),
+                "bakes": [asdict(item) for item in requirements],
+            }
+        )
+
+    @tool()
     def create_render_job(base_revision: int, composition_id: str) -> dict[str, JsonValue]:
         """Queue a saved-revision projector/LED/mixed bake; requires direct_edit or publish.
 
-        Does not merge/approve proposals, publish, activate, or send hardware commands.
-        Save or human-merge edits first. Poll get_render_job until completed; stale inputs fail.
+        composition_id may also be a scene-output:<scene>:<output> id from
+        get_bake_requirements: it mixes that output's whole-scene audio layers into a copy of
+        its media (video copied unchanged). Does not merge/approve proposals, publish,
+        activate, or send hardware commands. Save or human-merge edits first. Poll
+        get_render_job until completed; stale inputs fail.
         """
         token = _authorize(services, McpScope.DIRECT_EDIT, McpScope.PUBLISH)
         try:

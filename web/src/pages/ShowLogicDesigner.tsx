@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { NumericInput } from "../components/NumericInput";
 
 import {
   AudiencePresenceDefinition,
@@ -300,10 +301,9 @@ export function ShowLogicDesigner({
         </label>
         <label>
           Deterministic random seed
-          <input
+          <NumericInput
             aria-label="Program random seed"
             disabled={!canEdit}
-            type="number"
             value={program.random_seed}
             onChange={(event) =>
               setProgram({ ...program, random_seed: Number(event.target.value) })

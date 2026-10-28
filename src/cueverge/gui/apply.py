@@ -4,6 +4,7 @@ import json
 import logging
 import sqlite3
 from collections.abc import Callable
+from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -15,6 +16,7 @@ from cueverge.controller.runtime import ShowMode
 from cueverge.core.loader import load_show_package
 from cueverge.core.models import MultiLightingLooksDefinition
 from cueverge.gui.contracts import GuiModel
+from cueverge.gui.render_jobs import RenderJobError
 
 if TYPE_CHECKING:
     from cueverge.gui.publication import PublicationService, PublishedPackage
@@ -41,6 +43,7 @@ def now() -> str:
 
 
 LOGGER = logging.getLogger(__name__)
+BAKE_POLL_SECONDS = 1.0
 
 
 class ApplyService:
@@ -208,7 +211,7 @@ class ApplyService:
 
     def cancel(self, job_id: str) -> dict[str, object]:
         document = self.get(job_id)
-        if document["state"] not in {"preparing", "publishing", "staging"}:
+        if document["state"] not in {"preparing", "baking", "publishing", "staging"}:
             raise ApplyError(
                 "Handover cannot be cancelled after interruption; use retained-version recovery."
             )
@@ -225,6 +228,83 @@ class ApplyService:
                 job["cancel_requested"] = True
                 job["stop_requested"] = True
                 self._save(job)
+
+    async def _bake(
+        self,
+        job_id: str,
+        project_id: str,
+        revision: int,
+        document: dict[str, object],
+    ) -> None:
+        """Bake every composition and scene output the saved version still needs."""
+        render_jobs = self.publication.render_jobs
+        requirements = [
+            item
+            for item in await asyncio.to_thread(
+                self.publication.bake_requirements, project_id, revision
+            )
+            if item.state != "current"
+        ]
+        if not requirements:
+            return
+        for item in requirements:
+            if item.state == "unavailable":
+                raise ApplyError(f"{item.label} can't be baked: {item.error}")
+        job_ids: dict[str, str] = {}
+        started: list[str] = []
+        for item in requirements:
+            if item.state in {"queued", "running"} and item.job_id is not None:
+                job_ids[item.id] = item.job_id
+                continue
+            try:
+                job = await asyncio.to_thread(
+                    render_jobs.create,
+                    project_id=project_id,
+                    composition_id=item.id,
+                    actor=str(document["actor"]),
+                    expected_revision=revision,
+                )
+            except RenderJobError as error:
+                raise ApplyError(f"{item.label} can't be baked: {error}") from error
+            job_ids[item.id] = job.id
+            if job.state != "completed":
+                started.append(job.id)
+        labels = {item.id: item.label for item in requirements}
+        try:
+            while True:
+                jobs = [
+                    await asyncio.to_thread(render_jobs.get, job_ids[bake_id])
+                    for bake_id in job_ids
+                ]
+                self._phase(
+                    job_id,
+                    "baking",
+                    bakes=[
+                        {
+                            "id": job.composition_id,
+                            "label": labels[job.composition_id],
+                            "state": job.state,
+                            "progress": job.progress,
+                            "error": job.error,
+                        }
+                        for job in jobs
+                    ],
+                )
+                for job in jobs:
+                    if job.state in {"failed", "canceled"}:
+                        raise ApplyError(
+                            f"Baking {labels[job.composition_id]} {job.state}: "
+                            f"{job.error or 'the bake did not finish'}"
+                        )
+                if all(job.state == "completed" for job in jobs):
+                    return
+                await asyncio.sleep(BAKE_POLL_SECONDS)
+        except (ApplyError, asyncio.CancelledError):
+            # Only bakes this Apply queued; bakes someone started separately keep running.
+            for bake_job_id in started:
+                with suppress(RenderJobError):
+                    await asyncio.to_thread(render_jobs.cancel, bake_job_id)
+            raise
 
     def _phase(self, job_id: str, state: str, **updates: object) -> dict[str, object]:
         document = self.get(job_id)
@@ -276,8 +356,8 @@ class ApplyService:
             try:
                 token_id = str(document["token_id"]) if document.get("token_id") else None
                 self._check(project_id, request, str(document["actor"]), token_id)
-                dependencies = self.dependency_digest(project_id, request.source_revision)
                 if request.restore_package_id is not None:
+                    dependencies = self.dependency_digest(project_id, request.source_revision)
                     package = self.publication.get(request.restore_package_id)
                     if (
                         package.project_id != project_id
@@ -285,6 +365,9 @@ class ApplyService:
                     ):
                         raise ApplyError("Recovery package does not match this show/version.")
                 else:
+                    await self._bake(job_id, project_id, request.source_revision, document)
+                    # After baking: its completed bakes are part of the guarded dependencies.
+                    dependencies = self.dependency_digest(project_id, request.source_revision)
                     self._phase(job_id, "publishing")
                     release = self.publication.release(project_id, request.source_revision)
                     if release.approval_state != "approved":

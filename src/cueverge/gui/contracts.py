@@ -1657,6 +1657,26 @@ class CreateRenderJobRequest(GuiModel):
     composition_id: str = Field(min_length=1, max_length=200)
 
 
+class BakeRequirementResponse(GuiModel):
+    """A bake the revision needs. id is a composition ID or scene-output:<scene>:<output>."""
+
+    id: str
+    label: str
+    kind: Literal["composition", "led", "scene_output"]
+    state: Literal["current", "missing", "queued", "running", "failed", "unavailable"]
+    job_id: str | None = None
+    progress: float | None = None
+    error: str | None = None
+    scene_id: str | None = None
+
+
+class BakeRequirementsResponse(GuiModel):
+    project_id: str
+    revision: int = Field(ge=1)
+    ready: bool
+    bakes: tuple[BakeRequirementResponse, ...]
+
+
 class RenderJobResponse(GuiModel):
     id: str
     project_id: str

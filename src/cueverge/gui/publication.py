@@ -19,6 +19,7 @@ from cueverge.gui.mapper_export import MapperExportError
 from cueverge.gui.media_delivery import media_members, stage_media_members
 from cueverge.gui.render_jobs import RenderJobError, RenderJobService
 from cueverge.gui.repository import GuiRepository
+from cueverge.gui.scene_output_bakes import scene_output_bakes
 from cueverge.gui.stage_renderer import bakes_lighting_only
 from cueverge.protocol.device_v2 import ArtifactCacheCapability, MediaPlaybackCapability
 
@@ -28,6 +29,23 @@ PublicationState = Literal["published", "staged", "active", "inactive", "failed"
 
 class PublicationError(RuntimeError):
     pass
+
+
+BakeState = Literal["current", "missing", "queued", "running", "failed", "unavailable"]
+
+
+@dataclass(frozen=True)
+class BakeRequirement:
+    """A bake the revision needs before it can be published or applied."""
+
+    id: str
+    label: str
+    kind: Literal["composition", "led", "scene_output"]
+    state: BakeState
+    job_id: str | None = None
+    progress: float | None = None
+    error: str | None = None
+    scene_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -155,6 +173,87 @@ class PublicationService:
         )
         return tuple(_changed_paths(base, candidate))
 
+    def bake_requirements(self, project_id: str, revision: int) -> tuple[BakeRequirement, ...]:
+        """Every bake the revision needs, in the same terms publication validation uses."""
+        draft = self.repository.get_revision(project_id, revision).draft
+        compositions = _object_map(draft.editor_metadata.get("compositions"))
+        jobs = self.render_jobs.list(project_id)
+        current_led = self.render_jobs.current_lighting_artifacts(project_id, revision)
+
+        def from_jobs(
+            bake_id: str, revision_bound: bool
+        ) -> tuple[BakeState, str | None, float | None, str | None]:
+            candidates = [
+                job
+                for job in jobs
+                if job.composition_id == bake_id
+                and (not revision_bound or job.source_revision == revision)
+            ]
+            if revision_bound and any(
+                job.state == "completed" and job.artifact_id for job in candidates
+            ):
+                return "current", None, None, None
+            latest = candidates[0] if candidates else None
+            if latest is not None and latest.state in {"queued", "running", "failed"}:
+                return (
+                    cast(BakeState, latest.state),
+                    latest.id,
+                    latest.progress,
+                    latest.error,
+                )
+            return "missing", None, None, None
+
+        requirements: list[BakeRequirement] = []
+        for composition_id in sorted(compositions):
+            composition = _object_map(compositions[composition_id])
+            label = str(composition.get("name") or composition_id)
+            if bakes_lighting_only(composition):
+                state, job_id, progress, error = (
+                    ("current", None, None, None)
+                    if composition_id in current_led
+                    else from_jobs(composition_id, revision_bound=False)
+                )
+                requirements.append(
+                    BakeRequirement(composition_id, label, "led", state, job_id, progress, error)
+                )
+                continue
+            state, job_id, progress, error = from_jobs(composition_id, revision_bound=True)
+            requirements.append(
+                BakeRequirement(
+                    composition_id, label, "composition", state, job_id, progress, error
+                )
+            )
+        for scene_output in scene_output_bakes(draft):
+            problem = scene_output.problem()
+            if problem is not None:
+                requirements.append(
+                    BakeRequirement(
+                        scene_output.composition_id,
+                        scene_output.label,
+                        "scene_output",
+                        "unavailable",
+                        error=problem,
+                        scene_id=scene_output.scene_id,
+                    )
+                )
+                continue
+            state, job_id, progress, error = from_jobs(
+                scene_output.composition_id, revision_bound=True
+            )
+            requirements.append(
+                BakeRequirement(
+                    scene_output.composition_id,
+                    scene_output.label,
+                    "scene_output",
+                    state,
+                    job_id,
+                    progress,
+                    error,
+                    scene_output.scene_id,
+                )
+            )
+        return tuple(requirements)
+
     def validate(self, project_id: str, revision: int) -> tuple[PublicationDiagnostic, ...]:
         stored = self.repository.get_revision(project_id, revision)
         draft = stored.draft
@@ -281,6 +380,30 @@ class PublicationService:
                     if composition_id in lighting_artifacts
                     else cast(str, job.artifact_id)
                 )
+        for scene_output in scene_output_bakes(draft):
+            problem = scene_output.problem()
+            if problem is not None:
+                add("scene_output_layers_unsupported", problem)
+                continue
+            job = next(
+                (
+                    item
+                    for item in jobs
+                    if item.composition_id == scene_output.composition_id
+                    and item.source_revision == revision
+                    and item.state == "completed"
+                    and item.artifact_id is not None
+                ),
+                None,
+            )
+            if job is None:
+                add(
+                    "current_bake_missing",
+                    f"{scene_output.label} has whole-scene audio layers with no bake for "
+                    f"revision {revision}.",
+                )
+            else:
+                artifact_ids.add(cast(str, job.artifact_id))
 
         assignments = {
             assignment.resource: assignment

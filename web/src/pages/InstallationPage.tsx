@@ -14,6 +14,7 @@ import { GeometryCanvas } from "../components/GeometryCanvas";
 import { InstallationPhotoCard } from "../components/InstallationPhotoCard";
 import { AgentSettingsPanel } from "../components/AgentSettingsPanel";
 import { DetailsDialog } from "../components/DetailsDialog";
+import { NumericInput } from "../components/NumericInput";
 import { StageMapPanel } from "../components/StageMapPanel";
 import { mapperDiagnostics } from "../components/mapper-diagnostics";
 import { geometryForBackground, photoPixelPoints } from "../components/pixel-traversal";
@@ -1695,7 +1696,7 @@ function GeometryMapper({
             <label><input type="checkbox" checked={labelVisible} onChange={(event) => setLabelVisible(event.target.checked)} />Labels</label>
             <label><input type="checkbox" checked={locked} onChange={(event) => setLocked(event.target.checked)} />Locked</label>
             <label><input type="checkbox" checked={hidden} onChange={(event) => setHidden(event.target.checked)} />Hidden</label>
-            <label>Layer order<input type="number" value={zIndex} onChange={(event) => setZIndex(Number(event.target.value))} /></label>
+            <label>Layer order<NumericInput value={zIndex} onChange={(event) => setZIndex(Number(event.target.value))} /></label>
             </div>
           </details>
           <details className="geometry-mapper__group">
@@ -2029,8 +2030,7 @@ function GeometryMapper({
           ).map(([field, label]) => (
             <label key={field}>
               {label}
-              <input
-                type="number"
+              <NumericInput
                 step="any"
                 value={
                   mappingValues.stage_placement === "surface" &&
@@ -2331,9 +2331,8 @@ function GeometryMapper({
               {(["a", "b", "c", "d", "tx", "ty"] as const).map((label, index) => (
                 <label key={label}>
                   Stage {label}
-                  <input
+                  <NumericInput
                     step="any"
-                    type="number"
                     value={lightingValues.stage_matrix[index]}
                     onChange={(event) =>
                       setLightingValues((current) => {

@@ -210,6 +210,16 @@ explicit interruption confirmation. Approval covers only the exact revision.
 Changing head, authorization, token validity or installation/asset/device/mapping
 dependencies during preparation rejects the candidate before load.
 
+Before publishing, the job bakes every requirement for the revision that is not
+current (`state: "baking"`, with a `bakes` list of `id`, `kind`, `name`, `job_id`,
+`state`, `progress` and `error`). It reuses queued/running render jobs, fails the
+Apply with the bake error when a bake fails or is `unavailable`, and on
+cancellation cancels only the jobs it queued. The dependency guard is taken
+after baking. `get_bake_requirements(revision=None)` (`read`) and
+`GET /api/gui/v1/projects/{project_id}/bake-requirements?revision=` list the same
+requirements: `kind` `composition`, `lighting`, or `scene_output`, with `state`
+`current`, `queued`, `running`, `failed`, `missing`, or `unavailable`.
+
 The job prepares an immutable package, verifies files, stages original or baked
 media by checksummed digest and receives transfer acknowledgements before
 interruption. Runtime media IDs resolve to device-cache digest filenames; the
@@ -1302,7 +1312,14 @@ For installation-wide image/video/GIF overlays:
    and `pixel_limit` (default 100, maximum 500). The complete result must fit the
    256 KiB MCP payload budget.
 5. Call `create_render_job(base_revision, composition_id)` to bake the saved
-   revision. This requires **either** `direct_edit` **or** `publish`; `read`,
+   revision. `composition_id` may also be a whole-scene output bake ID,
+   `scene-output:<scene_id>:<output_id>` (as listed by `get_bake_requirements`):
+   it mixes the audio layers stored under
+   `editor_metadata.timeline_transform_layers[<scene_id>]` with
+   `track_id: "media:<output_id>"` into a remux of the output's base video
+   (video packets copied unchanged, AAC stereo audio). Visual layers on such a
+   track make the requirement `unavailable` and preflight reports
+   `scene_output_layers_unsupported`; place them in a composition instead. This requires **either** `direct_edit` **or** `publish`; `read`,
    `draft_edit`, and `simulation` alone cannot queue or cancel jobs. Existing
    storage/calibration/projector-rehearsal checks still apply.
 6. Poll `get_render_job(job_id)` for state, progress, errors, and artifact ID.

@@ -44,6 +44,7 @@ WAVEFORM_SIZE = "1200x240"
 WAVEFORM_COLOR = "#6ee7ff"
 JPEG_QUALITY = 90
 AUDIO_SAMPLE_RATE = 48000
+MP4_COPYABLE_VIDEO_CODECS = frozenset({"h264", "hevc", "av1", "mpeg4", "vp9"})
 _LOUDNESS_PATTERN = re.compile(r"lavfi\.r128\.I=(-?\d+(?:\.\d+)?)")
 
 
@@ -333,6 +334,66 @@ def encode_mp4(
             for chunk in _audio_frames(samples, written_samples, len(samples)):
                 output.mux(audio.encode(chunk))
             output.mux(audio.encode(None))
+
+
+def remux_with_audio(
+    *,
+    source: Path,
+    audio_samples: NDArray[np.float32],
+    target: Path,
+) -> dict[str, object]:
+    """Copy the source video stream unchanged into an MP4 with a new AAC stereo track.
+
+    Returns the copied video stream description (None for audio-only sources).
+    """
+    samples = np.ascontiguousarray(audio_samples, dtype=np.float32)
+    with (
+        _open_input(source) as container,
+        av.open(str(target), "w", format="mp4", options={"movflags": "+faststart"}) as output,
+    ):
+        video_in = container.streams.video[0] if container.streams.video else None
+        video_out = None
+        described: dict[str, object] | None = None
+        if video_in is not None:
+            codec = _codec_name(video_in.codec_context)
+            if codec not in MP4_COPYABLE_VIDEO_CODECS:
+                raise MediaToolError(
+                    f"{codec or 'this'} video can't be copied into MP4; "
+                    "convert the source to H.264 MP4 first"
+                )
+            video_out = output.add_stream_from_template(video_in)
+            described = {
+                "codec": codec,
+                "width": int(video_in.codec_context.width),
+                "height": int(video_in.codec_context.height),
+                "frame_count": int(video_in.frames or 0),
+                "pixel_format": str(video_in.codec_context.pix_fmt or ""),
+            }
+        audio_out = output.add_stream("aac", rate=AUDIO_SAMPLE_RATE, layout="stereo")
+        audio_packets: list[Any] = []
+        for chunk in _audio_frames(samples, 0, len(samples)):
+            audio_packets.extend(audio_out.encode(chunk))
+        audio_packets.extend(audio_out.encode(None))
+        pending = iter(audio_packets)
+        next_audio = next(pending, None)
+
+        def audio_seconds(packet: Any) -> float:
+            return float(packet.pts * packet.time_base) if packet.pts is not None else 0.0
+
+        if video_in is not None and video_out is not None:
+            for packet in container.demux(video_in):
+                if packet.dts is None:
+                    continue
+                seconds = float(packet.dts * packet.time_base)
+                while next_audio is not None and audio_seconds(next_audio) <= seconds:
+                    output.mux(next_audio)
+                    next_audio = next(pending, None)
+                packet.stream = video_out
+                output.mux(packet)
+        while next_audio is not None:
+            output.mux(next_audio)
+            next_audio = next(pending, None)
+    return described or {}
 
 
 def audio_boundary(path: Path) -> dict[str, object]:

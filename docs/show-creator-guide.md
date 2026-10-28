@@ -163,7 +163,10 @@ Important current limitations:
 
 - There is no independent runtime sound-effect channel or runtime audio ducking.
 - Layered video, alpha, and audio composition are authored and baked on the
-  controller, not composited dynamically by the runtime media agents.
+  controller, not composited dynamically by the runtime media agents. Audio
+  clips on a whole-scene media output are mixed into that output's video by a
+  whole-scene bake; visual layers there must move into a composition. Apply
+  bakes anything missing or stale before publishing.
 - Conditions are exact scalar matches rather than arbitrary expressions.
 - Cueverge does not yet start programs from wall-clock schedules by itself.
 - Managed rendered artifacts can be staged into checksummed device caches.

@@ -1186,7 +1186,8 @@ export interface RuntimeStatus {
 
 export interface ApplyJob {
   id: string; project_id: string; source_revision: number;
-  state: "preparing" | "publishing" | "staging" | "handover" | "completed" | "failed" | "cancelled";
+  state: "preparing" | "baking" | "publishing" | "staging" | "handover" | "completed" | "failed" | "cancelled";
+  bakes?: { id: string; label: string; state: string; progress: number; error: string | null }[];
   package_id: string | null; previous_package_id: string | null;
   error: string | null; cancel_requested: boolean; interrupted: boolean;
   loaded: boolean; running: boolean; warnings?: string[];
@@ -2166,6 +2167,30 @@ export async function runSimulationScenario(
       `${encodeURIComponent(scenarioId)}/run`,
     { method: "POST", headers: mutationHeaders() },
   );
+}
+
+/** A bake a saved revision needs; id is a composition ID or scene-output:<scene>:<output>. */
+export interface BakeRequirement {
+  id: string;
+  label: string;
+  kind: "composition" | "led" | "scene_output";
+  state: "current" | "missing" | "queued" | "running" | "failed" | "unavailable";
+  job_id?: string | null;
+  progress?: number | null;
+  error?: string | null;
+  scene_id?: string | null;
+}
+
+export interface BakeRequirements {
+  project_id: string;
+  revision: number;
+  ready: boolean;
+  bakes: BakeRequirement[];
+}
+
+export async function getBakeRequirements(projectId: string, revision?: number): Promise<BakeRequirements> {
+  const query = revision === undefined ? "" : `?revision=${revision}`;
+  return request(`/api/gui/v1/projects/${encodeURIComponent(projectId)}/bake-requirements${query}`);
 }
 
 export async function createRenderJob(

@@ -872,7 +872,16 @@ LED-only bakes (spatial lighting compositions and lights-only stage overlays)
 stay current when you save edits that don't change what they draw, such as
 renaming a scene or editing another composition. Changing the composition, its
 layers, its media files or the installation mapping needs a new bake. Projector
-and mixed projector/LED bakes still need a bake for each saved revision. A save
+and mixed projector/LED bakes still need a bake for each saved revision.
+
+Audio clips placed on a media output row of the **Whole scene** timeline are
+mixed into that output's video by a whole-scene bake. With no composition
+selected, **Render & bake > Whole-scene audio** lists each output with its bake
+state and a **Bake** button (save first). The bake keeps the scene video's
+picture unchanged and replaces its soundtrack with the scene audio plus your
+clips (gain, fades, mute and solo apply). Visual layers on a whole-scene output
+are not baked: move them into a composition. Apply bakes these automatically
+when they are missing or stale. A save
 that changes nothing keeps the current revision, and **Save timeline** stays
 unavailable until the timeline has an edit. Zoom, snap and loop range are saved
 with your next timeline edit. All outputs share a 4,096-LED sample budget; large
@@ -1531,9 +1540,15 @@ the advanced release buttons. The dialog summarizes what will load, lists
 **What happens to playback**. Pick the scene to restart with if the show is
 playing, then confirm **This version is ready to go live on the display** and
 **It's OK to briefly stop playback to load it**.
-Preparation, publication and checksummed device transfers happen before the
-controller stops and loads the verified catalog. Progress and failures persist
-when the browser closes. Cancel during preparation; Stop/Blackout take priority
+Apply first bakes anything the saved version still needs (**Baking media that
+changed**): compositions, LED compositions and whole-scene audio whose bake is
+missing or stale. It reuses bakes already queued or running, shows each bake's
+progress, and stops with the failing bake's error if one fails or cannot run
+(for example a visual layer left on a whole-scene output). Cancelling stops only
+the bakes Apply started. Preparation, publication and checksummed device
+transfers happen before the controller stops and loads the verified catalog.
+Progress and failures persist when the browser closes. Cancel during baking or
+preparation; Stop/Blackout take priority
 once handover starts. A playing show restarts from zero; paused/stopped stays
 stopped. Under **Advanced options**, the controller's standby and safety lighting
 looks are kept unless you deliberately clear **Keep the controller's standby and
