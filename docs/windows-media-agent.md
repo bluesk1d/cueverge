@@ -244,3 +244,21 @@ latency rather than assumed frame accuracy.
 mpv `time-pos/full` is playback time, not proof that a frame is visible on the
 projector or sound has emerged from the speaker. Hardware calibration remains
 required.
+
+## Slow starts on files with audio
+
+Every projector in a scene starts only once the slowest device has its file
+loaded, so a slow device holds the others on their first frame. On Windows the
+usual cause is the audio output, not the media: mpv opens a new WASAPI stream
+whenever it starts a file with audio after `stop` or after a file without audio.
+On a Dell Latitude 3140 with Realtek audio, `IAudioClient::Initialize` took
+1.1 s with Windows audio enhancements on, making starts take 1.2–1.7 s; with
+enhancements off they took 160–190 ms.
+
+To check a client, run mpv in the signed-in session with
+`--log-file=mpv.log --msg-level=all=v` and compare the timestamps of
+`IAudioClient::Initialize` and `Initialize pRenderClient`. To fix it, open
+**Settings > System > Sound**, select the output device the agent uses, and turn
+**Audio enhancements** off (or clear **Enable audio enhancements** under the
+device's **Advanced** properties). Re-check after driver updates, which can turn
+them back on.
