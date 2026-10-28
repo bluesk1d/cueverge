@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import time
 from dataclasses import dataclass
@@ -77,6 +78,9 @@ class MediaAgentClient:
         self._queued_session: tuple[str, str] | None = None
         self._entry = 0
         self._last_duration_ms: int | None = None
+        # Telemetry polls the player concurrently with commands; a status read in the middle
+        # of advance would otherwise switch files twice.
+        self._player_lock = asyncio.Lock()
 
     @property
     def media_features(self) -> tuple[MediaFeature, ...]:
@@ -88,6 +92,10 @@ class MediaAgentClient:
         if rejection is not None:
             LOGGER.warning("rejected command %s: %s", command.request_id, rejection)
             return self._ack(command, "error", rejection, rejection)
+        async with self._player_lock:
+            return await self._run_command(command)
+
+    async def _run_command(self, command: AgentCommand) -> CommandAck:
         try:
             if command.command == "prepare":
                 await self.player.prepare(
@@ -141,6 +149,10 @@ class MediaAgentClient:
         return self._ack(command, "completed")
 
     async def telemetry(self) -> MediaPosition | None:
+        async with self._player_lock:
+            return await self._read_telemetry()
+
+    async def _read_telemetry(self) -> MediaPosition | None:
         if (
             self.controller_epoch is None
             or self.scene_instance_id is None

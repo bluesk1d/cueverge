@@ -672,8 +672,22 @@ class DevicePresenceClient:
         websocket: ClientConnection,
         send_lock: asyncio.Lock,
     ) -> None:
+        last_failure: str | None = None
         while True:
-            telemetry = await self.media_client.telemetry()
+            try:
+                telemetry = await self.media_client.telemetry()
+            except Exception as error:
+                # mpv briefly reports properties unavailable while switching files; a dead
+                # telemetry task would leave the controller waiting forever for completion.
+                failure = f"{type(error).__name__}: {error}"
+                if failure != last_failure:
+                    LOGGER.warning("media telemetry read failed; retrying: %s", failure)
+                last_failure = failure
+                telemetry = None
+            else:
+                if last_failure is not None:
+                    LOGGER.info("media telemetry recovered")
+                last_failure = None
             if telemetry is not None:
                 message = DeviceMediaPosition(
                     device_session_id=UUID(telemetry.agent_session_id),

@@ -1,10 +1,17 @@
 import asyncio
+import contextlib
+import json
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Literal
+from uuid import uuid4
 
 from cueverge.config import MediaAgentConfig
-from cueverge.media_agent.client import MediaAgentClient, PlayerError, PlayerStatus
+from cueverge.media_agent.client import MediaAgentClient, Player, PlayerError, PlayerStatus
+from cueverge.media_agent.device_presence import DevicePresenceClient
+from cueverge.media_agent.mpv import MpvError
+from cueverge.media_agent.mpv_player import MpvPlayer
 from cueverge.protocol.models import AgentCommand, PlaybackState
 
 
@@ -185,7 +192,140 @@ def test_automatic_advance_reports_completion_then_follows_queued_session() -> N
     asyncio.run(scenario())
 
 
-def _ready_client(player: FakePlayer) -> MediaAgentClient:
+class _SwitchingMpvClient:
+    """mpv IPC double whose round trips yield, so telemetry can interleave with commands."""
+
+    def __init__(self) -> None:
+        self.unavailable: set[str] = set()
+        self.properties: dict[str, object] = {
+            "idle-active": False,
+            "time-pos": 3.9,
+            "pause": False,
+            "duration": 4.0,
+            "speed": 1.0,
+            "eof-reached": False,
+            "playlist-pos": 0,
+        }
+
+    async def command(self, *items: object) -> object:
+        await asyncio.sleep(0)
+        if items[0] == "get_property":
+            name = str(items[1])
+            if name in self.unavailable:
+                raise MpvError("property unavailable")
+            return self.properties[name]
+        if items == ("playlist-next", "force"):
+            self.properties.update({"playlist-pos": 1, "time-pos": 0.0})
+        if items == ("playlist-remove", 0):
+            self.properties["playlist-pos"] = 0
+        return None
+
+    async def named_command(self, name: str, **arguments: object) -> object:
+        await asyncio.sleep(0)
+        return None
+
+
+def _mpv_client(tmp_path: Path) -> tuple[MediaAgentClient, MpvPlayer, _SwitchingMpvClient]:
+    (tmp_path / "a.mp4").write_bytes(b"a")
+    (tmp_path / "b.mp4").write_bytes(b"b")
+    mpv = _SwitchingMpvClient()
+    player = MpvPlayer(mpv, tmp_path)  # type: ignore[arg-type]
+    return _ready_client(player), player, mpv
+
+
+def test_telemetry_during_advance_switches_files_once(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        client, player, _ = _mpv_client(tmp_path)
+        await client.handle_command(_command(client, "prepare", asset_id="a.mp4"))
+        await client.handle_command(
+            _command(
+                client,
+                "queue",
+                asset_id="b.mp4",
+                scene_instance_id="scene-2",
+                playback_session_id="playback-2",
+                auto_advance=False,
+            )
+        )
+        advance = asyncio.create_task(
+            client.handle_command(
+                _command(
+                    client, "advance", scene_instance_id="scene-2", playback_session_id="playback-2"
+                )
+            )
+        )
+        await asyncio.sleep(0)
+        telemetry = await client.telemetry()
+        acknowledgment = await advance
+
+        assert acknowledgment.status == "completed"
+        assert player.entry == 2
+        assert telemetry is not None
+        assert telemetry.playback_session_id == "playback-2"
+
+    asyncio.run(scenario())
+
+
+def test_telemetry_loop_survives_unavailable_position_during_automatic_advance(
+    tmp_path: Path,
+) -> None:
+    class Socket:
+        def __init__(self) -> None:
+            self.sent: list[dict[str, object]] = []
+
+        async def send(self, payload: str) -> None:
+            self.sent.append(json.loads(payload))
+            if len(self.sent) == 3:
+                raise asyncio.CancelledError
+
+    async def scenario() -> None:
+        client, _, mpv = _mpv_client(tmp_path)
+        client.agent_session_id = str(uuid4())
+        client.controller_epoch = str(uuid4())
+        scene, playback = str(uuid4()), str(uuid4())
+        next_scene, next_playback = str(uuid4()), str(uuid4())
+        prepare = _command(client, "prepare", asset_id="a.mp4")
+        await client.handle_command(
+            prepare.model_copy(
+                update={
+                    "controller_epoch": client.controller_epoch,
+                    "scene_instance_id": scene,
+                    "playback_session_id": playback,
+                }
+            )
+        )
+        queue = _command(client, "queue", asset_id="b.mp4", auto_advance=True)
+        await client.handle_command(
+            queue.model_copy(
+                update={
+                    "controller_epoch": client.controller_epoch,
+                    "scene_instance_id": next_scene,
+                    "playback_session_id": next_playback,
+                }
+            )
+        )
+        # mpv continued into the queued file and has no position for it yet.
+        mpv.properties["playlist-pos"] = 1
+        mpv.unavailable.add("time-pos")
+        presence = SimpleNamespace(media_client=client, _telemetry_hz=lambda: 1000.0)
+        socket = Socket()
+        loop = asyncio.create_task(
+            DevicePresenceClient._telemetry_loop(presence, socket, asyncio.Lock())  # type: ignore[arg-type]
+        )
+        await asyncio.sleep(0.01)
+        mpv.unavailable.clear()
+        with contextlib.suppress(asyncio.CancelledError):
+            await asyncio.wait_for(loop, timeout=2)
+
+        assert socket.sent[0]["playback_session_id"] == playback
+        assert socket.sent[0]["state"] == PlaybackState.COMPLETED.value
+        assert socket.sent[1]["playback_session_id"] == next_playback
+        assert socket.sent[1]["state"] == PlaybackState.PLAYING.value
+
+    asyncio.run(scenario())
+
+
+def _ready_client(player: Player) -> MediaAgentClient:
     client = MediaAgentClient(_config(), player)
     client.agent_session_id = "device-session-1"
     client.controller_epoch = "controller-1"

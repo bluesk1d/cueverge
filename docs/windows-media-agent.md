@@ -55,7 +55,13 @@ controller rejects the new hello field. With these features, mpv:
   same) and `prefetch-playlist`, and either continues into it at the end of the
   current file or switches with `playlist-next` on `advance`;
 - reports a held final frame (`keep-open`) as completed, so scenes whose clock
-  output holds its last frame now finish and continue to their next scene.
+  output holds its last frame now finish and continue to their next scene;
+- keeps sending positions when a single status read fails (for example while mpv
+  switches files), logging `media telemetry read failed; retrying` once and
+  `media telemetry recovered` when reads succeed again. Earlier builds stopped
+  telemetry until the agent reconnected, which left the controller holding the
+  scene with `telemetry_stale` while the clock device had already continued into
+  the next scene.
 
 When validating hardware, confirm the cut between two scenes on the actual
 projector: there should be no black frame between the last frame of one clip

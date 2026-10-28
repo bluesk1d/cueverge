@@ -50,7 +50,12 @@ not with `loop`). `queue` preloads the next scene's media behind the current
 file under the next scene-instance and playback-session UUIDs, and requires
 `auto_advance`. With `auto_advance: true` the device continues into that file
 by itself when the current media ends. It then sends one `completed` position
-for the old session, followed by positions for the new session. Telemetry for
+for the old session, followed by positions for the new session. If reading the
+player fails at the switch (mpv briefly has no position for the new file), the
+agent retries on the next telemetry tick and still sends that `completed`
+position first; a failed read never stops telemetry for the connection. The
+agent serializes player commands with its telemetry reads, so a position read
+cannot interleave with `advance`. Telemetry for
 the new session reaches the controller before it adopts the next scene and is
 answered with the non-error reason `handoff_pending`. With `auto_advance:
 false` the device holds the queued file until `advance` names its playback
