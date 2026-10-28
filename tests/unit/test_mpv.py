@@ -47,14 +47,34 @@ class FakeMpvClient:
         return self.properties[name]
 
 
+READY_READS = [
+    ("get_property", "path"),
+    ("get_property", "duration"),
+    ("get_property", "time-pos"),
+    ("get_property", "seeking"),
+    ("get_property", "vid"),
+    ("get_property", "video-params/w"),
+]
+
+
 class RecordingMpvClient:
     def __init__(self) -> None:
         self.commands: list[tuple[object, ...]] = []
+        self.path: object = None
 
     async def command(self, *items: object) -> object:
         self.commands.append(items)
-        if items == ("get_property", "duration"):
-            return 3.0
+        if items[0] == "loadfile":
+            self.path = items[1]
+        if items[0] == "get_property":
+            return {
+                "path": self.path,
+                "duration": 3.0,
+                "time-pos": 0.0,
+                "seeking": False,
+                "vid": 1,
+                "video-params/w": 1280,
+            }.get(str(items[1]))
         return None
 
 
@@ -264,9 +284,9 @@ def test_player_configures_exact_end_behavior(
             ("set_property", "vid", "auto"),
             ("loadfile", str(asset.resolve()), "replace"),
             ("set_property", "pause", True),
+            *READY_READS,
             *(
                 [
-                    ("get_property", "duration"),
                     ("get_property", "container-fps"),
                     ("set_property", "ab-loop-a", 0),
                     ("set_property", "ab-loop-b", 3.0),
@@ -296,16 +316,27 @@ class ScriptedMpvClient:
             "speed": 1.0,
             "eof-reached": False,
             "playlist-pos": 0,
+            "seeking": False,
+            "vid": 1,
+            "video-params/w": 1280,
+            "path": None,
         }
+        self.appended: object = None
 
     async def command(self, *items: object) -> object:
         if items[0] == "get_property":
             return self.properties[str(items[1])]
         self.commands.append(items)
+        if items[0] == "loadfile":
+            self.properties["path"] = items[1]
+        if items == ("playlist-next", "force"):
+            self.properties["path"] = self.appended
         return None
 
     async def named_command(self, name: str, **arguments: object) -> object:
         self.named.append((name, arguments))
+        if name == "loadfile":
+            self.appended = arguments["url"]
         return None
 
 
@@ -392,11 +423,13 @@ def test_player_holds_queued_switch_until_advance(tmp_path: Path) -> None:
 
         fake.commands.clear()
         await player.advance()
+        # The switch holds the queued file's first frame until the controller sends play.
         assert fake.commands == [
+            ("set_property", "pause", True),
             ("playlist-next", "force"),
-            ("set_property", "pause", False),
             ("playlist-remove", 0),
         ]
+        assert fake.properties["path"] == str((tmp_path / "b.mp4").resolve())
         assert player.entry == 2
         with pytest.raises(PlayerError):
             await player.advance()
@@ -610,3 +643,74 @@ def test_looping_media_continued_into_from_the_queue_gets_a_frame_aligned_loop(
 )
 def test_loop_end_rounds_to_whole_frames(duration: float, fps: float | None, end: float) -> None:
     assert _loop_end(duration, fps) == pytest.approx(end)
+
+
+def test_prepare_acknowledges_only_once_the_first_frame_is_decoded(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        (tmp_path / "long.mp4").write_bytes(b"a")
+        fake = ScriptedMpvClient()
+        fake.properties["path"] = "/old/file.mp4"
+        # Still opening: the first frame isn't decoded yet.
+        fake.properties["video-params/w"] = None
+        player = MpvPlayer(fake, tmp_path)  # type: ignore[arg-type]
+        prepare = asyncio.create_task(player.prepare("long.mp4", "hold_last_frame"))
+        await asyncio.sleep(0.1)
+        assert not prepare.done()
+        fake.properties["video-params/w"] = 1072
+        await asyncio.wait_for(prepare, timeout=1)
+
+    asyncio.run(scenario())
+
+
+def test_prepare_does_not_mistake_the_previous_file_for_the_new_one(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        (tmp_path / "next.mp4").write_bytes(b"a")
+        fake = ScriptedMpvClient()
+        player = MpvPlayer(fake, tmp_path)  # type: ignore[arg-type]
+        original = fake.command
+
+        async def loads_slowly(*items: object) -> object:
+            result = await original(*items)
+            if items[0] == "loadfile":
+                fake.properties["path"] = "/old/file.mp4"
+            return result
+
+        fake.command = loads_slowly  # type: ignore[method-assign]
+        prepare = asyncio.create_task(player.prepare("next.mp4", "stop"))
+        await asyncio.sleep(0.1)
+        assert not prepare.done()
+        fake.properties["path"] = str((tmp_path / "next.mp4").resolve())
+        await asyncio.wait_for(prepare, timeout=1)
+
+    asyncio.run(scenario())
+
+
+def test_prepare_fails_when_the_media_never_finishes_loading(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def scenario() -> None:
+        (tmp_path / "stuck.mp4").write_bytes(b"a")
+        fake = ScriptedMpvClient()
+        fake.properties["video-params/w"] = None
+        clock = _Clock()
+        player = MpvPlayer(fake, tmp_path, monotonic=clock)  # type: ignore[arg-type]
+
+        async def tick(_: float) -> None:
+            clock.now += 1.0
+
+        monkeypatch.setattr("cueverge.media_agent.mpv_player.asyncio.sleep", tick)
+        with pytest.raises(PlayerError, match="did not finish loading"):
+            await player.prepare("stuck.mp4", "stop")
+
+    asyncio.run(scenario())
+
+
+def test_audio_only_media_is_ready_without_a_video_frame(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        (tmp_path / "sound.wav").write_bytes(b"a")
+        fake = ScriptedMpvClient()
+        fake.properties.update({"vid": False, "video-params/w": None})
+        player = MpvPlayer(fake, tmp_path)  # type: ignore[arg-type]
+        await asyncio.wait_for(player.prepare("sound.wav", "stop"), timeout=1)
+
+    asyncio.run(scenario())

@@ -26,6 +26,10 @@ PACE_SPEED_STEP = 0.005
 # Audio priming or padding can run past the last video frame; a loop ends on a whole
 # frame unless the file runs on by more than this fraction of a frame.
 LOOP_FRAME_TOLERANCE = 0.25
+# Prepare and advance acknowledge only once the file is open and its first frame decoded;
+# the controller gives up on a command after 10 s.
+READY_TIMEOUT_SECONDS = 8.0
+READY_POLL_SECONDS = 0.02
 
 
 @dataclass
@@ -36,6 +40,7 @@ class _PlaylistItem:
     last_raw_position_ms: int = 0
     blanked: bool = False
     loop_ms: int | None = None
+    path: str | None = None
 
 
 @dataclass
@@ -84,9 +89,10 @@ class MpvPlayer:
         await self._command("loadfile", str(asset), "replace")
         await self._command("set_property", "pause", True)
         await self._reset_pace()
-        item = _PlaylistItem(end_behavior, repeat_count)
+        item = _PlaylistItem(end_behavior, repeat_count, path=str(asset))
+        duration = await self._wait_until_ready(item)
         if end_behavior == "loop":
-            await self._set_loop_range(item, await self._wait_for_duration())
+            await self._set_loop_range(item, duration)
         else:
             await self._command("set_property", "ab-loop-a", "no")
             await self._command("set_property", "ab-loop-b", "no")
@@ -129,15 +135,18 @@ class MpvPlayer:
         # Auto-advance lets mpv continue gaplessly at end of file; otherwise hold the end
         # until the controller sends advance.
         await self._command("set_property", "keep-open", "no" if auto_advance else "always")
-        self._queued = _PlaylistItem(end_behavior, repeat_count)
+        self._queued = _PlaylistItem(end_behavior, repeat_count, path=str(asset))
         self._queued_auto_advance = auto_advance
 
     async def advance(self) -> None:
+        """Switch to the queued file and hold its first frame until play."""
         if self._queued is None:
             raise PlayerError("no media is queued to advance to")
+        await self._command("set_property", "pause", True)
         await self._command("playlist-next", "force")
-        await self._command("set_property", "pause", False)
         await self._promote_queued()
+        assert self._current is not None
+        await self._wait_until_ready(self._current)
 
     async def _promote_queued(self) -> None:
         assert self._queued is not None
@@ -163,17 +172,48 @@ class MpvPlayer:
         await self._command("set_property", "ab-loop-b", end)
         item.loop_ms = round(end * 1000)
 
-    async def _wait_for_duration(self) -> float:
-        for _ in range(200):
+    async def _wait_until_ready(self, item: _PlaylistItem) -> float:
+        """Wait until mpv has opened the file and decoded its first frame; return its duration.
+
+        Acknowledging before then lets the controller start every device while a slower one
+        is still opening its file, so that device starts late by its load time.
+        """
+        deadline = self.monotonic() + READY_TIMEOUT_SECONDS
+        while True:
+            duration = await self._ready_duration(item)
+            if duration is not None:
+                return duration
+            if self.monotonic() >= deadline:
+                raise PlayerError(
+                    f"mpv did not finish loading the media within {READY_TIMEOUT_SECONDS:g} s"
+                )
+            await asyncio.sleep(READY_POLL_SECONDS)
+
+    async def _ready_duration(self, item: _PlaylistItem) -> float | None:
+        try:
+            path = await self._property("path")
+            duration = await self._property("duration")
+            position = await self._property("time-pos")
+            seeking = await self._property("seeking")
+            video = await self._property("vid")
+        except PlayerError:
+            return None
+        if (
+            (item.path is not None and path != item.path)
+            or not isinstance(duration, int | float)
+            or duration <= 0
+            or not isinstance(position, int | float)
+            or seeking is True
+        ):
+            return None
+        if video not in (False, "no", None):
             try:
-                duration = await self._property("duration")
+                width = await self._property("video-params/w")
             except PlayerError:
-                await asyncio.sleep(0.05)
-                continue
-            if isinstance(duration, int | float) and duration > 0:
-                return float(duration)
-            await asyncio.sleep(0.05)
-        raise PlayerError("mpv did not report loop duration within 10 seconds")
+                return None
+            if not isinstance(width, int) or width <= 0:
+                return None
+        return float(duration)
 
     async def play(self) -> None:
         self._pace_anchor = None

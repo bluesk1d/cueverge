@@ -615,7 +615,11 @@ shown until the change:
   completion report is lost, its first position in the preloaded file completes
   the scene instead.
 - Other preloaded outputs, and all outputs of `controller_timed` scenes, switch
-  immediately when the controller changes scene, without stopping or reloading.
+  when the controller changes scene, without stopping or reloading. Each device
+  holds the first frame of its preloaded file until every device has switched,
+  then all start together (each shifted by its calibrated output timing, as on
+  a normal start), so the cut can hold for as long as the slowest device takes
+  to open its file (typically well under a second).
 - Outputs on devices that are idle in the current scene, outputs with a
   `start_delay_ms`, and devices without the `seamless_transition` media feature
   are prepared and started the existing way.

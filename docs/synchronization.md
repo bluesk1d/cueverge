@@ -9,6 +9,12 @@ and playback rate `v`, the estimated position at time `t` is:
 p + min(max(t - r, 0), stale_after) * v
 ```
 
+Every media output of a scene starts together: the controller sends `play` only
+after each device acknowledges `prepare` (or `advance` for a preloaded change),
+and mpv agents acknowledge only once the file is open and its first frame is
+decoded. Devices that load files at different speeds therefore start on the
+same command instead of the faster one running ahead by the difference.
+
 The estimate is also bounded by the media duration when known. Paused,
 completed, errored, and disconnected sessions do not extrapolate. Once sample
 age exceeds `stale_after`, the estimate freezes at the bound and status becomes

@@ -205,7 +205,13 @@ class _SwitchingMpvClient:
             "speed": 1.0,
             "eof-reached": False,
             "playlist-pos": 0,
+            "seeking": False,
+            "vid": 1,
+            "video-params/w": 1280,
+            "container-fps": 30.0,
+            "path": None,
         }
+        self.appended: object = None
 
     async def command(self, *items: object) -> object:
         await asyncio.sleep(0)
@@ -214,14 +220,18 @@ class _SwitchingMpvClient:
             if name in self.unavailable:
                 raise MpvError("property unavailable")
             return self.properties[name]
+        if items[0] == "loadfile":
+            self.properties["path"] = items[1]
         if items == ("playlist-next", "force"):
-            self.properties.update({"playlist-pos": 1, "time-pos": 0.0})
+            self.properties.update({"playlist-pos": 1, "time-pos": 0.0, "path": self.appended})
         if items == ("playlist-remove", 0):
             self.properties["playlist-pos"] = 0
         return None
 
     async def named_command(self, name: str, **arguments: object) -> object:
         await asyncio.sleep(0)
+        if name == "loadfile":
+            self.appended = arguments["url"]
         return None
 
 

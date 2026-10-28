@@ -121,9 +121,15 @@ def test_clock_media_continues_into_preloaded_next_scene_without_reload(tmp_path
         assert active.scene_instance_id == queue["scene_instance_id"]
         assert active.playback_session_id == queue["playback_session_id"]
         assert active.scene_instance_id != first.scene_instance_id
+        # Play waits until the device has switched files and holds the first frame.
+        assert channel.names()[-1] == "advance"
+        advance = channel.sent[-1]
+        assert advance["playback_session_id"] == queue["playback_session_id"]
+        assert (
+            await runtime.acknowledge_command(agent.acknowledge(advance["request_id"]))
+        ).accepted
         assert channel.names()[-2:] == ["advance", "play"]
         assert "stop" not in channel.names()
-        assert channel.sent[-2]["playback_session_id"] == queue["playback_session_id"]
         assert runtime.status()["seamless_transitions"] == 1
 
         agent.attach(active.scene_instance_id, active.playback_session_id)
@@ -244,11 +250,147 @@ def test_lost_completion_report_still_finishes_after_automatic_cut(tmp_path: Pat
         assert active is not None
         assert active.definition.id == "main"
         assert active.playback_session_id == queue["playback_session_id"]
+        assert channel.names()[-1] == "advance"
+        assert (
+            await runtime.acknowledge_command(agent.acknowledge(channel.sent[-1]["request_id"]))
+        ).accepted
         assert channel.names()[-2:] == ["advance", "play"]
         assert runtime.status()["scene_completions"] == 1
         await runtime.shutdown()
 
     asyncio.run(scenario())
+
+
+def test_projectors_start_the_next_scene_together_after_the_slowest_switch(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        runtime = ControllerRuntime(catalog=load_show_package(_two_projector_package(tmp_path)))
+        left = FakeMediaAgent(agent_id="media-left")
+        right = FakeMediaAgent(agent_id="media-right")
+        channels: dict[str, MemoryCommandChannel] = {}
+        for agent in (left, right):
+            channels[agent.agent_id] = MemoryCommandChannel([])
+            hello = agent.hello().model_copy(update={"capabilities": SEAMLESS})
+            agent.accept_welcome(runtime.register_agent(hello, channels[agent.agent_id]))
+
+        active = await runtime.start_scene("intro")
+        for agent in (left, right):
+            prepare = channels[agent.agent_id].sent[-1]
+            assert prepare["command"] == "prepare"
+            await runtime.acknowledge_command(agent.acknowledge(prepare["request_id"]))
+            session = active.session_for_agent(agent.agent_id)
+            assert session is not None
+            agent.attach(active.scene_instance_id, session.playback_session_id)
+        assert runtime.ingest(left.position(3500)).accepted
+        await _settle()
+        for agent in (left, right):
+            queue = channels[agent.agent_id].sent[-1]
+            assert queue["command"] == "queue"
+            await runtime.acknowledge_command(agent.acknowledge(queue["request_id"]))
+
+        assert runtime.ingest(left.position(4000, state=PlaybackState.COMPLETED)).accepted
+        await _settle()
+        assert channels["media-left"].names()[-1] == "advance"
+        assert channels["media-right"].names()[-1] == "advance"
+
+        # The fast device switched; the slow one is still opening its file.
+        right_advance = channels["media-right"].sent[-1]
+        await runtime.acknowledge_command(right.acknowledge(right_advance["request_id"]))
+        assert channels["media-right"].names()[-1] == "advance"
+        assert channels["media-left"].names()[-1] == "advance"
+
+        left_advance = channels["media-left"].sent[-1]
+        await runtime.acknowledge_command(left.acknowledge(left_advance["request_id"]))
+        assert channels["media-left"].names()[-1] == "play"
+        assert channels["media-right"].names()[-1] == "play"
+        assert channels["media-right"].names().count("play") == 2
+        await runtime.shutdown()
+
+    asyncio.run(scenario())
+
+
+def test_preloaded_changes_apply_calibrated_output_timing(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        runtime = ControllerRuntime(catalog=load_show_package(_two_projector_package(tmp_path)))
+        runtime.set_output_timing({"projector.right": 40})
+        left = FakeMediaAgent(agent_id="media-left")
+        right = FakeMediaAgent(agent_id="media-right")
+        channels: dict[str, MemoryCommandChannel] = {}
+        for agent in (left, right):
+            channels[agent.agent_id] = MemoryCommandChannel([])
+            hello = agent.hello().model_copy(update={"capabilities": SEAMLESS})
+            agent.accept_welcome(runtime.register_agent(hello, channels[agent.agent_id]))
+        active = await runtime.start_scene("intro")
+        for agent in (left, right):
+            prepare = channels[agent.agent_id].sent[-1]
+            await runtime.acknowledge_command(agent.acknowledge(prepare["request_id"]))
+            session = active.session_for_agent(agent.agent_id)
+            assert session is not None
+            agent.attach(active.scene_instance_id, session.playback_session_id)
+        await asyncio.sleep(0.06)
+        assert runtime.ingest(left.position(3500)).accepted
+        await _settle()
+        for agent in (left, right):
+            queue = channels[agent.agent_id].sent[-1]
+            await runtime.acknowledge_command(agent.acknowledge(queue["request_id"]))
+        assert runtime.ingest(left.position(4000, state=PlaybackState.COMPLETED)).accepted
+        await _settle()
+        for agent in (left, right):
+            advance = channels[agent.agent_id].sent[-1]
+            await runtime.acknowledge_command(agent.acknowledge(advance["request_id"]))
+
+        assert channels["media-left"].names()[-1] == "play"
+        assert channels["media-right"].names()[-1] == "advance"
+        await asyncio.sleep(0.06)
+        assert channels["media-right"].names()[-1] == "play"
+        next_scene = runtime.active_scene
+        assert next_scene is not None
+        assert next_scene.session_for_agent("media-right").installation_delay_ms == 40  # type: ignore[union-attr]
+        await runtime.shutdown()
+
+    asyncio.run(scenario())
+
+
+def _two_projector_package(tmp_path: Path) -> Path:
+    root = tmp_path / "two-projectors"
+    scenes = root / "scenes"
+    scenes.mkdir(parents=True)
+    installation = {
+        "schema_version": 1,
+        "resources": [
+            {"resource": "projector.left", "kind": "media_agent", "target": "media-left"},
+            {"resource": "projector.right", "kind": "media_agent", "target": "media-right"},
+            {"resource": "roofline", "kind": "pixel_output", "target": "memory", "pixel_count": 8},
+        ],
+    }
+
+    def scene(scene_id: str, completion: dict[str, object]) -> dict[str, object]:
+        return {
+            "schema_version": 2,
+            "id": scene_id,
+            "name": scene_id,
+            "mode": "media_synchronized",
+            "resources": ["projector.left", "projector.right", "roofline"],
+            "duration_ms": 4000,
+            "clock_source": "left",
+            "completion": completion,
+            "media": [
+                {"id": "left", "resource": "projector.left", "asset": f"{scene_id}-left.mp4"},
+                {"id": "right", "resource": "projector.right", "asset": f"{scene_id}-right.mp4"},
+            ],
+            "lighting": [{"id": "roofline", "resource": "roofline", "effect": "synthetic_sweep"}],
+        }
+
+    (root / "installation.json").write_text(json.dumps(installation), encoding="utf-8")
+    (scenes / "intro.json").write_text(
+        json.dumps(scene("intro", {"policy": "transition_to", "target_scene_id": "main"})),
+        encoding="utf-8",
+    )
+    (scenes / "main.json").write_text(
+        json.dumps(scene("main", {"policy": "hold"})), encoding="utf-8"
+    )
+    return root
 
 
 def test_stop_discards_the_planned_scene(tmp_path: Path) -> None:

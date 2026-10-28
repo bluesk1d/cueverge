@@ -44,7 +44,11 @@ One required output is the declared clock source; other telemetry is
 diagnostic and cannot advance authoritative scene time.
 
 `device.media.command` names are `prepare`, `queue`, `advance`, `play`,
-`pause`, `resume`, `seek`, `stop` and `get_status`. Only `prepare` and `queue`
+`pause`, `resume`, `seek`, `stop` and `get_status`. mpv agents acknowledge
+`prepare` only once the file is open and its first video frame is decoded,
+paused at the start (failing after 8 s), so the controller's prepare barrier
+waits for the slowest device to load rather than the time it takes to send a
+command. Only `prepare` and `queue`
 carry `asset_id`, `end_behavior` and an optional `repeat_count` (total plays,
 not with `loop`). `queue` preloads the next scene's media behind the current
 file under the next scene-instance and playback-session UUIDs, and requires
@@ -62,8 +66,12 @@ comes from the clock device that was told to continue automatically, the
 controller also treats it as completion of the current scene, so a lost
 `completed` position cannot hold the show in a finished scene. With `auto_advance:
 false` the device holds the queued file until `advance` names its playback
-session. `advance` is idempotent once the device has already continued into
-that session. A new `prepare` or `stop` discards anything queued. A failed
+session. `advance` switches to that file paused on its first frame and
+acknowledges once it is decoded; the controller sends `play` to every output of
+the new scene only after every `advance` and `prepare` for it is acknowledged,
+so a device that opens files faster cannot start ahead. Older agents that start
+playing on `advance` still work. `advance` is idempotent once the device has
+already continued into that session. A new `prepare` or `stop` discards anything queued. A failed
 `queue` only cancels preloading for that device, and a failed `advance` makes
 the controller fall back to `prepare`.
 

@@ -295,6 +295,7 @@ class ControllerRuntime:
         )
         self.active_scene: ActiveScene | None = None
         self._handoff: PlannedHandoff | None = None
+        self._played_scene_instance: str | None = None
         self._handoff_considered_for: str | None = None
         self._preselected_next: tuple[str, str | None] | None = None
         self.seamless_transitions = 0
@@ -948,7 +949,7 @@ class ControllerRuntime:
                     pending.command.command,
                 )
             )
-        if pending.command.command == "prepare" and self.active_scene is not None:
+        if pending.command.command in {"prepare", "advance"} and self.active_scene is not None:
             await self._play_when_prepared(self.active_scene)
         return TelemetryDecision(True)
 
@@ -1023,9 +1024,11 @@ class ControllerRuntime:
                 playback_session_id=str(uuid4()),
                 asset_id=output.asset_id,
                 required=output.definition.required,
-                start_delay_ms=0,
+                # Calibrated output timing applies to a preloaded change as to a normal start.
+                start_delay_ms=self.output_delay_ms(output.definition.resource),
                 end_behavior=output.definition.end_behavior,
                 repeat_count=repeat_count,
+                installation_delay_ms=self.output_delay_ms(output.definition.resource),
             )
             if (
                 clock is not None
@@ -1134,8 +1137,12 @@ class ControllerRuntime:
     async def _play_when_prepared(self, active: ActiveScene) -> None:
         if self.active_scene is not active:
             return
+        if self._played_scene_instance == active.scene_instance_id:
+            return
+        # Every device must have its file open before any of them starts, or the fastest
+        # device starts ahead by the slowest one's load time.
         has_pending_prepare = any(
-            pending.command.command == "prepare"
+            pending.command.command in {"prepare", "advance"}
             and pending.command.scene_instance_id == active.scene_instance_id
             for pending in self._pending_commands.values()
         )
@@ -1145,6 +1152,7 @@ class ControllerRuntime:
         )
         if has_pending_prepare or required_failed:
             return
+        self._played_scene_instance = active.scene_instance_id
         if self._controller_clock is not None:
             self._controller_clock.start(self.clock())
         for session in active.resolved_media_sessions:
