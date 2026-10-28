@@ -245,6 +245,12 @@ class ArtifactDeploymentService:
             assignment.resource: assignment
             for assignment in self.repository.list_resource_assignments()
         }
+        receiving: dict[str, set[str]] = {}
+        for item in members:
+            if isinstance(item, dict) and isinstance(item.get("digest_sha256"), str):
+                target = assignments.get(str(item.get("resource")))
+                if target is not None:
+                    receiving.setdefault(target.device_id, set()).add(str(item["digest_sha256"]))
         stage_requests: list[tuple[str, UUID, DeviceArtifactStageCommand]] = []
         activation_requests: list[tuple[str, UUID, DeviceArtifactActivateCommand]] = []
         resources: list[str] = []
@@ -287,7 +293,12 @@ class ArtifactDeploymentService:
                                 resource,
                             )
                         ),
-                        protected_digests=protected_digests,
+                        protected_digests=device_protected_digests(
+                            self.repository,
+                            assignment.device_id,
+                            protected_digests,
+                            receiving[assignment.device_id],
+                        ),
                     ),
                 )
             )
@@ -347,3 +358,18 @@ def _session_placeholder() -> UUID:
     # The registry rewrites transport session identity validation through the
     # active mTLS session; the field is replaced by the device channel.
     return UUID(int=0)
+
+
+def device_protected_digests(
+    repository: "GuiRepository",
+    device_id: str,
+    protected_digests: tuple[str, ...],
+    receiving: set[str],
+) -> tuple[str, ...]:
+    """The protected digests one device can actually hold.
+
+    Retained packages list every device's media; pinning another device's files makes this
+    device report pinned artifacts as missing and blocks publication.
+    """
+    held = {artifact.digest_sha256 for artifact in repository.list_device_artifacts(device_id)}
+    return tuple(sorted(set(protected_digests) & (held | receiving)))

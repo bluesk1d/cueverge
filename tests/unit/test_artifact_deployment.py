@@ -258,6 +258,9 @@ ACTIVATION = "12345678-1234-5678-9234-567812345678"
 
 
 class _FixtureRepository:
+    def list_device_artifacts(self, device_id: str) -> tuple[object, ...]:
+        return ()
+
     def get_render_artifact_manifest(self, artifact_id: str):
         assert artifact_id == ACTIVATION
         return {

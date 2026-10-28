@@ -508,10 +508,22 @@ class PublicationService:
                     "warning",
                 )
             elif status.faults:
-                add(
-                    "inventory_fault",
-                    f"Client {assignment.device_id} reports: {', '.join(status.faults)}.",
-                )
+                # Staging replaces the device's pin set, and media this package needs is
+                # checked below, so stale pins alone must not block publication.
+                stale_pins = [fault for fault in status.faults if "pinned artifact" in fault]
+                blocking = [fault for fault in status.faults if fault not in stale_pins]
+                if blocking:
+                    add(
+                        "inventory_fault",
+                        f"Client {assignment.device_id} reports: {', '.join(blocking)}.",
+                    )
+                if stale_pins:
+                    add(
+                        "inventory_stale_pins",
+                        f"Client {assignment.device_id} reports: {', '.join(stale_pins)}. "
+                        "Staging this package replaces its pinned files.",
+                        "warning",
+                    )
         for device_id, required in required_by_device.items():
             status = statuses.get(device_id)
             if status is None:

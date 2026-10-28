@@ -109,6 +109,8 @@ def test_runtime_media_staging_checks_exact_ack_and_uses_https(
         role=Role.ADMINISTRATOR,
         occurred_at=NOW.isoformat(),
     )
+    held = SimpleNamespace(digest_sha256="c" * 64)
+    repository.list_device_artifacts = lambda device_id: (held,)  # type: ignore[method-assign]
     commands = []
     epoch = uuid4()
 
@@ -639,3 +641,47 @@ def test_staging_resends_when_the_device_session_expires_mid_request(tmp_path: P
 
     assert asyncio.run(scenario()) == []
     assert sent == ["old", "new"]
+
+
+def test_staging_protects_only_digests_the_device_holds_or_receives(tmp_path: Path) -> None:
+    repository, _, _ = _enrolled_device(tmp_path)
+    repository.set_resource_assignment(
+        resource="projector",
+        device_id=str(DEVICE_ID),
+        capability_kind="media_playback",
+        device_output=None,
+        expected_revision=None,
+        actor="admin",
+        role=Role.ADMINISTRATOR,
+        occurred_at=NOW.isoformat(),
+    )
+    held = SimpleNamespace(digest_sha256="c" * 64)
+    repository.list_device_artifacts = lambda device_id: (held,)  # type: ignore[method-assign]
+    commands = []
+    epoch = uuid4()
+
+    async def request(device_id, request_id, command):
+        commands.append(command)
+        return {
+            "request_id": str(request_id),
+            "device_session_id": str(UUID(int=0)),
+            "controller_epoch": str(epoch),
+            "activation_identity": str(command.activation_identity),
+            "digest_sha256": command.digest_sha256,
+            "status": "completed",
+        }
+
+    sessions = SimpleNamespace(controller_epoch=epoch, request=request)
+    member = {"resource": "projector", "member_id": "m", "digest_sha256": "a" * 64}
+    asyncio.run(
+        stage_media_members(
+            repository,
+            sessions,  # type: ignore[arg-type]
+            "wss://controller.example:7443/api/device/v2/agent/ws",
+            str(uuid4()),
+            [{**member, "size_bytes": 12}],
+            # The retained package also lists "f", another device's file.
+            ("a" * 64, "c" * 64, "f" * 64),
+        )
+    )
+    assert commands[0].protected_digests == ("a" * 64, "c" * 64)

@@ -9,7 +9,7 @@ from uuid import UUID, uuid4
 
 from pydantic import AnyUrl, TypeAdapter, ValidationError
 
-from cueverge.gui.artifact_deployment import ArtifactDeploymentError
+from cueverge.gui.artifact_deployment import ArtifactDeploymentError, device_protected_digests
 from cueverge.gui.contracts import DraftProject
 from cueverge.gui.scene_output_bakes import scene_output_bakes
 from cueverge.gui.stage_renderer import bakes_lighting_only
@@ -267,6 +267,11 @@ async def stage_media_members(
     assignments = {item.resource: item for item in repository.list_resource_assignments()}
     parsed_url = urlsplit(public_url)
     download_base = urlunsplit(("https", parsed_url.netloc, "", "", ""))
+    receiving: dict[str, set[str]] = {}
+    for member in members:
+        target = assignments.get(str(member["resource"]))
+        if target is not None:
+            receiving.setdefault(target.device_id, set()).add(str(member["digest_sha256"]))
     for member in members:
         resource = str(member["resource"])
         assignment = assignments.get(resource)
@@ -290,7 +295,12 @@ async def stage_media_members(
                 f"{download_base}/api/device/v2/published-media/"
                 f"{quote(package_id, safe='')}/{quote(str(member['member_id']), safe='')}"
             ),
-            protected_digests=protected_digests,
+            protected_digests=device_protected_digests(
+                repository,
+                assignment.device_id,
+                protected_digests,
+                receiving[assignment.device_id],
+            ),
         )
         from cueverge.gui.device_session import DeviceSessionError
 

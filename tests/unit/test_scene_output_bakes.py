@@ -391,3 +391,45 @@ def test_full_length_audio_trim_tolerates_millisecond_rounding(tmp_path: Path) -
             raw_layers=[layer("short")],
             assets=Assets(),  # type: ignore[arg-type]
         )
+
+
+def test_stale_pins_warn_but_other_client_faults_block_publication(tmp_path: Path) -> None:
+    from dataclasses import replace
+    from types import SimpleNamespace
+
+    from cueverge.gui.repository import StoredDeviceArtifactStatus
+
+    _, services, project_id, candidate, _, _, resource, _ = _scene_with_output_audio(tmp_path)
+    assignment = SimpleNamespace(
+        resource=resource,
+        device_id="client-1",
+        capability_kind="media_playback",
+        device_output=None,
+    )
+    services.repository.list_resource_assignments = lambda: (assignment,)
+    status = StoredDeviceArtifactStatus(
+        device_id=assignment.device_id,
+        observed_at_ms=1,
+        total_bytes=10**9,
+        free_bytes=10**9,
+        artifact_count=0,
+        artifact_bytes=0,
+        pinned_count=4,
+        supports_pinning=True,
+        supports_resumable_transfer=True,
+        transfers=(),
+        faults=("4 pinned artifact(s) are missing",),
+    )
+
+    def diagnostics(reported: StoredDeviceArtifactStatus) -> dict[str, str]:
+        services.repository.list_device_artifact_statuses = lambda: (reported,)
+        return {
+            item.code: item.severity
+            for item in services.publication.validate(project_id, candidate.revision)
+        }
+
+    stale = diagnostics(status)
+    assert stale["inventory_stale_pins"] == "warning"
+    assert "inventory_fault" not in stale
+    unreadable = diagnostics(replace(status, faults=("1 asset(s) could not be read",)))
+    assert unreadable["inventory_fault"] == "error"
