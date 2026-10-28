@@ -53,7 +53,10 @@ carry `asset_id`, `end_behavior` and an optional `repeat_count` (total plays,
 not with `loop`). `queue` preloads the next scene's media behind the current
 file under the next scene-instance and playback-session UUIDs, and requires
 `auto_advance`. With `auto_advance: true` the device continues into that file
-by itself when the current media ends. It then sends one `completed` position
+by itself when the current media ends. The controller sets it for the clock
+device when its media doesn't loop, and for other devices whose reported media
+duration is within 50 ms of the clock media's, so all of them cut together; a
+`stop` output that continues by itself is not blanked at its end. It then sends one `completed` position
 for the old session, followed by positions for the new session. If reading the
 player fails at the switch (mpv briefly has no position for the new file), the
 agent retries on the next telemetry tick and still sends that `completed`

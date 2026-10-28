@@ -714,3 +714,20 @@ def test_audio_only_media_is_ready_without_a_video_frame(tmp_path: Path) -> None
         await asyncio.wait_for(player.prepare("sound.wav", "stop"), timeout=1)
 
     asyncio.run(scenario())
+
+
+def test_stop_media_continuing_into_the_next_file_by_itself_is_not_blanked(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        (tmp_path / "a.mp4").write_bytes(b"a")
+        (tmp_path / "b.mp4").write_bytes(b"b")
+        fake = ScriptedMpvClient()
+        player = MpvPlayer(fake, tmp_path)  # type: ignore[arg-type]
+        await player.prepare("a.mp4", "stop")
+        await player.queue("b.mp4", "loop", None, True)
+        fake.properties.update({"time-pos": 4.0, "eof-reached": True})
+        await player.status()
+        assert ("set_property", "vid", "no") not in fake.commands
+
+    asyncio.run(scenario())

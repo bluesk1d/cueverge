@@ -314,7 +314,12 @@ class MpvPlayer:
                 state = PlaybackState.COMPLETED
                 if duration_ms is not None:
                     position_ms = duration_ms
-                if item.end_behavior == "stop" and self._queued is not None and not item.blanked:
+                if (
+                    item.end_behavior == "stop"
+                    and self._queued is not None
+                    and not self._queued_auto_advance
+                    and not item.blanked
+                ):
                     # A held end stands in for "stop" while the next scene waits to advance.
                     await self._command("set_property", "vid", "no")
                     item.blanked = True

@@ -613,7 +613,10 @@ shown until the change:
   last frame of the current scene is followed directly by the first frame of the
   next. That end of media is also what completes the scene; if the device's
   completion report is lost, its first position in the preloaded file completes
-  the scene instead.
+  the scene instead. Other preloaded outputs whose media ends within 50 ms of the
+  clock media (as reported by their devices) continue into their preloaded files
+  by themselves at the same moment, so every projector cuts on the same frame
+  instead of one blanking (`stop`) or holding while it waits for the controller.
 - Other preloaded outputs, and all outputs of `controller_timed` scenes, switch
   when the controller changes scene, without stopping or reloading. Each device
   holds the first frame of its preloaded file until every device has switched,

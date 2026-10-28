@@ -64,6 +64,8 @@ SceneSelector = Callable[["ActiveScene"], Awaitable[str | None]]
 
 
 SEAMLESS_PRELOAD_LEAD_MS = 3000
+# A follower whose media ends within this of the clock media also cuts by itself.
+AUTOMATIC_CUT_TOLERANCE_MS = 50
 """How long before a scene's end its successor is chosen and its media preloaded."""
 
 
@@ -98,7 +100,9 @@ class PlannedHandoff:
 
     ``sessions`` maps agent IDs to the next scene's media sessions queued on those agents.
     ``auto_agent_id`` continues into its queued file by itself when the current clock media
-    ends, so the cut is frame-accurate; other queued agents switch on ``advance``.
+    ends, so the cut is frame-accurate. ``follow_agent_ids`` are other agents whose media
+    ends with the clock media and that cut by themselves too; the rest switch on
+    ``advance``.
     """
 
     from_scene_instance_id: str
@@ -106,6 +110,7 @@ class PlannedHandoff:
     scene_instance_id: str
     sessions: dict[str, ActiveMediaSession]
     auto_agent_id: str | None
+    follow_agent_ids: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -296,6 +301,7 @@ class ControllerRuntime:
         self.active_scene: ActiveScene | None = None
         self._handoff: PlannedHandoff | None = None
         self._played_scene_instance: str | None = None
+        self._media_durations: dict[str, int] = {}
         self._handoff_considered_for: str | None = None
         self._preselected_next: tuple[str, str | None] | None = None
         self.seamless_transitions = 0
@@ -578,6 +584,7 @@ class ControllerRuntime:
         )
         self.active_scene = active
         self._failed_prepare_sessions.clear()
+        self._media_durations.clear()
         for session in media_sessions:
             if self.active_scene is not active:
                 raise RuntimeError("scene start was cancelled by Stop")
@@ -821,9 +828,11 @@ class ControllerRuntime:
                 return TelemetryDecision(False, "session_fence")
             connection.last_seen_at = self.clock()
             self._last_media_positions[media_session.playback_session_id] = telemetry.position_ms
+            self._record_media_duration(media_session, telemetry)
             self._media_sessions_with_telemetry.add(media_session.playback_session_id)
             return TelemetryDecision(True)
 
+        self._record_media_duration(media_session, telemetry)
         telemetry = self._unwrap_looping_clock(active, media_session, telemetry)
         decision = self.follower.ingest(telemetry, self.clock())
         if not decision.accepted:
@@ -1000,6 +1009,10 @@ class ControllerRuntime:
         current = {session.agent_id: session for session in active.resolved_media_sessions}
         clock = active.clock_session
         auto_agent: str | None = None
+        following: set[str] = set()
+        clock_media_ms = (
+            self._media_durations.get(clock.playback_session_id) if clock is not None else None
+        )
         sessions: dict[str, ActiveMediaSession] = {}
         for output in next_scene.media_outputs:
             connection = self._agents.get(output.agent_id)
@@ -1036,6 +1049,8 @@ class ControllerRuntime:
                 and clock.end_behavior != "loop"
             ):
                 auto_agent = output.agent_id
+            elif self._ends_with_clock_media(running, clock_media_ms):
+                following.add(output.agent_id)
         if not sessions:
             return
         handoff = PlannedHandoff(
@@ -1044,6 +1059,8 @@ class ControllerRuntime:
             scene_instance_id=str(uuid4()),
             sessions=sessions,
             auto_agent_id=auto_agent,
+            # Followers only cut by themselves alongside a clock that does.
+            follow_agent_ids=frozenset(following) if auto_agent is not None else frozenset(),
         )
         self._handoff = handoff
         for agent_id, session in sessions.items():
@@ -1056,8 +1073,24 @@ class ControllerRuntime:
                 "queue",
                 connection,
                 target_scene=(handoff.scene_id, handoff.scene_instance_id),
-                auto_advance=agent_id == auto_agent,
+                auto_advance=agent_id == auto_agent or agent_id in handoff.follow_agent_ids,
             )
+
+    def _record_media_duration(self, session: ActiveMediaSession, telemetry: MediaPosition) -> None:
+        if telemetry.duration_ms is not None and session.end_behavior != "loop":
+            self._media_durations[session.playback_session_id] = telemetry.duration_ms
+
+    def _ends_with_clock_media(
+        self, running: ActiveMediaSession, clock_media_ms: int | None
+    ) -> bool:
+        """Whether a follower's current media ends together with the clock media."""
+        media_ms = self._media_durations.get(running.playback_session_id)
+        return (
+            running.end_behavior != "loop"
+            and clock_media_ms is not None
+            and media_ms is not None
+            and abs(media_ms - clock_media_ms) <= AUTOMATIC_CUT_TOLERANCE_MS
+        )
 
     async def _handoff_command_failed(
         self, command: AgentCommand, acknowledgment: CommandAck
@@ -1085,6 +1118,7 @@ class ControllerRuntime:
                     auto_agent_id=(
                         None if handoff.auto_agent_id == command.agent_id else handoff.auto_agent_id
                     ),
+                    follow_agent_ids=handoff.follow_agent_ids - {command.agent_id},
                 )
             return
         active = self.active_scene
@@ -1958,6 +1992,7 @@ class ControllerRuntime:
             self._handled_completion_sessions.clear()
             self._completion_history.clear()
             self._last_media_positions.clear()
+            self._media_durations.clear()
             self._media_sessions_with_telemetry.clear()
             self._failed_prepare_sessions.clear()
             self._lighting_output_errors.clear()

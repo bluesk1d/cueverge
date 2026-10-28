@@ -352,8 +352,66 @@ def test_preloaded_changes_apply_calibrated_output_timing(tmp_path: Path) -> Non
     asyncio.run(scenario())
 
 
-def _two_projector_package(tmp_path: Path) -> Path:
-    root = tmp_path / "two-projectors"
+async def _queue_after_follower_reports(
+    tmp_path: Path, *, right_duration_ms: int, left_end: str = "hold_last_frame"
+) -> tuple[dict[str, Any], dict[str, Any], ControllerRuntime]:
+    runtime = ControllerRuntime(
+        catalog=load_show_package(_two_projector_package(tmp_path, left_end=left_end))
+    )
+    left = FakeMediaAgent(agent_id="media-left")
+    right = FakeMediaAgent(agent_id="media-right")
+    channels: dict[str, MemoryCommandChannel] = {}
+    for agent in (left, right):
+        channels[agent.agent_id] = MemoryCommandChannel([])
+        hello = agent.hello().model_copy(update={"capabilities": SEAMLESS})
+        agent.accept_welcome(runtime.register_agent(hello, channels[agent.agent_id]))
+    active = await runtime.start_scene("intro")
+    for agent in (left, right):
+        prepare = channels[agent.agent_id].sent[-1]
+        await runtime.acknowledge_command(agent.acknowledge(prepare["request_id"]))
+        session = active.session_for_agent(agent.agent_id)
+        assert session is not None
+        agent.attach(active.scene_instance_id, session.playback_session_id)
+    assert runtime.ingest(right.position(3400, duration_ms=right_duration_ms)).accepted
+    assert runtime.ingest(left.position(3500)).accepted
+    await _settle()
+    return channels["media-left"].sent[-1], channels["media-right"].sent[-1], runtime
+
+
+def test_followers_ending_with_the_clock_media_cut_by_themselves(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        left, right, runtime = await _queue_after_follower_reports(tmp_path, right_duration_ms=4020)
+        assert (left["command"], left["auto_advance"]) == ("queue", True)
+        assert (right["command"], right["auto_advance"]) == ("queue", True)
+        await runtime.shutdown()
+
+    asyncio.run(scenario())
+
+
+def test_followers_with_shorter_media_wait_for_advance(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        left, right, runtime = await _queue_after_follower_reports(tmp_path, right_duration_ms=3000)
+        assert left["auto_advance"] is True
+        assert right["auto_advance"] is False
+        await runtime.shutdown()
+
+    asyncio.run(scenario())
+
+
+def test_followers_never_cut_by_themselves_when_the_clock_loops(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        left, right, runtime = await _queue_after_follower_reports(
+            tmp_path, right_duration_ms=4000, left_end="loop"
+        )
+        assert left["auto_advance"] is False
+        assert right["auto_advance"] is False
+        await runtime.shutdown()
+
+    asyncio.run(scenario())
+
+
+def _two_projector_package(tmp_path: Path, *, left_end: str = "hold_last_frame") -> Path:
+    root = tmp_path / f"two-projectors-{left_end}"
     scenes = root / "scenes"
     scenes.mkdir(parents=True)
     installation = {
@@ -376,7 +434,12 @@ def _two_projector_package(tmp_path: Path) -> Path:
             "clock_source": "left",
             "completion": completion,
             "media": [
-                {"id": "left", "resource": "projector.left", "asset": f"{scene_id}-left.mp4"},
+                {
+                    "id": "left",
+                    "resource": "projector.left",
+                    "asset": f"{scene_id}-left.mp4",
+                    "end_behavior": left_end,
+                },
                 {"id": "right", "resource": "projector.right", "asset": f"{scene_id}-right.mp4"},
             ],
             "lighting": [{"id": "roofline", "resource": "roofline", "effect": "synthetic_sweep"}],
