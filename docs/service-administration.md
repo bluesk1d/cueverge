@@ -199,7 +199,10 @@ available through the
 [Publish controller image workflow](../.github/workflows/publish-image.yml).
 It checks AMD64 startup, native dependency preflight, frontend availability,
 and the MCP authentication boundary before pushing a multi-platform image for
-`linux/amd64` and `linux/arm64`.
+`linux/amd64` and `linux/arm64`. Architecture-independent stages (the frontend
+and media agent bundles) build once on the runner's native platform, and the
+Docker layer cache is stored in the registry as `ghcr.io/bluesk1d/cueverge:buildcache`;
+that tag is a build cache, not a runnable image.
 
 Both GitHub workflows use Node.js 24-based actions. GitHub-hosted runners
 support these actions; a self-hosted runner must be version 2.327.1 or newer.

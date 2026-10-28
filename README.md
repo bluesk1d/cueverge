@@ -56,7 +56,8 @@ uv run pytest
 
 Pytest adds the repository root to its import path so the suite can also test
 the local-demo tooling in `examples/`, which is not part of the installed engine
-package. CI uses the same configuration and commands.
+package. CI uses the same configuration and commands, running pytest in parallel
+with `uv run pytest -n auto` (pytest-xdist); use that locally for faster full runs.
 
 Run the controller:
 

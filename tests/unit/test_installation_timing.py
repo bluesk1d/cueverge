@@ -421,7 +421,8 @@ def test_calibration_service_stages_starts_players_and_saves_accepted_delays(
         occurred_at=NOW,
     )
     installation = repository.ensure_runtime_installation(name="home", occurred_at=NOW)
-    sessions = DeviceSessionRegistry()
+    # The fake device and media agent never heartbeat; keep them connected on loaded runners.
+    sessions = DeviceSessionRegistry(heartbeat_timeout_ms=60_000)
     device_messages: list[Any] = []
 
     class DeviceChannel:
@@ -465,7 +466,9 @@ def test_calibration_service_stages_starts_players_and_saves_accepted_delays(
 
     async def scenario() -> None:
         runtime = ControllerRuntime(
-            catalog=load_show_package(_package(tmp_path / "show")), sink=MemoryFrameSink()
+            catalog=load_show_package(_package(tmp_path / "show")),
+            sink=MemoryFrameSink(),
+            heartbeat_timeout_ms=60_000,
         )
         agent = FakeMediaAgent(agent_id="player")
 

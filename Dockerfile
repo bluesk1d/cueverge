@@ -4,7 +4,8 @@ ARG PYTHON_IMAGE=python:3.12-slim-bookworm@sha256:34386ef0cb081344d7ec1c103ba398
 ARG NODE_IMAGE=node:22-bookworm-slim@sha256:c3de60bf2f9dd0ac6370e6117950ff62d6e339527e7472301c9c78a017978392
 ARG UV_VERSION=0.11.23
 
-FROM ${NODE_IMAGE} AS web-build
+# The web bundle is architecture-independent, so build it natively instead of under emulation.
+FROM --platform=$BUILDPLATFORM ${NODE_IMAGE} AS web-build
 
 WORKDIR /build/web
 COPY web/package.json web/package-lock.json ./
@@ -23,8 +24,19 @@ COPY pyproject.toml uv.lock README.md ./
 COPY src/ src/
 RUN uv sync --locked --no-dev --no-editable
 
-# Offline media agent bundles the controller serves for managed agent updates.
-FROM python-build AS agent-bundles
+# Offline media agent bundles the controller serves for managed agent updates. Bundles are
+# cross-resolved for every agent platform, so build them once natively instead of per target
+# architecture; for native targets these steps share the python-build cache.
+FROM --platform=$BUILDPLATFORM ${PYTHON_IMAGE} AS agent-bundles
+
+ARG UV_VERSION
+ENV UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy
+WORKDIR /build
+RUN pip install --no-cache-dir "uv==${UV_VERSION}"
+COPY pyproject.toml uv.lock README.md ./
+COPY src/ src/
+RUN uv sync --locked --no-dev --no-editable
 
 ARG CUEVERGE_BUILD_LABEL=image
 ARG CUEVERGE_AGENT_PLATFORMS="linux_x86_64 linux_aarch64 windows_amd64"
