@@ -31,6 +31,22 @@ ALLOWED_MEDIA_TYPES = {
     "video/quicktime",
     "video/webm",
 }
+# Browsers and Python's mimetypes disagree on names for the same formats (Python maps .wav to
+# audio/x-wav, Chrome declares audio/wav), so both sides are compared in canonical form.
+MEDIA_TYPE_ALIASES = {
+    "audio/x-wav": "audio/wav",
+    "audio/wave": "audio/wav",
+    "audio/vnd.wave": "audio/wav",
+    "audio/x-pn-wav": "audio/wav",
+    "audio/x-flac": "audio/flac",
+    "audio/mp3": "audio/mpeg",
+    "audio/x-mp3": "audio/mpeg",
+    "audio/mpeg3": "audio/mpeg",
+    "audio/x-mpeg": "audio/mpeg",
+    "image/jpg": "image/jpeg",
+    "image/pjpeg": "image/jpeg",
+}
+UNDECLARED_MEDIA_TYPES = {"", "application/octet-stream"}
 REVIEW_ARTIFACT_TYPES = {
     "audio": ("audio/mpeg", ".mp3"),
     "image": ("image/jpeg", ".jpg"),
@@ -281,6 +297,7 @@ class AssetUploadService:
         role: Role,
         occurred_at: str,
     ) -> tuple[StoredAsset, StoredAssetUpload]:
+        media_type = canonical_media_type(media_type, original_filename)
         self._validate_upload(original_filename, media_type, total_bytes, expected_sha256)
         asset_id = str(uuid4())
         upload_id = str(uuid4())
@@ -357,6 +374,7 @@ class AssetUploadService:
         succeeds. Until then the current revision stays in use; a failed or
         quarantined replacement never becomes current.
         """
+        media_type = canonical_media_type(media_type, original_filename)
         self._validate_upload(original_filename, media_type, total_bytes, expected_sha256)
         upload_id = str(uuid4())
         temp_path = self._reserve_temp(upload_id)
@@ -621,7 +639,7 @@ class AssetUploadService:
         _validate_filename(original_filename)
         if media_type not in ALLOWED_MEDIA_TYPES:
             raise AssetUploadError(f"media type is not allowed: {media_type}")
-        guessed_type, _ = mimetypes.guess_type(original_filename)
+        guessed_type = _guessed_media_type(original_filename)
         if guessed_type is not None and guessed_type != media_type:
             raise AssetUploadError(
                 f"declared media type {media_type} does not match filename type {guessed_type}"
@@ -2028,6 +2046,23 @@ def _check_editable(row: sqlite3.Row, expected_revision: int) -> int:
     if current != expected_revision:
         raise AssetMetadataConflictError(current)
     return current
+
+
+def canonical_media_type(media_type: str, original_filename: str) -> str:
+    """Canonical name of a declared type; uses the filename when the browser declared none."""
+    declared = media_type.split(";", 1)[0].strip().lower()
+    declared = MEDIA_TYPE_ALIASES.get(declared, declared)
+    if declared in UNDECLARED_MEDIA_TYPES:
+        return _guessed_media_type(original_filename) or declared or "application/octet-stream"
+    return declared
+
+
+def _guessed_media_type(original_filename: str) -> str | None:
+    guessed, _ = mimetypes.guess_type(original_filename)
+    if guessed is None:
+        return None
+    guessed = guessed.lower()
+    return MEDIA_TYPE_ALIASES.get(guessed, guessed)
 
 
 def _media_kind(media_type: str) -> str:

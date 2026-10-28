@@ -2819,6 +2819,7 @@ export async function uploadAsset(
         expected_sha256: null,
       }),
     },
+    true,
   );
   return sendAssetChunks(upload, file, onProgress);
 }
@@ -2845,6 +2846,7 @@ async function sendAssetChunks(
         },
         body: chunk,
       },
+      true,
     );
     onProgress(upload.received_bytes);
   }

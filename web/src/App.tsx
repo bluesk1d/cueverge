@@ -740,8 +740,8 @@ function ProjectCard({
         setAssetError(result.error ?? "Upload verification failed.");
       }
       await loadAssets();
-    } catch {
-      setAssetError("Asset upload failed.");
+    } catch (error) {
+      setAssetError(error instanceof Error ? error.message : "Asset upload failed.");
     } finally {
       setUploadProgress(null);
     }
@@ -952,7 +952,7 @@ function ProjectCard({
             <label className="file-button file-button--compact">
               Add visual or audio asset
               <input
-                accept="video/mp4,video/webm,video/quicktime,audio/mpeg,audio/wav,audio/flac,audio/ogg,image/png,image/jpeg,image/webp"
+                accept="video/mp4,video/webm,video/quicktime,audio/mpeg,audio/wav,audio/flac,audio/ogg,image/png,image/jpeg,image/webp,image/gif,.mp4,.webm,.mov,.mp3,.wav,.flac,.ogg,.png,.jpg,.jpeg,.webp,.gif"
                 disabled={uploadProgress !== null}
                 type="file"
                 onChange={(event) => {

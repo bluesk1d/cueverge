@@ -415,6 +415,7 @@ def test_processing_quarantines_malware(
             },
         ),
         ("tone.mp3", "audio/mpeg", {"review": "audio/mpeg", "waveform": "image/png"}),
+        ("tone.wav", "audio/wav", {"review": "audio/mpeg", "waveform": "image/png"}),
         ("still.png", "image/png", {"review": "image/jpeg", "thumbnail": "image/jpeg"}),
     ],
 )
@@ -469,7 +470,7 @@ def test_processing_generates_real_metadata_and_artifacts_with_pyav(
         assert processed.metadata["loudness_status"] == "ready"
     else:
         assert processed.metadata["loudness_status"] == "not_applicable"
-    if media_type != "audio/mpeg":
+    if not media_type.startswith("audio/"):
         assert (processed.metadata["width"], processed.metadata["height"]) == (64, 36)
     artifacts = processed.metadata["artifacts"]
     assert isinstance(artifacts, dict)
@@ -487,18 +488,74 @@ def test_processing_generates_real_metadata_and_artifacts_with_pyav(
             )
 
 
+@pytest.mark.parametrize(
+    ("filename", "declared", "stored"),
+    [
+        ("take.wav", "audio/wav", "audio/wav"),
+        ("take.wav", "audio/x-wav", "audio/wav"),
+        ("take.wav", "audio/wave", "audio/wav"),
+        ("take.WAV", "", "audio/wav"),
+        ("take.flac", "application/octet-stream", "audio/flac"),
+        ("photo.jpg", "image/jpg", "image/jpeg"),
+        ("song.mp3", "audio/mp3", "audio/mpeg"),
+    ],
+)
+def test_upload_accepts_browser_and_platform_media_type_names(
+    tmp_path: Path, filename: str, declared: str, stored: str
+) -> None:
+    _, service, project_id = _service(tmp_path)
+    _, upload = service.begin(
+        project_id=project_id,
+        name=filename,
+        original_filename=filename,
+        media_type=declared,
+        total_bytes=16,
+        expected_sha256=None,
+        actor="admin",
+        role=Role.ADMINISTRATOR,
+        occurred_at="2026-10-27T18:00:00Z",
+    )
+    with service._connect() as connection:
+        row = connection.execute(
+            "SELECT media_type FROM asset_uploads WHERE id = ?", (upload.id,)
+        ).fetchone()
+    assert row["media_type"] == stored
+
+
+def test_upload_still_rejects_mismatched_and_unsupported_types(tmp_path: Path) -> None:
+    _, service, project_id = _service(tmp_path)
+    for filename, declared, message in (
+        ("take.wav", "video/mp4", "does not match filename type audio/wav"),
+        ("notes.txt", "", "media type is not allowed"),
+        ("take.aiff", "audio/aiff", "media type is not allowed: audio/aiff"),
+    ):
+        with pytest.raises(AssetUploadError, match=message):
+            service.begin(
+                project_id=project_id,
+                name=filename,
+                original_filename=filename,
+                media_type=declared,
+                total_bytes=16,
+                expected_sha256=None,
+                actor="admin",
+                role=Role.ADMINISTRATOR,
+                occurred_at="2026-10-27T18:00:00Z",
+            )
+
+
 def _write_media_fixture(path: Path) -> None:
     samples = (np.sin(2 * np.pi * 440 * np.arange(48000) / 48000) * 0.25).astype(np.float32)
     if path.suffix == ".png":
         Image.new("RGB", (64, 36), "orange").save(path)
-    elif path.suffix == ".mp3":
+    elif path.suffix in {".mp3", ".wav"}:
         wav = path.with_suffix(".wav")
         with wave.open(str(wav), "wb") as output:
             output.setnchannels(1)
             output.setsampwidth(2)
             output.setframerate(48000)
             output.writeframes((samples * 32767).astype("<i2").tobytes())
-        media_tools.write_audio_review(wav, path)
+        if path.suffix == ".mp3":
+            media_tools.write_audio_review(wav, path)
     else:
         frames = tuple(
             np.full((36, 64, 3), [index * 20, 80, 160], dtype=np.uint8) for index in range(10)
