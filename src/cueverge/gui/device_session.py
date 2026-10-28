@@ -65,6 +65,8 @@ class DeviceSessionRegistry:
         if hello.capabilities != device.capabilities:
             raise DeviceSessionError("device capabilities differ from the enrolled document")
         with self._lock:
+            if hello.device_id in self._sessions:
+                self._fail_pending(hello.device_id, "device reconnected during request")
             self._sessions[hello.device_id] = ActiveDeviceSession(
                 device=device,
                 session_id=hello.device_session_id,
@@ -125,6 +127,10 @@ class DeviceSessionRegistry:
         try:
             await channel.send_device_message(message)
             return await asyncio.wait_for(future, timeout_seconds)
+        except TimeoutError as error:
+            raise DeviceSessionError(
+                f"device did not answer within {round(timeout_seconds)} seconds"
+            ) from error
         finally:
             with self._lock:
                 self._pending.pop(request_id, None)
@@ -248,17 +254,21 @@ class DeviceSessionRegistry:
             session = self._sessions.get(device_id)
             if session is not None and session.session_id == session_id:
                 del self._sessions[device_id]
-                pending = [
-                    (request_id, future)
-                    for request_id, (pending_device, future) in self._pending.items()
-                    if pending_device == device_id
-                ]
-                for request_id, future in pending:
-                    self._pending.pop(request_id, None)
-                    if not future.done():
-                        future.set_exception(
-                            DeviceSessionError("device disconnected during request")
-                        )
+                self._fail_pending(device_id, "device disconnected during request")
+
+    def _fail_pending(self, device_id: UUID, reason: str) -> None:
+        """Fail requests sent to a device session that ended; its answers can never arrive."""
+        pending = [
+            (request_id, future)
+            for request_id, (pending_device, future) in self._pending.items()
+            if pending_device == device_id
+        ]
+        for request_id, future in pending:
+            self._pending.pop(request_id, None)
+            if not future.done():
+                future.get_loop().call_soon_threadsafe(
+                    _fail_future, future, DeviceSessionError(reason)
+                )
 
     def connected_device_ids(self) -> tuple[UUID, ...]:
         self.expire_stale()
@@ -290,3 +300,9 @@ class DeviceSessionRegistry:
             ]
             for device_id in expired:
                 del self._sessions[device_id]
+                self._fail_pending(device_id, "device session expired during request")
+
+
+def _fail_future(future: "asyncio.Future[object]", error: Exception) -> None:
+    if not future.done():
+        future.set_exception(error)

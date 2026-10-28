@@ -227,6 +227,8 @@ class ControllerRuntime:
         self.automatic_rendering = automatic_rendering
         self.follower = TimecodeFollower(stale_after_ms=stale_after_ms)
         self._controller_clock: ControllerClock | None = None
+        # (playback session, completed loops, last raw position) for a looping media clock.
+        self._looping_clock: tuple[str, int, int] | None = None
         self.render_fps = render_fps
         self.heartbeat_interval_ms = heartbeat_interval_ms
         self.heartbeat_timeout_ms = heartbeat_timeout_ms
@@ -721,6 +723,32 @@ class ControllerRuntime:
         if self.active_scene.definition.id in managed:
             await self.stop(continue_queue=False)
 
+    def _unwrap_looping_clock(
+        self, active: ActiveScene, session: ActiveMediaSession, telemetry: MediaPosition
+    ) -> MediaPosition:
+        """Scene time from a clock video that loops: its reported position wraps every loop.
+
+        Each wrap adds one file length, so cues and completion follow the scene duration
+        rather than the file's.
+        """
+        file_ms = telemetry.duration_ms
+        if session.end_behavior != "loop" or file_ms is None:
+            return telemetry
+        raw_ms = telemetry.position_ms
+        tracked = self._looping_clock
+        loops = 0
+        if tracked is not None and tracked[0] == telemetry.playback_session_id:
+            loops, last_raw_ms = tracked[1], tracked[2]
+            if raw_ms + max(250, file_ms // 2) < last_raw_ms:
+                loops += 1
+        self._looping_clock = (telemetry.playback_session_id, loops, raw_ms)
+        return telemetry.model_copy(
+            update={
+                "position_ms": loops * file_ms + raw_ms,
+                "duration_ms": max(active.definition.duration_ms, loops * file_ms + raw_ms),
+            }
+        )
+
     def ingest(self, telemetry: MediaPosition) -> TelemetryDecision:
         self.check_timeouts()
         active = self.active_scene
@@ -759,6 +787,7 @@ class ControllerRuntime:
             self._media_sessions_with_telemetry.add(media_session.playback_session_id)
             return TelemetryDecision(True)
 
+        telemetry = self._unwrap_looping_clock(active, media_session, telemetry)
         decision = self.follower.ingest(telemetry, self.clock())
         if not decision.accepted:
             self.rejected_telemetry += 1
@@ -770,7 +799,12 @@ class ControllerRuntime:
                 telemetry.position_ms,
             )
             self._last_media_positions[active.playback_session_id] = telemetry.position_ms
-            if telemetry.state is PlaybackState.COMPLETED:
+            looped_past_end = (
+                media_session.end_behavior == "loop"
+                and telemetry.state is PlaybackState.PLAYING
+                and telemetry.position_ms >= active.definition.duration_ms
+            )
+            if telemetry.state is PlaybackState.COMPLETED or looped_past_end:
                 self._schedule_completion(active)
             else:
                 ready = self.arbiter.pop_ready(

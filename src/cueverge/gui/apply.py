@@ -14,7 +14,7 @@ from pydantic import Field, TypeAdapter, ValidationError
 
 from cueverge.controller.runtime import ShowMode
 from cueverge.core.loader import load_show_package
-from cueverge.core.models import MultiLightingLooksDefinition
+from cueverge.core.models import MultiLightingLooksDefinition, SceneCatalog
 from cueverge.gui.contracts import GuiModel
 from cueverge.gui.render_jobs import RenderJobError
 
@@ -346,6 +346,9 @@ class ApplyService:
                 raise ApplyError("Retained package integrity check failed.")
         return root
 
+    def _load_verified_catalog(self, package: "PublishedPackage") -> SceneCatalog:
+        return load_show_package(self._verified_root(package))
+
     async def _run(self, job_id: str, request: ApplyRequest) -> None:
         async with self._lock:
             document = self.get(job_id)
@@ -406,8 +409,9 @@ class ApplyService:
                         )
                         else None,
                     )
-                root = self._verified_root(package)
-                catalog = load_show_package(root)
+                # Hashing every packaged file and parsing the catalog takes seconds; keep the
+                # event loop serving device heartbeats meanwhile.
+                catalog = await asyncio.to_thread(self._load_verified_catalog, package)
                 if (
                     request.preserve_controller_looks
                     and (
@@ -563,7 +567,7 @@ class ApplyService:
             if not isinstance(package_id, str):
                 raise ApplyError("Retained catalog package identity is invalid")
             package = self.publication.get(package_id)
-            catalog = load_show_package(self._verified_root(package))
+            catalog = await asyncio.to_thread(self._load_verified_catalog, package)
             identity = self._catalog_identity(package)
             await self.runtime.replace_catalog(catalog, identity=identity)
             await self.runtime.set_show_mode(ShowMode.DISABLED)

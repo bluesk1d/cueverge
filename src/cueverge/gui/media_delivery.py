@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import json
 import sqlite3
@@ -294,7 +295,17 @@ async def stage_media_members(
         from cueverge.gui.device_session import DeviceSessionError
 
         try:
-            response = await sessions.request(UUID(assignment.device_id), request_id, command)
+            device_id = UUID(assignment.device_id)
+            try:
+                response = await sessions.request(device_id, request_id, command)
+            except DeviceSessionError as error:
+                # A session that ended mid-request (for example fenced after a controller stall)
+                # can never answer; resend once on the device's next session.
+                if not await _wait_for_new_session(sessions, device_id, str(error)):
+                    raise
+                request_id = uuid4()
+                command = command.model_copy(update={"request_id": request_id})
+                response = await sessions.request(device_id, request_id, command)
             ack = DeviceArtifactStageAck.model_validate(response)
             if (
                 ack.status != "completed"
@@ -316,3 +327,20 @@ async def stage_media_members(
                 "Reapply when it is available."
             )
     return warnings
+
+
+STAGE_RECONNECT_SECONDS = 20.0
+_SESSION_ENDED = ("disconnected", "expired", "reconnected", "not connected")
+
+
+async def _wait_for_new_session(
+    sessions: "DeviceSessionRegistry", device_id: UUID, reason: str
+) -> bool:
+    if not any(marker in reason for marker in _SESSION_ENDED):
+        return False
+    deadline = asyncio.get_running_loop().time() + STAGE_RECONNECT_SECONDS
+    while asyncio.get_running_loop().time() < deadline:
+        if device_id in sessions.connected_device_ids():
+            return True
+        await asyncio.sleep(0.25)
+    return False

@@ -560,3 +560,82 @@ def _led_show_with_media_bindings(tmp_path: Path, *resources: str) -> Path:
     )
     (show / "installation.json").write_text(json.dumps(installation))
     return show
+
+
+def test_staging_resends_when_the_device_session_expires_mid_request(tmp_path: Path) -> None:
+    """A request sent on a session that is then fenced is resent on the device's new session."""
+    from cueverge.protocol.device_v2 import DeviceHello
+
+    repository, _, capabilities = _enrolled_device(tmp_path)
+    repository.set_resource_assignment(
+        resource="projector",
+        device_id=str(DEVICE_ID),
+        capability_kind="media_playback",
+        device_output=None,
+        expected_revision=None,
+        actor="admin",
+        role=Role.ADMINISTRATOR,
+        occurred_at=NOW.isoformat(),
+    )
+    sessions = DeviceSessionRegistry()
+    device = repository.get_device(str(DEVICE_ID))
+    sent: list[str] = []
+
+    class Silent:
+        async def send_device_message(self, message: Any) -> None:
+            sent.append("old")
+
+    class Answering:
+        async def send_device_message(self, message: Any) -> None:
+            sent.append("new")
+            ack = {
+                "request_id": str(message.request_id),
+                "device_session_id": str(message.device_session_id),
+                "controller_epoch": str(message.controller_epoch),
+                "activation_identity": str(message.activation_identity),
+                "digest_sha256": message.digest_sha256,
+                "status": "completed",
+            }
+            asyncio.get_running_loop().call_soon(
+                sessions.acknowledge, DEVICE_ID, message.request_id, ack
+            )
+
+    def connect(channel: Any) -> UUID:
+        session_id = uuid4()
+        hello = DeviceHello.model_validate(_hello(session_id, capabilities))
+        sessions.connect(device, hello)
+        sessions.attach_channel(DEVICE_ID, session_id, channel)
+        return session_id
+
+    old_session = connect(Silent())
+
+    async def scenario() -> list[str]:
+        staging = asyncio.create_task(
+            stage_media_members(
+                repository,
+                sessions,
+                "wss://controller.example:7443/api/device/v2/agent/ws",
+                str(uuid4()),
+                [
+                    {
+                        "resource": "projector",
+                        "member_id": "member",
+                        "digest_sha256": "a" * 64,
+                        "size_bytes": 12,
+                    }
+                ],
+                (),
+            )
+        )
+        await asyncio.sleep(0.05)
+        assert sent == ["old"]
+        # A controller stall outlasts the heartbeat timeout: the old session is fenced, its
+        # socket closes after a new session connected, and the device reconnects.
+        sessions._sessions[DEVICE_ID].last_seen_at -= 3600
+        sessions.expire_stale()
+        connect(Answering())
+        sessions.disconnect(DEVICE_ID, old_session)
+        return await asyncio.wait_for(staging, timeout=5)
+
+    assert asyncio.run(scenario()) == []
+    assert sent == ["old", "new"]

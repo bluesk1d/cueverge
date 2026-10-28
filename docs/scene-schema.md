@@ -187,7 +187,10 @@ within the scene.
 
 In `media_synchronized` mode, `clock_source` must identify a required media output. Its accepted telemetry is
 the authoritative scene clock. Telemetry from other media outputs is fenced
-and recorded but does not move scene time.
+and recorded but does not move scene time. When the clock output has
+`end_behavior: "loop"`, the controller adds one media duration each time the
+reported position wraps, so scene time keeps increasing and the scene completes
+at `duration_ms`. Other clock outputs complete when their media ends.
 
 Media and lighting outputs default to `required: true`. A disconnected optional
 media output is omitted when the scene starts. All required media agents must

@@ -209,3 +209,46 @@ def _catalog(
     scenes = dict(catalog.scenes)
     scenes[definition.id] = scene.model_copy(update={"definition": definition})
     return catalog.model_copy(update={"scenes": scenes})
+
+
+def test_looping_clock_video_completes_at_the_scene_duration() -> None:
+    """A 1.5 s clock video set to loop drives a 4 s scene: its wrapping position is unwrapped."""
+
+    async def scenario() -> None:
+        catalog = _catalog(
+            completion=CompletionDefinition(policy="transition_to", target_scene_id="ambient")
+        )
+        scene = catalog.require("synthetic-sweep")
+        [output] = scene.media_outputs
+        looping = output.model_copy(
+            update={"definition": output.definition.model_copy(update={"end_behavior": "loop"})}
+        )
+        scenes = dict(catalog.scenes)
+        scenes[scene.definition.id] = scene.model_copy(update={"media_outputs": (looping,)})
+        runtime = ControllerRuntime(catalog=catalog.model_copy(update={"scenes": scenes}))
+        agent = FakeMediaAgent()
+        agent.accept_welcome(runtime.register_agent(agent.hello(), MemoryCommandChannel([])))
+        active = await runtime.start_scene("synthetic-sweep")
+        agent.attach(active.scene_instance_id, active.playback_session_id)
+        assert scene.definition.duration_ms == 4000
+
+        for raw_ms, scene_ms in ((0, 0), (1000, 1000), (1400, 1400), (200, 1700), (1450, 2950)):
+            assert runtime.ingest(agent.position(raw_ms, duration_ms=1500)).accepted
+            assert runtime.status()["estimated_position_ms"] == scene_ms
+            await runtime.wait_for_lifecycle_idle()
+            assert runtime.scene_completions == 0
+        # Third play: 3000 + 900 ms is still inside the scene; 3000 + 1050 ms is past its end.
+        assert runtime.ingest(agent.position(100, duration_ms=1500)).accepted
+        assert runtime.ingest(agent.position(900, duration_ms=1500)).accepted
+        await runtime.wait_for_lifecycle_idle()
+        assert runtime.scene_completions == 0
+        assert runtime.ingest(agent.position(1050, duration_ms=1500)).accepted
+        assert runtime.ingest(agent.position(1100, duration_ms=1500)).accepted
+        await runtime.wait_for_lifecycle_idle()
+
+        assert runtime.scene_completions == 1
+        assert runtime.active_scene is not None
+        assert runtime.active_scene.definition.id == "ambient"
+        await runtime.shutdown()
+
+    asyncio.run(scenario())

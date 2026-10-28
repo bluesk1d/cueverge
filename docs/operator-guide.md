@@ -704,6 +704,10 @@ For each scene, define:
 Cueverge runs one active scene at a time, but a scene may contain multiple
 media and lighting outputs. Every required media output prepares before play;
 one required output supplies the scene clock in media-synchronized mode.
+If that clock output is set to **Loop**, scene time keeps counting across each
+loop of the video and the scene completes at its own duration (for example, a
+36.2 s scene clocked by an 18.1 s looping video completes after the second loop
+plus 0.1 s). Otherwise the scene completes when the clock media ends.
 For an LED-only pre-show, use a schema-v2 scene with `media: []`, only lighting
 resource claims, and **Clock authority → Controller** in the timeline editor's
 **Scene settings**.
