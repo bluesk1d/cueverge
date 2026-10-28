@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import time
 from asyncio import Lock
@@ -314,7 +315,9 @@ def create_device_app(
                 )
             while True:
                 payload = await websocket.receive_json()
-                repository.authorize_device_certificate(
+                # Off the event loop: agents send several messages a second per connection.
+                await asyncio.to_thread(
+                    repository.authorize_device_certificate,
                     device_id=str(peer.device_id),
                     certificate_serial=peer.serial,
                     certificate_fingerprint_sha256=peer.fingerprint_sha256,
@@ -325,7 +328,8 @@ def create_device_app(
                     heartbeat = DeviceHeartbeat.model_validate(payload)
                     heartbeat_ack = sessions.heartbeat(heartbeat)
                     if heartbeat_ack.accepted:
-                        repository.mark_device_seen(
+                        await asyncio.to_thread(
+                            repository.mark_device_seen,
                             device_id=device.id,
                             session_id=str(heartbeat.device_session_id),
                             observed_at_ms=_now_ms(),
@@ -366,7 +370,8 @@ def create_device_app(
                         timing.controller_epoch,
                     ):
                         raise DeviceSessionError("timing report session was fenced")
-                    repository.mark_device_timing(
+                    await asyncio.to_thread(
+                        repository.mark_device_timing,
                         device_id=device.id,
                         session_id=str(timing.device_session_id),
                         latency_ms=timing.round_trip_ms,
@@ -382,7 +387,8 @@ def create_device_app(
                         inventory.controller_epoch,
                     ):
                         raise DeviceSessionError("artifact inventory session was fenced")
-                    repository.replace_device_artifact_inventory(
+                    await asyncio.to_thread(
+                        repository.replace_device_artifact_inventory,
                         device_id=device.id,
                         session_id=str(inventory.device_session_id),
                         observed_at_ms=_now_ms(),

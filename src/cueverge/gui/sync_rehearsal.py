@@ -174,7 +174,7 @@ class SyncRehearsalService:
         )
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA journal_mode = WAL")
-        connection.execute("PRAGMA synchronous = FULL")
+        connection.execute("PRAGMA synchronous = NORMAL")
         return connection
 
 

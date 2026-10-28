@@ -3843,7 +3843,9 @@ class GuiRepository:
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
         connection.execute("PRAGMA journal_mode = WAL")
-        connection.execute("PRAGMA synchronous = FULL")
+        # In WAL mode NORMAL never corrupts the database; a power loss can only drop the
+        # latest commits. FULL fsyncs every commit, which stalled heartbeats on slow storage.
+        connection.execute("PRAGMA synchronous = NORMAL")
         return connection
 
     @staticmethod

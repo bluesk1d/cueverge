@@ -37,6 +37,39 @@ async function installTimelineRoutes(
   });
 }
 
+test("scrubbing keeps one preview evaluation in flight and finishes on the newest frame", async ({ page }) => {
+  await installTimelineRoutes(page);
+  let inFlight = 0;
+  let maxInFlight = 0;
+  const requested: number[] = [];
+  await page.route("**/projects/demo-project/preview-evaluation**", async (route) => {
+    const timestamp = Number(new URL(route.request().url()).searchParams.get("timestamp_ms"));
+    requested.push(timestamp);
+    inFlight += 1;
+    maxInFlight = Math.max(maxInFlight, inFlight);
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    inFlight -= 1;
+    await route.fulfill({ status: 404, json: { detail: "fixture preview unavailable" } }).catch(() => undefined);
+  });
+
+  await page.goto("/demo.html");
+  await page.getByRole("button", { name: "Shows", exact: true }).click();
+  await openTimelineEditor(page);
+  await expect(page.getByText("5s", { exact: true })).toBeVisible();
+  await expect.poll(() => requested.length).toBeGreaterThan(0);
+
+  const timeline = page.getByLabel("Timeline canvas");
+  await timeline.focus();
+  for (let step = 0; step < 20; step += 1) await page.keyboard.press("ArrowRight");
+  await expect(page.getByLabel("Playhead time")).toContainText("0:02.000");
+
+  // The editor evaluates the frame containing the playhead (30 fps here).
+  await expect.poll(() => requested.at(-1)).toBeGreaterThanOrEqual(1966);
+  await expect.poll(() => inFlight).toBe(0);
+  expect(maxInFlight).toBe(1);
+  expect(requested.length).toBeLessThan(10);
+});
+
 test("timeline ruler markers regions loop and snapping persist", async ({ page }) => {
   await installTimelineRoutes(page);
 

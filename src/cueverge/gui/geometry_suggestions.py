@@ -146,7 +146,7 @@ class GeometrySuggestionService:
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
         connection.execute("PRAGMA journal_mode = WAL")
-        connection.execute("PRAGMA synchronous = FULL")
+        connection.execute("PRAGMA synchronous = NORMAL")
         return connection
 
 

@@ -682,33 +682,70 @@ export function TimelineEditor({
       });
   }, [installationId]);
 
+  // One evaluation request at a time, always for the newest playhead position: playback and
+  // scrubbing move the playhead faster than the controller evaluates, and unbounded parallel
+  // requests starved its status polling.
+  const previewRequests = useRef<{
+    scope: string | null;
+    wantedMs: number | null;
+    sentMs: number | null;
+    inFlight: AbortController | null;
+  }>({ scope: null, wantedMs: null, sentMs: null, inFlight: null });
+
   useEffect(() => {
-    let active = true;
-    getPreviewEvaluation(
-      projectId,
-      editingSpaceId,
-      Math.round(evaluationTimestampMs),
-    )
-      .then((evaluation) => {
-        if (active) {
-          setPreviewEvaluation(evaluation);
-          setPreviewEvaluationError(null);
-        }
-      })
-      .catch((error) => {
-        if (active) {
+    const state = previewRequests.current;
+    const scope = `${projectId}\u0000${editingSpaceId}`;
+    if (state.scope !== scope) {
+      state.inFlight?.abort();
+      state.inFlight = null;
+      state.sentMs = null;
+      state.scope = scope;
+    }
+    state.wantedMs = Math.round(evaluationTimestampMs);
+    const send = () => {
+      if (state.inFlight || state.wantedMs === null || state.wantedMs === state.sentMs) {
+        return;
+      }
+      const controller = new AbortController();
+      const requestScope = state.scope;
+      state.inFlight = controller;
+      state.sentMs = state.wantedMs;
+      getPreviewEvaluation(projectId, editingSpaceId, state.wantedMs, controller.signal)
+        .then((evaluation) => {
+          if (state.scope === requestScope) {
+            setPreviewEvaluation(evaluation);
+            setPreviewEvaluationError(null);
+          }
+        })
+        .catch((error) => {
+          if (controller.signal.aborted || state.scope !== requestScope) {
+            return;
+          }
           setPreviewEvaluation(null);
           setPreviewEvaluationError(
             error instanceof Error
               ? error.message
               : "Backend preview evaluation is unavailable.",
           );
-        }
-      });
-    return () => {
-      active = false;
+        })
+        .finally(() => {
+          if (state.inFlight === controller) {
+            state.inFlight = null;
+            send();
+          }
+        });
     };
+    send();
   }, [editingSpaceId, evaluationTimestampMs, projectId]);
+
+  useEffect(() => {
+    const state = previewRequests.current;
+    return () => {
+      state.inFlight?.abort();
+      state.inFlight = null;
+      state.scope = null;
+    };
+  }, []);
 
   useEffect(() => {
     if (

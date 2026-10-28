@@ -2273,10 +2273,12 @@ export async function getPreviewEvaluation(
   projectId: string,
   spaceId: string,
   timestampMs: number,
+  signal?: AbortSignal,
 ): Promise<PreviewEvaluation> {
   return request<PreviewEvaluation>(
     `/api/gui/v1/projects/${encodeURIComponent(projectId)}/preview-evaluation` +
       `?space_id=${encodeURIComponent(spaceId)}&timestamp_ms=${timestampMs}`,
+    { signal },
   );
 }
 
