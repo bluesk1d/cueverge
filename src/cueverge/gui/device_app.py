@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import re
 import time
 from asyncio import Lock
 from collections.abc import Iterator
@@ -99,6 +100,7 @@ def create_device_app(
     assets: AssetUploadService | None = None,
     agent_bundles: AgentBundleCatalog | None = None,
     agent_settings: DeviceAgentSettingsService | None = None,
+    calibration_media: Path | None = None,
 ) -> FastAPI:
     app = FastAPI(
         title="Cueverge Device Transport",
@@ -205,6 +207,44 @@ def create_device_app(
             _file_chunks(bundle.path, start),
             status_code=206 if start else 200,
             media_type="application/zip",
+            headers=headers,
+        )
+
+    @app.get("/api/device/v2/calibration-media/{digest}")
+    async def calibration_media_file(
+        digest: str,
+        request: Request,
+        range_header: str | None = Header(default=None, alias="Range"),
+    ) -> StreamingResponse:
+        """The timing-calibration reference clip, for any enrolled device."""
+        try:
+            peer = peer_device_certificate(request.scope)
+            repository.authorize_device_certificate(
+                device_id=str(peer.device_id),
+                certificate_serial=peer.serial,
+                certificate_fingerprint_sha256=peer.fingerprint_sha256,
+            )
+            if calibration_media is None or not re.fullmatch(r"[0-9a-f]{64}", digest):
+                raise ValueError("calibration media is unavailable")
+            path = calibration_media / digest
+            if not path.is_file():
+                raise ValueError("calibration media is unavailable")
+            size = path.stat().st_size
+        except (ValueError, OSError, DeviceCertificateAuthorizationError):
+            raise HTTPException(status_code=403, detail="calibration media access denied") from None
+        start = _range_start(range_header, size)
+        headers = {
+            "Accept-Ranges": "bytes",
+            "Content-Length": str(size - start),
+            "ETag": f'"sha256:{digest}"',
+            "Cache-Control": "private, immutable",
+        }
+        if range_header is not None:
+            headers["Content-Range"] = f"bytes {start}-{size - 1}/{size}"
+        return StreamingResponse(
+            _file_chunks(path, start),
+            status_code=206 if range_header is not None else 200,
+            media_type="application/octet-stream",
             headers=headers,
         )
 

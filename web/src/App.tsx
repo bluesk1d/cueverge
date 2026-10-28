@@ -164,10 +164,10 @@ function AuthenticatedApp({
   onSignedOut: () => void;
 }) {
   const [workspace, setWorkspace] = useState<Workspace>("overview");
-  const [installationEntry, setInstallationEntry] = useState<"photos" | "objects" | "devices" | "inputs">("photos");
+  const [installationEntry, setInstallationEntry] = useState<"photos" | "objects" | "devices" | "timing" | "inputs">("photos");
   const [installationProjectId, setInstallationProjectId] = useState("");
   const [authoringDirty, setAuthoringDirty] = useState(false);
-  const navigate = (next: Workspace, setupSection: "photos" | "objects" | "devices" | "inputs" = "photos") => {
+  const navigate = (next: Workspace, setupSection: "photos" | "objects" | "devices" | "timing" | "inputs" = "photos") => {
     if (next === workspace) return;
     if (!authoringDirty ||
       window.confirm("Discard unsaved changes and leave this page?")) {
@@ -2636,7 +2636,10 @@ function OperationalDiagnostics({ runtime }: { runtime: RuntimeStatus }) {
                   </div>
                   <div>
                     <dt>Timing offset</dt>
-                    <dd>{output.timing_offset_ms} ms</dd>
+                    <dd>
+                      {output.timing_offset_ms + (output.installation_offset_ms ?? 0)} ms (scene {output.timing_offset_ms} +
+                      installation {output.installation_offset_ms ?? 0})
+                    </dd>
                   </div>
                 </dl>
                 {output.error && <p className="diagnostic-error">{output.error}</p>}

@@ -2179,7 +2179,12 @@ class ProjectorMappingRequest(GuiModel):
     fit_mode: Literal["preserve", "stretch"] = "preserve"
     overscan: bool = False
     brightness_limit: float = Field(default=1, gt=0, le=1)
-    media_start_delay_ms: int = Field(default=0, ge=-5000, le=5000)
+    media_start_delay_ms: int = Field(
+        default=0,
+        ge=-5000,
+        le=5000,
+        description="Retired and ignored at runtime; use installation output timing.",
+    )
     media_release_delay_ms: int = Field(default=0, ge=-5000, le=5000)
     orientation_degrees: Literal[0, 90, 180, 270] = 0
     mirror_x: bool = False
@@ -2268,7 +2273,12 @@ class LightingSurfaceRequest(GuiModel):
     pixel_footprint_width: float = Field(default=0.01, gt=0)
     pixel_footprint_height: float = Field(default=0.01, gt=0)
     brightness_limit: float = Field(default=1, gt=0, le=1)
-    timing_offset_ms: int = Field(default=0, ge=-5000, le=5000)
+    timing_offset_ms: int = Field(
+        default=0,
+        ge=-5000,
+        le=5000,
+        description="Retired and ignored at runtime; use installation output timing.",
+    )
     release_offset_ms: int = Field(default=0, ge=-5000, le=5000)
     pixel_overrides: tuple[PixelPositionOverride, ...] = Field(
         default_factory=tuple,
@@ -2355,57 +2365,66 @@ class OutputTestOverviewResponse(GuiModel):
     test: OutputTestResponse | None
 
 
-class StartTimingCalibrationRequest(GuiModel):
-    target_kind: Literal["projector_mapping", "lighting_surface"]
-    geometry_id: str = Field(min_length=1)
-    adjustment_kind: Literal["onset", "release"]
-    test_asset_id: str | None = Field(default=None, max_length=200)
-    test_asset_version: str | None = Field(default=None, max_length=200)
-    observed_variability_ms: float | None = Field(default=None, ge=0)
-    notes: str | None = Field(default=None, max_length=4000)
-    context: dict[str, JsonValue] = Field(default_factory=dict)
-
-
-class UpdateTimingCalibrationRequest(GuiModel):
-    proposed_ms: int = Field(ge=-5000, le=5000)
-
-
-class TimingCalibrationSessionResponse(GuiModel):
-    id: str
-    target_kind: Literal["projector_mapping", "lighting_surface"]
-    geometry_id: str
-    adjustment_kind: Literal["onset", "release"]
-    baseline_ms: int
-    proposed_ms: int
-    state: Literal["active", "accepted", "cancelled", "expired"]
-    revision: int = Field(ge=1)
-    simulation_only: Literal[True] = True
-    expires_at: str
-
-
-class AcceptedCalibrationResponse(GuiModel):
-    id: str
-    target_kind: Literal["projector_mapping", "lighting_surface"]
-    geometry_id: str
-    adjustment_kind: Literal["onset", "release"]
-    accepted_ms: int
+class OutputTimingResponse(GuiModel):
     resource: str
-    device_id: str | None
-    software_version: str | None
-    test_asset_id: str | None
-    test_asset_version: str | None
-    observed_variability_ms: float | None
-    notes: str | None
-    context: dict[str, JsonValue]
-    actor: str
-    accepted_at: str
-    stale_reasons: tuple[str, ...]
+    kind: Literal["media", "lighting"]
+    delay_ms: int
+    minimum_ms: int
+    maximum_ms: int
+    revision: int = Field(ge=0)
+    updated_by: str | None
+    updated_at: str | None
 
 
-class ReviewCalibrationContextRequest(GuiModel):
-    target_kind: Literal["projector_mapping", "lighting_surface"]
-    geometry_id: str = Field(min_length=1)
-    context: dict[str, JsonValue] = Field(default_factory=dict)
+class SetOutputTimingRequest(GuiModel):
+    delay_ms: int = Field(ge=-5000, le=5000)
+
+
+class CalibrationOutputResponse(GuiModel):
+    resource: str
+    kind: Literal["media", "lighting"]
+    delay_ms: int
+    saved_ms: int
+    state: Literal["preparing", "waiting", "playing", "flashing", "error"]
+    error: str | None
+    drift_ms: int | None
+
+
+class TimingCalibrationRunResponse(GuiModel):
+    id: str
+    state: Literal["starting", "active", "stopped", "failed"]
+    period_ms: int
+    flash_ms: int
+    cycles: int
+    started_at: str
+    error: str | None
+    stop_reason: str | None
+    outputs: tuple[CalibrationOutputResponse, ...]
+
+
+class InstallationTimingResponse(GuiModel):
+    installation_id: str
+    outputs: tuple[OutputTimingResponse, ...]
+    calibration: TimingCalibrationRunResponse | None
+
+
+class CalibrationProjectorChoice(GuiModel):
+    resource: str = Field(min_length=1)
+    click: bool = True
+
+
+class StartTimingCalibrationRequest(GuiModel):
+    projectors: tuple[CalibrationProjectorChoice, ...] = Field(default=(), max_length=32)
+    leds: tuple[str, ...] = Field(default=(), max_length=32)
+
+
+class AdjustTimingCalibrationRequest(GuiModel):
+    delay_ms: int = Field(ge=-5000, le=5000)
+
+
+class FinishTimingCalibrationResponse(GuiModel):
+    run: TimingCalibrationRunResponse
+    saved: tuple[OutputTimingResponse, ...]
 
 
 class ProjectorOverlapRequest(GuiModel):

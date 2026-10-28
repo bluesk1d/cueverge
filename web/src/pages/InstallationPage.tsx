@@ -15,6 +15,7 @@ import { InstallationPhotoCard } from "../components/InstallationPhotoCard";
 import { AgentSettingsPanel } from "../components/AgentSettingsPanel";
 import { DetailsDialog } from "../components/DetailsDialog";
 import { NumericInput } from "../components/NumericInput";
+import { InstallationTimingPanel } from "../components/InstallationTimingPanel";
 import { StageMapPanel } from "../components/StageMapPanel";
 import { mapperDiagnostics } from "../components/mapper-diagnostics";
 import { geometryForBackground, photoPixelPoints } from "../components/pixel-traversal";
@@ -81,12 +82,6 @@ import {
   saveLightingSurface,
   saveProjectorOverlap,
   startMaintenancePreview,
-  startTimingCalibration,
-  adjustTimingCalibration,
-  finishTimingCalibration,
-  TimingCalibrationSession,
-  AcceptedCalibration,
-  reviewAcceptedCalibrations,
   reviewGeometrySuggestion,
   uploadInstallationPhoto,
   probeEndpoint,
@@ -127,7 +122,7 @@ export function InstallationPage({
   session?: Session;
   onRefresh?: () => Promise<void> | void;
   onDirtyChange?: (dirty: boolean) => void;
-  initialSection?: "photos" | "objects" | "devices" | "inputs";
+  initialSection?: "photos" | "objects" | "devices" | "timing" | "inputs";
   initialProjectId?: string;
 }) {
   const [section, setSection] = useState(initialSection);
@@ -170,16 +165,24 @@ export function InstallationPage({
         }
       />
       <div className="setup-tabs" role="group" aria-label="Installation workspace">
-        {(["photos", "objects", "devices", "inputs"] as const).map((value) => <button key={value} aria-pressed={section === value} onClick={() => {
+        {(["photos", "objects", "devices", "timing", "inputs"] as const).map((value) => <button key={value} aria-pressed={section === value} onClick={() => {
           if (value === section) return;
           if ((inputDirty || layoutDirty || objectDirty) && !window.confirm("Discard unsaved installation changes and change section?")) return;
           setInputDirty(false); setLayoutDirty(false); setObjectDirty(false); setSection(value);
-        }}>{value === "photos" ? "Photos & Layout" : value === "objects" ? "Objects" : value === "devices" ? "Devices" : "Inputs & connections"}</button>)}
+        }}>{value === "photos" ? "Photos & Layout" : value === "objects" ? "Objects" : value === "devices" ? "Devices" : value === "timing" ? "Timing" : "Inputs & connections"}</button>)}
       </div>
       {section === "objects" && <InstallationObjects session={session} projectId={objectProjectId}
         onProjectChange={setObjectProjectId} onDirtyChange={setObjectDirty}
         onLayout={(selection) => { setLayoutSelection(selection); setSection("photos"); }} />}
       {section === "inputs" && <InputSourcePanel session={session} onDirtyChange={setInputDirty} />}
+      {section === "timing" && installation && (
+        <InstallationTimingPanel
+          installationId={installation.installation_id}
+          assignments={assignments}
+          canOperate={session?.role === "administrator" || session?.role === "operator"}
+          canConfigureDevices={session?.role === "administrator"}
+        />
+      )}
       {section === "devices" && <>
       <details className="setup-disclosure"><summary>Connection overview</summary>
       <section className="topology-summary" aria-label="Topology summary">
@@ -662,23 +665,6 @@ function GeometryMapper({
   const [generatorRows, setGeneratorRows] = useState(4);
   const [generatorColumns, setGeneratorColumns] = useState(10);
   const [importedPoints, setImportedPoints] = useState("");
-  const [timingSession, setTimingSession] =
-    useState<TimingCalibrationSession | null>(null);
-  const [timingView, setTimingView] = useState<"baseline" | "proposed">("proposed");
-  const [acceptedCalibrations, setAcceptedCalibrations] = useState<
-    AcceptedCalibration[]
-  >([]);
-  const [calibrationProvenance, setCalibrationProvenance] = useState({
-    test_asset_id: "",
-    test_asset_version: "",
-    observed_variability_ms: "",
-    notes: "",
-    hardware: "",
-    routing: "",
-    display_mode: "",
-    media_settings: "",
-    environment: "",
-  });
   const [overlapSecondId, setOverlapSecondId] = useState("");
   const [overlapPreviewMode, setOverlapPreviewMode] =
     useState<"native" | "mapped">("mapped");
@@ -1022,17 +1008,6 @@ function GeometryMapper({
         setLightingSurface(undefined);
       }
     }
-    if (item.kind === "projector_surface" || item.kind === "pixel_segment") {
-      setAcceptedCalibrations(
-        await reviewAcceptedCalibrations(
-          item.kind === "projector_surface"
-            ? "projector_mapping"
-            : "lighting_surface",
-          item.id,
-          calibrationContext(),
-        ),
-      );
-    }
   }
 
   function reset() {
@@ -1191,78 +1166,6 @@ function GeometryMapper({
           ] as [number, number],
       ),
     }));
-  }
-
-  function calibrationContext(): Record<string, unknown> {
-    return {
-      hardware: calibrationProvenance.hardware,
-      routing: calibrationProvenance.routing,
-      display_mode: calibrationProvenance.display_mode,
-      media_settings: calibrationProvenance.media_settings,
-      environment: calibrationProvenance.environment,
-    };
-  }
-
-  async function beginTiming(adjustmentKind: "onset" | "release") {
-    if (!editing) {
-      return;
-    }
-    setTimingSession(
-      await startTimingCalibration(
-        editing.kind === "projector_surface"
-          ? "projector_mapping"
-          : "lighting_surface",
-        editing.id,
-        adjustmentKind,
-        {
-          test_asset_id: calibrationProvenance.test_asset_id || null,
-          test_asset_version: calibrationProvenance.test_asset_version || null,
-          observed_variability_ms: calibrationProvenance.observed_variability_ms
-            ? Number(calibrationProvenance.observed_variability_ms)
-            : null,
-          notes: calibrationProvenance.notes || null,
-          context: calibrationContext(),
-        },
-      ),
-    );
-    setTimingView("proposed");
-  }
-
-  async function nudgeTiming(delta: number) {
-    if (!timingSession) {
-      return;
-    }
-    const proposed = Math.max(
-      -5000,
-      Math.min(5000, timingSession.proposed_ms + delta),
-    );
-    setTimingSession(await adjustTimingCalibration(timingSession, proposed));
-    setTimingView("proposed");
-  }
-
-  async function finishTiming(action: "accept" | "cancel") {
-    if (!timingSession) {
-      return;
-    }
-    setTimingSession(await finishTimingCalibration(timingSession, action));
-    if (action === "accept") {
-      if (editing?.kind === "projector_surface") {
-        setMapping(await getProjectorMapping(editing.id));
-      } else if (editing?.kind === "pixel_segment") {
-        setLightingSurface(await getLightingSurface(editing.id));
-      }
-      if (editing) {
-        setAcceptedCalibrations(
-          await reviewAcceptedCalibrations(
-            editing.kind === "projector_surface"
-              ? "projector_mapping"
-              : "lighting_surface",
-            editing.id,
-            calibrationContext(),
-          ),
-        );
-      }
-    }
   }
 
   async function saveOverlap() {
@@ -2025,7 +1928,6 @@ function GeometryMapper({
               ["crop_width", "Crop width"],
               ["crop_height", "Crop height"],
               ["brightness_limit", "Brightness limit (0–1)"],
-              ["media_start_delay_ms", "Media start delay (ms)"],
             ] as const
           ).map(([field, label]) => (
             <label key={field}>
@@ -2309,7 +2211,6 @@ function GeometryMapper({
                   ["pixel_footprint_width", "Pixel footprint width"],
                   ["pixel_footprint_height", "Pixel footprint height"],
                   ["brightness_limit", "Brightness limit (0–1)"],
-                  ["timing_offset_ms", "Lighting timing offset (ms)"],
                 ] as const
               ).map(([field, label]) => (
                 <label key={field}>
@@ -2495,147 +2396,6 @@ function GeometryMapper({
             )}
           </>
           )}
-      {canPreview &&
-        editing &&
-        (editing.kind === "projector_surface" ||
-          editing.kind === "pixel_segment") && (
-          <details className="geometry-mapper__group">
-          <summary>Timing calibration</summary>
-          <div
-            className="timing-calibration-panel"
-            tabIndex={timingSession?.state === "active" ? 0 : -1}
-            onKeyDown={(event) => {
-              if (timingSession?.state !== "active") {
-                return;
-              }
-              if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
-                event.preventDefault();
-                const direction = event.key === "ArrowLeft" ? -1 : 1;
-                void nudgeTiming(direction * (event.shiftKey ? 100 : 10));
-              }
-            }}
-          >
-            <strong>Temporary timing calibration</strong>
-            {(
-              [
-                ["test_asset_id", "Test asset ID"],
-                ["test_asset_version", "Test asset version"],
-                ["observed_variability_ms", "Observed variability (ms)"],
-                ["hardware", "Hardware identity/context"],
-                ["routing", "Routing"],
-                ["display_mode", "Display mode"],
-                ["media_settings", "Media settings"],
-                ["environment", "Environment"],
-              ] as const
-            ).map(([field, label]) => (
-              <label key={field}>
-                {label}
-                <input
-                  value={calibrationProvenance[field]}
-                  onChange={(event) =>
-                    setCalibrationProvenance((current) => ({
-                      ...current,
-                      [field]: event.target.value,
-                    }))
-                  }
-                />
-              </label>
-            ))}
-            <label className="asset-governance__wide">
-              Calibration notes
-              <textarea
-                rows={2}
-                value={calibrationProvenance.notes}
-                onChange={(event) =>
-                  setCalibrationProvenance((current) => ({
-                    ...current,
-                    notes: event.target.value,
-                  }))
-                }
-              />
-            </label>
-            {!timingSession || timingSession.state !== "active" ? (
-              <>
-                <button onClick={() => void beginTiming("onset")}>
-                  Calibrate onset
-                </button>
-                <button onClick={() => void beginTiming("release")}>
-                  Calibrate release
-                </button>
-              </>
-            ) : (
-              <>
-                <span>
-                  {timingSession.adjustment_kind} · baseline{" "}
-                  {timingSession.baseline_ms} ms · proposed{" "}
-                  {timingSession.proposed_ms} ms
-                </span>
-                {[-100, -10, 10, 100].map((delta) => (
-                  <button key={delta} onClick={() => void nudgeTiming(delta)}>
-                    {delta > 0 ? "+" : ""}
-                    {delta} ms
-                  </button>
-                ))}
-                <button
-                  onClick={() =>
-                    void nudgeTiming(
-                      timingSession.baseline_ms - timingSession.proposed_ms,
-                    )
-                  }
-                >
-                  Reset
-                </button>
-                <button
-                  onClick={() =>
-                    setTimingView((current) =>
-                      current === "baseline" ? "proposed" : "baseline",
-                    )
-                  }
-                >
-                  A/B: {timingView}
-                </button>
-                <button onClick={() => void finishTiming("accept")}>Accept</button>
-                <button onClick={() => void finishTiming("cancel")}>Cancel</button>
-                <small>
-                  Negative triggers earlier; positive triggers later. This
-                  session is simulation-only and expires at{" "}
-                  {new Date(timingSession.expires_at).toLocaleTimeString()}.
-                </small>
-              </>
-            )}
-            {timingSession && timingSession.state !== "active" && (
-              <small role="status">
-                Session {timingSession.state}; persisted values change only
-                after Accept.
-              </small>
-            )}
-            {acceptedCalibrations.map((calibration) => (
-              <div className="accepted-calibration" key={calibration.id}>
-                <strong>
-                  {calibration.adjustment_kind} {calibration.accepted_ms} ms
-                </strong>
-                <small>
-                  {calibration.resource} · {calibration.software_version ?? "firmware unavailable"} ·{" "}
-                  {new Date(calibration.accepted_at).toLocaleString()} · {calibration.actor}
-                </small>
-                <small>
-                  Test {calibration.test_asset_id ?? "not recorded"}{" "}
-                  {calibration.test_asset_version ?? ""}
-                  {calibration.observed_variability_ms === null
-                    ? ""
-                    : ` · variability ${calibration.observed_variability_ms} ms`}
-                </small>
-                {calibration.notes && <small>{calibration.notes}</small>}
-                {calibration.stale_reasons.map((reason) => (
-                  <small className="asset-diagnostic--warning" key={reason}>
-                    {reason}
-                  </small>
-                ))}
-              </div>
-            ))}
-          </div>
-          </details>
-        )}
         {alignmentPreview && (
           <div className="geometry-mapper__fields" role="status">
             <small>

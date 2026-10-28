@@ -350,16 +350,16 @@ Map logical show geometry onto multiple location photographs.
   effects such as fog. A device profile declares which onset and release
   delays can be adjusted, valid ranges and resolution, whether adjustment can
   occur while active, and its safe test procedure.
-- [ ] Add a live timing-calibration workflow in maintenance mode. Play a
+- [x] Add a live timing-calibration workflow in maintenance mode. Play a
   purpose-built reference with an unambiguous on-screen flash and audio click,
   and trigger the selected device for the same authored timestamp. Let the
   operator adjust that device's command lead/lag while the test continues, or
   between explicitly armed trials when the device cannot be adjusted safely
   while active, so alignment can be judged immediately by eye and ear.
-  **Partial:** maintenance/idle-gated temporary sessions, bounded expiry,
-  baseline/proposed comparison, and explicit accept/cancel are implemented
-  simulation-only. Purpose-built flash/click playback and live actuator
-  triggering remain.
+  **Done for projectors and LED outputs:** Installation > Timing plays a
+  controller-generated flash/click loop on the selected projectors and flashes
+  LED outputs on the same beat, with live per-output delays, resync, and
+  accept/cancel. Other actuators (relays, fog) remain.
 - [x] Provide coarse and fine delay controls, keyboard nudging, clear positive and
   negative direction labels, reset, and A/B comparison. Apply adjustments as
   temporary calibration overrides until the operator explicitly accepts them;

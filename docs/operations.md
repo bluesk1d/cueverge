@@ -316,6 +316,27 @@ the player only in maintenance mode with nothing playing. Updates are audited as
 `device.agent_settings.update`. The GUI equivalent is **Device details > Agent
 settings**; `get_capabilities` describes it under `agent_settings`.
 
+Installation output timing is hardware latency compensation shared by every
+show. `get_installation_timing` (read) lists one delay per output of the runtime
+installation (`media` projectors 0–5000 ms start later; `lighting` LED outputs
+-5000–5000 ms render behind scene time) with each `revision`, plus any running
+calibration (`delay_ms`, `saved_ms`, `state`, `drift_ms` per output).
+`set_installation_output_timing(resource, delay_ms, expected_revision=None,
+confirm_physical_output=True)` saves one value and pushes it to the runtime; no
+Apply is needed and scene-level delays stack on top. The live wizard is
+`start_timing_calibration(projectors=[{"resource": ..., "click": true}],
+leds=[...], confirm_physical_output=True)` (maintenance mode, nothing playing;
+it stages the reference clip and starts on-demand players),
+`adjust_timing_calibration(resource, delay_ms)`, `resync_timing_calibration()`
+and `finish_timing_calibration("accept"|"cancel")`. All write tools require
+`live_operation`; saves are audited as `installation.output_timing.set` and runs
+as `installation.timing_calibration.*` and `mcp.installation.timing.*`. Client
+audio delay stays on `set_device_agent_settings` (`audio_delay_ms`). The GUI
+equivalent is **Installation > Timing**; REST endpoints are
+`GET/PUT /api/gui/v1/installations/{id}/output-timing[/{resource}]` and
+`/api/gui/v1/installations/{id}/timing-calibration[/outputs/{resource}|/resync|/accept|/cancel]`.
+`get_capabilities` describes it under `installation_timing`.
+
 `get_agent_updates` (read) lists each media host's running agent version, bundle
 digest and update state (`current`, `available`, `updating`, `failed`,
 `rolled_back`, `unmanaged`, `unsupported_platform`, `no_bundle`,

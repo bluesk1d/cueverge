@@ -663,12 +663,14 @@ preview, which remains simulation-only until protocol dispatch is explicitly
 implemented and commissioned.
 
 Calibration values live with the object they affect and share its optimistic
-revision/audit boundary. Projector mappings persist a 0–1 brightness limit and
-bounded ±5000 ms media start delay. Lighting surfaces persist a 0–1 brightness
-limit and bounded ±5000 ms timing offset. These controls sit beside the
-maintenance-gated projector-alignment and pixel-identification previews;
-preview requests remain simulation-only until physical command paths are
-commissioned.
+revision/audit boundary. Projector mappings and lighting surfaces persist a
+0–1 brightness limit. Output timing is stored once per output resource for the
+runtime installation (`installation_output_timing`: projector start delay
+0–5000 ms, LED offset ±5000 ms) and is pushed to the runtime immediately; the
+retired per-surface `media_start_delay_ms`/`timing_offset_ms` fields remain in
+the mapping API for compatibility but are ignored at runtime (migration 46
+copied them once: agreeing surfaces kept their value, disagreeing ones the
+largest, projector delays clamped to 0).
 
 Protocol-v2 capability documents support generic timing calibration for media,
 audio, pixels, network lights, smart switches, relays, and future physical
@@ -678,15 +680,19 @@ maintenance-reference, armed-trial, or simulation-only testing and optional
 A/B support. Topology diagnostics display these constraints without assuming
 that undeclared actuators are calibratable.
 
-Timing calibration sessions are temporary, revisioned, audited, and expire
-after ten minutes. Starting one requires maintenance mode and idle playback and
-cancels any prior active session for that target. Onset and release sessions
-retain distinct baselines and proposed values. The UI provides ±100 ms coarse
-and ±10 ms fine nudges, explicit earlier/later direction labels, reset, and A/B
-baseline/proposed comparison. Accept atomically writes the applicable
-projector or lighting offset and advances its mapping revision; Cancel and
-expiry leave persisted calibration untouched. Sessions remain simulation-only
-until reference playback and actuator dispatch are commissioned.
+Live timing calibration (**Installation > Timing**) runs in the runtime and owns
+its outputs exclusively: it requires maintenance mode with nothing playing,
+blocks scene starts, Apply and physical output tests, and ends on Stop or a
+mode change. The controller generates a 2 s reference clip (100 ms white flash,
+optional 2 kHz click), stages it by digest to each projector's client through
+`/api/device/v2/calibration-media/{digest}` (any enrolled device, mTLS), starts
+on-demand players, prepares every projector, then plays each at a shared beat
+origin plus its delay. LED outputs flash white on the same beat behind their
+offset. LED changes apply on the next frame; projector changes restart the
+loop. Accept writes changed delays (audited `installation.output_timing.set`
+with reason `calibration:<run>`) and pushes them to the runtime; Cancel leaves
+saved values untouched. The earlier per-surface onset/release session API was
+removed.
 
 Projector overlap calibrations pair two mapped projector surfaces in the same
 installation with an explicit shared-stage polygon. Revisioned controls persist

@@ -126,6 +126,10 @@ class DevicePlayerService:
             if isinstance(active_scene, str)
             else set()
         )
+        calibration = status.get("timing_calibration")
+        if isinstance(calibration, dict) and calibration.get("state") in {"starting", "active"}:
+            # Timing calibration plays its reference clip outside any scene.
+            playing.update(str(resource) for resource in calibration.get("resources") or ())
         stopped: list[str] = []
         idle_ids = set()
         for player in self.list():

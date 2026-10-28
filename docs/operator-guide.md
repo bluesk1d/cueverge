@@ -459,19 +459,42 @@ substitute for calibration.
 
 ### 5. Establish timing and acceptance
 
-Where the assigned device advertises timing-calibration support, use its
-declared ranges, resolution, and safe-test procedure. Compare baseline and
-proposed settings, record the test asset/version, observed variability,
-hardware/routing/display mode, and notes, then accept or cancel the session.
-Re-review calibration after changing hardware, cabling, display mode, routing,
-or media settings.
+Output timing is installation calibration, not show content. Open
+**Installation > Timing** to see one delay per output:
 
-Accepted calibration records and browser previews are not proof of a physical
-timing measurement. The current maintenance patterns are simulation-only.
-Have the technical operator perform the required physical reference test.
-Controller lighting delay and agent audio delay are separate deployment
-settings; positive audio delay delays audio, and positive lighting delay delays
-lighting. Do not guess compensation from the time a command was clicked.
+- **Projector start delay** (0–5000 ms): the projector starts its media this
+  much later than the scene asks.
+- **LED timing offset** (-5000 to 5000 ms): the LED output renders this much
+  behind scene time (negative values make it earlier).
+
+Every show uses these values immediately; no Apply is needed. Delays set on a
+scene's outputs in the timeline (media start delay, lighting timing offset) are
+added on top. In media-clocked scenes the clock projector's installation delay
+does not pull the LEDs along with it, so one calibration holds for both clock
+modes.
+
+To calibrate by eye and ear, switch to maintenance mode with nothing playing
+(the panel offers **Switch to maintenance (stops the show)**), choose the
+projectors and LED outputs, and choose **Start calibration**. The controller
+sends a short reference clip to each projector's client and starts on-demand
+players. Every two seconds the projectors flash white for 100 ms with a click
+(clear **Play the click** to silence one) and the LED outputs flash on the same
+beat, each shifted by its delay. Raise a delay to make that output later and
+lower it to make it earlier: use the −100/−10/+10/+100 buttons, type a value,
+or focus a row and press ← → (Shift for 100 ms). LED changes show on the next
+flash; projector changes restart the loop so every projector starts together
+again, and **Resync projectors** does the same on demand. Each projector row
+shows its drift from the beat when the client reports its position.
+Administrators also see each client's **Client audio delay** (the agent's
+audio delay setting) to line the click up with its picture; that change is
+saved to the client immediately.
+
+**Accept and save** stores every changed delay and applies it to the running
+controller; **Cancel** keeps the saved values. Either way the projectors stop
+and the LEDs go dark. Leaving maintenance mode or pressing Stop ends the run
+without saving. Re-calibrate after changing projectors, cabling, display
+modes, LED controllers or network paths. The controller-wide lighting delay
+remains a separate deployment setting applied before these offsets.
 
 **Installation acceptance:** correct resource identities, measured geometry and
 pixel order, usable video/audio, deliberate safe output states, reconnect
@@ -1046,8 +1069,10 @@ unavailable; save or cancel first. Stale saves retain edits and report conflict.
    - Click a scene media clip (the strip with the asset name or thumbnail) to
      select its output without moving the playhead. The **Inspector** shows its
      resource and lets you change the managed asset. Schema-v2 outputs also expose
-     **Media start delay (ms)** (0–5000), **Media end behavior** (hold, loop, or
-     stop), **Plays**, and **Required**. The clock-source output must remain required.
+     **Media start delay (ms)** (0–5000, added to the projector's installation
+     start delay from **Installation > Timing**), **Media end behavior** (hold,
+     loop, or stop), **Plays**, and **Required**. The clock-source output must
+     remain required.
      **Plays** (1–10000) plays the media that many times back to back, gaplessly,
      before the end behavior applies; it is unavailable with **Loop**, which
      repeats until the scene ends. Below it, the inspector compares the total

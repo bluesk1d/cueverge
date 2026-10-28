@@ -11,6 +11,13 @@ from typing import Any, Literal, Protocol
 from uuid import uuid4
 
 from cueverge.controller.loop_monitor import LoopStallMonitor
+from cueverge.controller.timing_calibration import (
+    CalibrationLightTarget,
+    CalibrationMediaTarget,
+    TimingCalibrationRun,
+    TimingCalibrationRunError,
+    TimingCalibrationRunStatus,
+)
 from cueverge.core.arbitration import ArbitrationDecision, ResourceArbiter
 from cueverge.core.director import ShowDirector
 from cueverge.core.encounter import EncounterEngine, EventOutcome, ObservedEventOutcome
@@ -81,6 +88,8 @@ class ActiveMediaSession:
     start_delay_ms: int
     end_behavior: Literal["stop", "hold_last_frame", "loop"]
     repeat_count: int | None = None
+    # Installation latency compensation included in start_delay_ms.
+    installation_delay_ms: int = 0
 
 
 @dataclass(frozen=True)
@@ -227,6 +236,8 @@ class ControllerRuntime:
         self.automatic_rendering = automatic_rendering
         self.follower = TimecodeFollower(stale_after_ms=stale_after_ms)
         self._controller_clock: ControllerClock | None = None
+        # Installation latency compensation per output resource, stacked under scene delays.
+        self._output_timing: dict[str, int] = {}
         # (playback session, completed loops, last raw position) for a looping media clock.
         self._looping_clock: tuple[str, int, int] | None = None
         self.render_fps = render_fps
@@ -248,6 +259,7 @@ class ControllerRuntime:
             raise ValueError("multiple lighting resources require a FrameSinkRouter")
         self.sink = configured_sink
         self._output_test: OutputTestRunner | None = None
+        self._timing_calibration: TimingCalibrationRun | None = None
         self._scene_starting = False
         self.event_clock = event_clock or (lambda: round(time.time() * 1000))
         if scene_selector is not None and director is not None:
@@ -434,6 +446,13 @@ class ControllerRuntime:
             reconciliation=reconciliation,
         )
 
+    def set_output_timing(self, delays: Mapping[str, int]) -> None:
+        """Replace installation timing; LEDs use it on the next frame, media on the next start."""
+        self._output_timing = {resource: int(delay) for resource, delay in delays.items() if delay}
+
+    def output_delay_ms(self, resource: str) -> int:
+        return self._output_timing.get(resource, 0)
+
     def is_agent_registered(self, agent_id: str, websocket: CommandChannel) -> bool:
         connection = self._agents.get(agent_id)
         return connection is not None and connection.channel is websocket
@@ -460,9 +479,14 @@ class ControllerRuntime:
         if self._catalog_loading:
             raise RuntimeError("show catalog is changing; retry after Apply finishes")
         test = self.output_test_status()
-        if self._scene_starting or (test is not None and test.state == "active"):
+        if (
+            self._scene_starting
+            or (test is not None and test.state == "active")
+            or self.timing_calibration_active
+        ):
             raise RuntimeError(
-                "scene start is blocked by an active output test or scene transition"
+                "scene start is blocked by an active output test, timing calibration or "
+                "scene transition"
             )
         self._scene_starting = True
         try:
@@ -523,9 +547,11 @@ class ControllerRuntime:
                 playback_session_id=str(uuid4()),
                 asset_id=output.asset_id,
                 required=output.definition.required,
-                start_delay_ms=output.definition.start_delay_ms,
+                start_delay_ms=output.definition.start_delay_ms
+                + self.output_delay_ms(output.definition.resource),
                 end_behavior=output.definition.end_behavior,
                 repeat_count=getattr(output.definition, "repeat_count", None),
+                installation_delay_ms=self.output_delay_ms(output.definition.resource),
             )
             for output in scene.media_outputs
             if output.agent_id in self._agents
@@ -585,6 +611,7 @@ class ControllerRuntime:
 
     async def set_show_mode(self, mode: ShowMode) -> None:
         await self.stop_output_test(reason="mode_changed")
+        await self.stop_timing_calibration(reason="mode_changed")
         self.show_mode = mode
         if mode is ShowMode.AUTOMATIC:
             return
@@ -751,6 +778,14 @@ class ControllerRuntime:
 
     def ingest(self, telemetry: MediaPosition) -> TelemetryDecision:
         self.check_timeouts()
+        calibration = self._timing_calibration
+        if calibration is not None and calibration.owns_playback(telemetry.playback_session_id):
+            calibrating = self._agents.get(telemetry.agent_id)
+            if calibrating is None or telemetry.agent_session_id != calibrating.session_id:
+                return TelemetryDecision(False, "agent_session_fence")
+            calibrating.last_seen_at = self.clock()
+            calibration.observe_position(telemetry.agent_id, telemetry.position_ms)
+            return TelemetryDecision(True)
         active = self.active_scene
         handoff = self._handoff
         if handoff is not None and any(
@@ -859,6 +894,10 @@ class ControllerRuntime:
         if connection is None or acknowledgment.agent_session_id != connection.session_id:
             self.rejected_protocol_messages += 1
             return TelemetryDecision(False, "agent_session_fence")
+        calibration = self._timing_calibration
+        if calibration is not None and calibration.acknowledge(acknowledgment):
+            connection.last_seen_at = self.clock()
+            return TelemetryDecision(True)
         pending = self._pending_commands.get(acknowledgment.request_id)
         if pending is None or pending.command.agent_id != acknowledgment.agent_id:
             self.rejected_protocol_messages += 1
@@ -1291,6 +1330,8 @@ class ControllerRuntime:
         current = self.output_test_status()
         if current is not None and current.state == "active":
             raise OutputTestError("An output test already owns the lighting output")
+        if self.timing_calibration_active:
+            raise OutputTestError("Timing calibration owns the outputs; finish it first")
         target = next((item for item in self.lighting_targets() if item.resource == resource), None)
         if target is None or target.expected_pixel_count != pixel_count:
             raise OutputTestError(
@@ -1323,6 +1364,102 @@ class ControllerRuntime:
             on_finish=finished,
         )
         return self._output_test.start()
+
+    @property
+    def timing_calibration_active(self) -> bool:
+        return self._timing_calibration is not None and self._timing_calibration.active
+
+    def timing_calibration_status(self) -> TimingCalibrationRunStatus | None:
+        return self._timing_calibration.status if self._timing_calibration is not None else None
+
+    def start_timing_calibration(
+        self,
+        *,
+        media: tuple[CalibrationMediaTarget, ...],
+        lights: tuple[str, ...],
+        delays: Mapping[str, int],
+        on_finish: Callable[[TimingCalibrationRunStatus], None] | None = None,
+    ) -> TimingCalibrationRunStatus:
+        """Own the selected outputs and play the calibration beat on them."""
+        if self.show_mode is not ShowMode.MAINTENANCE or self.active_scene or self._scene_starting:
+            raise TimingCalibrationRunError("Timing calibration requires idle maintenance mode")
+        if self._catalog_loading:
+            raise TimingCalibrationRunError("the show is being applied; retry when it finishes")
+        test = self.output_test_status()
+        if test is not None and test.state == "active":
+            raise TimingCalibrationRunError("finish the physical output test first")
+        if self.timing_calibration_active:
+            raise TimingCalibrationRunError("a timing calibration is already running")
+        missing = [target.resource for target in media if target.agent_id not in self._agents]
+        if missing:
+            raise TimingCalibrationRunError(
+                f"{', '.join(missing)} has no running player connected to the controller"
+            )
+        targets = {item.resource: item for item in self.lighting_targets()}
+        unknown = [resource for resource in lights if resource not in targets]
+        if unknown:
+            raise TimingCalibrationRunError(
+                f"{', '.join(unknown)} needs a configured LED driver to calibrate"
+            )
+        runtime = self
+
+        class Agents:
+            def connection(
+                self, agent_id: str
+            ) -> tuple[str, Callable[[object], Awaitable[None]]] | None:
+                connection = runtime._agents.get(agent_id)
+                return (
+                    (connection.session_id, connection.channel.send_json)
+                    if connection is not None
+                    else None
+                )
+
+        self._timing_calibration = TimingCalibrationRun(
+            sink=self.sink,
+            agents=Agents(),
+            controller_epoch=self.controller_epoch,
+            media=media,
+            lights=tuple(
+                CalibrationLightTarget(resource, self._pixel_count(resource, targets[resource]))
+                for resource in lights
+            ),
+            delays=delays,
+            clock=self.clock,
+            on_frame=self._observe_output_frame,
+            on_finish=on_finish,
+        )
+        return self._timing_calibration.start()
+
+    def _pixel_count(self, resource: str, target: RuntimeLightingTarget) -> int:
+        if target.expected_pixel_count is not None:
+            return target.expected_pixel_count
+        binding = next(
+            (item for item in self.catalog.installation.resources if item.resource == resource),
+            None,
+        )
+        if binding is None or binding.pixel_count is None:
+            raise TimingCalibrationRunError(f"{resource} has no known pixel count")
+        return binding.pixel_count
+
+    def set_timing_calibration_delay(
+        self, resource: str, delay_ms: int
+    ) -> TimingCalibrationRunStatus:
+        if self._timing_calibration is None:
+            raise TimingCalibrationRunError("no timing calibration is running")
+        return self._timing_calibration.set_delay(resource, delay_ms)
+
+    def resync_timing_calibration(self) -> TimingCalibrationRunStatus:
+        if self._timing_calibration is None or not self._timing_calibration.active:
+            raise TimingCalibrationRunError("no timing calibration is running")
+        self._timing_calibration.resync()
+        return self._timing_calibration.status
+
+    async def stop_timing_calibration(
+        self, *, reason: str = "operator"
+    ) -> TimingCalibrationRunStatus | None:
+        if self._timing_calibration is None:
+            return None
+        return await self._timing_calibration.stop(reason)
 
     async def stop_output_test(self, *, reason: str = "operator") -> OutputTestStatus | None:
         if self._output_test is None:
@@ -1368,12 +1505,24 @@ class ControllerRuntime:
         # Completion reports the full duration, which is past every cue and baked frame;
         # render the last valid millisecond so the end-of-scene tick does not go dark.
         last_ms = max(0, active.definition.duration_ms - 1)
-        render_position_ms = max(0, min(estimate.position_ms, last_ms) - self.lighting_delay_ms)
+        # A media clock starts late by its projector's installation delay; that delay only
+        # compensates the projector's own latency, so LEDs must not inherit it.
+        clock = active.clock_session
+        clock_compensation_ms = clock.installation_delay_ms if clock is not None else 0
+        render_position_ms = max(
+            0,
+            min(estimate.position_ms + clock_compensation_ms, last_ms) - self.lighting_delay_ms,
+        )
         frames: list[tuple[str, int, tuple[tuple[int, int, int], ...]]] = []
         for output in active.scene.lighting_outputs:
-            output_position_ms = max(
-                0,
-                render_position_ms - output.definition.timing_offset_ms,
+            output_position_ms = min(
+                last_ms,
+                max(
+                    0,
+                    render_position_ms
+                    - output.definition.timing_offset_ms
+                    - self.output_delay_ms(output.definition.resource),
+                ),
             )
             frames.append(
                 (
@@ -1459,6 +1608,8 @@ class ControllerRuntime:
 
     async def stop(self, *, continue_queue: bool = True) -> None:
         self._scene_control_generation += 1
+        if self.timing_calibration_active:
+            await self.stop_timing_calibration(reason="stop")
         test = self.output_test_status()
         if test is not None and test.state == "active":
             await self.stop_output_test()
@@ -1664,6 +1815,8 @@ class ControllerRuntime:
         test = self.output_test_status()
         if test is not None and test.state == "active":
             raise RuntimeError("finish the active physical output test before Apply")
+        if self.timing_calibration_active:
+            raise RuntimeError("finish timing calibration before Apply")
         current = {item.resource: item for item in self.catalog.installation.resources}
         used = {
             resource for scene in catalog.scenes.values() for resource in scene.definition.resources
@@ -2083,6 +2236,7 @@ class ControllerRuntime:
                     "playback_session_id": session.playback_session_id,
                     "required": session.required,
                     "start_delay_ms": session.start_delay_ms,
+                    "installation_delay_ms": session.installation_delay_ms,
                     "clock_source": session == self.active_scene.clock_session,
                     "connected": session.agent_id in self._agents,
                     "prepare_failed": (
@@ -2117,6 +2271,7 @@ class ControllerRuntime:
                     "required": output.definition.required,
                     "pixel_count": output.pixel_count,
                     "timing_offset_ms": output.definition.timing_offset_ms,
+                    "installation_offset_ms": self.output_delay_ms(output.definition.resource),
                     "error": self._lighting_output_errors.get(output.definition.resource),
                 }
                 for output in self.active_scene.scene.lighting_outputs
@@ -2169,6 +2324,17 @@ class ControllerRuntime:
                 if self._output_test is not None
                 else None
             ),
+            "timing_calibration": (
+                {
+                    "id": calibration.id,
+                    "state": calibration.state,
+                    "error": calibration.error,
+                    "resources": sorted(calibration.outputs),
+                }
+                if (calibration := self.timing_calibration_status()) is not None
+                else None
+            ),
+            "output_timing": dict(sorted(self._output_timing.items())),
             "pending_commands": len(self._pending_commands),
             "command_errors": self.command_errors,
             "command_timeouts": self.command_timeouts,

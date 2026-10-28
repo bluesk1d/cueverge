@@ -4043,36 +4043,117 @@ p {
   overflow-wrap: anywhere;
 }
 
-.timing-calibration-panel {
+.installation-timing {
+  display: grid;
+  gap: 16px;
+  max-width: 1100px;
+}
+
+.installation-timing header p,
+.installation-timing__wizard > p {
+  margin: 4px 0 0;
+  color: var(--cv-text-muted);
+}
+
+.installation-timing__saved {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.installation-timing__saved th,
+.installation-timing__saved td {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--cv-border);
+  text-align: left;
+  vertical-align: middle;
+}
+
+.installation-timing__saved td small {
+  margin-left: 8px;
+  color: var(--cv-text-faint);
+}
+
+.installation-timing__saved input {
+  width: 96px;
+}
+
+.installation-timing__wizard {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  background: var(--cv-surface);
+  border: 1px solid var(--cv-border);
+  border-radius: 8px;
+}
+
+.installation-timing__wizard h3 {
+  margin: 0;
+}
+
+.installation-timing__wizard fieldset {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 10px;
+  border: 1px solid var(--cv-border);
+}
+
+.installation-timing__choice,
+.installation-timing__requirement,
+.installation-timing__controls,
+.installation-timing__actions {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
+  gap: 8px;
+}
+
+.installation-timing__requirement {
+  padding: 8px 10px;
+  background: color-mix(in srgb, var(--cv-warning) 8%, var(--cv-bg));
+  border: 1px solid color-mix(in srgb, var(--cv-warning) 35%, var(--cv-border));
+}
+
+.installation-timing__live {
+  display: grid;
+  gap: 8px;
+}
+
+.installation-timing__row {
+  display: grid;
   gap: 6px;
-  padding: 8px;
-  background: color-mix(in srgb, var(--cv-warning) 6%, var(--cv-bg));
-  border: 1px solid color-mix(in srgb, var(--cv-warning) 30%, var(--cv-border));
-}
-
-.timing-calibration-panel strong,
-.timing-calibration-panel small {
-  flex-basis: 100%;
-}
-
-.timing-calibration-panel label {
-  display: grid;
-  flex: 1 1 180px;
-  gap: 3px;
-  color: var(--cv-text-faint);
-  font-size: 11px;
-}
-
-.accepted-calibration {
-  display: grid;
-  flex: 1 1 100%;
-  gap: 3px;
-  padding: 7px;
+  padding: 10px;
   background: var(--cv-bg);
   border: 1px solid var(--cv-border);
+  border-radius: 6px;
+}
+
+.installation-timing__row:focus-visible {
+  outline: 2px solid var(--cv-focus);
+  outline-offset: 2px;
+}
+
+.installation-timing__row span,
+.installation-timing__controls small {
+  color: var(--cv-text-muted);
+}
+
+.installation-timing__controls input {
+  width: 84px;
+}
+
+.installation-timing .primary-button {
+  color: white;
+  background: color-mix(in srgb, var(--cv-primary) 75%, #000);
+  border-color: color-mix(in srgb, var(--cv-primary) 75%, #000);
+}
+
+.installation-timing .primary-button:disabled {
+  opacity: 0.6;
+}
+
+.installation-timing__error {
+  color: var(--cv-danger, #ff8a80);
 }
 
 .projector-content-preview,

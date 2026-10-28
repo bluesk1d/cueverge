@@ -52,10 +52,10 @@ from cueverge.gui.auth import (
 )
 from cueverge.gui.compiler import CompilationError
 from cueverge.gui.contracts import (
-    AcceptedCalibrationResponse,
     ActivationRequest,
     ActivityEventResponse,
     AddSceneOutputRequest,
+    AdjustTimingCalibrationRequest,
     AgentUpdatesResponse,
     AmbientLightingPreviewRequest,
     ApplyScenePresetRequest,
@@ -107,6 +107,7 @@ from cueverge.gui.contracts import (
     DiscoveredEndpointResponse,
     DraftProject,
     EvaluateSyncAdmissionRequest,
+    FinishTimingCalibrationResponse,
     GeometryPoint,
     GeometrySuggestionRequest,
     GeometrySuggestionResponse,
@@ -121,6 +122,7 @@ from cueverge.gui.contracts import (
     InstallationResourceResponse,
     InstallationStatusResponse,
     InstallationSummaryResponse,
+    InstallationTimingResponse,
     InteractionEditRequest,
     InteractionPreviewRequest,
     LightingBakeStatusListResponse,
@@ -144,6 +146,7 @@ from cueverge.gui.contracts import (
     OutputTestOverviewResponse,
     OutputTestResponse,
     OutputTestSegmentResponse,
+    OutputTimingResponse,
     PairingTokenResponse,
     PhotoDescriptionRequest,
     PlaceAssetRequest,
@@ -175,7 +178,6 @@ from cueverge.gui.contracts import (
     ResourceAssignmentConflictResponse,
     ResourceAssignmentResponse,
     RevertAssetRevisionRequest,
-    ReviewCalibrationContextRequest,
     ReviewLinkRequest,
     ReviewLinkResponse,
     ReviewLinkView,
@@ -192,6 +194,7 @@ from cueverge.gui.contracts import (
     SessionResponse,
     SetDeviceConnectionPolicyRequest,
     SetDeviceEnrollmentStateRequest,
+    SetOutputTimingRequest,
     SetResourceAssignmentRequest,
     ShowPlanEditRequest,
     SimulationRunResponse,
@@ -205,7 +208,7 @@ from cueverge.gui.contracts import (
     StartTimingCalibrationRequest,
     SyncAdmissionResponse,
     SyncRehearsalResponse,
-    TimingCalibrationSessionResponse,
+    TimingCalibrationRunResponse,
     TopologyNodeResponse,
     TopologyResponse,
     UpdateAssetMetadataRequest,
@@ -213,7 +216,6 @@ from cueverge.gui.contracts import (
     UpdateInstallationPhotoRequest,
     UpdateInstallationRequest,
     UpdateRevisionReleaseRequest,
-    UpdateTimingCalibrationRequest,
 )
 from cueverge.gui.contracts import (
     PixelPositionOverride as PixelPositionOverrideResponse,
@@ -227,6 +229,12 @@ from cueverge.gui.geometry_suggestions import (
 )
 from cueverge.gui.home_assistant import HomeAssistantBridge, HomeAssistantError
 from cueverge.gui.input_sources import InputSourceError
+from cueverge.gui.installation_calibration import (
+    InstallationCalibrationError,
+    MediaChoice,
+    calibration_run_response,
+    output_timing_response,
+)
 from cueverge.gui.installation_geometry import (
     InstallationGeometryConflictError,
     InstallationGeometryError,
@@ -242,6 +250,7 @@ from cueverge.gui.installation_photos import (
     InstallationPhotoError,
     StoredInstallationPhoto,
 )
+from cueverge.gui.installation_timing import InstallationTimingError
 from cueverge.gui.interaction_preview import preview_interactions
 from cueverge.gui.interactions import (
     InteractionError,
@@ -350,11 +359,6 @@ from cueverge.gui.sync_rehearsal import (
     StoredSyncRehearsal,
     SyncAdmission,
     SyncRehearsalError,
-)
-from cueverge.gui.timing_calibration import (
-    StoredAcceptedCalibration,
-    StoredTimingCalibration,
-    TimingCalibrationError,
 )
 from cueverge.lighting.output_test import OutputTestError, OutputTestStatus
 from cueverge.protocol.device_v2 import (
@@ -5015,116 +5019,185 @@ def create_gui_router(services: GuiServices) -> APIRouter:
             expires_at=expires_at.isoformat(),
         )
 
-    @router.post(
-        "/timing-calibrations",
-        response_model=TimingCalibrationSessionResponse,
-        status_code=201,
-    )
-    def start_timing_calibration(
-        body: StartTimingCalibrationRequest,
-        identity: Annotated[AuthenticatedSession, operator_mutation],
-    ) -> TimingCalibrationSessionResponse:
-        status = services.runtime.status()
-        operations = status.get("operations")
-        mode = operations.get("mode") if isinstance(operations, dict) else None
-        if mode != ShowMode.MAINTENANCE.value or status.get("active_scene") is not None:
-            raise HTTPException(
-                status_code=409,
-                detail={"code": "timing_calibration_requires_idle_maintenance"},
-            )
-        try:
-            session = services.timing_calibration.start(
-                target_kind=body.target_kind,
-                geometry_id=body.geometry_id,
-                adjustment_kind=body.adjustment_kind,
-                actor=identity.username,
-                role=identity.role,
-                occurred_at=_now_iso(),
-                test_asset_id=body.test_asset_id,
-                test_asset_version=body.test_asset_version,
-                observed_variability_ms=body.observed_variability_ms,
-                notes=body.notes,
-                context=body.context,
-            )
-        except TimingCalibrationError as error:
+    def _timing_installation(installation_id: str) -> None:
+        if installation_id != services.repository.get_runtime_installation().id:
             raise HTTPException(
                 status_code=422,
-                detail={"code": "timing_calibration_invalid", "message": str(error)},
-            ) from error
-        return _timing_calibration(session)
+                detail={
+                    "code": "timing_requires_runtime_installation",
+                    "message": "Output timing applies to the installation the controller uses.",
+                },
+            )
 
-    @router.post(
-        "/accepted-calibrations/review",
-        response_model=list[AcceptedCalibrationResponse],
+    def _timing_run() -> TimingCalibrationRunResponse | None:
+        run = services.installation_calibration.status()
+        if run is None:
+            return None
+        return calibration_run_response(
+            run,
+            services.installation_timing.delays(services.repository.get_runtime_installation().id),
+        )
+
+    @router.get(
+        "/installations/{installation_id}/output-timing",
+        response_model=InstallationTimingResponse,
         dependencies=[reader],
     )
-    def accepted_calibrations(
-        body: ReviewCalibrationContextRequest,
-    ) -> list[AcceptedCalibrationResponse]:
-        return [
-            _accepted_calibration(calibration)
-            for calibration in services.timing_calibration.accepted(
-                body.target_kind,
-                body.geometry_id,
-                body.context,
-            )
-        ]
+    def installationoutput_timing_response(installation_id: str) -> InstallationTimingResponse:
+        _timing_installation(installation_id)
+        return InstallationTimingResponse(
+            installation_id=installation_id,
+            outputs=tuple(
+                output_timing_response(item)
+                for item in services.installation_calibration.saved(installation_id)
+            ),
+            calibration=_timing_run(),
+        )
 
     @router.put(
-        "/timing-calibrations/{session_id}",
-        response_model=TimingCalibrationSessionResponse,
+        "/installations/{installation_id}/output-timing/{resource}",
+        response_model=OutputTimingResponse,
     )
-    def update_timing_calibration(
-        session_id: str,
-        body: UpdateTimingCalibrationRequest,
+    def set_installationoutput_timing_response(
+        installation_id: str,
+        resource: str,
+        body: SetOutputTimingRequest,
         response: Response,
         identity: Annotated[AuthenticatedSession, operator_mutation],
         if_match: Annotated[str | None, Header(alias="If-Match")] = None,
-    ) -> TimingCalibrationSessionResponse:
+    ) -> OutputTimingResponse:
+        _timing_installation(installation_id)
         try:
-            session = services.timing_calibration.update(
-                session_id,
-                expected_revision=_parse_if_match(if_match),
-                proposed_ms=body.proposed_ms,
+            saved = services.installation_calibration.set_saved(
+                installation_id=installation_id,
+                resource=resource,
+                delay_ms=body.delay_ms,
+                expected_revision=_parse_if_match(if_match) if if_match is not None else None,
                 actor=identity.username,
                 role=identity.role,
                 occurred_at=_now_iso(),
             )
-        except TimingCalibrationError as error:
+        except InstallationTimingError as error:
+            conflict = "changed since" in str(error)
             raise HTTPException(
-                status_code=409,
-                detail={"code": "timing_calibration_conflict", "message": str(error)},
+                status_code=409 if conflict else 422,
+                detail={
+                    "code": "output_timing_conflict" if conflict else "output_timing_invalid",
+                    "message": str(error),
+                },
             ) from error
-        response.headers["ETag"] = _etag(session.revision)
-        return _timing_calibration(session)
+        response.headers["ETag"] = _etag(saved.revision)
+        return output_timing_response(saved)
+
+    @router.get(
+        "/installations/{installation_id}/timing-calibration",
+        response_model=TimingCalibrationRunResponse | None,
+        dependencies=[reader],
+    )
+    def timing_calibration_status(installation_id: str) -> TimingCalibrationRunResponse | None:
+        _timing_installation(installation_id)
+        return _timing_run()
 
     @router.post(
-        "/timing-calibrations/{session_id}/{action}",
-        response_model=TimingCalibrationSessionResponse,
+        "/installations/{installation_id}/timing-calibration",
+        response_model=TimingCalibrationRunResponse,
+        status_code=201,
     )
-    def finish_timing_calibration(
-        session_id: str,
-        action: Literal["accept", "cancel"],
-        response: Response,
+    async def start_timing_calibration(
+        installation_id: str,
+        body: StartTimingCalibrationRequest,
         identity: Annotated[AuthenticatedSession, operator_mutation],
-        if_match: Annotated[str | None, Header(alias="If-Match")] = None,
-    ) -> TimingCalibrationSessionResponse:
+    ) -> TimingCalibrationRunResponse:
+        _timing_installation(installation_id)
         try:
-            session = services.timing_calibration.finish(
-                session_id,
-                expected_revision=_parse_if_match(if_match),
+            await services.installation_calibration.start(
+                installation_id=installation_id,
+                media=tuple(
+                    MediaChoice(resource=item.resource, click=item.click)
+                    for item in body.projectors
+                ),
+                lights=body.leds,
+                actor=identity.username,
+                role=identity.role,
+                occurred_at=_now_iso(),
+            )
+        except InstallationCalibrationError as error:
+            raise HTTPException(
+                status_code=409,
+                detail={"code": "timing_calibration_unavailable", "message": str(error)},
+            ) from error
+        run = _timing_run()
+        assert run is not None
+        return run
+
+    @router.put(
+        "/installations/{installation_id}/timing-calibration/outputs/{resource}",
+        response_model=TimingCalibrationRunResponse,
+    )
+    async def adjust_timing_calibration(
+        installation_id: str,
+        resource: str,
+        body: AdjustTimingCalibrationRequest,
+        identity: Annotated[AuthenticatedSession, operator_mutation],
+    ) -> TimingCalibrationRunResponse:
+        _timing_installation(installation_id)
+        try:
+            services.installation_calibration.adjust(resource, body.delay_ms)
+        except InstallationCalibrationError as error:
+            raise HTTPException(
+                status_code=409,
+                detail={"code": "timing_calibration_adjust_failed", "message": str(error)},
+            ) from error
+        run = _timing_run()
+        assert run is not None
+        return run
+
+    @router.post(
+        "/installations/{installation_id}/timing-calibration/resync",
+        response_model=TimingCalibrationRunResponse,
+    )
+    async def resync_timing_calibration(
+        installation_id: str,
+        identity: Annotated[AuthenticatedSession, operator_mutation],
+    ) -> TimingCalibrationRunResponse:
+        _timing_installation(installation_id)
+        try:
+            services.installation_calibration.resync()
+        except InstallationCalibrationError as error:
+            raise HTTPException(
+                status_code=409,
+                detail={"code": "timing_calibration_not_running", "message": str(error)},
+            ) from error
+        run = _timing_run()
+        assert run is not None
+        return run
+
+    @router.post(
+        "/installations/{installation_id}/timing-calibration/{action}",
+        response_model=FinishTimingCalibrationResponse,
+    )
+    async def finish_timing_calibration(
+        installation_id: str,
+        action: Literal["accept", "cancel"],
+        identity: Annotated[AuthenticatedSession, operator_mutation],
+    ) -> FinishTimingCalibrationResponse:
+        _timing_installation(installation_id)
+        try:
+            run, saved = await services.installation_calibration.finish(
                 accept=action == "accept",
                 actor=identity.username,
                 role=identity.role,
                 occurred_at=_now_iso(),
             )
-        except TimingCalibrationError as error:
+        except InstallationCalibrationError as error:
             raise HTTPException(
                 status_code=409,
-                detail={"code": "timing_calibration_conflict", "message": str(error)},
+                detail={"code": "timing_calibration_not_running", "message": str(error)},
             ) from error
-        response.headers["ETag"] = _etag(session.revision)
-        return _timing_calibration(session)
+        return FinishTimingCalibrationResponse(
+            run=calibration_run_response(run, services.installation_timing.delays(installation_id)),
+            saved=tuple(output_timing_response(item) for item in saved),
+        )
 
     @router.post("/operate/actions", response_model=OperateActionResponse)
     async def operate(
@@ -6520,22 +6593,6 @@ def _lighting_surface(surface: StoredLightingSurface) -> LightingSurfaceResponse
     )
 
 
-def _timing_calibration(
-    session: StoredTimingCalibration,
-) -> TimingCalibrationSessionResponse:
-    return TimingCalibrationSessionResponse(
-        id=session.id,
-        target_kind=session.target_kind,
-        geometry_id=session.geometry_id,
-        adjustment_kind=session.adjustment_kind,
-        baseline_ms=session.baseline_ms,
-        proposed_ms=session.proposed_ms,
-        state=session.state,
-        revision=session.revision,
-        expires_at=session.expires_at,
-    )
-
-
 def _output_test_response(test: OutputTestStatus) -> OutputTestResponse:
     return OutputTestResponse(
         id=test.id,
@@ -6571,29 +6628,6 @@ def _output_arm(arm: StoredOutputArm) -> OutputArmResponse:
         stop_action=arm.stop_action,
         state=arm.state,
         expires_at=arm.expires_at,
-    )
-
-
-def _accepted_calibration(
-    calibration: StoredAcceptedCalibration,
-) -> AcceptedCalibrationResponse:
-    return AcceptedCalibrationResponse(
-        id=calibration.id,
-        target_kind=calibration.target_kind,
-        geometry_id=calibration.geometry_id,
-        adjustment_kind=calibration.adjustment_kind,
-        accepted_ms=calibration.accepted_ms,
-        resource=calibration.resource,
-        device_id=calibration.device_id,
-        software_version=calibration.software_version,
-        test_asset_id=calibration.test_asset_id,
-        test_asset_version=calibration.test_asset_version,
-        observed_variability_ms=calibration.observed_variability_ms,
-        notes=calibration.notes,
-        context=calibration.context,
-        actor=calibration.actor,
-        accepted_at=calibration.accepted_at,
-        stale_reasons=calibration.stale_reasons,
     )
 
 

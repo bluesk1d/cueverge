@@ -225,9 +225,15 @@ output with a repeat count refuses to start on older agents.
 
 Lighting outputs may set `timing_offset_ms` from -5000 through 5000. Positive
 values delay that output by rendering an earlier scene position; negative
-values advance it. The existing controller-wide lighting delay is applied
-first, followed by the per-output offset. Both values are installation
-calibration inputs and should remain zero until measured.
+values advance it. The controller-wide lighting delay is applied first, then
+the output's installation timing offset, then this scene offset. Media outputs
+likewise start after `start_delay_ms` plus the projector's installation start
+delay. Installation timing (per output resource, set under **Installation >
+Timing** or with the MCP `set_installation_output_timing` tool) is hardware
+compensation shared by every show and needs no Apply; keep scene values for
+creative staggering. In `media_synchronized` scenes the clock output's
+installation delay is added back to the LED render position, so LEDs follow
+scene time rather than the clock projector's latency compensation.
 
 Each lighting output is rendered independently with its own pixel geometry and
 brightness limit, then routed by logical resource to its configured sink.

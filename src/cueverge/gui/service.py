@@ -1,7 +1,7 @@
 import hashlib
 import json
 import sqlite3
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from typing import Protocol
@@ -14,6 +14,10 @@ from cueverge.controller.runtime import (
     RuntimeAgentStatus,
     RuntimeLightingTarget,
     ShowMode,
+)
+from cueverge.controller.timing_calibration import (
+    CalibrationMediaTarget,
+    TimingCalibrationRunStatus,
 )
 from cueverge.core.encounter import EventOutcome, ObservedEventOutcome
 from cueverge.core.events import ExternalEvent
@@ -36,8 +40,13 @@ from cueverge.gui.endpoint_discovery import EndpointDiscoveryService
 from cueverge.gui.geometry_suggestions import GeometrySuggestionService
 from cueverge.gui.home_assistant import HomeAssistantBridge
 from cueverge.gui.input_sources import InputSourceService
+from cueverge.gui.installation_calibration import (
+    InstallationCalibrationService,
+    reference_clip_root,
+)
 from cueverge.gui.installation_geometry import InstallationGeometryService
 from cueverge.gui.installation_photos import InstallationPhotoService
+from cueverge.gui.installation_timing import InstallationTimingService
 from cueverge.gui.lighting_surface import LightingSurfaceService
 from cueverge.gui.mapper_export import MapperExportService
 from cueverge.gui.mcp_authoring import (
@@ -57,7 +66,6 @@ from cueverge.gui.simulation_scenarios import SimulationScenarioService
 from cueverge.gui.stage_coverage import StageCoverageService
 from cueverge.gui.stage_reference import StageReferenceService
 from cueverge.gui.sync_rehearsal import SyncRehearsalService
-from cueverge.gui.timing_calibration import TimingCalibrationService
 from cueverge.gui.wled_status import WledStatusObserver
 from cueverge.lighting.output_test import OutputTestSegment, OutputTestStatus
 
@@ -123,6 +131,29 @@ class RuntimeStatusSource(Protocol):
 
     async def stop_output_test(self, *, reason: str = "operator") -> OutputTestStatus | None: ...
 
+    def set_output_timing(self, delays: Mapping[str, int]) -> None: ...
+
+    def timing_calibration_status(self) -> TimingCalibrationRunStatus | None: ...
+
+    def start_timing_calibration(
+        self,
+        *,
+        media: tuple[CalibrationMediaTarget, ...],
+        lights: tuple[str, ...],
+        delays: Mapping[str, int],
+        on_finish: Callable[[TimingCalibrationRunStatus], None] | None = None,
+    ) -> TimingCalibrationRunStatus: ...
+
+    def set_timing_calibration_delay(
+        self, resource: str, delay_ms: int
+    ) -> TimingCalibrationRunStatus: ...
+
+    def resync_timing_calibration(self) -> TimingCalibrationRunStatus: ...
+
+    async def stop_timing_calibration(
+        self, *, reason: str = "operator"
+    ) -> TimingCalibrationRunStatus | None: ...
+
 
 @dataclass(frozen=True)
 class GuiServices:
@@ -141,7 +172,8 @@ class GuiServices:
     installation_geometry: InstallationGeometryService
     projector_mapping: ProjectorMappingService
     lighting_surface: LightingSurfaceService
-    timing_calibration: TimingCalibrationService
+    installation_timing: InstallationTimingService
+    installation_calibration: InstallationCalibrationService
     projector_overlap: ProjectorOverlapService
     geometry_suggestions: GeometrySuggestionService
     output_arming: OutputArmService
@@ -445,13 +477,27 @@ class GuiServices:
             broker=input_source.broker_config,
             audit=audit,
         )
+        device_players = DevicePlayerService(repository, device_sessions, runtime)
+        installation_timing = InstallationTimingService(repository)
+        installation_calibration = InstallationCalibrationService(
+            repository=repository,
+            runtime=runtime,
+            sessions=device_sessions,
+            players=device_players,
+            timing=installation_timing,
+            clip_root=reference_clip_root(config.data_root),
+            public_url=str(config.device_listener_public_url)
+            if config.device_listener_public_url
+            else None,
+        )
+        installation_calibration.push_to_runtime()
         services = cls(
             home_assistant=home_assistant,
             apply=ApplyService(
                 repository, publication, runtime, authorize_apply, apply_dependencies
             ),
             input_source=input_source,
-            device_players=DevicePlayerService(repository, device_sessions, runtime),
+            device_players=device_players,
             agent_settings=DeviceAgentSettingsService(repository, device_sessions, runtime),
             agent_updates=DeviceAgentUpdateService(
                 repository,
@@ -475,7 +521,8 @@ class GuiServices:
             installation_geometry=installation_geometry,
             projector_mapping=ProjectorMappingService(repository, installation_geometry),
             lighting_surface=lighting_surface,
-            timing_calibration=TimingCalibrationService(repository),
+            installation_timing=installation_timing,
+            installation_calibration=installation_calibration,
             projector_overlap=projector_overlap,
             geometry_suggestions=GeometrySuggestionService(repository),
             output_arming=OutputArmService(repository),

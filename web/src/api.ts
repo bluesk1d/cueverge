@@ -1714,36 +1714,43 @@ export function stopPhysicalOutputTest(id: string): Promise<PhysicalOutputTest> 
   );
 }
 
-export interface TimingCalibrationSession {
-  id: string;
-  target_kind: "projector_mapping" | "lighting_surface";
-  geometry_id: string;
-  adjustment_kind: "onset" | "release";
-  baseline_ms: number;
-  proposed_ms: number;
-  state: "active" | "accepted" | "cancelled" | "expired";
+export interface OutputTiming {
+  resource: string;
+  kind: "media" | "lighting";
+  delay_ms: number;
+  minimum_ms: number;
+  maximum_ms: number;
   revision: number;
-  simulation_only: true;
-  expires_at: string;
+  updated_by: string | null;
+  updated_at: string | null;
 }
 
-export interface AcceptedCalibration {
-  id: string;
-  target_kind: TimingCalibrationSession["target_kind"];
-  geometry_id: string;
-  adjustment_kind: TimingCalibrationSession["adjustment_kind"];
-  accepted_ms: number;
+export interface CalibrationOutput {
   resource: string;
-  device_id: string | null;
-  software_version: string | null;
-  test_asset_id: string | null;
-  test_asset_version: string | null;
-  observed_variability_ms: number | null;
-  notes: string | null;
-  context: Record<string, unknown>;
-  actor: string;
-  accepted_at: string;
-  stale_reasons: string[];
+  kind: "media" | "lighting";
+  delay_ms: number;
+  saved_ms: number;
+  state: "preparing" | "waiting" | "playing" | "flashing" | "error";
+  error: string | null;
+  drift_ms: number | null;
+}
+
+export interface TimingCalibrationRun {
+  id: string;
+  state: "starting" | "active" | "stopped" | "failed";
+  period_ms: number;
+  flash_ms: number;
+  cycles: number;
+  started_at: string;
+  error: string | null;
+  stop_reason: string | null;
+  outputs: CalibrationOutput[];
+}
+
+export interface InstallationTiming {
+  installation_id: string;
+  outputs: OutputTiming[];
+  calibration: TimingCalibrationRun | null;
 }
 
 export interface ResourceAssignment {
@@ -1810,7 +1817,9 @@ export interface MediaOutputStatus {
   agent_id: string;
   playback_session_id: string;
   required: boolean;
+  /** Scene delay plus installation_delay_ms. */
   start_delay_ms: number;
+  installation_delay_ms?: number;
   clock_source: boolean;
   connected: boolean;
   prepare_failed: boolean;
@@ -1825,6 +1834,7 @@ export interface LightingOutputStatus {
   required: boolean;
   pixel_count: number;
   timing_offset_ms: number;
+  installation_offset_ms?: number;
   error: string | null;
 }
 
@@ -3204,70 +3214,79 @@ export async function stopOutputArm(armId: string): Promise<OutputArm> {
   );
 }
 
-export async function startTimingCalibration(
-  targetKind: TimingCalibrationSession["target_kind"],
-  geometryId: string,
-  adjustmentKind: TimingCalibrationSession["adjustment_kind"],
-  provenance: {
-    test_asset_id: string | null;
-    test_asset_version: string | null;
-    observed_variability_ms: number | null;
-    notes: string | null;
-    context: Record<string, unknown>;
-  },
-): Promise<TimingCalibrationSession> {
-  return request<TimingCalibrationSession>("/api/gui/v1/timing-calibrations", {
-    method: "POST",
-    headers: mutationHeaders(),
-    body: JSON.stringify({
-      target_kind: targetKind,
-      geometry_id: geometryId,
-      adjustment_kind: adjustmentKind,
-      ...provenance,
-    }),
+export async function getInstallationTiming(installationId: string): Promise<InstallationTiming> {
+  return request<InstallationTiming>(`/api/gui/v1/installations/${encodeURIComponent(installationId)}/output-timing`, {
+    cache: "no-store",
   });
 }
 
-export async function reviewAcceptedCalibrations(
-  targetKind: TimingCalibrationSession["target_kind"],
-  geometryId: string,
-  context: Record<string, unknown>,
-): Promise<AcceptedCalibration[]> {
-  return request<AcceptedCalibration[]>("/api/gui/v1/accepted-calibrations/review", {
-    method: "POST",
-    headers: mutationHeaders(),
-    body: JSON.stringify({
-      target_kind: targetKind,
-      geometry_id: geometryId,
-      context,
-    }),
-  });
+export async function setOutputTiming(
+  installationId: string,
+  output: OutputTiming,
+  delayMs: number,
+): Promise<OutputTiming> {
+  return request<OutputTiming>(
+    `/api/gui/v1/installations/${encodeURIComponent(installationId)}/output-timing/${encodeURIComponent(output.resource)}`,
+    {
+      method: "PUT",
+      headers: {
+        ...mutationHeaders(),
+        ...(output.revision > 0 ? { "If-Match": `"${output.revision}"` } : {}),
+      },
+      body: JSON.stringify({ delay_ms: delayMs }),
+    },
+    true,
+  );
+}
+
+export async function startTimingCalibration(
+  installationId: string,
+  projectors: { resource: string; click: boolean }[],
+  leds: string[],
+): Promise<TimingCalibrationRun> {
+  return request<TimingCalibrationRun>(
+    `/api/gui/v1/installations/${encodeURIComponent(installationId)}/timing-calibration`,
+    {
+      method: "POST",
+      headers: mutationHeaders(),
+      body: JSON.stringify({ projectors, leds }),
+    },
+    true,
+  );
 }
 
 export async function adjustTimingCalibration(
-  session: TimingCalibrationSession,
-  proposedMs: number,
-): Promise<TimingCalibrationSession> {
-  return request<TimingCalibrationSession>(
-    `/api/gui/v1/timing-calibrations/${encodeURIComponent(session.id)}`,
+  installationId: string,
+  resource: string,
+  delayMs: number,
+): Promise<TimingCalibrationRun> {
+  return request<TimingCalibrationRun>(
+    `/api/gui/v1/installations/${encodeURIComponent(installationId)}/timing-calibration/outputs/${encodeURIComponent(resource)}`,
     {
       method: "PUT",
-      headers: { ...mutationHeaders(), "If-Match": `"${session.revision}"` },
-      body: JSON.stringify({ proposed_ms: proposedMs }),
+      headers: mutationHeaders(),
+      body: JSON.stringify({ delay_ms: delayMs }),
     },
+    true,
+  );
+}
+
+export async function resyncTimingCalibration(installationId: string): Promise<TimingCalibrationRun> {
+  return request<TimingCalibrationRun>(
+    `/api/gui/v1/installations/${encodeURIComponent(installationId)}/timing-calibration/resync`,
+    { method: "POST", headers: mutationHeaders() },
+    true,
   );
 }
 
 export async function finishTimingCalibration(
-  session: TimingCalibrationSession,
+  installationId: string,
   action: "accept" | "cancel",
-): Promise<TimingCalibrationSession> {
-  return request<TimingCalibrationSession>(
-    `/api/gui/v1/timing-calibrations/${encodeURIComponent(session.id)}/${action}`,
-    {
-      method: "POST",
-      headers: { ...mutationHeaders(), "If-Match": `"${session.revision}"` },
-    },
+): Promise<{ run: TimingCalibrationRun; saved: OutputTiming[] }> {
+  return request<{ run: TimingCalibrationRun; saved: OutputTiming[] }>(
+    `/api/gui/v1/installations/${encodeURIComponent(installationId)}/timing-calibration/${action}`,
+    { method: "POST", headers: mutationHeaders() },
+    true,
   );
 }
 

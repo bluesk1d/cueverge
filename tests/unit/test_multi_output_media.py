@@ -79,6 +79,7 @@ def test_prepares_all_media_before_starting_playback(tmp_path: Path) -> None:
                 "playback_session_id": primary_session.playback_session_id,
                 "required": True,
                 "start_delay_ms": 0,
+                "installation_delay_ms": 0,
                 "clock_source": True,
                 "connected": True,
                 "prepare_failed": False,
@@ -92,6 +93,7 @@ def test_prepares_all_media_before_starting_playback(tmp_path: Path) -> None:
                 "playback_session_id": secondary_session.playback_session_id,
                 "required": True,
                 "start_delay_ms": 0,
+                "installation_delay_ms": 0,
                 "clock_source": False,
                 "connected": True,
                 "prepare_failed": False,
@@ -107,6 +109,7 @@ def test_prepares_all_media_before_starting_playback(tmp_path: Path) -> None:
                 "required": True,
                 "pixel_count": 8,
                 "timing_offset_ms": 0,
+                "installation_offset_ms": 0,
                 "error": None,
             }
         ]

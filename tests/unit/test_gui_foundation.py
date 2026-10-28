@@ -1941,89 +1941,37 @@ def test_installation_crud_preserves_runtime_active_record(tmp_path: Path) -> No
     )
     assert stopped_arm.json()["state"] == "stopped"
     assert stopped_arm.json()["stop_action"] == "stop media playback"
-    timing = client.post(
-        "/api/gui/v1/timing-calibrations",
-        json={
-            "target_kind": "projector_mapping",
-            "geometry_id": geometry_id,
-            "adjustment_kind": "release",
-            "test_asset_id": "timing-reference",
-            "test_asset_version": "sha256:fixture",
-            "observed_variability_ms": 12.5,
-            "notes": "Observed from the front yard.",
-            "context": {
-                "hardware": "projector-a",
-                "routing": "hdmi-1",
-                "display_mode": "1920x1080@60",
-                "media_settings": "mpv-default",
-                "environment": "night",
-            },
-        },
-        headers=_mutation_headers(client),
-    )
-    assert timing.status_code == 201
-    assert timing.json()["baseline_ms"] == 0
-    adjusted = client.put(
-        f"/api/gui/v1/timing-calibrations/{timing.json()['id']}",
-        json={"proposed_ms": -85},
-        headers=_mutation_headers(client, if_match='"1"'),
-    )
-    assert adjusted.status_code == 200
-    assert adjusted.json()["baseline_ms"] == 0
-    assert adjusted.json()["proposed_ms"] == -85
-    accepted = client.post(
-        f"/api/gui/v1/timing-calibrations/{timing.json()['id']}/accept",
-        headers=_mutation_headers(client, if_match='"2"'),
-    )
-    assert accepted.status_code == 200
-    assert accepted.json()["state"] == "accepted"
-    persisted_mapping = client.get(
-        f"/api/gui/v1/installation-geometry/{geometry_id}/projector-mapping"
-    )
-    assert persisted_mapping.json()["media_release_delay_ms"] == -85
-    calibration_review = client.post(
-        "/api/gui/v1/accepted-calibrations/review",
-        json={
-            "target_kind": "projector_mapping",
-            "geometry_id": geometry_id,
-            "context": {
-                "hardware": "projector-a",
-                "routing": "hdmi-2",
-                "display_mode": "1920x1080@60",
-                "media_settings": "mpv-default",
-                "environment": "night",
-            },
-        },
-        headers=_mutation_headers(client),
-    )
-    assert calibration_review.status_code == 200
-    assert calibration_review.json()[0]["test_asset_version"] == "sha256:fixture"
-    assert "Routing changed." in calibration_review.json()[0]["stale_reasons"]
-    cancelled_timing = client.post(
-        "/api/gui/v1/timing-calibrations",
-        json={
-            "target_kind": "projector_mapping",
-            "geometry_id": geometry_id,
-            "adjustment_kind": "onset",
-        },
-        headers=_mutation_headers(client),
-    )
-    changed_timing = client.put(
-        f"/api/gui/v1/timing-calibrations/{cancelled_timing.json()['id']}",
-        json={"proposed_ms": 500},
-        headers=_mutation_headers(client, if_match='"1"'),
-    )
-    cancelled = client.post(
-        f"/api/gui/v1/timing-calibrations/{cancelled_timing.json()['id']}/cancel",
-        headers=_mutation_headers(client, if_match=f'"{changed_timing.json()["revision"]}"'),
-    )
-    assert cancelled.json()["state"] == "cancelled"
     assert (
-        client.get(f"/api/gui/v1/installation-geometry/{geometry_id}/projector-mapping").json()[
-            "media_start_delay_ms"
-        ]
-        == 120
+        client.get(f"/api/gui/v1/installations/{installation_id}/output-timing").status_code == 422
     )
+    runtime_installation = client.get("/api/gui/v1/runtime/status").json()["installation_id"]
+    timing = client.get(f"/api/gui/v1/installations/{runtime_installation}/output-timing")
+    assert timing.status_code == 200
+    projector = next(item for item in timing.json()["outputs"] if item["kind"] == "media")
+    assert (projector["delay_ms"], projector["minimum_ms"], projector["revision"]) == (0, 0, 0)
+    saved_timing = client.put(
+        f"/api/gui/v1/installations/{runtime_installation}/output-timing/{projector['resource']}",
+        json={"delay_ms": 85},
+        headers=_mutation_headers(client),
+    )
+    assert saved_timing.status_code == 200
+    assert (saved_timing.json()["delay_ms"], saved_timing.json()["revision"]) == (85, 1)
+    assert runtime.output_delay_ms(projector["resource"]) == 85
+    assert (
+        client.put(
+            f"/api/gui/v1/installations/{runtime_installation}/output-timing/{projector['resource']}",
+            json={"delay_ms": -5},
+            headers=_mutation_headers(client),
+        ).status_code
+        == 422
+    )
+    unassigned = client.post(
+        f"/api/gui/v1/installations/{runtime_installation}/timing-calibration",
+        json={"projectors": [{"resource": projector["resource"]}]},
+        headers=_mutation_headers(client),
+    )
+    assert unassigned.status_code == 409
+    assert "no assigned client" in unassigned.json()["detail"]["message"]
     calibration_photo = client.post(
         f"/api/gui/v1/installations/{installation_id}/photos",
         content=b"fresh-calibration-photo",
@@ -2084,7 +2032,7 @@ def test_installation_crud_preserves_runtime_active_record(tmp_path: Path) -> No
             ],
             "mesh_triangles": [[0, 1, 4], [1, 2, 4], [2, 3, 4], [3, 0, 4]],
         },
-        headers=_mutation_headers(client, if_match='"2"'),
+        headers=_mutation_headers(client, if_match='"1"'),
     )
     assert subdivided.status_code == 200
     assert subdivided.json()["homography"] is None

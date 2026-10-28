@@ -15,6 +15,7 @@ from cueverge.gui.device_uvicorn import (
     PeerCertificateHttpProtocol,
     PeerCertificateWebSocketProtocol,
 )
+from cueverge.gui.installation_calibration import reference_clip_root
 from cueverge.gui.repository import GuiRepository
 
 
@@ -53,6 +54,7 @@ class EmbeddedDeviceListener:
                     AssetUploadService(config, repository),
                     agent_bundles,
                     agent_settings,
+                    reference_clip_root(config.data_root),
                 ),
                 host=config.device_listener_host,
                 port=config.device_listener_port,

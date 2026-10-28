@@ -28,6 +28,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
 from cueverge.controller.runtime import SEAMLESS_PRELOAD_LEAD_MS
+from cueverge.controller.timing_calibration import DEFAULT_FLASH_MS, DEFAULT_PERIOD_MS
 from cueverge.core.loader import ShowPackageError
 from cueverge.gui.agent_settings import AgentSettingsError
 from cueverge.gui.agent_updates import AgentUpdateError
@@ -77,11 +78,18 @@ from cueverge.gui.device_players import PLAYER_IDLE_STOP_SECONDS, DevicePlayerEr
 from cueverge.gui.device_session import DeviceSessionError
 from cueverge.gui.home_assistant import HomeAssistantError
 from cueverge.gui.input_sources import InputSourceError
+from cueverge.gui.installation_calibration import (
+    InstallationCalibrationError,
+    MediaChoice,
+    calibration_run_response,
+    output_timing_response,
+)
 from cueverge.gui.installation_objects import (
     installation_object_inventory,
     save_installation_object,
 )
 from cueverge.gui.installation_photos import MAX_PHOTO_BYTES, InstallationPhotoError
+from cueverge.gui.installation_timing import InstallationTimingError
 from cueverge.gui.interaction_preview import preview_interactions
 from cueverge.gui.interactions import (
     InteractionError,
@@ -598,6 +606,171 @@ def create_mcp_app(services: GuiServices) -> Starlette:
         except AgentSettingsError as error:
             raise ToolError(str(error)) from error
         return _bounded_result(result.model_dump(mode="json"))
+
+    def timing_payload() -> dict[str, object]:
+        installation_id = services.repository.get_runtime_installation().id
+        saved = services.installation_timing.delays(installation_id)
+        run = services.installation_calibration.status()
+        return {
+            "installation_id": installation_id,
+            "outputs": [
+                output_timing_response(item).model_dump(mode="json")
+                for item in services.installation_calibration.saved(installation_id)
+            ],
+            "calibration": calibration_run_response(run, saved).model_dump(mode="json")
+            if run is not None
+            else None,
+        }
+
+    def audit_timing(
+        token: McpToken, action: str, result: str, context: dict[str, JsonValue]
+    ) -> None:
+        services.repository.append_audit(
+            actor=token.username,
+            action=f"mcp.installation.timing.{action}",
+            target=services.repository.get_runtime_installation().id,
+            result=result,
+            occurred_at=_now_iso(),
+            authorization_context={"token_id": token.id, "scope": "live_operation", **context},
+        )
+
+    @tool()
+    def get_installation_timing() -> dict[str, JsonValue]:
+        """Read installation output timing and any running timing calibration.
+
+        Requires read and this runtime's installation. One delay per output resource:
+        media (projectors, 0..5000 ms) start that much later than the scene asks;
+        lighting (LED outputs, -5000..5000 ms) render that much behind scene time.
+        Scene-level delays (media start_delay_ms, lighting timing_offset_ms) stack on
+        top. calibration lists each calibrated output's live delay_ms, saved_ms,
+        state and drift_ms (projector position vs the beat, when reported).
+        """
+        input_installation_token(McpScope.READ)
+        return _bounded_result(timing_payload())
+
+    @tool()
+    def set_installation_output_timing(
+        resource: str,
+        delay_ms: int,
+        expected_revision: int | None = None,
+        confirm_physical_output: bool = False,
+    ) -> dict[str, JsonValue]:
+        """Save one output's installation delay; every show uses it immediately.
+
+        Requires explicit live_operation, a current operator/administrator with
+        live-output permission, this runtime's installation and physical confirmation.
+        Pass the revision from get_installation_timing as expected_revision (0 = never
+        set). LED changes affect the next rendered frame; projector delays apply at the
+        next scene start. Audited as installation.output_timing.set.
+        """
+        token = input_installation_token(McpScope.LIVE_OPERATION)
+        if not confirm_physical_output:
+            raise ToolError("Explicit physical-output confirmation is required")
+        try:
+            saved = services.installation_calibration.set_saved(
+                installation_id=services.repository.get_runtime_installation().id,
+                resource=resource,
+                delay_ms=delay_ms,
+                expected_revision=expected_revision or None,
+                actor=token.username,
+                role=_token_role(services, token),
+                occurred_at=_now_iso(),
+            )
+        except InstallationTimingError as error:
+            raise ToolError(str(error)) from error
+        return output_timing_response(saved).model_dump(mode="json")
+
+    @tool()
+    async def start_timing_calibration(
+        projectors: list[dict[str, JsonValue]] | None = None,
+        leds: list[str] | None = None,
+        confirm_physical_output: bool = False,
+    ) -> dict[str, JsonValue]:
+        """Play the live flash-and-click timing beat on projectors and LED outputs.
+
+        Requires explicit live_operation, a current operator/administrator with
+        live-output permission, physical confirmation, and maintenance mode with
+        nothing playing. projectors: [{"resource": "...", "click": true}] (click=false
+        plays the flash without the audio click); leds: LED output resources. Starts
+        on-demand players and sends the reference clip to their clients. Every 2 s
+        projectors flash white for 100 ms with a click and LEDs flash on the same beat,
+        each shifted by its saved delay. Adjust with adjust_timing_calibration, then
+        finish_timing_calibration accept or cancel. Changing mode or Stop ends the run.
+        """
+        token = input_installation_token(McpScope.LIVE_OPERATION)
+        if not confirm_physical_output:
+            raise ToolError("Explicit physical-output confirmation is required")
+        try:
+            choices = tuple(
+                MediaChoice(
+                    resource=str(item["resource"]),
+                    click=bool(item.get("click", True)),
+                )
+                for item in projectors or ()
+            )
+        except (KeyError, TypeError) as error:
+            raise ToolError("projectors items need a resource") from error
+        try:
+            await services.installation_calibration.start(
+                installation_id=services.repository.get_runtime_installation().id,
+                media=choices,
+                lights=tuple(leds or ()),
+                actor=token.username,
+                role=_token_role(services, token),
+                occurred_at=_now_iso(),
+            )
+        except InstallationCalibrationError as error:
+            audit_timing(token, "calibration.start", "error", {"error": str(error)})
+            raise ToolError(str(error)) from error
+        audit_timing(token, "calibration.start", "success", {})
+        return _bounded_result(timing_payload())
+
+    @tool()
+    async def adjust_timing_calibration(resource: str, delay_ms: int) -> dict[str, JsonValue]:
+        """Change one calibrated output's live delay without saving it.
+
+        Requires explicit live_operation and a running calibration. LEDs move on the
+        next frame; projector changes restart the loop so all projectors start
+        together again (about a second). Positive delays make the output later.
+        """
+        input_installation_token(McpScope.LIVE_OPERATION)
+        try:
+            services.installation_calibration.adjust(resource, delay_ms)
+        except InstallationCalibrationError as error:
+            raise ToolError(str(error)) from error
+        return _bounded_result(timing_payload())
+
+    @tool()
+    async def resync_timing_calibration() -> dict[str, JsonValue]:
+        """Restart the calibration loop so every projector starts on the beat again."""
+        input_installation_token(McpScope.LIVE_OPERATION)
+        try:
+            services.installation_calibration.resync()
+        except InstallationCalibrationError as error:
+            raise ToolError(str(error)) from error
+        return _bounded_result(timing_payload())
+
+    @tool()
+    async def finish_timing_calibration(
+        action: Literal["accept", "cancel"],
+    ) -> dict[str, JsonValue]:
+        """End the calibration: accept saves every changed delay, cancel keeps saved values.
+
+        Requires explicit live_operation. Projectors stop and LEDs go dark either way.
+        Accepted values apply to every show immediately. Audited as
+        installation.timing_calibration.accept/cancel.
+        """
+        token = input_installation_token(McpScope.LIVE_OPERATION)
+        try:
+            _, saved = await services.installation_calibration.finish(
+                accept=action == "accept",
+                actor=token.username,
+                role=_token_role(services, token),
+                occurred_at=_now_iso(),
+            )
+        except InstallationCalibrationError as error:
+            raise ToolError(str(error)) from error
+        return _bounded_result({**timing_payload(), "saved": [item.resource for item in saved]})
 
     @tool()
     def get_agent_updates() -> dict[str, JsonValue]:
@@ -1843,6 +2016,27 @@ def create_mcp_app(services: GuiServices) -> Starlette:
                     "player_restart_requires_idle_maintenance": True,
                     "optimistic_revision": True,
                 },
+                "installation_timing": {
+                    "read_tool": "get_installation_timing",
+                    "set_tool": "set_installation_output_timing",
+                    "calibration_tools": [
+                        "start_timing_calibration",
+                        "adjust_timing_calibration",
+                        "resync_timing_calibration",
+                        "finish_timing_calibration",
+                    ],
+                    "scope": "live_operation",
+                    "physical_confirmation_required": True,
+                    "per": "output_resource",
+                    "ranges_ms": {"media": [0, 5000], "lighting": [-5000, 5000]},
+                    "stacks_with_scene_delays": True,
+                    "media_clock_led_compensation": True,
+                    "applies_without_apply": True,
+                    "calibration_requires_idle_maintenance": True,
+                    "beat_period_ms": DEFAULT_PERIOD_MS,
+                    "flash_ms": DEFAULT_FLASH_MS,
+                    "client_audio_delay": "set_device_agent_settings audio_delay_ms",
+                },
                 "agent_updates": {
                     "read_tool": "get_agent_updates",
                     "update_tool": "update_device_agents",
@@ -2004,6 +2198,8 @@ def create_mcp_app(services: GuiServices) -> Starlette:
                     "managed_agent_settings": True,
                     "scene_output_audio_bakes": True,
                     "apply_bakes_missing_or_stale": True,
+                    "installation_output_timing": True,
+                    "live_timing_calibration": True,
                     "geometry_editing": False,
                     "live_media_rendering": False,
                 },
