@@ -277,3 +277,46 @@ def test_keep_awake_is_omitted_on_the_wire_when_off(tmp_path: Path) -> None:
     assert DeviceHello.model_validate_json(sent).keep_awake == status
     with pytest.raises(ValueError):
         KeepAwakeStatus.model_validate({"mode": "always", "active": True})
+
+
+def test_runtime_target_registers_again_after_a_heartbeat_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from cueverge.controller.runtime import ControllerRuntime
+    from cueverge.gui import device_app
+
+    repository, _, capabilities = _enrolled_device(tmp_path)
+    sessions = DeviceSessionRegistry()
+    channel = _connect(repository, sessions, capabilities, state="ready")
+    now = [100.0]
+    runtime = ControllerRuntime(clock=lambda: now[0])
+    monkeypatch.setattr(device_app, "_assigned_agent_id", lambda *_: "media-1")
+    session = sessions._sessions[DEVICE_ID]
+    hello = DeviceHello(
+        device_id=DEVICE_ID,
+        device_session_id=session.session_id,
+        capabilities=capabilities,
+        media_features=("player_control",),
+        player_state="ready",
+    )
+    target = device_app._RuntimeTarget(
+        repository,
+        runtime,
+        sessions,
+        str(DEVICE_ID),
+        hello,
+        channel,  # type: ignore[arg-type]
+    )
+
+    target.sync()
+    assert runtime.is_agent_registered("media-1", channel)  # type: ignore[arg-type]
+
+    # An event-loop stall longer than the heartbeat timeout drops the agent from the runtime
+    # while its authenticated device session stays connected.
+    now[0] += runtime.heartbeat_timeout_ms / 1000 + 1
+    runtime.check_timeouts()
+    assert runtime.status()["connected_agents"] == []
+
+    target.sync()
+    assert runtime.status()["connected_agents"] == ["media-1"]
+    assert runtime.is_agent_registered("media-1", channel)  # type: ignore[arg-type]

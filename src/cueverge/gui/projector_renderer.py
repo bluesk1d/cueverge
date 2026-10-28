@@ -29,6 +29,8 @@ from cueverge.gui.frame_compositor import (
 )
 from cueverge.gui.render_encoder import EncoderProfile, encode_output_set
 
+AUDIO_TRIM_TOLERANCE_SAMPLES = 480  # 10 ms at 48 kHz
+
 
 class ProjectorRenderError(RuntimeError):
     pass
@@ -198,8 +200,13 @@ def prepare_media_layers(
             out_sample = _integer(layer.get("out_point_ms")) * 48
             trimmed = decoded[in_sample:out_sample]
             expected = _integer(layer.get("duration_ms")) * 48
-            if trimmed.shape[0] < expected:
+            shortfall = expected - trimmed.shape[0]
+            if shortfall > AUDIO_TRIM_TOLERANCE_SAMPLES:
                 raise ProjectorRenderError("audio source is shorter than its layer trim")
+            if shortfall > 0:
+                # Asset durations are rounded to whole milliseconds and resampling can drop a
+                # few samples, so a full-length trim may end just past the decoded audio.
+                trimmed = np.pad(trimmed, ((0, shortfall), (0, 0)))
             audio = _mapping(layer.get("audio"))
             audio_layers.append(
                 AudioLayerBuffer(

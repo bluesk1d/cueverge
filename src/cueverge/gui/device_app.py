@@ -573,7 +573,17 @@ class _RuntimeTarget:
             if not ready:
                 self.release()
                 self._log_idle("player is not running")
-            return None
+                return None
+            if self.runtime.is_agent_registered(self.agent_id, self.channel):
+                return None
+            # The runtime dropped this target (heartbeat timeout, for example after an event
+            # loop stall) while the device stayed connected: register it again.
+            LOGGER.warning(
+                "runtime target %s for device %s was dropped; registering again",
+                self.agent_id,
+                self.device_id,
+            )
+            self.agent_id = None
         if not ready:
             self._log_idle("player is not running")
             return None

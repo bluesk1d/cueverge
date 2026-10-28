@@ -432,6 +432,10 @@ class ControllerRuntime:
             reconciliation=reconciliation,
         )
 
+    def is_agent_registered(self, agent_id: str, websocket: CommandChannel) -> bool:
+        connection = self._agents.get(agent_id)
+        return connection is not None and connection.channel is websocket
+
     def disconnect_agent(self, agent_id: str, websocket: CommandChannel) -> None:
         connection = self._agents.get(agent_id)
         if connection is not None and connection.channel is websocket:

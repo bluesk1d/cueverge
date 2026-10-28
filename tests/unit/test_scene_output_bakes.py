@@ -346,3 +346,48 @@ def test_gui_and_mcp_list_bake_requirements(tmp_path: Path) -> None:
         assert login.status_code == 200
         listed = client.get(f"/api/gui/v1/projects/{project_id}/bake-requirements").json()
         assert {item["id"]: item["kind"] for item in listed["bakes"]}[bake_id] == "scene_output"
+
+
+def test_full_length_audio_trim_tolerates_millisecond_rounding(tmp_path: Path) -> None:
+    from types import SimpleNamespace
+
+    import pytest
+
+    from cueverge.gui.projector_renderer import ProjectorRenderError, prepare_media_layers
+
+    def wav(name: str, frames: int) -> Path:
+        path = tmp_path / name
+        with wave.open(str(path), "wb") as output:
+            output.setnchannels(1)
+            output.setsampwidth(2)
+            output.setframerate(48000)
+            output.writeframes(np.full(frames, 8000, dtype="<i2").tobytes())
+        return path
+
+    # 499.79 ms of audio is stored as a 500 ms asset, and a full-length layer trims 0-500 ms.
+    files = {"rounded": wav("rounded.wav", 23990), "short": wav("short.wav", 23000)}
+
+    class Assets:
+        def get_original(self, source_id: str) -> tuple[Any, Path]:
+            asset = SimpleNamespace(project_id="p", digest_sha256=source_id, media_type="audio/wav")
+            return asset, files[source_id]
+
+    def layer(source_id: str) -> dict[str, Any]:
+        return {**_layer(source_id), "duration_ms": 500, "out_point_ms": 500}
+
+    prepared = prepare_media_layers(
+        project_id="p",
+        raw_layers=[layer("rounded")],
+        assets=Assets(),  # type: ignore[arg-type]
+    )
+    [buffer] = prepared.audio_layers
+    assert buffer.samples.shape[0] == 500 * 48
+    assert float(np.abs(buffer.samples[-1]).max()) == 0.0
+    assert float(np.abs(buffer.samples[100]).max()) > 0.1
+
+    with pytest.raises(ProjectorRenderError, match="shorter than its layer trim"):
+        prepare_media_layers(
+            project_id="p",
+            raw_layers=[layer("short")],
+            assets=Assets(),  # type: ignore[arg-type]
+        )
