@@ -1,29 +1,45 @@
 name: Publish controller image
 
+# CI calls this twice: once with publish=false so native per-architecture builds and smoke
+# checks run alongside the test jobs, then with build=false after tests pass to tag the
+# images. A manual dispatch from main does both.
 on:
   workflow_call:
+    inputs:
+      build:
+        description: Build, smoke-test, and push untagged per-architecture images.
+        type: boolean
+        default: true
+      publish:
+        description: Combine this run's per-architecture images under the published tags.
+        type: boolean
+        default: true
   workflow_dispatch:
 
 permissions:
   contents: read
   packages: write
 
-concurrency:
-  group: publish-controller-image
-  cancel-in-progress: false
+env:
+  IMAGE: ghcr.io/bluesk1d/cueverge
 
 jobs:
-  publish:
-    if: github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
+  build:
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch' || inputs.build)
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
     env:
-      IMAGE: ghcr.io/bluesk1d/cueverge
       # Registry cache reuses blobs already pushed with the image; the GHA cache export took minutes.
-      BUILD_CACHE: ghcr.io/bluesk1d/cueverge:buildcache
+      BUILD_CACHE: ghcr.io/bluesk1d/cueverge:buildcache-${{ matrix.arch }}
     steps:
       - uses: actions/checkout@v5
-      - uses: docker/setup-qemu-action@v4
       - uses: docker/setup-buildx-action@v4
       - name: Sign in to GitHub Container Registry
         uses: docker/login-action@v4
@@ -35,7 +51,7 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           context: .
-          platforms: linux/amd64
+          platforms: linux/${{ matrix.arch }}
           load: true
           tags: cueverge-controller:smoke
           cache-from: type=registry,ref=${{ env.BUILD_CACHE }}
@@ -68,7 +84,7 @@ jobs:
             echo "Controller did not become ready." >&2
             exit 1
           fi
-          python -c 'import json,sys; assert json.load(open(sys.argv[1]))["status"] == "ready"' "$health_response"
+          python3 -c 'import json,sys; assert json.load(open(sys.argv[1]))["status"] == "ready"' "$health_response"
           curl --fail --silent --show-error http://127.0.0.1:18000/ \
             | grep -q 'id="root"'
           status="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
@@ -77,27 +93,73 @@ jobs:
             --header 'Accept: application/json, text/event-stream' \
             --data '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"image-smoke","version":"1"}}}')"
           test "$status" = 401
-      - name: Publish AMD64 and ARM64 images
+      - name: Push untagged ${{ matrix.arch }} image
         id: image
         uses: docker/build-push-action@v7
         with:
           context: .
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: |
-            ${{ env.IMAGE }}:latest
-            ${{ env.IMAGE }}:sha-${{ github.sha }}
+          platforms: linux/${{ matrix.arch }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
           cache-from: type=registry,ref=${{ env.BUILD_CACHE }}
           cache-to: type=registry,ref=${{ env.BUILD_CACHE }},mode=max,image-manifest=true,oci-mediatypes=true
-      - name: Record published digest
+      - name: Record ${{ matrix.arch }} digest
         env:
           DIGEST: ${{ steps.image.outputs.digest }}
         run: |
+          mkdir -p "$RUNNER_TEMP/digests"
+          touch "$RUNNER_TEMP/digests/${DIGEST#sha256:}"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: controller-image-digest-${{ matrix.arch }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    needs: build
+    if: >-
+      !cancelled() && github.ref == 'refs/heads/main' &&
+      (github.event_name == 'workflow_dispatch' || inputs.publish) &&
+      (needs.build.result == 'success' || needs.build.result == 'skipped')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Serialize tag updates so an older commit never overwrites a newer latest.
+    concurrency:
+      group: publish-controller-image
+      cancel-in-progress: false
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: controller-image-digest-*
+          merge-multiple: true
+      - uses: docker/setup-buildx-action@v4
+      - name: Sign in to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish AMD64 and ARM64 images
+        working-directory: ${{ runner.temp }}/digests
+        run: |
+          set -euo pipefail
+          digests=(*)
+          test "${#digests[@]}" -eq 2
+          docker buildx imagetools create \
+            --tag "${IMAGE}:latest" \
+            --tag "${IMAGE}:sha-${GITHUB_SHA}" \
+            $(printf "${IMAGE}@sha256:%s " "${digests[@]}")
+      - name: Record published digest
+        run: |
+          set -euo pipefail
+          DIGEST="$(docker buildx imagetools inspect "${IMAGE}:sha-${GITHUB_SHA}" \
+            --format '{{json .Manifest}}' | python3 -c 'import json,sys; print(json.load(sys.stdin)["digest"])')"
           docker buildx imagetools inspect "${IMAGE}@${DIGEST}" --raw > image-manifest.json
-          python - <<'PY'
+          python3 - <<'PY'
           import json
           with open("image-manifest.json") as manifest_file:
               manifest = json.load(manifest_file)
@@ -114,6 +176,6 @@ jobs:
             echo "- Image: \`${IMAGE}:latest\`"
             echo "- Revision tag: \`${IMAGE}:sha-${GITHUB_SHA}\`"
             echo "- Digest: \`${IMAGE}@${DIGEST}\`"
-            echo "- Platforms: linux/amd64, linux/arm64"
-            echo "- AMD64 startup, native preflight, GUI, and MCP authentication smoke checks passed."
+            echo "- Platforms: linux/amd64, linux/arm64 (built on native runners)"
+            echo "- AMD64 and ARM64 startup, native preflight, GUI, and MCP authentication smoke checks passed."
           } >> "$GITHUB_STEP_SUMMARY"

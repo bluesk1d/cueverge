@@ -197,15 +197,21 @@ Pull requests and pushes to other branches do not publish images.
 Manual publishing from `main` remains
 available through the
 [Publish controller image workflow](../.github/workflows/publish-image.yml).
-It checks AMD64 startup, native dependency preflight, frontend availability,
-and the MCP authentication boundary before pushing a multi-platform image for
-`linux/amd64` and `linux/arm64`. Architecture-independent stages (the frontend
-and media agent bundles) build once on the runner's native platform, and the
-Docker layer cache is stored in the registry as `ghcr.io/bluesk1d/cueverge:buildcache`;
-that tag is a build cache, not a runnable image.
+The `linux/amd64` and `linux/arm64` images build on native GitHub-hosted AMD64
+and ARM64 runners, without emulation, while the CI test jobs run. Each
+architecture's image is checked for startup, native dependency preflight,
+frontend availability, and the MCP authentication boundary, then pushed by
+digest without a tag. Only after the tests pass does the workflow combine both
+digests into the multi-platform `latest` and `sha-<commit>` tags, so untagged
+digests from a failed run are never published under a tag. Tag updates are
+serialized so an older commit cannot overwrite a newer `latest`. The Docker layer
+cache is stored in the registry as `ghcr.io/bluesk1d/cueverge:buildcache-amd64`
+and `buildcache-arm64`; those tags are build caches, not runnable images.
 
 Both GitHub workflows use Node.js 24-based actions. GitHub-hosted runners
 support these actions; a self-hosted runner must be version 2.327.1 or newer.
+Image builds use the `ubuntu-24.04-arm` hosted runner, which is free for public
+repositories.
 CI needs no system FFmpeg: native capability and renderer tests use the
 FFmpeg libraries bundled in the locked PyAV wheel. Production container
 package versions remain pinned in the native dependency inventory.

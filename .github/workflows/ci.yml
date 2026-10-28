@@ -95,10 +95,24 @@ jobs:
       - run: npm run build
       - run: npm test
 
-  publish:
-    needs: [changes, test, web]
+  image:
+    needs: changes
     if: needs.changes.outputs.package == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main'
     permissions:
       contents: read
       packages: write
     uses: ./.github/workflows/publish-image.yml
+    with:
+      build: true
+      publish: false
+
+  publish:
+    needs: [changes, test, web, image]
+    if: needs.changes.outputs.package == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/publish-image.yml
+    with:
+      build: false
+      publish: true
