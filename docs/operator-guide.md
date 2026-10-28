@@ -883,8 +883,13 @@ mixed into that output's video by a whole-scene bake. With no composition
 selected, **Render & bake > Whole-scene audio** lists each output with its bake
 state and a **Bake** button (save first). The bake keeps the scene video's
 picture unchanged and replaces its soundtrack with the scene audio plus your
-clips (gain, fades, mute and solo apply). Visual layers on a whole-scene output
-are not baked: move them into a composition. Apply bakes these automatically
+clips (gain, fades, mute and solo apply). When the output is set to **Loop**,
+the bake repeats the video in whole loops until it covers the scene and every
+clip, so a clip that crosses the video's loop point plays once instead of being
+cut and restarted. For outputs that hold or stop, a clip that runs past the end
+of the video fails the bake with a message; loop the output or move or trim the
+clip. Visual layers on a whole-scene output are not baked: move them into a
+composition. Apply bakes these automatically
 when they are missing or stale. A save
 that changes nothing keeps the current revision, and **Save timeline** stays
 unavailable until the timeline has an edit. Zoom, snap and loop range are saved

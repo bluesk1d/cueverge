@@ -8,6 +8,7 @@ normal render artifact, so packaging, staging and playback treat it like any oth
 
 import hashlib
 import json
+import math
 import shutil
 import tempfile
 from collections.abc import Mapping
@@ -15,6 +16,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 from uuid import uuid4
+
+import numpy as np
 
 from cueverge.gui import media_tools
 from cueverge.gui.asset_upload import AssetUploadService
@@ -30,8 +33,11 @@ from cueverge.gui.render_pipeline import RENDER_PIPELINE_REVISION
 from cueverge.gui.render_verification import VERIFICATION_POLICY_REVISION
 
 SCENE_OUTPUT_PREFIX = "scene-output:"
-SCENE_OUTPUT_RENDERER = "scene-output-remux-v1"
+SCENE_OUTPUT_RENDERER = "scene-output-remux-v2"
 VISUAL_KINDS = frozenset({"image", "video", "composition"})
+
+
+AUDIO_OVERRUN_TOLERANCE_SAMPLES = 480  # 10 ms at 48 kHz
 
 
 class SceneOutputBakeError(RuntimeError):
@@ -50,6 +56,7 @@ class SceneOutputBake:
     asset_id: str | None
     end_behavior: str
     layers: tuple[dict[str, object], ...]
+    scene_duration_ms: int = 0
 
     @property
     def label(self) -> str:
@@ -109,6 +116,7 @@ def scene_output_bakes(draft: DraftProject) -> tuple[SceneOutputBake, ...]:
                     asset_id=output.asset,
                     end_behavior=str(getattr(output, "end_behavior", "stop")),
                     layers=layers,
+                    scene_duration_ms=scene.duration_ms,
                 )
             )
     return tuple(result)
@@ -146,6 +154,7 @@ def scene_output_cache_payload(
         "resource": bake.resource,
         "asset_id": bake.asset_id,
         "end_behavior": bake.end_behavior,
+        "scene_duration_ms": bake.scene_duration_ms,
         "layers": sorted(bake.layers, key=lambda layer: str(layer.get("id"))),
     }
     return composition, checksums
@@ -168,16 +177,36 @@ def render_scene_output(
     duration_ms = metadata.get("duration_ms")
     if not isinstance(duration_ms, int) or isinstance(duration_ms, bool) or duration_ms <= 0:
         raise SceneOutputBakeError(f"{bake.label}: the output's media has no known duration")
-    total_samples = duration_ms * 48
     try:
         prepared = prepare_media_layers(
             project_id=project_id, raw_layers=list(bake.layers), assets=assets
         )
-    except (ProjectorRenderError, ValueError) as error:
+        span = media_tools.video_loop_span(base_path)
+    except (ProjectorRenderError, ValueError, media_tools.MediaToolError) as error:
         raise SceneOutputBakeError(f"{bake.label}: {error}") from error
     layers = list(prepared.audio_layers)
+    loop_samples = round(span * 48_000) if span is not None else duration_ms * 48
+    layer_end = max((layer.start_sample + layer.samples.shape[0] for layer in layers), default=0)
+    if bake.end_behavior == "loop":
+        # Whole loops keep the video's loop point seamless and cover the scene and every
+        # clip, so the device never restarts the mixed audio partway through the scene.
+        needed = max(layer_end, bake.scene_duration_ms * 48, 1)
+        loops = max(1, math.ceil(needed / loop_samples))
+    else:
+        loops = 1
+        if layer_end > loop_samples + AUDIO_OVERRUN_TOLERANCE_SAMPLES:
+            raise SceneOutputBakeError(
+                f"{bake.label}: audio runs to {layer_end / 48_000:.1f} s but the output's "
+                f"media ends at {loop_samples / 48_000:.1f} s. Set the output to loop, or "
+                "move or trim the clip."
+            )
+    total_samples = loops * loop_samples
+    duration_ms = round(total_samples / 48)
     if metadata.get("audio_codecs"):
-        original = decode_audio_stereo_48k(str(base_path))[:total_samples]
+        single = decode_audio_stereo_48k(str(base_path))[:loop_samples]
+        if single.shape[0] < loop_samples:
+            single = np.pad(single, ((0, loop_samples - single.shape[0]), (0, 0)))
+        original = np.tile(single, (loops, 1))
         # The output's own soundtrack always plays; solo only chooses among added layers.
         layers.insert(
             0,
@@ -201,7 +230,7 @@ def render_scene_output(
         target = temporary / filename
         try:
             video = media_tools.remux_with_audio(
-                source=base_path, audio_samples=mixed, target=target
+                source=base_path, audio_samples=mixed, target=target, loops=loops
             )
             boundary = media_tools.audio_boundary(target)
         except media_tools.MediaToolError as error:
@@ -240,6 +269,7 @@ def render_scene_output(
                 "output_id": bake.output_id,
                 "base_asset_id": bake.asset_id,
                 "layer_ids": [str(layer.get("id")) for layer in bake.layers],
+                "video_loops": loops,
             },
             "members": [
                 {

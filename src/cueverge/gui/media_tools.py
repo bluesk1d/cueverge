@@ -336,16 +336,40 @@ def encode_mp4(
             output.mux(audio.encode(None))
 
 
+def video_loop_span(source: Path) -> Fraction | None:
+    """Seconds from the first video frame to the end of the last, or None without video."""
+    with _open_input(source) as container:
+        if not container.streams.video:
+            return None
+        stream = container.streams.video[0]
+        first: int | None = None
+        end: int | None = None
+        for packet in container.demux(stream):
+            if packet.pts is None:
+                continue
+            first = packet.pts if first is None else min(first, packet.pts)
+            finish = packet.pts + (packet.duration or 0)
+            end = finish if end is None else max(end, finish)
+        if first is None or end is None or end <= first or stream.time_base is None:
+            return None
+        return Fraction(end - first) * Fraction(stream.time_base)
+
+
 def remux_with_audio(
     *,
     source: Path,
     audio_samples: NDArray[np.float32],
     target: Path,
+    loops: int = 1,
 ) -> dict[str, object]:
     """Copy the source video stream unchanged into an MP4 with a new AAC stereo track.
 
+    With loops > 1 the video packets are copied that many times back to back, each pass
+    shifted by the video's span, so a looping clip plays seamlessly under longer audio.
     Returns the copied video stream description (None for audio-only sources).
     """
+    if loops < 1:
+        raise MediaToolError("loops must be at least 1")
     samples = np.ascontiguousarray(audio_samples, dtype=np.float32)
     with (
         _open_input(source) as container,
@@ -381,15 +405,29 @@ def remux_with_audio(
             return float(packet.pts * packet.time_base) if packet.pts is not None else 0.0
 
         if video_in is not None and video_out is not None:
-            for packet in container.demux(video_in):
-                if packet.dts is None:
-                    continue
-                seconds = float(packet.dts * packet.time_base)
-                while next_audio is not None and audio_seconds(next_audio) <= seconds:
-                    output.mux(next_audio)
-                    next_audio = next(pending, None)
-                packet.stream = video_out
-                output.mux(packet)
+            span = video_loop_span(source) if loops > 1 else None
+            if loops > 1 and (span is None or video_in.time_base is None):
+                raise MediaToolError("the video's length is unknown, so it can't be looped")
+            for loop in range(loops):
+                offset = (
+                    round(span * loop / Fraction(video_in.time_base))
+                    if span is not None and video_in.time_base is not None
+                    else 0
+                )
+                with _open_input(source) as pass_container:
+                    pass_stream = pass_container.streams.video[0]
+                    for packet in pass_container.demux(pass_stream):
+                        if packet.dts is None:
+                            continue
+                        packet.dts += offset
+                        if packet.pts is not None:
+                            packet.pts += offset
+                        seconds = float(packet.dts * packet.time_base)
+                        while next_audio is not None and audio_seconds(next_audio) <= seconds:
+                            output.mux(next_audio)
+                            next_audio = next(pending, None)
+                        packet.stream = video_out
+                        output.mux(packet)
         while next_audio is not None:
             output.mux(next_audio)
             next_audio = next(pending, None)

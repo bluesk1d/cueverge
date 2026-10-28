@@ -96,7 +96,13 @@ def _layer(source_id: str, *, kind: str = "audio", track: str = "media:left") ->
     }
 
 
-def _scene_with_output_audio(tmp_path: Path, layers: list[dict[str, Any]] | None = None):
+def _scene_with_output_audio(
+    tmp_path: Path,
+    layers: list[dict[str, Any]] | None = None,
+    *,
+    end_behavior: str | None = None,
+    layer_start_ms: int = 1000,
+):
     runtime, services, stored = setup(tmp_path)
     video_path, tone_path = _media(tmp_path)
     video = _upload(services, stored.project.id, video_path, "video/mp4")
@@ -110,8 +116,12 @@ def _scene_with_output_audio(tmp_path: Path, layers: list[dict[str, Any]] | None
     scene["media"] = [
         {"id": "left", "resource": media_resource, "asset": video.id, "required": False}
     ]
+    if end_behavior is not None:
+        scene["media"][0]["end_behavior"] = end_behavior
     document["editor_metadata"]["timeline_transform_layers"] = {
-        scene["id"]: layers if layers is not None else [_layer(tone.id)]
+        scene["id"]: layers
+        if layers is not None
+        else [{**_layer(tone.id), "start_ms": layer_start_ms}]
     }
     candidate = services.repository.update_draft(
         project_id=stored.project.id,
@@ -433,3 +443,57 @@ def test_stale_pins_warn_but_other_client_faults_block_publication(tmp_path: Pat
     assert "inventory_fault" not in stale
     unreadable = diagnostics(replace(status, faults=("1 asset(s) could not be read",)))
     assert unreadable["inventory_fault"] == "error"
+
+
+def test_looping_output_bakes_whole_video_loops_so_audio_is_not_cut_at_the_loop(
+    tmp_path: Path,
+) -> None:
+    """A clip past the end of a looping 2 s video plays once instead of being cut and repeated."""
+    from cueverge.gui.frame_compositor import decode_audio_stereo_48k
+
+    _, services, project_id, candidate, video, _, resource, bake_id = _scene_with_output_audio(
+        tmp_path, end_behavior="loop", layer_start_ms=2500
+    )
+    [bake] = scene_output_bakes(candidate.draft)
+    expected_loops = max(2, -(-bake.scene_duration_ms // 2000))
+    job = _wait_for_job(
+        services,
+        services.render_jobs.create(
+            project_id=project_id, composition_id=bake_id, actor="admin", expected_revision=2
+        ).id,
+    )
+    assert job.state == "completed", job.error
+    member = services.repository.get_render_artifact_member(job.artifact_id, resource)
+    base_path = services.asset_upload.get_original(video.id)[1]
+    with av.open(str(base_path)) as source, av.open(str(member.path)) as baked:
+        source_packets = [bytes(p) for p in source.demux(source.streams.video[0]) if p.size]
+        baked_stream = baked.streams.video[0]
+        baked_packets = [(bytes(p), p.pts) for p in baked.demux(baked_stream) if p.size]
+    assert [data for data, _ in baked_packets] == source_packets * expected_loops
+    pts = [value for _, value in baked_packets]
+    assert pts == sorted(pts) and len(set(pts)) == len(pts)
+
+    mixed = decode_audio_stereo_48k(str(member.path))
+    assert mixed.shape[0] >= expected_loops * 2000 * 48 - 2048
+    assert _rms(mixed, 100, 2400) < 0.01  # Nothing replays from the clip on the first pass.
+    assert 0.1 < _rms(mixed, 2600, 2900) < 0.25  # The clip after the loop point is intact.
+    assert _rms(mixed, 3100, 3900) < 0.01
+    manifest = services.repository.get_render_artifact_manifest(job.artifact_id)
+    assert manifest["scene_output"]["video_loops"] == expected_loops
+    assert manifest["duration_ms"] == expected_loops * 2000
+
+
+def test_audio_past_the_end_of_a_held_output_is_an_error_not_silently_cut(
+    tmp_path: Path,
+) -> None:
+    _, services, project_id, _, _, _, _, bake_id = _scene_with_output_audio(
+        tmp_path, end_behavior="hold_last_frame", layer_start_ms=2500
+    )
+    job = _wait_for_job(
+        services,
+        services.render_jobs.create(
+            project_id=project_id, composition_id=bake_id, actor="admin", expected_revision=2
+        ).id,
+    )
+    assert job.state == "failed"
+    assert "Set the output to loop, or move or trim the clip" in (job.error or "")

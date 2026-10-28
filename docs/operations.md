@@ -1317,7 +1317,10 @@ For installation-wide image/video/GIF overlays:
    it mixes the audio layers stored under
    `editor_metadata.timeline_transform_layers[<scene_id>]` with
    `track_id: "media:<output_id>"` into a remux of the output's base video
-   (video packets copied unchanged, AAC stereo audio). Visual layers on such a
+   (video packets copied unchanged, AAC stereo audio). A `loop` output is copied
+   in whole loops covering the scene duration and its last audio layer
+   (`scene_output.video_loops` in the manifest); for other end behaviors, audio
+   past the end of the base media fails the job. Visual layers on such a
    track make the requirement `unavailable` and preflight reports
    `scene_output_layers_unsupported`; place them in a composition instead. This requires **either** `direct_edit` **or** `publish`; `read`,
    `draft_edit`, and `simulation` alone cannot queue or cancel jobs. Existing
