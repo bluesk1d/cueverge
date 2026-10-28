@@ -214,6 +214,43 @@ def test_repeat_counts_require_device_support(tmp_path: Path) -> None:
     asyncio.run(scenario())
 
 
+def test_lost_completion_report_still_finishes_after_automatic_cut(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        runtime = ControllerRuntime(catalog=load_show_package(_package(tmp_path)))
+        agent, channel = _connect(runtime)
+        await _start_playing(runtime, agent, channel, "intro")
+        assert runtime.ingest(agent.position(3500)).accepted
+        await _settle()
+        queue = channel.sent[-1]
+        assert queue["command"] == "queue"
+        assert (await runtime.acknowledge_command(agent.acknowledge(queue["request_id"]))).accepted
+
+        following = agent.position(200).model_copy(
+            update={
+                "scene_instance_id": queue["scene_instance_id"],
+                "playback_session_id": queue["playback_session_id"],
+            }
+        )
+        fenced = following.model_copy(update={"agent_session_id": str(uuid4())})
+        assert runtime.ingest(fenced).reason == "handoff_pending"
+        await _settle()
+        assert runtime.active_scene is not None
+        assert runtime.active_scene.definition.id == "intro"
+
+        # The single completed report for intro never arrived.
+        assert runtime.ingest(following).reason == "handoff_pending"
+        await _settle()
+        active = runtime.active_scene
+        assert active is not None
+        assert active.definition.id == "main"
+        assert active.playback_session_id == queue["playback_session_id"]
+        assert channel.names()[-2:] == ["advance", "play"]
+        assert runtime.status()["scene_completions"] == 1
+        await runtime.shutdown()
+
+    asyncio.run(scenario())
+
+
 def test_stop_discards_the_planned_scene(tmp_path: Path) -> None:
     async def scenario() -> None:
         runtime = ControllerRuntime(catalog=load_show_package(_package(tmp_path)))

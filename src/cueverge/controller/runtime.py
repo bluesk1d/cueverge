@@ -759,6 +759,7 @@ class ControllerRuntime:
         ):
             # Preloaded media that already started; the controller adopts it when the
             # current scene completes, so this is expected rather than a fencing error.
+            self._complete_after_automatic_cut(active, handoff, telemetry)
             return TelemetryDecision(False, "handoff_pending")
         if active is None:
             self.rejected_telemetry += 1
@@ -822,6 +823,33 @@ class ControllerRuntime:
                         telemetry.duration_ms or active.definition.duration_ms,
                     )
         return decision
+
+    def _complete_after_automatic_cut(
+        self,
+        active: ActiveScene | None,
+        handoff: PlannedHandoff,
+        telemetry: MediaPosition,
+    ) -> None:
+        """Finish the scene once its clock device is playing the preloaded next file.
+
+        The device reports the finished file only once; if that report is lost, its
+        telemetry for the next file is proof that the current scene ended.
+        """
+        clock = active.clock_session if active is not None else None
+        connection = self._agents.get(telemetry.agent_id)
+        if (
+            active is None
+            or clock is None
+            or handoff.auto_agent_id != telemetry.agent_id
+            or clock.agent_id != telemetry.agent_id
+            or handoff.from_scene_instance_id != active.scene_instance_id
+            or connection is None
+            or telemetry.agent_session_id != connection.session_id
+            or telemetry.controller_epoch != self.controller_epoch
+        ):
+            return
+        connection.last_seen_at = self.clock()
+        self._schedule_completion(active)
 
     async def acknowledge_command(self, acknowledgment: CommandAck) -> TelemetryDecision:
         connection = self._agents.get(acknowledgment.agent_id)

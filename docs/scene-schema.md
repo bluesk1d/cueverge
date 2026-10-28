@@ -605,7 +605,9 @@ shown until the change:
 - In a `media_synchronized` scene whose clock output is not `loop`, the clock
   device continues into the preloaded file the moment its media ends, so the
   last frame of the current scene is followed directly by the first frame of the
-  next. That end of media is also what completes the scene.
+  next. That end of media is also what completes the scene; if the device's
+  completion report is lost, its first position in the preloaded file completes
+  the scene instead.
 - Other preloaded outputs, and all outputs of `controller_timed` scenes, switch
   immediately when the controller changes scene, without stopping or reloading.
 - Outputs on devices that are idle in the current scene, outputs with a

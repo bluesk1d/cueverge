@@ -57,7 +57,10 @@ position first; a failed read never stops telemetry for the connection. The
 agent serializes player commands with its telemetry reads, so a position read
 cannot interleave with `advance`. Telemetry for
 the new session reaches the controller before it adopts the next scene and is
-answered with the non-error reason `handoff_pending`. With `auto_advance:
+answered with the non-error reason `handoff_pending`. When that telemetry
+comes from the clock device that was told to continue automatically, the
+controller also treats it as completion of the current scene, so a lost
+`completed` position cannot hold the show in a finished scene. With `auto_advance:
 false` the device holds the queued file until `advance` names its playback
 session. `advance` is idempotent once the device has already continued into
 that session. A new `prepare` or `stop` discards anything queued. A failed
