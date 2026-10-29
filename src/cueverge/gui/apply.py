@@ -35,7 +35,15 @@ class ApplyRequest(GuiModel):
     approve_release: bool = False
     starting_scene_id: str | None = None
     restore_package_id: str | None = None
-    preserve_controller_looks: bool = True
+    preserve_controller_looks: bool = Field(
+        default=True,
+        description=(
+            "Keep the running controller's safe-state (standby) lighting for LED outputs "
+            "this show's own ambient lights, when its targets exist in this show's "
+            "installation. Another show's ambient baseline is never carried over; outputs "
+            "without ambient in this show black out between scenes."
+        ),
+    )
 
 
 def now() -> str:
@@ -421,19 +429,6 @@ class ApplyService:
                 # Hashing every packaged file and parsing the catalog takes seconds; keep the
                 # event loop serving device heartbeats meanwhile.
                 catalog = await asyncio.to_thread(self._load_verified_catalog, package)
-                if (
-                    request.preserve_controller_looks
-                    and (
-                        self.runtime.catalog.lighting_looks_by_resource
-                        or self.runtime.catalog.lighting_looks
-                    )
-                    and not (catalog.lighting_looks_by_resource or catalog.lighting_looks)
-                ):
-                    raise ApplyError(
-                        "This retained package has no controller baseline/safe lighting. "
-                        "Apply the saved show with preservation, "
-                        "or explicitly authorize clearing those looks."
-                    )
                 self.runtime.validate_catalog_handover(catalog)
                 start_scene = request.starting_scene_id or (
                     catalog.program.initial_scene_id if catalog.program else None

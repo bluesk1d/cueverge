@@ -221,7 +221,9 @@ An optional show-level persistent look (ambient lighting) can run fixture
 baselines or a looping LED composition on a controller-monotonic cycle across
 media scene changes. Timeline scenes overlay only their targeted pixels and
 restore the ambient naturally afterward. Explicit stop renders a configured
-safe state.
+safe state. The ambient belongs to its show: applying a different show never
+keeps this one's ambient, so give every show that needs between-scene lighting
+its own ambient.
 
 ### Lighting features that may still be requested
 

@@ -367,11 +367,8 @@ def test_monitor_records_only_successful_sends_caps_capture_and_reports_failures
             runtime.output_monitor(pixel_limit=limit)
 
 
-@pytest.mark.parametrize("preserve", [False, True])
-def test_apply_preserves_controller_looks_unless_explicitly_cleared(tmp_path: Path, preserve: bool):
-    runtime, services, stored = setup(tmp_path)
-    resource = stored.draft.scenes[0].lighting[0].resource
-    looks = MultiLightingLooksDefinition.model_validate(
+def _controller_looks(resource: str, safe_target: dict | None = None):
+    return MultiLightingLooksDefinition.model_validate(
         {
             "schema_version": 2,
             "outputs": [
@@ -380,24 +377,71 @@ def test_apply_preserves_controller_looks_unless_explicitly_cleared(tmp_path: Pa
                     "cycle_ms": 1000,
                     "baseline": [
                         {
-                            "id": "baseline",
+                            "id": "other-show-ambient",
                             "primitive": "solid",
                             "start_ms": 0,
                             "duration_ms": 1000,
                             "color": "#123456",
+                            "target": {"kind": "fixture", "id": "other-show-only-fixture"},
                         }
                     ],
                     "safe_state": [
-                        {"id": "safe", "primitive": "blackout", "start_ms": 0, "duration_ms": 1000}
+                        {
+                            "id": "running-safe",
+                            "primitive": "solid",
+                            "start_ms": 0,
+                            "duration_ms": 1000,
+                            "color": "#0000FF",
+                            **({"target": safe_target} if safe_target else {}),
+                        }
                     ],
                 }
             ],
         }
     )
-    initial = services.compiler.compile(
-        project_id="looks", revision=1, draft=stored.draft, lighting_looks=looks
+
+
+@pytest.mark.parametrize("preserve", [False, True])
+def test_apply_never_carries_another_shows_ambient(tmp_path: Path, preserve: bool):
+    runtime, services, stored = setup(tmp_path)
+    resource = stored.draft.scenes[0].lighting[0].resource
+    # The running show's ambient targets a fixture the applied show's installation lacks.
+    installation = stored.draft.installation.model_dump(mode="json")
+    for binding in installation["resources"]:
+        if binding["resource"] == resource:
+            binding["segments"] = [{"id": "porch", "start": 0, "end": binding["pixel_count"]}]
+            binding["fixtures"] = [
+                {"id": "other-show-only-fixture", "segments": [{"segment": "porch"}]}
+            ]
+    running = DraftCompiler(tmp_path / "running").compile(
+        project_id="running",
+        revision=1,
+        draft=DraftProject.model_validate(
+            {
+                **stored.draft.model_dump(mode="json"),
+                "installation": installation,
+                "editor_metadata": {
+                    "ambient_lighting": {
+                        "schema_version": 1,
+                        "outputs": [
+                            {
+                                "resource": resource,
+                                "cycle_ms": 1000,
+                                "cues": [
+                                    _controller_looks(resource)
+                                    .outputs[0]
+                                    .baseline[0]
+                                    .model_dump(mode="json")
+                                ],
+                            }
+                        ],
+                    }
+                },
+            }
+        ),
     )
-    runtime.catalog = load_show_package(initial.package_root)
+    runtime.catalog = load_show_package(running.package_root)
+    assert runtime.catalog.lighting_looks_by_resource
 
     async def scenario():
         job = await services.apply.start(
@@ -405,13 +449,53 @@ def test_apply_preserves_controller_looks_unless_explicitly_cleared(tmp_path: Pa
         )
         result = await wait(services, str(job["id"]))
         assert result["state"] == "completed", result
-        assert bool(runtime.catalog.lighting_looks_by_resource) is preserve
-        if preserve:
-            assert (
-                runtime.catalog.lighting_looks_by_resource[resource].definition == looks.outputs[0]
-            )
+        assert not runtime.catalog.lighting_looks_by_resource
+        assert runtime.catalog.lighting_looks is None
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    "safe_target,keeps_running_safe_state",
+    [(None, True), ({"kind": "fixture", "id": "other-show-only-fixture"}, False)],
+)
+def test_retained_looks_only_donate_compatible_safe_state_to_own_ambient(
+    tmp_path: Path, safe_target: dict | None, keeps_running_safe_state: bool
+):
+    _, services, stored = setup(tmp_path)
+    resource = stored.draft.scenes[0].lighting[0].resource
+    own_ambient = {
+        "resource": resource,
+        "cycle_ms": 2000,
+        "cues": [
+            {
+                "id": "own",
+                "primitive": "solid",
+                "start_ms": 0,
+                "duration_ms": 2000,
+                "color": "#FF0000",
+            }
+        ],
+    }
+    draft = stored.draft.model_copy(
+        update={
+            "editor_metadata": {
+                **stored.draft.editor_metadata,
+                "ambient_lighting": {"schema_version": 1, "outputs": [own_ambient]},
+            }
+        }
+    )
+    compiled = services.compiler.compile(
+        project_id="own-ambient",
+        revision=1,
+        draft=draft,
+        lighting_looks=_controller_looks(resource, safe_target),
+    )
+    look = load_show_package(compiled.package_root).lighting_looks_by_resource[resource]
+    assert [cue.id for cue in look.definition.baseline] == ["own"]
+    assert look.definition.cycle_ms == 2000
+    expected = "running-safe" if keeps_running_safe_state else "ambient-safe-blackout"
+    assert [cue.id for cue in look.definition.safe_state] == [expected]
 
 
 def test_retained_restore_loads_previous_version_without_overwriting_saved_head(tmp_path: Path):

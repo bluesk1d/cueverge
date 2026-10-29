@@ -12,6 +12,7 @@ from cueverge.core.models import (
     LightingCue,
     LightingLookDefinition,
     MultiLightingLooksDefinition,
+    ResourceBinding,
 )
 from cueverge.gui.ambient_lighting import AmbientLighting, parse_ambient_lighting
 from cueverge.gui.contracts import DraftProject
@@ -109,6 +110,7 @@ class DraftCompiler:
             try:
                 looks = _compile_lighting_looks(
                     temporary_root,
+                    draft,
                     ambient,
                     lighting_looks,
                     lighting_artifacts or {},
@@ -270,19 +272,26 @@ def _bake_manifest(
 
 def _compile_lighting_looks(
     root: Path,
+    draft: DraftProject,
     ambient: AmbientLighting | None,
     controller_looks: MultiLightingLooksDefinition | None,
     artifacts: dict[str, Path],
     revision: int,
     lighting_only: frozenset[str] = frozenset(),
 ) -> MultiLightingLooksDefinition | None:
-    """Ambient lighting from the draft, over any retained controller looks per LED output."""
+    """Ambient lighting from the draft; retained controller looks only donate safe states.
+
+    Each show's ambient comes from that show. A retained controller look never carries
+    its baseline into another show; it only supplies the safe state for outputs the
+    draft's own ambient lights, when every target it uses exists in this installation.
+    """
     from cueverge.lighting.sequence import LightingSequenceReference, load_lighting_sequence
 
     retained = {
         look.resource: look for look in (controller_looks.outputs if controller_looks else ())
     }
-    outputs: dict[str, LightingLookDefinition] = dict(retained)
+    bindings = {binding.resource: binding for binding in draft.installation.resources}
+    outputs: dict[str, LightingLookDefinition] = {}
     excluded = ambient.excluded_scene_ids if ambient is not None else ()
     for output in ambient.outputs if ambient is not None else ():
         sequence_reference: LightingSequenceReference | None = None
@@ -355,6 +364,7 @@ def _compile_lighting_looks(
             safe_state=(
                 previous.safe_state
                 if previous is not None
+                and _targets_resolve(previous.safe_state, bindings.get(output.resource))
                 else (
                     LightingCue(
                         id="ambient-safe-blackout",
@@ -377,6 +387,17 @@ def _compile_lighting_looks(
             for _, look in sorted(outputs.items())
         ),
     )
+
+
+def _targets_resolve(cues: tuple[LightingCue, ...], binding: ResourceBinding | None) -> bool:
+    if binding is None:
+        return False
+    known = {
+        "segment": {item.id for item in binding.segments},
+        "fixture": {item.id for item in binding.fixtures},
+        "path": {item.id for item in binding.paths},
+    }
+    return all(cue.target is None or cue.target.id in known[cue.target.kind] for cue in cues)
 
 
 def _install_lighting_sequences(

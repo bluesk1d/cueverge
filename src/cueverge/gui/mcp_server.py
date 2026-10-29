@@ -2327,6 +2327,12 @@ def create_mcp_app(services: GuiServices) -> Starlette:
                         "the indices they target, LED composition bakes replace only the LEDs "
                         "their media covers"
                     ),
+                    "apply_handover": (
+                        "each show's ambient comes only from its own draft; Apply never carries "
+                        "the running show's ambient baseline into another show. "
+                        "preserve_controller_looks only keeps the running safe_state on outputs "
+                        "this show's ambient lights, when its targets exist here"
+                    ),
                     "led_background": {
                         "field": "editor_metadata.compositions[id].led_background",
                         "values": ["ambient", "background"],

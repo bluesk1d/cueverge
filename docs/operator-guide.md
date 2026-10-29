@@ -1587,10 +1587,12 @@ transfers happen before the controller stops and loads the verified catalog.
 Progress and failures persist when the browser closes. Cancel during baking or
 preparation; Stop/Blackout take priority
 once handover starts. A playing show restarts from zero; paused/stopped stays
-stopped. Under **Advanced options**, the controller's standby and safety lighting
-looks are kept unless you deliberately clear **Keep the controller's standby and
-safety lighting looks**. Routing changes need deployment configuration, not
-automatic rewiring.
+stopped. Each show brings its own ambient lighting: applying a show never keeps
+the previous show's ambient, so LED outputs the new show has no ambient for go
+dark between scenes. Under **Advanced options**, **Keep the controller's safety
+lighting look** (on by default) keeps the current standby lighting on outputs
+the new show's ambient lights; clear it to use blackout. Routing changes need
+deployment configuration, not automatic rewiring.
 
 Open **Earlier versions** and choose **Restore version N** to restore a verified
 retained version without overwriting saved editing work. Failed/interrupted handover

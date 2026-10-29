@@ -194,9 +194,9 @@ function ApplyReview({ draft, restore, priorRevision, onClose, onStarted }: {
             <summary>Advanced options</summary>
             <label className="apply-review__check">
               <input type="checkbox" checked={preserveLooks} onChange={(event) => setPreserveLooks(event.target.checked)} />
-              <span>Keep the controller's standby and safety lighting looks</span>
+              <span>Keep the controller's safety lighting look</span>
             </label>
-            <small>Turn this off to remove those looks. If they don't work with this show, applying stops and tells you instead of dropping them.</small>
+            <small>Keeps the running standby (safe-state) lighting on LED outputs this show's ambient lights. Another show's ambient never carries over: outputs without ambient in this show go dark between scenes.</small>
             <small>Applying uses exactly version {targetRevision}. If someone saves a newer version first, applying stops so you can review it.</small>
           </details>
 

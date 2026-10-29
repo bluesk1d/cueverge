@@ -226,9 +226,13 @@ interruption. Runtime media IDs resolve to device-cache digest filenames; the
 working draft's asset IDs are unchanged. Ambiguous multiple baked roots for one
 media output are rejected: create one combined native composition first.
 Routing/kind/pixel-count deployment changes require deployment configuration,
-not a silent GUI sink replacement. Controller baseline/safe looks are preserved
-by default; incompatible definitions block Apply. Explicitly clearing the
-preservation option removes them and requires deliberate review.
+not a silent GUI sink replacement. Each show's ambient lighting comes only from
+its own draft: Apply never carries the running show's ambient baseline into
+another show, so outputs without ambient in the applied show black out between
+scenes. `preserve_controller_looks` (default `true`) only keeps the running
+safe-state look on outputs the applied show's ambient lights, and only when its
+fixture/segment/path targets exist in that show's installation; otherwise the
+safe state is blackout.
 
 Poll the durable job by `get_apply_jobs(job_id=...)` or authenticated
 `GET /api/gui/v1/projects/{id}/apply-jobs/{job}`. Preparation/publishing/staging

@@ -75,7 +75,7 @@ test("Apply reviews an exact saved version and surfaces acknowledged completion 
   const restore = page.getByRole("dialog", { name: "Restore an earlier version" });
   await expect(restore.getByLabel("This version is ready to go live", { exact: false })).toHaveCount(0);
   await restore.getByText("Advanced options", { exact: true }).click();
-  await restore.getByLabel("Keep the controller's standby and safety lighting looks").uncheck();
+  await restore.getByLabel("Keep the controller's safety lighting look").uncheck();
   await restore.getByLabel("It's OK to briefly stop playback", { exact: false }).check();
   await restore.getByRole("button", { name: "Restore now", exact: true }).click();
   await expect.poll(() => state.starts.length).toBe(2);
