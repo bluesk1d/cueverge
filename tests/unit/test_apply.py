@@ -1,5 +1,6 @@
 import asyncio
 import hashlib
+import threading
 import time
 from datetime import UTC, datetime, timedelta
 from io import BytesIO
@@ -204,6 +205,29 @@ def test_staging_rechecks_cancellation_permissions_and_dependencies(
 
     asyncio.run(scenario())
     assert runtime.catalog is original
+
+
+def test_dependency_scans_never_block_the_event_loop(tmp_path: Path):
+    runtime, services, stored = setup(tmp_path)
+    scan = services.apply.dependency_digest
+    threads: list[int] = []
+
+    def tracked(*args):
+        threads.append(threading.get_ident())
+        return scan(*args)
+
+    services.apply.dependency_digest = tracked
+
+    async def scenario():
+        await runtime.start_scene("ambient")
+        loop_thread = threading.get_ident()
+        job = await services.apply.start(stored.project.id, request(), "admin")
+        result = await wait(services, str(job["id"]))
+        assert result["state"] == "completed", result
+        assert len(threads) == 3
+        assert loop_thread not in threads
+
+    asyncio.run(scenario())
 
 
 def test_recovery_verifies_retained_files_and_never_autostarts(tmp_path: Path):

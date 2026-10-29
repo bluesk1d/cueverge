@@ -346,6 +346,11 @@ class ApplyService:
                 raise ApplyError("Retained package integrity check failed.")
         return root
 
+    async def _dependency_digest(self, project_id: str, revision: int) -> str:
+        # Scanning assets and devices takes seconds on large shows; blocking the event loop
+        # that long times out device heartbeats and fails the stop handover.
+        return await asyncio.to_thread(self.dependency_digest, project_id, revision)
+
     def _load_verified_catalog(self, package: "PublishedPackage") -> SceneCatalog:
         return load_show_package(self._verified_root(package))
 
@@ -360,7 +365,9 @@ class ApplyService:
                 token_id = str(document["token_id"]) if document.get("token_id") else None
                 self._check(project_id, request, str(document["actor"]), token_id)
                 if request.restore_package_id is not None:
-                    dependencies = self.dependency_digest(project_id, request.source_revision)
+                    dependencies = await self._dependency_digest(
+                        project_id, request.source_revision
+                    )
                     package = self.publication.get(request.restore_package_id)
                     if (
                         package.project_id != project_id
@@ -370,7 +377,9 @@ class ApplyService:
                 else:
                     await self._bake(job_id, project_id, request.source_revision, document)
                     # After baking: its completed bakes are part of the guarded dependencies.
-                    dependencies = self.dependency_digest(project_id, request.source_revision)
+                    dependencies = await self._dependency_digest(
+                        project_id, request.source_revision
+                    )
                     self._phase(job_id, "publishing")
                     release = self.publication.release(project_id, request.source_revision)
                     if release.approval_state != "approved":
@@ -442,7 +451,9 @@ class ApplyService:
                 )
                 _, warnings = await self.publication.stage_runtime(package.id, now(), protected)
                 self._check(project_id, request, str(document["actor"]), token_id)
-                if dependencies != self.dependency_digest(project_id, request.source_revision):
+                if dependencies != await self._dependency_digest(
+                    project_id, request.source_revision
+                ):
                     raise ApplyError(
                         "Installation, assets or device assignments changed during preparation. "
                         "Recheck and retry Apply."
@@ -459,7 +470,9 @@ class ApplyService:
                     self._check(project_id, request, str(document["actor"]), token_id)
                     if self.get(job_id).get("stop_requested"):
                         raise ApplyError("Apply was stopped by the operator.")
-                    if dependencies != self.dependency_digest(project_id, request.source_revision):
+                    if dependencies != await self._dependency_digest(
+                        project_id, request.source_revision
+                    ):
                         raise ApplyError("Apply dependencies changed before catalog load.")
                     return None
 
