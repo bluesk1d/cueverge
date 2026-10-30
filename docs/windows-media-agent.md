@@ -66,7 +66,11 @@ controller rejects the new hello field. With these features, mpv:
   time at every wrap to the start, so the agent nudges `speed` by up to ±4%
   (seeking past 500 ms of error) to keep the loop on its starting beat, and
   ends loops on the last whole video frame so untrimmed audio priming cannot
-  lengthen them. See [synchronization](synchronization.md).
+  lengthen them. See [synchronization](synchronization.md);
+- keeps its audio output open once it has played sound: files without audio
+  play over a silent WAV of their length, and `stop` leaves a silent WAV playing
+  in the black window, so the next file with sound starts without reopening the
+  audio device.
 
 When validating hardware, confirm the cut between two scenes on the actual
 projector: there should be no black frame between the last frame of one clip
@@ -249,16 +253,18 @@ required.
 
 Every projector in a scene starts only once the slowest device has its file
 loaded, so a slow device holds the others on their first frame. On Windows the
-usual cause is the audio output, not the media: mpv opens a new WASAPI stream
-whenever it starts a file with audio after `stop` or after a file without audio.
-On a Dell Latitude 3140 with Realtek audio, `IAudioClient::Initialize` took
-1.1 s with Windows audio enhancements on, making starts take 1.2–1.7 s; with
-enhancements off they took 160–190 ms.
+usual cause is the audio output, not the media: opening a WASAPI stream took
+0.9–1.2 s on a Dell Latitude 3140 with Realtek audio, against about 150 ms to
+open and decode a 270 MB file. The agent therefore keeps one audio output open
+once it has played sound (see [synchronization](synchronization.md)); with that,
+switching between files with and without sound, and starting a scene after
+`stop`, took 130–230 ms on the same laptop.
 
-To check a client, run mpv in the signed-in session with
+The first file with sound after the player starts still opens the output. To
+measure it on a client, run mpv in the signed-in session with
 `--log-file=mpv.log --msg-level=all=v` and compare the timestamps of
-`IAudioClient::Initialize` and `Initialize pRenderClient`. To fix it, open
-**Settings > System > Sound**, select the output device the agent uses, and turn
-**Audio enhancements** off (or clear **Enable audio enhancements** under the
-device's **Advanced** properties). Re-check after driver updates, which can turn
-them back on.
+`IAudioClient::Initialize` and `Initialize pRenderClient`. Turning Windows
+**Audio enhancements** off for the output the agent uses (**Settings > System >
+Sound**, or **Enable audio enhancements** under the device's **Advanced**
+properties) shortened that call from 1.1 s to about 0.65 s there; re-check after
+driver updates, which can turn them back on.

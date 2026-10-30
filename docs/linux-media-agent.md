@@ -65,7 +65,11 @@ controller rejects the new hello field. With these features, mpv:
   time at every wrap to the start, so the agent nudges `speed` by up to ±4%
   (seeking past 500 ms of error) to keep the loop on its starting beat, and
   ends loops on the last whole video frame so untrimmed audio priming cannot
-  lengthen them. See [synchronization](synchronization.md).
+  lengthen them. See [synchronization](synchronization.md);
+- keeps its audio output open once it has played sound: files without audio
+  play over a silent WAV of their length, and `stop` leaves a silent WAV playing
+  in the black window, so the next file with sound starts without reopening the
+  audio device.
 
 When validating hardware, confirm the cut between two scenes on the actual
 projector: there should be no black frame between the last frame of one clip

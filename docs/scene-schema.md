@@ -274,6 +274,13 @@ lighting-look packages may include media-only scenes; scenes that do contain
 lighting must still match that legacy look's resource. Explicit stop still
 applies any configured safe-state lighting looks.
 
+While a scene waits for its media devices to load (from the start or scene
+change until the controller sends `play`), its own lighting has no media clock
+yet. During that time every LED output with a persistent look shows the
+ambient on the controller clock (or the safe state when the incoming scene is
+excluded from that look), so the LEDs keep moving instead of freezing on the
+previous frame and the scene's opening cues don't fire before its media starts.
+
 The GUI **Add scene** / **Add output** workflows create schema-v2 definitions.
 Adding to a v1 scene retains its old singular outputs under IDs `media` and
 `lighting`; media remains the clock unless the author explicitly changes it.

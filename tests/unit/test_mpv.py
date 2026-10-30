@@ -15,7 +15,14 @@ from cueverge.media_agent.mpv import (
     create_mpv_transport,
     resolve_local_asset,
 )
-from cueverge.media_agent.mpv_player import MpvPlayer, _loop_end
+from cueverge.media_agent.mpv_player import (
+    STANDBY_SECONDS,
+    Mp4Audio,
+    MpvPlayer,
+    _loop_end,
+    read_mp4_audio,
+    silent_wav,
+)
 from cueverge.protocol.models import PlaybackState
 
 
@@ -276,11 +283,7 @@ def test_player_configures_exact_end_behavior(
             ("playlist-clear",),
             ("set_property", "loop-file", "no"),
             ("set_property", "keep-open", keep_open_value),
-            (
-                "set_property",
-                "gapless-audio",
-                "yes" if end_behavior == "loop" else "no",
-            ),
+            ("set_property", "gapless-audio", "yes"),
             ("set_property", "vid", "auto"),
             ("loadfile", str(asset.resolve()), "replace"),
             ("set_property", "pause", True),
@@ -335,7 +338,9 @@ class ScriptedMpvClient:
 
     async def named_command(self, name: str, **arguments: object) -> object:
         self.named.append((name, arguments))
-        if name == "loadfile":
+        if name == "loadfile" and arguments.get("flags") == "replace":
+            self.properties["path"] = arguments["url"]
+        elif name == "loadfile":
             self.appended = arguments["url"]
         return None
 
@@ -385,7 +390,7 @@ def test_player_queues_next_file_and_continues_into_it_automatically(tmp_path: P
                     "url": str((tmp_path / "b.mp4").resolve()),
                     "flags": "append",
                     "options": (
-                        "loop-file=1,keep-open=no,gapless-audio=no,"
+                        "loop-file=1,keep-open=no,gapless-audio=yes,"
                         "ab-loop-a=no,ab-loop-b=no,vid=auto"
                     ),
                 },
@@ -729,5 +734,106 @@ def test_stop_media_continuing_into_the_next_file_by_itself_is_not_blanked(
         fake.properties.update({"time-pos": 4.0, "eof-reached": True})
         await player.status()
         assert ("set_property", "vid", "no") not in fake.commands
+
+    asyncio.run(scenario())
+
+
+def _mp4(path: Path, *handlers: bytes, moov_last: bool = False, seconds: int = 4) -> Path:
+    """A minimal MP4 with one track per handler type (b"vide", b"soun")."""
+
+    def box(kind: bytes, payload: bytes) -> bytes:
+        return (8 + len(payload)).to_bytes(4, "big") + kind + payload
+
+    header = box(
+        b"mvhd", bytes(12) + (1000).to_bytes(4, "big") + (seconds * 1000).to_bytes(4, "big")
+    )
+    tracks = b"".join(
+        box(b"trak", box(b"mdia", box(b"hdlr", bytes(8) + handler + bytes(12))))
+        for handler in handlers
+    )
+    parts = [box(b"ftyp", b"isom"), box(b"mdat", bytes(64)), box(b"moov", header + tracks)]
+    if not moov_last:
+        parts[1], parts[2] = parts[2], parts[1]
+    path.write_bytes(b"".join(parts))
+    return path
+
+
+def test_mp4_audio_tracks_and_length_are_read_from_the_file_header(tmp_path: Path) -> None:
+    assert read_mp4_audio(_mp4(tmp_path / "a.mp4", b"vide", b"soun")) == Mp4Audio(True, 4.0)
+    assert read_mp4_audio(_mp4(tmp_path / "b.mp4", b"vide", seconds=18)) == Mp4Audio(False, 18.0)
+    late = _mp4(tmp_path / "c.mp4", b"vide", b"soun", moov_last=True)
+    assert read_mp4_audio(late).has_audio is True
+    (tmp_path / "d.wav").write_bytes(b"RIFF" + bytes(40))
+    assert read_mp4_audio(tmp_path / "d.wav") == Mp4Audio(None, None)
+    assert read_mp4_audio(tmp_path / "missing.mp4") == Mp4Audio(None, None)
+
+
+def test_silent_wavs_match_the_length_and_are_reused(tmp_path: Path) -> None:
+    first = silent_wav(tmp_path, 2.5)
+    assert silent_wav(tmp_path, 2.5) == first
+    data = first.read_bytes()
+    assert data[:4] == b"RIFF" and data[8:16] == b"WAVEfmt "
+    assert int.from_bytes(data[40:44], "little") == 2.5 * 48_000 * 2 * 2
+    assert len(data) == 44 + 2.5 * 48_000 * 2 * 2
+    assert set(data[44:]) == {0}
+
+
+def _player(tmp_path: Path) -> tuple[MpvPlayer, ScriptedMpvClient]:
+    fake = ScriptedMpvClient()
+    player = MpvPlayer(fake, tmp_path, silence_root=tmp_path / "silence")  # type: ignore[arg-type]
+    _mp4(tmp_path / "quiet.mp4", b"vide")
+    _mp4(tmp_path / "loud.mp4", b"vide", b"soun")
+    return player, fake
+
+
+def test_files_without_audio_play_over_silence_once_the_player_has_played_sound(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        player, fake = _player(tmp_path)
+        quiet = (tmp_path / "quiet.mp4").resolve()
+
+        # Nothing has opened the audio output yet, so a silent file needs no audio.
+        await player.prepare("quiet.mp4", "loop")
+        assert fake.named == []
+        assert ("loadfile", str(quiet), "replace") in fake.commands
+
+        await player.prepare("loud.mp4", "hold_last_frame")
+        assert ("set_property", "gapless-audio", "yes") in fake.commands
+        silence = silent_wav(tmp_path / "silence", 4.0)
+        option = f"audio-files=%{len(str(silence))}%{silence}"
+        await player.queue("quiet.mp4", "loop", None, False)
+        assert option in str(fake.named[-1][1]["options"])
+
+        fake.named.clear()
+        await player.prepare("quiet.mp4", "loop")
+        assert fake.named == [
+            ("loadfile", {"url": str(quiet), "flags": "replace", "options": option})
+        ]
+        await player.queue("loud.mp4", "hold_last_frame", None, False)
+        assert "audio-files" not in str(fake.named[-1][1]["options"])
+
+    asyncio.run(scenario())
+
+
+def test_stop_keeps_the_audio_output_open_on_a_silent_standby(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        player, fake = _player(tmp_path)
+        await player.prepare("quiet.mp4", "loop")
+        await player.stop()
+        assert ("stop",) in fake.commands
+
+        await player.prepare("loud.mp4", "hold_last_frame")
+        fake.commands.clear()
+        fake.named.clear()
+        await player.stop()
+        assert ("stop",) not in fake.commands
+        standby = silent_wav(tmp_path / "silence", STANDBY_SECONDS)
+        assert fake.named == [
+            ("loadfile", {"url": str(standby), "flags": "replace", "options": "loop-file=inf"})
+        ]
+        assert fake.commands[-1] == ("set_property", "pause", False)
+        with pytest.raises(PlayerError, match="nothing is playing"):
+            await player.queue("loud.mp4", "hold_last_frame", None, False)
 
     asyncio.run(scenario())

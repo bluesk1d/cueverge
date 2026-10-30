@@ -1,7 +1,7 @@
 import asyncio
 import time
 from collections import deque
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextlib import suppress
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
@@ -1518,6 +1518,20 @@ class ControllerRuntime:
         self.render_ticks += 1
         active = self.active_scene
         estimate = self._estimate_time()
+        if (
+            active is not None
+            and self._played_scene_instance != active.scene_instance_id
+            and (
+                estimate is None
+                or (estimate.state is not PlaybackState.PLAYING and estimate.position_ms == 0)
+            )
+        ):
+            # Its media devices are still loading. Keep the ambient moving instead of
+            # freezing on the last frame, and don't show the scene's opening cue early.
+            self.render_ticks_without_timecode += 1
+            if render_pixels:
+                self._render_ambient_while_starting(active)
+            return False
         if active is None or estimate is None or estimate.reason == "agent_disconnected":
             self.render_ticks_without_timecode += 1
             return False
@@ -1594,11 +1608,36 @@ class ControllerRuntime:
                         ),
                     )
                 )
+        self._send_lighting_frames(active.scene_instance_id, frames)
+        if estimate.degraded:
+            self.stale_frames += 1
+        if self._last_frame_at is not None:
+            self._render_interval_total_ms += (rendered_at - self._last_frame_at) * 1000
+            self._render_interval_count += 1
+        self._last_frame_at = rendered_at
+        return True
+
+    def _render_ambient_while_starting(self, active: ActiveScene) -> None:
+        rendered_at = self.clock()
+        elapsed_ms = self._ambient_elapsed_ms(rendered_at)
+        self._send_lighting_frames(
+            active.scene_instance_id,
+            [
+                (resource, 0, render_ambient_output(looks, elapsed_ms, active.definition.id))
+                for resource, looks in self._all_lighting_looks().items()
+            ],
+        )
+
+    def _send_lighting_frames(
+        self,
+        scene_instance_id: str,
+        frames: Sequence[tuple[str, int, tuple[tuple[int, int, int], ...]]],
+    ) -> None:
         for resource, output_position_ms, pixels in frames:
             try:
                 self._send_output_frame(
                     RenderedFrame(
-                        scene_instance_id=active.scene_instance_id,
+                        scene_instance_id=scene_instance_id,
                         position_ms=output_position_ms,
                         pixels=pixels,
                         resource=resource,
@@ -1610,13 +1649,6 @@ class ControllerRuntime:
                 continue
             self._lighting_output_errors.pop(resource, None)
             self.rendered_frames += 1
-        if estimate.degraded:
-            self.stale_frames += 1
-        if self._last_frame_at is not None:
-            self._render_interval_total_ms += (rendered_at - self._last_frame_at) * 1000
-            self._render_interval_count += 1
-        self._last_frame_at = rendered_at
-        return True
 
     def _render_lighting_output(
         self,

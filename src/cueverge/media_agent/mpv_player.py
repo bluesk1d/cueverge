@@ -1,9 +1,12 @@
 import asyncio
+import os
+import struct
+import tempfile
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import Any, BinaryIO, Literal, cast
 
 from cueverge.media_agent.client import PlayerError, PlayerStatus
 from cueverge.media_agent.mpv import MpvClient, MpvError, resolve_local_asset
@@ -30,6 +33,14 @@ LOOP_FRAME_TOLERANCE = 0.25
 # the controller gives up on a command after 10 s.
 READY_TIMEOUT_SECONDS = 8.0
 READY_POLL_SECONDS = 0.02
+# Opening an audio output can take about a second on some Windows drivers, and mpv closes
+# it for any file without audio and on stop. Once the player has played sound it keeps one
+# output open for good: files without audio play with a silent WAV of the same length as
+# their audio track, and stop parks the player on a silent WAV in its black window instead
+# of unloading.
+SILENCE_SAMPLE_RATE = 48_000
+SILENCE_CHANNELS = 2
+STANDBY_SECONDS = 60
 
 
 @dataclass
@@ -41,6 +52,8 @@ class _PlaylistItem:
     blanked: bool = False
     loop_ms: int | None = None
     path: str | None = None
+    has_audio: bool | None = None
+    silence: Path | None = None
 
 
 @dataclass
@@ -60,6 +73,11 @@ class MpvPlayer:
     _pace_anchor: tuple[float, int] | None = field(default=None, repr=False)
     _pace_error_ms: float | None = field(default=None, repr=False)
     _speed: float = field(default=1.0, repr=False)
+    silence_root: Path = field(
+        default_factory=lambda: Path(tempfile.gettempdir()) / "cueverge-silence", repr=False
+    )
+    _audio_open: bool = field(default=False, repr=False)
+    _media_info: dict[Path, "Mp4Audio"] = field(default_factory=dict, repr=False)
 
     async def prepare(
         self,
@@ -73,6 +91,7 @@ class MpvPlayer:
             asset = resolve_local_asset(self.asset_root, asset_id)
         except MpvError as error:
             raise PlayerError(str(error)) from error
+        item = await self._item(asset, end_behavior, repeat_count)
         await self._command("playlist-clear")
         await self._command("set_property", "loop-file", _loop_file(end_behavior, repeat_count))
         await self._command(
@@ -80,23 +99,27 @@ class MpvPlayer:
             "keep-open",
             "always" if end_behavior == "hold_last_frame" else "no",
         )
-        await self._command(
-            "set_property",
-            "gapless-audio",
-            "yes" if end_behavior == "loop" else "no",
-        )
+        # Gapless audio keeps the audio output open from one file to the next.
+        await self._command("set_property", "gapless-audio", "yes")
         await self._command("set_property", "vid", "auto")
-        await self._command("loadfile", str(asset), "replace")
+        if item.silence is not None:
+            await self._named(
+                "loadfile",
+                url=str(asset),
+                flags="replace",
+                options=f"audio-files={_quoted(str(item.silence))}",
+            )
+        else:
+            await self._command("loadfile", str(asset), "replace")
         await self._command("set_property", "pause", True)
         await self._reset_pace()
-        item = _PlaylistItem(end_behavior, repeat_count, path=str(asset))
         duration = await self._wait_until_ready(item)
         if end_behavior == "loop":
             await self._set_loop_range(item, duration)
         else:
             await self._command("set_property", "ab-loop-a", "no")
             await self._command("set_property", "ab-loop-b", "no")
-        self._current = item
+        self._make_current(item)
         self._queued = None
         self.entry += 1
 
@@ -118,15 +141,21 @@ class MpvPlayer:
             asset = resolve_local_asset(self.asset_root, asset_id)
         except MpvError as error:
             raise PlayerError(str(error)) from error
+        item = await self._item(asset, end_behavior, repeat_count)
         loop_file = "inf" if end_behavior == "loop" else _loop_file(end_behavior, repeat_count)
         options = ",".join(
             (
                 f"loop-file={loop_file}",
                 f"keep-open={'always' if end_behavior == 'hold_last_frame' else 'no'}",
-                f"gapless-audio={'yes' if end_behavior == 'loop' else 'no'}",
+                "gapless-audio=yes",
                 "ab-loop-a=no",
                 "ab-loop-b=no",
                 "vid=auto",
+                *(
+                    (f"audio-files={_quoted(str(item.silence))}",)
+                    if item.silence is not None
+                    else ()
+                ),
             )
         )
         await self._command("playlist-clear")
@@ -135,7 +164,7 @@ class MpvPlayer:
         # Auto-advance lets mpv continue gaplessly at end of file; otherwise hold the end
         # until the controller sends advance.
         await self._command("set_property", "keep-open", "no" if auto_advance else "always")
-        self._queued = _PlaylistItem(end_behavior, repeat_count, path=str(asset))
+        self._queued = item
         self._queued_auto_advance = auto_advance
 
     async def advance(self) -> None:
@@ -150,7 +179,7 @@ class MpvPlayer:
 
     async def _promote_queued(self) -> None:
         assert self._queued is not None
-        self._current = self._queued
+        self._make_current(self._queued)
         self._queued = None
         self.entry += 1
         self._last_position_ms = 0
@@ -160,6 +189,28 @@ class MpvPlayer:
             await self._command("playlist-remove", 0)
         except PlayerError:
             self._pending_advance_cleanup = True
+
+    async def _item(
+        self, asset: Path, end_behavior: EndBehavior, repeat_count: int | None
+    ) -> _PlaylistItem:
+        info = self._media_info.get(asset)
+        if info is None:
+            info = self._media_info[asset] = await asyncio.to_thread(read_mp4_audio, asset)
+        silence = None
+        if info.has_audio is False and info.duration_seconds and self._audio_open:
+            silence = await asyncio.to_thread(silent_wav, self.silence_root, info.duration_seconds)
+        return _PlaylistItem(
+            end_behavior,
+            repeat_count,
+            path=str(asset),
+            has_audio=info.has_audio,
+            silence=silence,
+        )
+
+    def _make_current(self, item: _PlaylistItem) -> None:
+        self._current = item
+        if item.has_audio is not False:
+            self._audio_open = True
 
     async def _set_loop_range(self, item: _PlaylistItem, duration: float) -> None:
         """Loop between the first and last whole video frames of the file."""
@@ -242,10 +293,22 @@ class MpvPlayer:
         await self._command("seek", position_ms / 1000, "absolute+exact")
 
     async def stop(self) -> None:
-        await self._command("stop")
+        if self._audio_open:
+            await self._standby()
+        else:
+            await self._command("stop")
         self._current = None
         self._queued = None
         await self._reset_pace()
+
+    async def _standby(self) -> None:
+        """Play silence in the black window, so the audio output stays open for the next file."""
+        standby = await asyncio.to_thread(silent_wav, self.silence_root, STANDBY_SECONDS)
+        await self._command("playlist-clear")
+        for name, value in (("ab-loop-a", "no"), ("ab-loop-b", "no")):
+            await self._command("set_property", name, value)
+        await self._named("loadfile", url=str(standby), flags="replace", options="loop-file=inf")
+        await self._command("set_property", "pause", False)
 
     async def status(self) -> PlayerStatus:
         idle = await self._property("idle-active")
@@ -416,6 +479,129 @@ def _loop_end(duration: float, fps: float | None) -> float:
     if abs(frames - whole) > LOOP_FRAME_TOLERANCE:
         whole = int(frames)
     return whole / fps if whole > 0 else duration
+
+
+def _quoted(value: str) -> str:
+    """An mpv option value that may contain separators, in mpv's %length% form."""
+    return f"%{len(value.encode())}%{value}"
+
+
+@dataclass(frozen=True)
+class Mp4Audio:
+    has_audio: bool | None
+    """Whether the file has an audio track; None when that can't be told (not MP4)."""
+    duration_seconds: float | None
+
+
+def read_mp4_audio(path: Path) -> Mp4Audio:
+    """Read whether an MP4/MOV file has an audio track, and its length, from its header."""
+    try:
+        with path.open("rb") as file:
+            end = file.seek(0, 2)
+            moov = _child_box(file, 0, end, b"moov")
+            if moov is None:
+                return Mp4Audio(None, None)
+            duration = _movie_duration(file, *moov)
+            tracks = 0
+            for kind, start, stop in _boxes(file, *moov):
+                if kind != b"trak":
+                    continue
+                tracks += 1
+                media = _child_box(file, start, stop, b"mdia")
+                handler = _child_box(file, *media, b"hdlr") if media is not None else None
+                if handler is None:
+                    continue
+                file.seek(handler[0] + 8)
+                if file.read(4) == b"soun":
+                    return Mp4Audio(True, duration)
+            return Mp4Audio(False if tracks else None, duration)
+    except OSError:
+        return Mp4Audio(None, None)
+
+
+def _movie_duration(file: BinaryIO, start: int, end: int) -> float | None:
+    header = _child_box(file, start, end, b"mvhd")
+    if header is None:
+        return None
+    file.seek(header[0])
+    version = file.read(4)[:1]
+    if version == b"\x01":
+        fields = file.read(28)
+        timescale, duration = (
+            int.from_bytes(fields[16:20], "big"),
+            int.from_bytes(fields[20:28], "big"),
+        )
+    else:
+        fields = file.read(16)
+        timescale, duration = (
+            int.from_bytes(fields[8:12], "big"),
+            int.from_bytes(fields[12:16], "big"),
+        )
+    return duration / timescale if timescale and duration else None
+
+
+def silent_wav(root: Path, seconds: float) -> Path:
+    """A silent 48 kHz stereo WAV of the given length, written once and reused."""
+    frames = max(1, round(seconds * SILENCE_SAMPLE_RATE))
+    path = root / f"silence-{frames}.wav"
+    if path.is_file():
+        return path
+    root.mkdir(parents=True, exist_ok=True)
+    data_bytes = frames * SILENCE_CHANNELS * 2
+    header = (
+        b"RIFF"
+        + (36 + data_bytes).to_bytes(4, "little")
+        + b"WAVEfmt "
+        + struct.pack(
+            "<IHHIIHH",
+            16,
+            1,
+            SILENCE_CHANNELS,
+            SILENCE_SAMPLE_RATE,
+            SILENCE_SAMPLE_RATE * SILENCE_CHANNELS * 2,
+            SILENCE_CHANNELS * 2,
+            16,
+        )
+        + b"data"
+        + data_bytes.to_bytes(4, "little")
+    )
+    partial = path.with_name(f".{path.name}.{os.getpid()}.partial")
+    with partial.open("wb") as file:
+        file.write(header)
+        file.truncate(len(header) + data_bytes)
+    partial.replace(path)
+    return path
+
+
+def _boxes(file: BinaryIO, start: int, end: int) -> Iterator[tuple[bytes, int, int]]:
+    """(type, payload start, box end) for each box between two file offsets."""
+    position = start
+    while position + 8 <= end:
+        file.seek(position)
+        header = file.read(8)
+        if len(header) < 8:
+            return
+        size = int.from_bytes(header[:4], "big")
+        payload = position + 8
+        if size == 1:
+            large = file.read(8)
+            if len(large) < 8:
+                return
+            size = int.from_bytes(large, "big")
+            payload += 8
+        elif size == 0:
+            size = end - position
+        if size < payload - position or position + size > end:
+            return
+        yield header[4:8], payload, position + size
+        position += size
+
+
+def _child_box(file: BinaryIO, start: int, end: int, kind: bytes) -> tuple[int, int] | None:
+    for found, payload, stop in _boxes(file, start, end):
+        if found == kind:
+            return payload, stop
+    return None
 
 
 def _loop_file(end_behavior: EndBehavior, repeat_count: int | None) -> str:

@@ -23,6 +23,7 @@ from cueverge.lighting.ambient import render_ambient, render_ambient_output
 from cueverge.lighting.sequence import LightingSequenceReference, LoadedLightingSequence
 from cueverge.lighting.sink import MemoryFrameSink
 from cueverge.media_agent.fake import FakeMediaAgent
+from cueverge.protocol.models import PlaybackState
 
 
 def _sequence(
@@ -163,6 +164,62 @@ def test_runtime_runs_ambient_on_outputs_a_scene_does_not_light_unless_it_opts_o
         clock.now += 1
         assert runtime.ingest(agent.position(1000)).accepted
         assert runtime.render_frame()
+        assert sink.frames[-1].pixels == ((1, 2, 3),) * 8
+        await runtime.shutdown()
+
+    asyncio.run(scenario())
+
+
+def test_leds_keep_the_ambient_moving_while_a_scene_waits_for_its_media() -> None:
+    async def scenario() -> None:
+        base = load_show_package(Path("shows/demo"))
+        red = LightingCue(
+            id="red", primitive="solid", start_ms=0, duration_ms=1000, color="#FF0000"
+        )
+        blue = LightingCue(
+            id="blue", primitive="solid", start_ms=1000, duration_ms=1000, color="#0000FF"
+        )
+        looks = _looks(cues=(red, blue), excluded=("synthetic-sweep",), pixel_count=8)
+        looks = looks.model_copy(
+            update={"definition": looks.definition.model_copy(update={"resource": "roofline.demo"})}
+        )
+        catalog = base.model_copy(update={"lighting_looks_by_resource": {"roofline.demo": looks}})
+        clock = ManualClock()
+        sink = MemoryFrameSink()
+        runtime = ControllerRuntime(clock=clock, sink=sink, catalog=catalog)
+        agent = FakeMediaAgent()
+        channel = MemoryCommandChannel([])
+        agent.accept_welcome(runtime.register_agent(agent.hello(), channel))
+
+        # The projector is still loading the file: no play yet, and no media clock.
+        ambient = await runtime.start_scene("ambient")
+        assert [command["command"] for command in channel.sent] == ["prepare"]
+        clock.now += 0.25
+        assert not runtime.render_frame()
+        assert sink.frames[-1].pixels == ((255, 0, 0),) * 8
+        clock.now += 1
+        assert not runtime.render_frame()
+        assert sink.frames[-1].pixels == ((0, 0, 255),) * 8
+
+        # Ready but paused at the start, waiting for play: still the ambient.
+        agent.attach(ambient.scene_instance_id, ambient.playback_session_id)
+        assert runtime.ingest(agent.position(0, state=PlaybackState.PAUSED)).accepted
+        clock.now += 1
+        assert not runtime.render_frame()
+        assert sink.frames[-1].pixels == ((255, 0, 0),) * 8
+
+        # Once playing, the scene's own lighting takes over on its media clock.
+        prepare = channel.sent[0]
+        await runtime.acknowledge_command(agent.acknowledge(prepare["request_id"]))
+        assert channel.sent[-1]["command"] == "play"
+        assert runtime.ingest(agent.position(100)).accepted
+        assert runtime.render_frame()
+        assert sink.frames[-1].pixels not in (((255, 0, 0),) * 8, ((0, 0, 255),) * 8)
+
+        # A scene that opts out of the ambient shows the safe state while it waits.
+        await runtime.start_scene("synthetic-sweep")
+        clock.now += 1
+        assert not runtime.render_frame()
         assert sink.frames[-1].pixels == ((1, 2, 3),) * 8
         await runtime.shutdown()
 
