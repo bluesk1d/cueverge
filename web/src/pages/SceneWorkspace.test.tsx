@@ -25,6 +25,22 @@ const draft = {
   },
 } as unknown as ProjectDraftRecord;
 
+test("an empty show offers the first scene creation dialog", async () => {
+  vi.spyOn(api, "getSceneAuthoringOptions").mockResolvedValue({
+    project_id: draft.project.id, revision: draft.revision, installation_id: null,
+    resources: [], importable_resources: [],
+  });
+  render(<SceneWorkspace
+    draft={{ ...draft, draft: { ...draft.draft, scenes: [] } }} sceneId="" canEdit canAdd assets={[]}
+    onSelectScene={vi.fn()} onSave={vi.fn()} onDirtyChange={vi.fn()}
+    onOpenTimeline={vi.fn()} onDelete={vi.fn()} onCreated={vi.fn()}
+  />);
+  expect(screen.getByRole("heading", { name: "No scenes yet" })).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Add scene" }));
+  expect(await screen.findByRole("dialog", { name: "Add scene" })).toBeInTheDocument();
+  expect(screen.getByRole("textbox", { name: "Scene name" })).toBeInTheDocument();
+});
+
 test("shows a refused scene deletion beside the Delete scene button", async () => {
   vi.spyOn(window, "confirm").mockReturnValue(true);
   vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response("{}", { status: 404 }));

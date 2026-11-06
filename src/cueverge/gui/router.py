@@ -1259,7 +1259,16 @@ def create_gui_router(services: GuiServices) -> APIRouter:
     ) -> ProjectDraftResponse:
         revision = services.repository.create_project(
             name=body.name,
-            draft=body.draft,
+            draft=body.draft
+            if body.draft is not None
+            else DraftProject(
+                schema_version=1,
+                installation=services.runtime.catalog.installation,
+                scenes=(),
+                editor_metadata={
+                    "installation_id": services.repository.get_runtime_installation().id
+                },
+            ),
             actor=identity.username,
             role=identity.role,
             occurred_at=_now_iso(),

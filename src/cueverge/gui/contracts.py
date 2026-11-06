@@ -118,7 +118,7 @@ def _normalize_tags(value: tuple[str, ...]) -> tuple[str, ...]:
 class DraftProject(GuiModel):
     schema_version: Literal[1]
     installation: InstallationDefinition
-    scenes: tuple[SceneDefinitionV1 | SceneDefinitionV2, ...] = Field(min_length=1)
+    scenes: tuple[SceneDefinitionV1 | SceneDefinitionV2, ...]
     program: ShowProgramDefinition | None = None
     audience: AudiencePresenceDefinition | None = None
     opportunities: OpportunityProgramDefinition | None = None
@@ -1286,7 +1286,7 @@ class McpProposalResponse(GuiModel):
 
 class CreateProjectRequest(GuiModel):
     name: str = Field(min_length=1, max_length=200)
-    draft: DraftProject
+    draft: DraftProject | None = None
 
 
 class ProjectSummary(GuiModel):

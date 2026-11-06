@@ -2619,8 +2619,8 @@ export async function deleteScene(
   );
 }
 
-export async function createProjectFromActive(name: string): Promise<ProjectDraftRecord> {
-  return request<ProjectDraftRecord>("/api/gui/v1/projects/from-active", {
+export async function createProject(name: string): Promise<ProjectDraftRecord> {
+  return request<ProjectDraftRecord>("/api/gui/v1/projects", {
     method: "POST",
     headers: mutationHeaders(),
     body: JSON.stringify({ name }),

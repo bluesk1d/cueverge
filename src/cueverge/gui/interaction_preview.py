@@ -29,6 +29,8 @@ async def preview_interactions(
 ) -> dict[str, object]:
     stored = services.repository.get_revision(project_id, request.source_revision)
     draft = request.proposed_draft or stored.draft
+    if not draft.scenes:
+        raise InteractionError("Add at least one scene before previewing visitor responses")
     if request.proposed_edit is not None:
         if request.proposed_edit.source_revision != request.source_revision:
             raise InteractionError("The proposed edit has a different source revision")

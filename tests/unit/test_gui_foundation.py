@@ -27,6 +27,7 @@ from cueverge.controller.runtime import ControllerRuntime
 from cueverge.core.loader import load_show_package
 from cueverge.core.models import SceneDefinitionV2
 from cueverge.gui.asset_upload import StoredAsset
+from cueverge.gui.compiler import CompilationError
 from cueverge.gui.config import GuiConfig
 from cueverge.gui.contracts import DraftProject, Role, SceneLightingPreviewRequest
 from cueverge.gui.endpoint_discovery import (
@@ -2455,6 +2456,68 @@ def test_installation_crud_preserves_runtime_active_record(tmp_path: Path) -> No
         headers=_mutation_headers(client, if_match='"2"'),
     )
     assert deleted.status_code == 204
+
+
+def test_new_show_starts_empty_and_can_add_its_first_scene(tmp_path: Path) -> None:
+    runtime = ControllerRuntime()
+    services = _services(tmp_path, runtime)
+    client = TestClient(create_app(runtime, gui_services=services))
+    _login(client)
+    active_scenes = dict(runtime.catalog.scenes)
+    assert active_scenes
+
+    created = client.post(
+        "/api/gui/v1/projects",
+        json={"name": "Fresh show"},
+        headers=_mutation_headers(client),
+    )
+    assert created.status_code == 201
+    assert created.headers["etag"] == '"1"'
+    project = created.json()
+    project_id = project["project"]["id"]
+    draft = project["draft"]
+    assert draft["scenes"] == []
+    assert all(draft[key] is None for key in ("program", "audience", "opportunities", "encounter"))
+    assert draft["installation"] == runtime.catalog.installation.model_dump(mode="json")
+    assert draft["editor_metadata"] == {
+        "installation_id": services.repository.get_runtime_installation().id
+    }
+    assert client.get(f"/api/gui/v1/projects/{project_id}/draft").json()["draft"] == draft
+    assert client.get(f"/api/gui/v1/projects/{project_id}/show-plan").status_code == 200
+    with pytest.raises(CompilationError, match="Add at least one scene"):
+        services.compiler.compile(
+            project_id=project_id, revision=1, draft=DraftProject.model_validate(draft)
+        )
+
+    binding = next(
+        resource
+        for resource in runtime.catalog.installation.resources
+        if resource.kind == "pixel_output"
+    )
+    added = client.post(
+        f"/api/gui/v1/projects/{project_id}/scenes",
+        json={
+            "scene_id": "first-scene",
+            "name": "First scene",
+            "duration_ms": 1000,
+            "mode": "controller_timed",
+            "completion_policy": "loop",
+            "output": {"output_id": "lights", "resource": binding.resource},
+        },
+        headers=_mutation_headers(client, if_match='"1"'),
+    )
+    assert added.status_code == 200
+    assert [scene["id"] for scene in added.json()["draft"]["scenes"]] == ["first-scene"]
+
+    duplicated = client.post(
+        f"/api/gui/v1/projects/{project_id}/duplicate",
+        json={"name": "Deliberate copy"},
+        headers=_mutation_headers(client),
+    )
+    assert duplicated.status_code == 201
+    assert duplicated.json()["draft"] == added.json()["draft"]
+    assert duplicated.json()["project"]["id"] != project_id
+    assert runtime.catalog.scenes == active_scenes
 
 
 def test_project_metadata_duplicate_archive_import_and_export(tmp_path: Path) -> None:

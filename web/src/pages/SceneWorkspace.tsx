@@ -181,7 +181,15 @@ export function SceneWorkspace({
     return () => window.clearInterval(timer);
   }, [playing, duration, scene?.completion?.policy]);
 
-  if (!scene) return <p>No scene is selected. Open advanced authoring to inspect this show.</p>;
+  if (!scene) return <section className="scene-workspace" aria-label="Scene workspace">
+    <h2>{document.scenes.length ? "No scene selected" : "No scenes yet"}</h2>
+    <p>{document.scenes.length ? "Choose a scene from the show plan." : "Add your first scene to start building this show."}</p>
+    {canEdit && <button disabled={!canAdd} onClick={() => setAuthoring("scene")}>Add scene</button>}
+    {authoring === "scene" && <SceneAuthoringDialog kind="scene" draft={draft} sceneId=""
+      onClose={() => setAuthoring(null)} onSaved={(updated, id) => {
+        setAuthoring(null); onCreated(updated, id);
+      }} />}
+  </section>;
 
   function changeOutput(update: (value: RecordValue) => RecordValue) {
     setDocument((current) => ({

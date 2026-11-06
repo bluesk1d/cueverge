@@ -37,11 +37,13 @@ async function sceneRoutes(page: Page, readOnly = false, cueCount = 10) {
     if (path.endsWith("/runtime/status")) return route.fulfill({ json: demoRuntime });
     if (path.endsWith("/topology")) return route.fulfill({ json: demoTopology });
     if (path.endsWith("/activity") || path.endsWith("/resource-assignments")) return route.fulfill({ json: [] });
-    if (path.endsWith("/projects")) return route.fulfill({ json: state.projectsVisible ? [{ ...state.project, head_revision: state.revision }] : [] });
-    if (path.endsWith("/projects/from-active")) {
+    if (path.endsWith("/projects") && request.method() === "GET") return route.fulfill({ json: state.projectsVisible ? [{ ...state.project, head_revision: state.revision }] : [] });
+    if (path.endsWith("/projects") && request.method() === "POST") {
       state.creations.push(request.postDataJSON().name);
       state.project.name = request.postDataJSON().name;
       state.projectsVisible = true;
+      state.document.scenes = [];
+      state.document.editor_metadata = {};
       return route.fulfill({ status: 201, json: {
         project: { ...state.project, head_revision: state.revision },
         revision: state.revision, draft: state.document,
@@ -555,7 +557,7 @@ for (const width of [1280, 390]) {
   });
 }
 
-test("New show is a focused flow and opens the created scene workspace", async ({ page }) => {
+test("New show opens an empty scene workspace without inheriting scenes", async ({ page }) => {
   const state = await sceneRoutes(page);
   state.projectsVisible = false;
   await page.goto("/");
@@ -565,7 +567,10 @@ test("New show is a focused flow and opens the created scene workspace", async (
   await page.getByRole("textbox", { name: "Show name", exact: true }).fill("Autumn display");
   await page.getByRole("button", { name: "Create show", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Autumn display", exact: true })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Original synthetic timeline", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "No scenes yet", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Add scene", exact: true })).toBeEnabled();
+  await expect(page.getByRole("heading", { name: "Original synthetic timeline", exact: true })).toHaveCount(0);
+  expect(state.document.scenes).toEqual([]);
   expect(state.creations).toEqual(["Autumn display"]);
   expect(state.saves).toHaveLength(0);
 });

@@ -56,6 +56,10 @@ class DraftCompiler:
         media_assets: dict[tuple[str, str], str] | None = None,
         lighting_looks: MultiLightingLooksDefinition | None = None,
     ) -> CompiledPackage:
+        if not draft.scenes:
+            raise CompilationError(
+                "Add at least one scene before previewing or publishing this show."
+            )
         project_root = self.output_root / project_id
         project_root.mkdir(parents=True, exist_ok=True)
         temporary_root = Path(tempfile.mkdtemp(prefix=".compile-", dir=project_root))

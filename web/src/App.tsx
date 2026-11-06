@@ -22,7 +22,7 @@ import {
   AssetRecord,
   archiveProject,
   createInstallation,
-  createProjectFromActive,
+  createProject,
   createOutputArm,
   createScenePreset,
   deleteInstallation,
@@ -502,7 +502,7 @@ export function ShowsPage({
       {canAuthor && (
         <details className="new-show-flow">
           <summary>New show</summary>
-          <p>Start with scenes from the current installation. Creating a show does not make it live.</p>
+          <p>Start with an empty show using the current installation. To copy scenes, open an existing show and choose Duplicate in Show options. Creating a show does not make it live.</p>
           <div className="project-actions">
             <label>
               Show name
@@ -517,7 +517,7 @@ export function ShowsPage({
               disabled={busy || !name.trim()}
               onClick={() =>
                 void run(async () => {
-                  const created = await createProjectFromActive(name);
+                  const created = await createProject(name);
                   setName("");
                   setOpenedNewProject(true);
                   setOpenProjectId(created.project.id);

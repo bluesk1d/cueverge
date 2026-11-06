@@ -567,14 +567,14 @@ for management selection, TLS, backup/restore and protected-storage requirements
 1. Open **Shows** with authoring permission.
 2. Choose **Open show** on an existing show, or expand **New show**, enter
    **Show name**, and choose **Create show**.
-3. An existing show opens on its **Show plan**. A new show opens into its
-   inherited scenes so you can start editing right away. Creation and saving
+3. An existing show opens on its **Show plan**. A new show starts with no
+   scenes; choose **Add scene** to create the first one. Creation and saving
    do not change live playback.
 
-The button copies the controller's current runtime catalog; it does not
-create an empty show or use the unprovisioned record you just created in
-Settings. Alternatively, use **Import project** with a compatible Cueverge
-project JSON document.
+New shows use the controller's current installation without copying its scenes
+or show logic. To deliberately copy a show, open it and choose **Duplicate**
+in **Show options**. Alternatively, use **Import project** with a compatible
+Cueverge project JSON document.
 
 Use **Find a show** in the library. Within an opened show, **Show options**
 contains name, duplicate/archive, export, and saved revision details.
