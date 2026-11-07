@@ -1,5 +1,8 @@
+import logging
 import socket
 import struct
+import time
+import zlib
 from dataclasses import dataclass, field
 
 from cueverge.lighting.renderer import Rgb
@@ -57,11 +60,14 @@ class DdpUdpSink:
     brightness_limit: float = 1.0
     _sequence: int = 0
     frames_sent: int = 0
+    # Explicit bounded capture; zero keeps checksum/logging work off the hot path.
+    diagnostic_frames: int = 0
     _socket: socket.socket = field(
         default_factory=lambda: socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     )
 
     def send(self, frame: RenderedFrame) -> None:
+        started = time.monotonic() if self.diagnostic_frames > 0 else None
         if self.expected_pixel_count is not None and len(frame.pixels) != self.expected_pixel_count:
             raise ValueError(
                 f"DDP frame has {len(frame.pixels)} pixels; expected {self.expected_pixel_count}"
@@ -86,6 +92,20 @@ class DdpUdpSink:
             sent = self._socket.sendto(packet, (self.host, self.port))
             if sent != len(packet):
                 raise OSError(f"partial DDP datagram send: {sent}/{len(packet)} bytes")
+        if started is not None:
+            self.diagnostic_frames -= 1
+            logging.getLogger(__name__).debug(
+                "ddp_frame instance=%s resource=%s position_ms=%s sequence=%s "
+                "start=%.6f end=%.6f frame_crc=%08x packets=%s",
+                frame.scene_instance_id,
+                frame.resource,
+                frame.position_ms,
+                self._sequence,
+                started,
+                time.monotonic(),
+                zlib.crc32(bytes(c for pixel in frame.pixels for c in pixel)),
+                [(len(p), struct.unpack_from("!I", p, 4)[0], zlib.crc32(p)) for p in packets],
+            )
         self._sequence = (self._sequence + 1) % 16
         self.frames_sent += 1
 
