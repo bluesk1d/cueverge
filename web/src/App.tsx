@@ -499,6 +499,7 @@ export function ShowsPage({
         title="Shows"
         description="Choose a show to create, edit, and safely preview its scenes."
       />
+      <button disabled={busy} onClick={() => void run(async () => {})}>Refresh shows</button>
       {canAuthor && (
         <details className="new-show-flow">
           <summary>New show</summary>
@@ -642,6 +643,7 @@ function ProjectCard({
   const [trashedAssets, setTrashedAssets] = useState<AssetRecord[]>([]);
   const [draft, setDraft] = useState<ProjectDraftRecord | null>(null);
   const [assetSearch, setAssetSearch] = useState("");
+  const [refreshingShow, setRefreshingShow] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [assetError, setAssetError] = useState<string | null>(null);
   const [timelineWorkspace, setTimelineWorkspace] = useState(false);
@@ -729,6 +731,16 @@ function ProjectCard({
     return () => window.clearTimeout(timer);
   }, [assets, loadAssets]);
 
+  async function refreshShow() {
+    if (refreshingShow || sceneDirtyRef.current || interactionDirtyRef.current) return;
+    setRefreshingShow(true);
+    try {
+      await loadAssets();
+    } finally {
+      setRefreshingShow(false);
+    }
+  }
+
   async function upload(file: File) {
     setUploadProgress(0);
     setAssetError(null);
@@ -815,6 +827,10 @@ function ProjectCard({
         if ((!sceneDirty && !interactionDirty) || window.confirm("Discard unsaved edits and return to the show library?")) onClose();
       }}>Back to shows</button>
       <h1>{project.name}</h1>
+      <button disabled={refreshingShow || busy || sceneDirty || interactionDirty}
+        title={sceneDirty || interactionDirty ? "Save or discard your edits before refreshing" : "Load the latest saved scenes and assets"}
+        onClick={() => void refreshShow()}>{refreshingShow ? "Refreshing show…" : "Refresh show"}</button>
+      {(sceneDirty || interactionDirty) && <p className="muted">Save or discard your edits before refreshing the show.</p>}
       {onObjects && <button onClick={() => onObjects(project.id)}>Manage installation objects</button>}
       {assetError && <p role="alert">{assetError}</p>}
       {permissionError && <p role="alert">{permissionError}</p>}
