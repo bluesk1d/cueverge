@@ -607,13 +607,13 @@ export function ScenePreview({ projectId, revision, document, dirty, sceneId, re
     if (typeof installationId !== "string") return;
     Promise.all([getInstallationPhotos(installationId), getInstallationGeometry(installationId)])
       .then(async ([images, shapes]) => {
-        const segments = shapes.filter((value) => value.kind === "pixel_segment");
+        const segments = shapes.filter((value) => (value.kind === "pixel_segment" || value.kind === "point_light"));
         const surfaces = await Promise.allSettled(segments.map((value) => getLightingSurface(value.id)));
         if (!current) return;
         setPhotos(images); setPhotoId(images[0]?.id ?? ""); setGeometry(shapes);
         onTargetNames(Object.fromEntries(shapes.filter((value) =>
           ["fixture", "path", "pixel_segment"].includes(value.kind)).map((value) =>
-          [`${value.kind === "pixel_segment" ? "segment" : value.kind}:${value.semantic_id}`, value.name])));
+          [`${(value.kind === "pixel_segment" || value.kind === "point_light") ? "segment" : value.kind}:${value.semantic_id}`, value.name])));
         setResources(Object.fromEntries(surfaces.flatMap((value, index) =>
           value.status === "fulfilled" ? [[segments[index].id, value.value.resource]] : [])));
         if (surfaces.some((value) => value.status === "rejected")) setMapError("Some saved mappings could not be read; photo coverage is incomplete.");

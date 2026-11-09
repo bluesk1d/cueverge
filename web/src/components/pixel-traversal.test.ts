@@ -138,3 +138,9 @@ test("closed loops do not duplicate the closing pixel", () => {
   }));
   expect(points.map((point) => point.x)).toEqual([0, 0.5, 1, 0.5]);
 });
+
+ test("stationary point lights map a single output sample at their position", () => {
+ const light = segment("left", 0, 1, {kind: "point_light", points: [{x: .25, y: .75}]});
+ expect(photoPixelPoints(light)).toEqual([{outputIndex: 0, x: .25, y: .75}]);
+ expect(outputTraversal([light], {left: "light.left"}, "light.left", "front", 1).segments).toHaveLength(1);
+ });

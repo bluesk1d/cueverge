@@ -34,6 +34,7 @@ from cueverge.core.opportunities import OpportunityManager
 from cueverge.lighting.ambient import render_ambient, render_ambient_output, scene_inherits_ambient
 from cueverge.lighting.ddp import DdpUdpSink
 from cueverge.lighting.evaluation import evaluate_lighting_output
+from cueverge.lighting.lifx import LifxUdpSink
 from cueverge.lighting.output_test import (
     OutputTestError,
     OutputTestRunner,
@@ -1334,7 +1335,7 @@ class ControllerRuntime:
         sinks: Mapping[str, FrameSink]
         if isinstance(self.sink, FrameSinkRouter):
             sinks = self.sink.sinks
-        elif isinstance(self.sink, DdpUdpSink):
+        elif isinstance(self.sink, (DdpUdpSink, LifxUdpSink)):
             resources = [
                 binding.resource
                 for binding in self.catalog.installation.resources
@@ -1350,8 +1351,20 @@ class ControllerRuntime:
                 expected_pixel_count=sink.expected_pixel_count,
             )
             for resource, sink in sorted(sinks.items())
-            if isinstance(sink, DdpUdpSink)
+            if isinstance(sink, (DdpUdpSink, LifxUdpSink))
         )
+
+    def lighting_transport_status(self) -> dict[str, dict[str, object]]:
+        sinks = (
+            self.sink.sinks
+            if isinstance(self.sink, FrameSinkRouter)
+            else {target.resource: self.sink for target in self.lighting_targets()}
+        )
+        return {
+            resource: sink.diagnostics()
+            for resource, sink in sinks.items()
+            if isinstance(sink, LifxUdpSink)
+        }
 
     def output_test_status(self) -> OutputTestStatus | None:
         return self._output_test.status if self._output_test is not None else None
@@ -1377,7 +1390,7 @@ class ControllerRuntime:
         target = next((item for item in self.lighting_targets() if item.resource == resource), None)
         if target is None or target.expected_pixel_count != pixel_count:
             raise OutputTestError(
-                "Output requires a configured DDP driver with matching pixel count"
+                "Output requires a configured lighting driver with matching sample count"
             )
         if pixel_count < 1 or speed < 1 or not 0 < duration_seconds <= 30:
             raise OutputTestError("Invalid output test count, speed or duration")
@@ -1842,7 +1855,8 @@ class ControllerRuntime:
                     "colors": [list(color) for color in colors],
                     "next_pixel_offset": end if end < count else None,
                     "limitations": [
-                        "Last successful sink send, not proof of visible physical output."
+                        "Last accepted controller frame; asynchronous outputs may coalesce frames. "
+                        "Transport status reports LAN replies, not visible emission."
                     ],
                 }
             )
@@ -2433,6 +2447,7 @@ class ControllerRuntime:
             "rejected_protocol_messages": self.rejected_protocol_messages,
             "rendered_frames": self.rendered_frames,
             "lighting_output_error_count": self.lighting_output_error_count,
+            "lighting_transport": self.lighting_transport_status(),
             "rejected_telemetry": self.rejected_telemetry,
             "render_target_fps": self.render_fps,
             "render_loop_running": self.render_loop_running,

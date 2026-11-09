@@ -1414,13 +1414,25 @@ class GuiRepository:
                     for row in connection.execute("PRAGMA foreign_key_list(installation_geometry)")
                     if row["from"] == "photo_id"
                 )
-                if photo_column["notnull"] or photo_key["on_delete"] != "SET NULL":
+                geometry_schema = connection.execute(
+                    "SELECT sql FROM sqlite_schema WHERE name='installation_geometry'"
+                ).fetchone()["sql"]
+                if (
+                    photo_column["notnull"]
+                    or photo_key["on_delete"] != "SET NULL"
+                    or "'point_light'" not in geometry_schema
+                ):
                     schema = connection.execute(
                         "SELECT sql FROM sqlite_schema WHERE type='table' "
                         "AND name='installation_geometry'"
                     ).fetchone()["sql"]
                     schema = schema.replace(
                         "installation_geometry", "installation_geometry_optional", 1
+                    )
+                    schema = (
+                        schema.replace("'pixel_segment'", "'pixel_segment', 'point_light'")
+                        if "'point_light'" not in schema
+                        else schema
                     )
                     schema = schema.replace("photo_id TEXT NOT NULL", "photo_id TEXT")
                     schema = schema.replace(

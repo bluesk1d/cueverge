@@ -557,6 +557,7 @@ function InstallationPhotos({
 const GEOMETRY_KINDS: InstallationGeometryKind[] = [
   "output",
   "pixel_segment",
+  "point_light",
   "fixture",
   "path",
   "projector_surface",
@@ -830,7 +831,7 @@ function GeometryMapper({
   const overlappingSegments = validPixelRange
     ? geometry.filter(
         (item, index, all) =>
-          item.kind === "pixel_segment" &&
+          (item.kind === "pixel_segment" || item.kind === "point_light") &&
           item.semantic_id !== (editing?.semantic_id ?? linkedSemanticId) &&
           item.start_index !== null &&
           item.pixel_count !== null &&
@@ -858,7 +859,7 @@ function GeometryMapper({
     setAllocationCheckError(false);
     void Promise.all(
       geometry
-        .filter((item) => item.kind === "pixel_segment")
+        .filter((item) => (item.kind === "pixel_segment" || item.kind === "point_light"))
         .map(async (item) => {
           try {
             return [item.id, (await getLightingSurface(item.id)).resource] as const;
@@ -976,7 +977,7 @@ function GeometryMapper({
         setMapping(undefined);
       }
     }
-    if (item.kind === "pixel_segment") {
+    if ((item.kind === "pixel_segment" || item.kind === "point_light")) {
       try {
         const loaded = await getLightingSurface(item.id);
         setLightingSurface(loaded);
@@ -1059,8 +1060,8 @@ function GeometryMapper({
         hidden,
         z_index: zIndex,
         direction,
-        start_index: kind === "pixel_segment" ? Number(startIndex) : null,
-        pixel_count: kind === "pixel_segment" ? Number(pixelCount) : null,
+        start_index: kind === "point_light" ? 0 : kind === "pixel_segment" ? Number(startIndex) : null,
+        pixel_count: kind === "point_light" ? 1 : kind === "pixel_segment" ? Number(pixelCount) : null,
         stage_points: stagePoints.trim()
           ? stagePoints
               .split("\n")
@@ -1098,7 +1099,7 @@ function GeometryMapper({
         mesh_vertices: savedMapping.mesh_vertices ?? current.mesh_vertices,
       }));
     }
-    if (kind === "pixel_segment") {
+    if ((kind === "pixel_segment" || kind === "point_light")) {
       const localPoints =
         lightingSurface?.local_points ??
         points.map(
@@ -1233,9 +1234,9 @@ function GeometryMapper({
           <div className="setup-actions">
             {GEOMETRY_KINDS.map((value) => <button type="button" key={value} onClick={(event) => {
               if (changed && !window.confirm("Discard unsaved layout changes and add a new object?")) return;
-              reset(); setKind(value); setAdding(true);
+              reset(); setKind(value); setAdding(true); if (value === "point_light") { setPixelCount("1"); setStartIndex("0"); }
               event.currentTarget.closest("details")?.removeAttribute("open");
-            }}>{value === "pixel_segment" ? "LED segment" : value === "projector_surface" ? "Projector area" : value.replaceAll("_", " ")}</button>)}
+            }}>{value === "point_light" ? "Stationary point light" : value === "pixel_segment" ? "LED segment" : value === "projector_surface" ? "Projector area" : value.replaceAll("_", " ")}</button>)}
           </div>
         </details>}
         <label>
@@ -1365,7 +1366,7 @@ function GeometryMapper({
       <aside className="geometry-mapper__inspector" aria-label="Geometry properties">
         <fieldset className="geometry-inspector-fields" disabled={!canEdit || savingGeometry} onChangeCapture={() => setChanged(true)}>
         <div className="geometry-mapper__fields">
-          <h3>{kind === "pixel_segment" ? "Segment properties" : "Geometry properties"}</h3>
+          <h3>{(kind === "pixel_segment" || kind === "point_light") ? "Segment properties" : "Geometry properties"}</h3>
           <label>
             Geometry type
             <select
@@ -1388,14 +1389,14 @@ function GeometryMapper({
           <label>
             Geometry name
             <input
-              placeholder={kind === "pixel_segment" ? "e.g. garage-eave" : "Name this geometry"}
+              placeholder={(kind === "pixel_segment" || kind === "point_light") ? "e.g. garage-eave" : "Name this geometry"}
               value={name}
               onChange={(event) => setName(event.target.value)}
             />
           </label>
-          {kind === "pixel_segment" && (
+          {(kind === "pixel_segment" || kind === "point_light") && (
           <>
-            <fieldset className="geometry-mapper__method">
+            <fieldset className="geometry-mapper__method" disabled={kind === "point_light"}>
               <legend>Creation method</legend>
               <div className="geometry-mapper__actions">
                 <button
@@ -1421,7 +1422,7 @@ function GeometryMapper({
                 }
               >
                 <option value="">Select an output</option>
-                {pixelResources.map((resource) => (
+                {pixelResources.filter((resource) => kind !== "point_light" || resource.pixel_count === 1).map((resource) => (
                   <option key={resource.resource} value={resource.resource}>
                     {resource.resource}{resource.pixel_count === null ? "" : ` · ${resource.pixel_count} pixels`}
                   </option>
@@ -1434,7 +1435,7 @@ function GeometryMapper({
             <div className="geometry-mapper__pair">
               <label>
                 First pixel index
-                <input min="0" step="1" type="number" value={startIndex} onChange={(event) => setStartIndex(event.target.value)} aria-describedby="mapper-pixel-index-help" />
+                <input min="0" step="1" type="number" readOnly={kind === "point_light"} value={startIndex} onChange={(event) => setStartIndex(event.target.value)} aria-describedby="mapper-pixel-index-help" />
               </label>
               <label>
                 Pixel count
@@ -1443,7 +1444,7 @@ function GeometryMapper({
                   step="1"
                   type="number"
                   value={pixelCount}
-                  readOnly={creationMethod === "generate" && ["grid", "individual", "import"].includes(pixelGenerator)}
+                  readOnly={kind === "point_light" || creationMethod === "generate" && ["grid", "individual", "import"].includes(pixelGenerator)}
                   onChange={(event) => setPixelCount(event.target.value)}
                 />
               </label>
@@ -1476,7 +1477,7 @@ function GeometryMapper({
             </label></details>
           </>
           )}
-          {(kind === "pixel_segment" || kind === "path") && (
+          {((kind === "pixel_segment" || kind === "point_light") || kind === "path") && (
             <>
               <label>
                 Wiring direction
@@ -1487,7 +1488,7 @@ function GeometryMapper({
               </label>
               <button
                 aria-pressed={traversalPreview}
-                disabled={kind === "pixel_segment" && (
+                disabled={(kind === "pixel_segment" || kind === "point_light") && (
                   allocationLoading || allocationCheckError ||
                   !selectedPixelOutput?.pixel_count
                 )}
@@ -1496,7 +1497,7 @@ function GeometryMapper({
                 {traversalPreview ? "Stop traversal preview" : "Preview traversal"}
               </button>
               <small>Canvas only. No hardware commands are sent.</small>
-              {kind === "pixel_segment" && (
+              {(kind === "pixel_segment" || kind === "point_light") && (
                 <small>
                   Previews every saved segment on the selected output in pixel-index order,
                   not just this segment. Save edits before previewing.
@@ -1507,7 +1508,7 @@ function GeometryMapper({
               )}
             </>
           )}
-          {kind === "pixel_segment" && creationMethod === "generate" && (
+          {(kind === "pixel_segment" || kind === "point_light") && creationMethod === "generate" && (
             <section className="geometry-mapper__fields geometry-mapper__generator" aria-label="Layout generator">
             <h4>Generate pixel layout</h4>
             <label>
@@ -1629,7 +1630,7 @@ function GeometryMapper({
               </select>
               </label>
             )}
-            {kind === "pixel_segment" && (
+            {(kind === "pixel_segment" || kind === "point_light") && (
               <>
                 {([["fixture_id", "Fixture ID"], ["group_id", "Group ID"], ["path_id", "Ordered path ID"]] as const).map(([field, label]) => (
                   <label key={field}>{label}<input value={lightingValues[field]} onChange={(event) => setLightingValues((current) => ({ ...current, [field]: event.target.value }))} /></label>
@@ -2174,7 +2175,7 @@ function GeometryMapper({
           </div>
           </details>
         )}
-      {canEdit && kind === "pixel_segment" && (
+      {canEdit && (kind === "pixel_segment" || kind === "point_light") && (
           <>
             {lightingSurface && (
               <small>
@@ -2419,12 +2420,12 @@ function GeometryMapper({
                     : points.length < 5 ||
                       mappingValues.mesh_vertices.length < 4 ||
                       mappingValues.mesh_triangles.length < 2))) ||
-              (kind === "pixel_segment" &&
+              ((kind === "pixel_segment" || kind === "point_light") &&
                 (!lightingValues.resource || !validPixelRange || exceedsOutput))
             }
             onClick={() => void save()}
           >
-            {savingGeometry ? "Saving…" : editing ? "Update geometry" : kind === "pixel_segment" ? "Save segment" : "Save geometry"}
+            {savingGeometry ? "Saving…" : editing ? "Update geometry" : (kind === "pixel_segment" || kind === "point_light") ? "Save segment" : "Save geometry"}
           </button>
           <button onClick={() => { if (!changed || window.confirm("Discard unsaved layout changes?")) reset(); }}>Cancel</button>
         </div>
@@ -2436,7 +2437,7 @@ function GeometryMapper({
         {canEdit && (adding || editing) && (
           <>
             <p className="geometry-mapper__instruction">
-              {kind === "pixel_segment"
+              {(kind === "pixel_segment" || kind === "point_light")
                 ? creationMethod === "trace"
                   ? "Click the first pixel, then trace the strand in wiring order. Two points are enough for a straight section."
                   : "Set the layout shape and pixel allocation, then generate. Drag points to position the layout on the photo."
@@ -2454,7 +2455,7 @@ function GeometryMapper({
             </div>
           </>
         )}
-      {traversalPreview && kind === "pixel_segment" &&
+      {traversalPreview && (kind === "pixel_segment" || kind === "point_light") &&
         !allocationLoading && !allocationCheckError && selectedPixelOutput?.pixel_count != null &&
         selectedPixelOutput.pixel_count > 0 && (
           <OutputTraversalPreview
@@ -2518,7 +2519,7 @@ function GeometryMapper({
           onPlacePoint={(point) => {
             setChanged(true);
             const maximum =
-              kind === "fixture"
+              (kind === "fixture" || kind === "point_light")
                 ? 1
                 : kind === "projector_surface" && mappingValues.surface_model === "planar"
                   ? 4
@@ -2584,7 +2585,7 @@ function GeometryMapper({
               geometry={item}
               simulation={simulationOverlay}
             />
-            {item.kind === "fixture" && item.points[0] ? <circle className="layout-hit-target"
+            {(item.kind === "fixture" || item.kind === "point_light") && item.points[0] ? <circle className="layout-hit-target"
               cx={item.points[0].x * 1000} cy={item.points[0].y * 600} r={18 / zoom} fill="transparent" />
               : item.closed ? <polygon className="layout-hit-target"
                 points={item.points.map((point) => `${point.x * 1000},${point.y * 600}`).join(" ")}
@@ -2596,7 +2597,7 @@ function GeometryMapper({
           ))}
           {simulationOverlay &&
             simulationGeometry
-              .filter((item) => item.kind === "pixel_segment")
+              .filter((item) => (item.kind === "pixel_segment" || item.kind === "point_light"))
               .flatMap((item) =>
                 photoPixelPoints(item).map((pixel) => (
                   <circle
@@ -2634,7 +2635,7 @@ function GeometryMapper({
               />
             ),
           )}
-          {editing?.kind === "pixel_segment" &&
+          {(editing?.kind === "pixel_segment" || editing?.kind === "point_light") &&
             lightingSurface?.geometry_id === editing.id &&
             photoPixelPoints(editing).map((pixel) => (
               <g key={pixel.outputIndex}>
@@ -2905,7 +2906,7 @@ function GeometryShape({
   const coordinates = geometry.points
     .map((point) => `${point.x * 1000},${point.y * 600}`)
     .join(" ");
-  if (geometry.kind === "fixture") {
+  if ((geometry.kind === "fixture" || geometry.kind === "point_light")) {
     const point = geometry.points[0];
     if (!point) {
       return null;
@@ -3105,7 +3106,7 @@ function SimulationPhotoCanvas({
         <GeometryShape geometry={item} key={item.id} simulation />
       ))}
       {geometry
-        .filter((item) => item.kind === "pixel_segment")
+        .filter((item) => (item.kind === "pixel_segment" || item.kind === "point_light"))
         .flatMap((item) =>
           photoPixelPoints(item).map((pixel) => (
             <circle
@@ -3141,7 +3142,7 @@ function filterSimulationGeometry(
     return target
       ? geometry.filter((item) => item.semantic_id === target)
       : geometry.filter((item) =>
-          ["pixel_segment", "fixture", "path"].includes(item.kind),
+          ["pixel_segment", "point_light", "fixture", "path"].includes(item.kind),
         );
   }
   if (mode === "parent_context") {
@@ -3169,7 +3170,7 @@ function filterSimulationGeometry(
   }
   if (target === "lighting") {
     return geometry.filter((item) =>
-      ["pixel_segment", "fixture", "path"].includes(item.kind),
+      ["pixel_segment", "point_light", "fixture", "path"].includes(item.kind),
     );
   }
   if (!target) {

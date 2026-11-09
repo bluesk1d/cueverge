@@ -272,6 +272,7 @@ export interface InstallationPhoto {
 
 export type InstallationGeometryKind =
   | "output"
+  | "point_light"
   | "pixel_segment"
   | "fixture"
   | "path"
@@ -1146,6 +1147,11 @@ export interface RuntimeStatus {
     rejected_protocol_messages: number;
     rendered_frames: number;
     lighting_output_error_count: number;
+    lighting_transport?: Record<string, {
+      driver: string; frames_sent: number; frames_coalesced: number;
+      acknowledgments: number; last_ack_age_ms: number | null;
+      last_ack_rtt_ms: number | null; reply_recent: boolean; error: string | null;
+    }>;
     rejected_telemetry: number;
     render_target_fps: number;
     render_loop_running: boolean;

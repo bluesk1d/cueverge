@@ -255,7 +255,7 @@ def test_unconfigured_outputs_and_nonmaintenance_mode_are_rejected() -> None:
                 on_finish=lambda _: None,
             )
         await runtime.set_show_mode(ShowMode.MAINTENANCE)
-        with pytest.raises(OutputTestError, match="configured DDP"):
+        with pytest.raises(OutputTestError, match="configured lighting"):
             runtime.start_output_test(
                 resource="roofline.demo",
                 pixel_count=8,

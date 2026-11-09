@@ -97,9 +97,22 @@ class DdpResourceConfig(RuntimeConfig):
     brightness_limit: float = Field(default=1.0, gt=0, le=1)
 
 
+class LifxResourceConfig(RuntimeConfig):
+    resource: str = Field(min_length=1)
+    kind: Literal["lifx"] = "lifx"
+    host: str = Field(pattern=r"^\d{1,3}(\.\d{1,3}){3}$")
+    target: str = Field(pattern=r"^[0-9a-fA-F]{12}$")
+    port: int = Field(default=56700, ge=1, le=65535)
+    expected_pixel_count: Literal[1] = 1
+    kelvin: int = Field(default=3500, ge=1500, le=9000)
+    brightness_limit: float = Field(default=1.0, gt=0, le=1)
+    max_hz: float = Field(default=18, ge=1, le=20)
+    duration_ms: int = Field(default=0, ge=0, le=1000)
+
+
 class OutputDeploymentConfig(RuntimeConfig):
     schema_version: Literal[1]
-    lighting: tuple[DdpResourceConfig, ...] = Field(min_length=1)
+    lighting: tuple[DdpResourceConfig | LifxResourceConfig, ...] = Field(min_length=1)
 
     @model_validator(mode="after")
     def validate_unique_resources(self) -> "OutputDeploymentConfig":

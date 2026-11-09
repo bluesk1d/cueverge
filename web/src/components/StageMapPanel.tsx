@@ -20,6 +20,7 @@ const UNITS: { value: StageUnit; label: string }[] = [
 
 const KIND_LABELS: Record<string, string> = {
   pixel_segment: "LED segment",
+  point_light: "Stationary point light",
   projector_surface: "Projector area",
   fixture: "Fixture",
   path: "Path",

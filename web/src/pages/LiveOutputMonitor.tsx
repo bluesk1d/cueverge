@@ -17,12 +17,12 @@ export function LiveOutputMonitor({ installationId, runtime }: {
   const generationMatches = snapshot?.loaded_catalog?.generation === runtime?.loaded_catalog?.generation;
   const outputs = snapshot?.outputs ?? [];
   return <Panel className="live-output-monitor" title="Intended output monitor"
-    description="Last sent LED colors and separate device reports—not proof of physical output.">
+    description="Accepted lighting frames and separate device reports; physical emission is not measured.">
     <button onClick={() => setEnabled((value) => !value)}>{enabled ? "Pause output monitor" : "Open output monitor"}</button>
     {enabled && <>
       <p role="status">Read only · up to 2 updates/second · pauses in hidden tabs.</p>
       <details><summary>What does this monitor show?</summary>
-        <p>These are successfully sent controller frames, not a camera feed or electrical measurement. Held colors can remain on LEDs after Stop when no safe-state look is configured. Unmapped LEDs and unsupported physical feedback are not invented.</p>
+        <p>These are accepted controller frames. Asynchronous outputs may coalesce them before transmission. Held colors can remain on LEDs after Stop when no safe-state look is configured. Unmapped LEDs and unsupported physical feedback are not invented.</p>
       </details>
       <label>LED output<select value={resource} onChange={(event) => { setResource(event.target.value); setOffset(0); clear(); }}>
         <option value="">All loaded LED outputs</option>
@@ -44,6 +44,13 @@ export function LiveOutputMonitor({ installationId, runtime }: {
           onFailure={noFailure} onTargetNames={noNames}
         />}
         {value.next_pixel_offset !== null && <button onClick={() => { setResource(value.resource); setOffset(value.next_pixel_offset!); }}>Next sampled LED range</button>}
+      </article>)}
+      {Object.entries(runtime?.status.lighting_transport ?? {}).filter(([name]) => !resource || resource === name).map(([name, transport]) => <article key={`transport:${name}`}>
+        <h3>{name} LAN delivery</h3>
+        <p>{transport.frames_sent} color packets sent · {transport.frames_coalesced} frames coalesced · {transport.acknowledgments} LAN acknowledgments</p>
+        <p>{transport.last_ack_age_ms === null ? "No LAN acknowledgment received" : `Last reply ${transport.last_ack_age_ms} ms ago`} · {transport.reply_recent ? "recent reply" : "no recent reply"}</p>
+        <small>LAN replies confirm protocol response; visible light timing is not measured.</small>
+        {transport.error && <p role="alert">{transport.error}</p>}
       </article>)}
       {offset > 0 && <button onClick={() => setOffset(0)}>First sampled LED range</button>}
       <details><summary>Device-reported media playback</summary>

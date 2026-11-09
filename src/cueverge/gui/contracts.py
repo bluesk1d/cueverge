@@ -2050,6 +2050,7 @@ class GeometryPoint(GuiModel):
 GeometryKind = Literal[
     "output",
     "pixel_segment",
+    "point_light",
     "fixture",
     "path",
     "projector_surface",
@@ -2096,6 +2097,18 @@ class InstallationGeometryRequest(GuiModel):
 
     @model_validator(mode="after")
     def validate_shape(self) -> "InstallationGeometryRequest":
+        if self.kind == "point_light":
+            if (
+                len(self.points) != 1
+                or self.closed
+                or self.start_index != 0
+                or self.pixel_count != 1
+            ):
+                raise ValueError(
+                    "point lights require one point, index zero, one sample and an open shape"
+                )
+            if self.stage_points is not None and len(self.stage_points) != 1:
+                raise ValueError("point lights require exactly one stage point")
         polygon_kinds = {
             "output",
             "projector_surface",
@@ -2117,7 +2130,7 @@ class InstallationGeometryRequest(GuiModel):
             and not (len(self.points) == 1 and self.pixel_count == 1)
         ):
             raise ValueError("pixel segments require two points, or one point for one pixel")
-        if self.kind != "pixel_segment" and (
+        if self.kind not in {"pixel_segment", "point_light"} and (
             self.start_index is not None or self.pixel_count is not None
         ):
             raise ValueError("pixel index range is valid only for pixel segments")

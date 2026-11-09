@@ -107,7 +107,7 @@ def _layout(
         resources = {
             shape.id: assignments[shape.semantic_id]
             for shape in geometry
-            if shape.kind == "pixel_segment" and shape.semantic_id in assignments
+            if shape.kind in {"pixel_segment", "point_light"} and shape.semantic_id in assignments
         }
     return installation_id, geometry, resources
 
@@ -121,7 +121,7 @@ def installation_object_inventory(
     details = {(item.resource, item.kind, item.id): item for item in _details(draft)}
     grouped: dict[str, list[StoredInstallationGeometry]] = {}
     for shape in geometry:
-        if shape.kind in {"pixel_segment", "fixture", "path"}:
+        if shape.kind in {"pixel_segment", "point_light", "fixture", "path"}:
             grouped.setdefault(shape.semantic_id, []).append(shape)
     records: list[InstallationObjectRecord] = []
     bindings = tuple(
@@ -158,7 +158,7 @@ def installation_object_inventory(
                 matched.update(
                     shape.id
                     for shape in geometry
-                    if shape.kind == "pixel_segment"
+                    if shape.kind in {"pixel_segment", "point_light"}
                     and geometry_resources.get(shape.id) == binding.resource
                     and shape.start_index == segment.start
                     and shape.pixel_count == segment.pixel_count
@@ -246,8 +246,11 @@ def save_installation_object(
         for semantic_id in request.geometry_semantic_ids:
             linked = [shape for shape in geometry if shape.semantic_id == semantic_id]
             if not linked or any(
-                shape.kind not in {"pixel_segment", request.kind}
-                or (shape.kind == "pixel_segment" and resources.get(shape.id) != request.resource)
+                shape.kind not in {"pixel_segment", "point_light", request.kind}
+                or (
+                    shape.kind in {"pixel_segment", "point_light"}
+                    and resources.get(shape.id) != request.resource
+                )
                 for shape in linked
             ):
                 raise ValueError(

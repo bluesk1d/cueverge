@@ -6,7 +6,7 @@ export function mapperDiagnostics(
   const conflicts: string[] = [];
   const observations: string[] = [];
   const physical = geometry.filter((item, index, all) =>
-    item.kind === "pixel_segment" && item.start_index !== null && item.pixel_count !== null &&
+    (item.kind === "pixel_segment" || item.kind === "point_light") && item.start_index !== null && item.pixel_count !== null &&
     Boolean(resources[item.id]) &&
     all.findIndex((candidate) => candidate.semantic_id === item.semantic_id) === index,
   );

@@ -60,3 +60,5 @@ Device enrollment against physical hosts, staging/activation/rollback,
 production TLS/Compose deployment, backup restoration, and live output were
 not exercised by this documentation capture. Qualify them on the target
 installation before relying on them.
+
+Stationary single-bulb outputs: [point light setup and LIFX deployment](stationary-point-lights.md).

@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "lighting": [
+    {
+      "resource": "light.left",
+      "kind": "lifx",
+      "host": "192.168.40.71",
+      "target": "d073d58b1a6d",
+      "brightness_limit": 0.25,
+      "max_hz": 18
+    },
+    {
+      "resource": "light.right",
+      "kind": "lifx",
+      "host": "192.168.40.194",
+      "target": "d073d58b1e1f",
+      "brightness_limit": 0.25,
+      "max_hz": 18
+    }
+  ]
+}

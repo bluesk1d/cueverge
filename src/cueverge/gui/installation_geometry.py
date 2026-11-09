@@ -10,6 +10,7 @@ from cueverge.gui.repository import GuiRepository
 GeometryKind = Literal[
     "output",
     "pixel_segment",
+    "point_light",
     "fixture",
     "path",
     "projector_surface",
@@ -404,6 +405,7 @@ def _stored_geometry(row: sqlite3.Row) -> StoredInstallationGeometry:
     kinds = {
         "output",
         "pixel_segment",
+        "point_light",
         "fixture",
         "path",
         "projector_surface",

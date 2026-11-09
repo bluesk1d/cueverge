@@ -1,0 +1,130 @@
+{
+  "originals": [
+    {
+      "host": "192.168.40.71",
+      "target": "d073d58b1a6d0000",
+      "service": [
+        1,
+        56700
+      ],
+      "vendor_product_version": [
+        1,
+        181,
+        17368064
+      ],
+      "firmware_build_reserved_version": [
+        1713226249000000000,
+        1713226249000000000,
+        262149
+      ],
+      "hsbk": [
+        0,
+        0,
+        65535,
+        3508
+      ],
+      "power": 65535,
+      "label": "",
+      "query_rtt": {
+        "count": 20,
+        "median_ms": 3.6585694979294203,
+        "p95_ms": 8.135790994856507,
+        "max_ms": 8.74951099831378
+      }
+    },
+    {
+      "host": "192.168.40.194",
+      "target": "d073d58b1e1f0000",
+      "service": [
+        1,
+        56700
+      ],
+      "vendor_product_version": [
+        1,
+        181,
+        17368064
+      ],
+      "firmware_build_reserved_version": [
+        1713226249000000000,
+        1713226249000000000,
+        262149
+      ],
+      "hsbk": [
+        0,
+        0,
+        65535,
+        3508
+      ],
+      "power": 65535,
+      "label": "",
+      "query_rtt": {
+        "count": 20,
+        "median_ms": 5.34008349859505,
+        "p95_ms": 8.111442002700642,
+        "max_ms": 11.498934996780008
+      }
+    }
+  ],
+  "calibration_id": "07617572-2275-4c4a-8bdc-a6f70a5001e9",
+  "transport_during_calibration": {
+    "light.left": {
+      "driver": "lifx",
+      "frames_sent": 179,
+      "frames_coalesced": 421,
+      "acknowledgments": 179,
+      "last_ack_age_ms": 67,
+      "last_ack_rtt_ms": 19.399601995246485,
+      "last_sent_at": 38089.339405073,
+      "reply_recent": true,
+      "error": null,
+      "visible_output_verified": false
+    },
+    "light.right": {
+      "driver": "lifx",
+      "frames_sent": 179,
+      "frames_coalesced": 421,
+      "acknowledgments": 180,
+      "last_ack_age_ms": 17,
+      "last_ack_rtt_ms": 13.54922899918165,
+      "last_sent_at": 38089.339271255,
+      "reply_recent": true,
+      "error": null,
+      "visible_output_verified": false
+    }
+  },
+  "stopped_brightness": [
+    0,
+    0
+  ],
+  "physical_test_state": "completed",
+  "transport_after_test": {
+    "light.left": {
+      "driver": "lifx",
+      "frames_sent": 217,
+      "frames_coalesced": 506,
+      "acknowledgments": 218,
+      "last_ack_age_ms": 446,
+      "last_ack_rtt_ms": 50.11169499630341,
+      "last_sent_at": 38091.647153546,
+      "reply_recent": true,
+      "error": null,
+      "visible_output_verified": false
+    },
+    "light.right": {
+      "driver": "lifx",
+      "frames_sent": 180,
+      "frames_coalesced": 422,
+      "acknowledgments": 181,
+      "last_ack_age_ms": 2698,
+      "last_ack_rtt_ms": 50.11712299892679,
+      "last_sent_at": 38089.395021612,
+      "reply_recent": true,
+      "error": null,
+      "visible_output_verified": false
+    }
+  },
+  "restored": [
+    true,
+    true
+  ]
+}

@@ -12,7 +12,7 @@ def mapped_test_segments(
 ) -> tuple[OutputTestSegment, ...]:
     mapped: dict[str, tuple[str, int, int]] = {}
     for item in geometry.list(installation_id):
-        if item.kind != "pixel_segment":
+        if item.kind not in {"pixel_segment", "point_light"}:
             continue
         surface = lighting.get(item.id)
         if surface.resource != resource:

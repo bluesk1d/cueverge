@@ -1,0 +1,14 @@
+{
+  "started_utc": "2026-11-09T19:07:03Z",
+  "devices": [
+    {
+      "host": "fd00:4::d273:d5ff:fe8b:1a6d",
+      "error": "timed out"
+    },
+    {
+      "host": "fd00:4::d273:d5ff:fe8b:1e1f",
+      "error": "timed out"
+    }
+  ],
+  "streams": []
+}

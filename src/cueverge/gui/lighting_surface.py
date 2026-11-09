@@ -71,7 +71,7 @@ class LightingSurfaceService:
 
     def get(self, geometry_id: str) -> StoredLightingSurface:
         geometry = self.geometry.get(geometry_id)
-        if geometry.kind != "pixel_segment":
+        if geometry.kind not in {"pixel_segment", "point_light"}:
             raise LightingSurfaceError("lighting surface requires pixel-segment geometry")
         with self._connect() as connection:
             row = _find_surface_row(connection, geometry)
@@ -106,7 +106,7 @@ class LightingSurfaceService:
     ) -> StoredLightingSurface:
         geometry = self.geometry.get(geometry_id)
         if (
-            geometry.kind != "pixel_segment"
+            geometry.kind not in {"pixel_segment", "point_light"}
             or geometry.start_index is None
             or geometry.pixel_count is None
         ):
@@ -320,7 +320,7 @@ def _find_surface_row(
         FROM lighting_surfaces AS s
         JOIN installation_geometry AS owner ON owner.id = s.geometry_id
         WHERE owner.installation_id = ? AND owner.semantic_id = ?
-          AND owner.kind = 'pixel_segment'
+          AND owner.kind IN ('pixel_segment', 'point_light')
         ORDER BY s.created_at, s.geometry_id
         LIMIT 1
         """,

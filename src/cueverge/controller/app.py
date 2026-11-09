@@ -23,6 +23,7 @@ from cueverge.gui.router import create_gui_router
 from cueverge.gui.service import GuiServices
 from cueverge.integrations.mqtt import FrigateMqttIngress
 from cueverge.lighting.ddp import DdpUdpSink
+from cueverge.lighting.lifx import LifxUdpSink
 from cueverge.lighting.sink import FrameSink, FrameSinkRouter, MemoryFrameSink
 from cueverge.observation.presence import AudiencePresenceEstimator
 from cueverge.protocol.device_v2 import (
@@ -226,7 +227,11 @@ def _configured_components() -> tuple[ControllerRuntime, EventIngress | None]:
     if config.output_deployment is not None:
         sink: FrameSink = FrameSinkRouter(
             {
-                output.resource: DdpUdpSink(
+                output.resource: LifxUdpSink(
+                    **output.model_dump(exclude={"kind", "resource", "expected_pixel_count"})
+                )
+                if output.kind == "lifx"
+                else DdpUdpSink(
                     host=output.host,
                     port=output.port,
                     destination_id=output.destination_id,

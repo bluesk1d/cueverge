@@ -22,7 +22,7 @@ export function useLedPhotoMapping(installationId: string | undefined, enabled: 
     if (!enabled || !installationId) return;
     let current = true;
     getInstallationGeometry(installationId).then(async (shapes) => {
-      const segments = shapes.filter((value) => value.kind === "pixel_segment");
+      const segments = shapes.filter((value) => (value.kind === "pixel_segment" || value.kind === "point_light"));
       const surfaces = await Promise.allSettled(segments.map((value) => getLightingSurface(value.id)));
       if (!current) return;
       setMapping({

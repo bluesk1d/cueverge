@@ -18,7 +18,7 @@ export function photoPixelPoints(
   geometry: InstallationGeometry,
 ): { outputIndex: number; x: number; y: number }[] {
   if (
-    geometry.kind !== "pixel_segment" ||
+    (geometry.kind !== "pixel_segment" && geometry.kind !== "point_light") ||
     geometry.start_index === null ||
     geometry.pixel_count === null ||
     geometry.points.length === 0
@@ -65,7 +65,7 @@ export function outputTraversal(
 ) {
   const linked = new Map<string, InstallationGeometry[]>();
   for (const item of geometry) {
-    if (item.kind !== "pixel_segment" || resources[item.id] !== resource) {
+    if ((item.kind !== "pixel_segment" && item.kind !== "point_light") || resources[item.id] !== resource) {
       continue;
     }
     const views = linked.get(item.semantic_id) ?? [];
