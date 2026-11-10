@@ -718,7 +718,13 @@ export interface SceneAuthoringOptions {
 export interface ObjectSegmentReference {
   segment: string;
   reverse: boolean;
+  /** Pixel range inside the segment (offsets, end exclusive); omit both for the whole segment. */
+  start?: number;
+  end?: number;
 }
+
+export type ObjectOwner = "installation" | "show";
+export type ObjectKind = "segment" | "fixture" | "path";
 
 export interface InstallationObjectEdit {
   resource: string;
@@ -728,6 +734,8 @@ export interface InstallationObjectEdit {
   segments: ObjectSegmentReference[];
   precedence: number;
   geometry_semantic_ids: string[];
+  /** Show objects only: also add the new object to this scene. */
+  scene_id?: string | null;
 }
 
 export interface InstallationObjectRecord extends Omit<InstallationObjectEdit, "kind"> {
@@ -737,6 +745,9 @@ export interface InstallationObjectRecord extends Omit<InstallationObjectEdit, "
   references: string[];
   geometry_ids: string[];
   missing_geometry_semantic_ids: string[];
+  owner: ObjectOwner;
+  scene_ids: string[];
+  used_by: { project_id: string; project_name: string; scene_ids: string[] }[];
 }
 
 export interface InstallationObjectInventory {
@@ -752,6 +763,29 @@ export interface InstallationObjectInventory {
   objects: InstallationObjectRecord[];
   geometry: { semantic_id: string; name: string; kind: string; resource: string | null; geometry_ids: string[] }[];
   editable_kinds: ("fixture" | "path")[];
+  inherits: boolean;
+}
+
+export interface InstallationLevelObjects {
+  installation_id: string;
+  revision: number;
+  layout_available: boolean;
+  resources: { resource: string; pixel_count: number; segments: { id: string; start: number; end: number }[] }[];
+  objects: InstallationObjectRecord[];
+  geometry: InstallationObjectInventory["geometry"];
+}
+
+export interface SceneObjectRef { resource: string; kind: ObjectKind; id: string }
+export interface SceneObjectEntry extends SceneObjectRef { name: string; owner: ObjectOwner; targeted: boolean }
+export interface SceneObjects {
+  project_id: string; revision: number; scene_id: string;
+  objects: SceneObjectEntry[]; available: SceneObjectEntry[];
+}
+export interface ShowObjectSummary {
+  project_id: string; revision: number; inherits: boolean;
+  scenes: { scene_id: string; name: string; devices: string[]; objects: SceneObjectRef[] }[];
+  devices: { resource: string; kind: string; scene_ids: string[] }[];
+  objects: (SceneObjectRef & { name: string; owner: ObjectOwner; scene_ids: string[] })[];
 }
 
 export interface ObjectLayoutSelection {
@@ -2559,18 +2593,71 @@ export function getSceneAuthoringOptions(projectId: string): Promise<SceneAuthor
   return request(`/api/gui/v1/projects/${encodeURIComponent(projectId)}/scene-authoring-options`);
 }
 
-export function getInstallationObjects(projectId: string): Promise<InstallationObjectInventory> {
-  return request(`/api/gui/v1/projects/${encodeURIComponent(projectId)}/installation-objects`, undefined, true);
+type ObjectAction = "create" | "update" | "delete";
+type ObjectBody = InstallationObjectEdit | Pick<InstallationObjectEdit, "resource" | "kind" | "id">;
+const projectUrl = (projectId: string) => `/api/gui/v1/projects/${encodeURIComponent(projectId)}`;
+const installationObjectsUrl = (installationId: string) =>
+  `/api/gui/v1/installations/${encodeURIComponent(installationId)}/objects`;
+const revised = (revision: number) => ({ ...mutationHeaders(), "If-Match": `"${revision}"` });
+
+/** Installation scope: wiring segments and reusable fixtures/paths every show inherits. */
+export function getInstallationObjects(installationId: string): Promise<InstallationLevelObjects> {
+  return request(installationObjectsUrl(installationId), undefined, true);
 }
 
 export function editInstallationObject(
-  projectId: string, revision: number, action: "create" | "update" | "delete",
-  body: InstallationObjectEdit | Pick<InstallationObjectEdit, "resource" | "kind" | "id">,
+  installationId: string, revision: number, action: ObjectAction, body: ObjectBody,
+): Promise<InstallationLevelObjects> {
+  return request(`${installationObjectsUrl(installationId)}/${action}`, {
+    method: "POST", headers: revised(revision), body: JSON.stringify(body),
+  }, true);
+}
+
+export function setInstallationSegments(
+  installationId: string, revision: number,
+  body: { resource: string; segments: { id: string; start: number; end: number }[]; names?: Record<string, string> },
+): Promise<InstallationLevelObjects> {
+  return request(`${installationObjectsUrl(installationId)}/segments`, {
+    method: "PUT", headers: revised(revision), body: JSON.stringify(body),
+  }, true);
+}
+
+/** Show scope: inherited installation objects plus the show's own fixtures/paths. */
+export function getShowObjects(projectId: string): Promise<InstallationObjectInventory> {
+  return request(`${projectUrl(projectId)}/objects`, undefined, true);
+}
+
+export function editShowObject(
+  projectId: string, revision: number, action: ObjectAction, body: ObjectBody,
 ): Promise<ProjectDraftRecord> {
-  return request(`/api/gui/v1/projects/${encodeURIComponent(projectId)}/installation-objects/${action}`, {
-    method: "POST",
-    headers: { ...mutationHeaders(), "If-Match": `"${revision}"` },
-    body: JSON.stringify(body),
+  return request(`${projectUrl(projectId)}/objects/${action}`, {
+    method: "POST", headers: revised(revision), body: JSON.stringify(body),
+  }, true);
+}
+
+export function showObjectAction(
+  projectId: string, revision: number, action: "promote" | "remove-unused" | "adopt",
+  body?: { resource: string; kind: "fixture" | "path"; id: string },
+): Promise<ProjectDraftRecord> {
+  return request(`${projectUrl(projectId)}/object-actions/${action}`, {
+    method: "POST", headers: revised(revision), ...(body ? { body: JSON.stringify(body) } : {}),
+  }, true);
+}
+
+export function getShowObjectSummary(projectId: string): Promise<ShowObjectSummary> {
+  return request(`${projectUrl(projectId)}/object-summary`, undefined, true);
+}
+
+/** Scene scope: the objects a scene uses; effects may only target these. */
+export function getSceneObjects(projectId: string, sceneId: string): Promise<SceneObjects> {
+  return request(`${projectUrl(projectId)}/scenes/${encodeURIComponent(sceneId)}/objects`, undefined, true);
+}
+
+export function setSceneObjects(
+  projectId: string, sceneId: string, revision: number, objects: SceneObjectRef[],
+): Promise<ProjectDraftRecord> {
+  return request(`${projectUrl(projectId)}/scenes/${encodeURIComponent(sceneId)}/objects`, {
+    method: "PUT", headers: revised(revision), body: JSON.stringify({ objects }),
   }, true);
 }
 
@@ -3697,8 +3784,3 @@ export function detectWledController(installationId: string, host: string) {
   });
 }
 
-export function importLightingDeviceResource(projectId: string, resource: string, revision: number) {
-  return request(`/api/gui/v1/projects/${encodeURIComponent(projectId)}/lighting-device-resources/${encodeURIComponent(resource)}`, {
-    method: "POST", headers: { ...mutationHeaders(), "If-Match": `"${revision}"` },
-  });
-}

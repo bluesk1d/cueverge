@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
-import { createLightingDevice, importLightingDeviceResource, removeLightingDevice } from "./api";
+import { createLightingDevice, removeLightingDevice } from "./api";
 
 const fetchMock = vi.fn<typeof fetch>();
 const csrfToken = "lighting-device-regression-csrf";
@@ -31,12 +31,5 @@ test("removing a lighting device targets the encoded resource", async () => {
   await removeLightingDevice("home", "light.left", 4);
   expect(fetchMock).toHaveBeenCalledWith("/api/gui/v1/installations/home/lighting-devices/light.left", {
     method: "DELETE", credentials: "include", headers: {...headers, "If-Match": '"4"'},
-  });
-});
-
-test("importing a lighting device sends CSRF and revision headers together", async () => {
-  await importLightingDeviceResource("show", "light.left", 7);
-  expect(fetchMock).toHaveBeenCalledWith("/api/gui/v1/projects/show/lighting-device-resources/light.left", {
-    method: "POST", credentials: "include", headers: {...headers, "If-Match": '"7"'},
   });
 });

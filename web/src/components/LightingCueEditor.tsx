@@ -38,12 +38,20 @@ export function lightingTargets(
   editorMetadata: RecordValue,
   resource: string,
   knownNames: Record<string, string> = {},
+  sceneId?: string,
 ): { targets: LightingTarget[]; targetName: (kind: string, id: string) => string } {
   const binding = objects(record(installation).resources)
     .find((candidate) => candidate.resource === resource);
-  const objectNames = Object.fromEntries(objects(editorMetadata.installation_object_details)
-    .filter((item) => item.resource === resource)
+  const objectNames = Object.fromEntries([
+    ...objects(editorMetadata.inherited_objects), ...objects(editorMetadata.installation_object_details),
+  ].filter((item) => item.resource === resource)
     .map((item) => [`${text(item.kind)}:${text(item.id)}`, text(item.name)]));
+  // Scenes list the decorations they use; legacy shows without lists offer everything.
+  const sceneLists = editorMetadata.scene_objects;
+  const allowed = sceneId !== undefined && sceneLists !== null && typeof sceneLists === "object" && !Array.isArray(sceneLists)
+    ? new Set(objects(record(sceneLists)[sceneId]).filter((item) => item.resource === resource)
+      .map((item) => `${text(item.kind)}:${text(item.id)}`))
+    : null;
   const targetName = (kind: string, id: string) =>
     objectNames[`${kind}:${id}`] ?? knownNames[`${kind}:${id}`] ?? id.replaceAll("-", " ");
   const targets = (["segments", "fixtures", "paths"] as const).flatMap((kind) => {
@@ -51,7 +59,7 @@ export function lightingTargets(
     return objects(binding?.[kind]).map((target) => ({
       key: `${single}:${text(target.id)}`,
       label: `${targetName(single, text(target.id))} · ${kind.slice(0, -1)}`,
-    }));
+    })).filter((target) => allowed === null || allowed.has(target.key));
   });
   return { targets, targetName };
 }

@@ -207,24 +207,27 @@ async function openScenes(page: Page) {
   await openShowScenes(page);
 }
 
-test("object names reach effect targets and show navigation retains the explicit definition scope", async ({ page }) => {
+test("effect targets list only the scene's objects and the show page never manages installation objects", async ({ page }) => {
   const state = await sceneRoutes(page);
-  Object.assign(state.document.editor_metadata, { installation_object_details: [{
-    resource: "roofline.demo", kind: "fixture", id: "outline", name: "Porch outline", geometry_semantic_ids: [],
-  }] });
-  await page.route("**/installation-objects", (route) => route.fulfill({ json: {
-    project_id: state.project.id, project_name: state.project.name, revision: state.revision,
-    archived: false, installation_id: "demo-installation", layout_available: true,
-    resources: [], objects: [], geometry: [], editable_kinds: ["fixture", "path"],
+  const sceneId = state.document.scenes[0].id;
+  Object.assign(state.document.editor_metadata, {
+    installation_object_details: [{
+      resource: "roofline.demo", kind: "fixture", id: "outline", name: "Porch outline", geometry_semantic_ids: [],
+    }],
+    scene_objects: { [sceneId]: [{ resource: "roofline.demo", kind: "fixture", id: "outline" }] },
+  });
+  await page.route("**/scenes/*/objects", (route) => route.fulfill({ json: {
+    project_id: state.project.id, revision: state.revision, scene_id: sceneId,
+    objects: [{ resource: "roofline.demo", kind: "fixture", id: "outline", name: "Porch outline", owner: "show", targeted: false }],
+    available: [{ resource: "roofline.demo", kind: "path", id: "travel", name: "travel", owner: "show", targeted: false }],
   } }));
   await openScenes(page);
+  await expect(page.getByRole("button", { name: "Manage installation objects" })).toHaveCount(0);
+  await expect(page.getByRole("list", { name: "Scene objects" })).toContainText("Porch outline");
   await page.getByRole("button", { name: "Edit effect sample-1", exact: true }).click();
-  await expect(page.getByRole("combobox", { name: "Target decorations" })
-    .getByRole("option", { name: "Porch outline · fixture" })).toHaveAttribute("value", "fixture:outline");
-  await page.getByRole("button", { name: "Manage installation objects" }).click();
-  await expect(page.getByRole("button", { name: "Objects", exact: true })).toHaveAttribute("aria-pressed", "true");
-  await expect(page.getByRole("combobox", { name: "Definitions from show" })).toHaveValue(state.project.id);
-  await expect(page.getByText("Working draft revision", { exact: false })).toBeVisible();
+  const targets = page.getByRole("combobox", { name: "Target decorations" });
+  await expect(targets.getByRole("option", { name: "Porch outline · fixture" })).toHaveAttribute("value", "fixture:outline");
+  await expect(targets.getByRole("option", { name: "travel · path" })).toHaveCount(0);
   expect(state.saves).toHaveLength(0);
 });
 

@@ -12,6 +12,7 @@ from cueverge.gui.contracts import (
     SceneAuthoringOptions,
     SceneOutputCreate,
 )
+from cueverge.gui.object_hierarchy import inherits
 from cueverge.gui.repository import RevisionConflictError, StoredRevision
 
 if TYPE_CHECKING:
@@ -143,7 +144,16 @@ def _import_binding(
     document: dict[str, Any], draft: DraftProject, binding: ResourceBinding
 ) -> None:
     if not any(item.resource == binding.resource for item in draft.installation.resources):
-        document["installation"]["resources"].append(binding.model_dump(mode="json"))
+        # Bring in the device only: another show's fixtures/paths never leak into this one,
+        # and inheriting shows receive wiring from the installation on save.
+        imported = binding.model_copy(
+            update={
+                "fixtures": (),
+                "paths": (),
+                "segments": () if inherits(draft) else binding.segments,
+            }
+        )
+        document["installation"]["resources"].append(imported.model_dump(mode="json"))
 
 
 def save_scene_edit(

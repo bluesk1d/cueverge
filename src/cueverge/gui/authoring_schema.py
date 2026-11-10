@@ -244,24 +244,49 @@ def authoring_schema() -> dict[str, Any]:
     """Describe known spatial metadata while retaining other GUI-owned metadata."""
     schema = DraftProject.model_json_schema()
     schema["x-installation-objects"] = {
-        "read_tool": "get_installation_objects",
-        "edit_tool": "edit_installation_object",
+        "hierarchy": {
+            "installation": "wiring segments (one contiguous partition per pixel output) and "
+            "reusable fixtures/paths; inherited read-only by every show of the installation",
+            "show": "fixtures/paths owned by one show; other shows never see them",
+            "scene": "editor_metadata.scene_objects lists the objects a scene uses; effects "
+            "may only target those (targeted objects are always members)",
+        },
+        "installation_tools": {
+            "read": "get_installation_objects",
+            "edit": "edit_installation_object",
+            "segments": "set_installation_segments",
+            "scope": "installation_edit",
+        },
+        "show_tools": {
+            "read": "get_show_objects",
+            "edit": "edit_show_object",
+            "promote": "promote_show_object",
+            "remove_unused": "remove_unused_show_objects",
+            "adopt": "adopt_installation_objects",
+            "summary": "get_show_object_summary",
+            "scope": "direct_edit",
+        },
+        "scene_tools": {
+            "read": "get_scene_objects",
+            "set": "set_scene_objects",
+            "scope": "direct_edit",
+            "metadata_key": "scene_objects",
+        },
         "read_scope": "read",
-        "write_scope": "direct_edit",
         "edit_schema": InstallationObjectEditRequest.model_json_schema(),
         "delete_schema": InstallationObjectDeleteRequest.model_json_schema(),
         "actions": ["create", "update", "delete"],
         "editable_kinds": ["fixture", "path"],
-        "segment_partition_editing": False,
+        "member_pixel_ranges": "members may set start/end offsets within a segment",
+        "inheritance_flag": "editor_metadata.object_inheritance == 1",
+        "inherited_mirror": "editor_metadata.inherited_objects (read-only)",
         "requires_current_base_revision": True,
-        "definition_owner": "show_working_draft",
         "geometry_owner": "installation",
         "metadata_key": "installation_object_details",
         "details_schema": InstallationObjectDetails.model_json_schema(),
         "geometry_links": "semantic IDs; optional; never create or delete geometry",
-        "placement": "explicit links plus mapped member segments on the same output",
         "blocks_referenced_deletion": True,
-        "ui": "Installation > Objects; choose the show explicitly",
+        "ui": "Installation > Objects (installation); show page > Show objects; scene > Objects",
         "changes_live_playback": False,
     }
     schema["x-scene-authoring"] = {

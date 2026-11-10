@@ -36,8 +36,31 @@ class PixelSegment(FrozenModel):
 
 
 class SegmentReference(FrozenModel):
+    """One member of a fixture/path: a whole segment or a pixel range inside it.
+
+    start/end are offsets within the segment (end exclusive); omit both for the
+    whole segment. Ranges let shows address part of a physical run without
+    changing the installation's wiring partition.
+    """
+
     segment: str = Field(min_length=1)
     reverse: bool = False
+    start: int | None = Field(default=None, ge=0, exclude_if=lambda value: value is None)
+    end: int | None = Field(default=None, gt=0, exclude_if=lambda value: value is None)
+
+    @model_validator(mode="after")
+    def validate_range(self) -> "SegmentReference":
+        if (self.start is None) != (self.end is None):
+            raise ValueError("segment member start and end must be given together")
+        if self.start is not None and self.end is not None and self.end <= self.start:
+            raise ValueError("segment member end must be greater than start")
+        return self
+
+    def pixel_range(self, segment: "PixelSegment") -> range:
+        """Absolute output indices of this member in traversal order."""
+        first = segment.start + (self.start or 0)
+        last = segment.start + self.end if self.end is not None else segment.end
+        return range(last - 1, first - 1, -1) if self.reverse else range(first, last)
 
 
 class PixelFixture(FrozenModel):
@@ -96,6 +119,7 @@ class ResourceBinding(FrozenModel):
         targets = tuple((fixture.id, fixture.segments) for fixture in self.fixtures) + tuple(
             (path.id, path.segments) for path in self.paths
         )
+        segments_by_id = {segment.id: segment for segment in self.segments}
         for target_id, references in targets:
             referenced = [reference.segment for reference in references]
             missing = set(referenced).difference(known_segments)
@@ -103,8 +127,15 @@ class ResourceBinding(FrozenModel):
                 raise ValueError(
                     f"pixel target {target_id} references unknown segments: {sorted(missing)}"
                 )
-            if len(referenced) != len(set(referenced)):
-                raise ValueError(f"pixel target {target_id} repeats a segment")
+            covered: set[int] = set()
+            for reference in references:
+                segment = segments_by_id[reference.segment]
+                if reference.end is not None and reference.end > segment.pixel_count:
+                    raise ValueError(f"pixel target {target_id} range exceeds segment {segment.id}")
+                pixels = set(reference.pixel_range(segment))
+                if covered & pixels:
+                    raise ValueError(f"pixel target {target_id} repeats a segment")
+                covered |= pixels
         return self
 
 

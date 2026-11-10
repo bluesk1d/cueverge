@@ -1,6 +1,7 @@
 import hashlib
 import json
 import sqlite3
+from collections.abc import Mapping
 from contextlib import closing
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
@@ -16,6 +17,12 @@ from cueverge.gui.contracts import (
     PortableAssetRevision,
     ProjectExportDocument,
     Role,
+)
+from cueverge.gui.object_hierarchy import (
+    InheritanceError,
+    InstallationObjectsDocument,
+    apply_inheritance,
+    inherits,
 )
 from cueverge.protocol.device_v2 import (
     AgentSettings,
@@ -376,6 +383,13 @@ class GuiRepository:
                         CHECK (metadata_revision >= 1),
                     archived_at TEXT,
                     created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS installation_objects (
+                    installation_id TEXT PRIMARY KEY,
+                    revision INTEGER NOT NULL CHECK (revision >= 1),
+                    content_json TEXT NOT NULL,
+                    updated_by TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS installations (
@@ -3058,10 +3072,11 @@ class GuiRepository:
         occurred_at: str,
     ) -> StoredRevision:
         project_id = str(uuid4())
-        content_json = _draft_json(draft)
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             try:
+                draft = self._inherit(connection, draft, strict=False)
+                content_json = _draft_json(draft)
                 connection.execute(
                     """
                     INSERT INTO projects(id, name, head_revision, created_at, updated_at)
@@ -3538,10 +3553,11 @@ class GuiRepository:
         role: Role,
         occurred_at: str,
     ) -> StoredRevision:
-        proposed_json = _draft_json(draft)
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             try:
+                draft = self._inherit(connection, draft, strict=True)
+                proposed_json = _draft_json(draft)
                 project_row = connection.execute(
                     """
                     SELECT id, name, head_revision, metadata_revision, archived_at,
@@ -3739,6 +3755,13 @@ class GuiRepository:
                         current_revision=project.head_revision,
                         conflicting_paths=conflicting_paths,
                     )
+                source_json = _draft_json(
+                    self._inherit(
+                        connection,
+                        DraftProject.model_validate_json(source_json),
+                        strict=False,
+                    )
+                )
                 next_revision = project.head_revision + 1
                 connection.execute(
                     """
@@ -3803,6 +3826,138 @@ class GuiRepository:
             occurred_at,
             restored_draft,
         )
+
+    def _installation_objects(
+        self, connection: sqlite3.Connection, installation_id: str
+    ) -> tuple[int, InstallationObjectsDocument] | None:
+        row = connection.execute(
+            "SELECT revision, content_json FROM installation_objects WHERE installation_id = ?",
+            (installation_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return int(row["revision"]), InstallationObjectsDocument.model_validate_json(
+            str(row["content_json"])
+        )
+
+    def _inherit(
+        self, connection: sqlite3.Connection, draft: DraftProject, *, strict: bool
+    ) -> DraftProject:
+        installation_id = draft.editor_metadata.get("installation_id")
+        if not inherits(draft) or not isinstance(installation_id, str):
+            return draft
+        stored = self._installation_objects(connection, installation_id)
+        return apply_inheritance(draft, stored[1] if stored else None, strict=strict)
+
+    def get_installation_objects(
+        self, installation_id: str
+    ) -> tuple[int, InstallationObjectsDocument] | None:
+        """The installation's wiring and reusable objects with their revision (None if unset)."""
+        with self._connect() as connection:
+            return self._installation_objects(connection, installation_id)
+
+    def save_installation_objects(
+        self,
+        *,
+        installation_id: str,
+        expected_revision: int,
+        document: InstallationObjectsDocument,
+        actor: str,
+        role: Role,
+        occurred_at: str,
+        action: str = "installation.objects.update",
+        show_drafts: Mapping[str, DraftProject] | None = None,
+    ) -> tuple[int, tuple[str, ...]]:
+        """Save the store and re-materialize it into every participating show, atomically.
+
+        show_drafts replaces specific shows' head drafts in the same transaction (e.g.
+        a promotion). Returns the new store revision and the show IDs given new revisions.
+        """
+        content_json = json.dumps(document.model_dump(mode="json"), sort_keys=True)
+        updated: list[str] = []
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                current = self._installation_objects(connection, installation_id)
+                current_revision = current[0] if current else 0
+                if expected_revision != current_revision:
+                    raise RevisionConflictError(
+                        requested_revision=expected_revision,
+                        current_revision=current_revision,
+                        conflicting_paths=("/installation_objects",),
+                    )
+                next_revision = current_revision + 1
+                connection.execute(
+                    """
+                    INSERT INTO installation_objects(
+                        installation_id, revision, content_json, updated_by, updated_at
+                    ) VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(installation_id) DO UPDATE SET
+                        revision = excluded.revision, content_json = excluded.content_json,
+                        updated_by = excluded.updated_by, updated_at = excluded.updated_at
+                    """,
+                    (installation_id, next_revision, content_json, actor, occurred_at),
+                )
+                rows = connection.execute(
+                    """
+                    SELECT p.id, p.name, p.head_revision, r.content_json
+                    FROM projects p JOIN revisions r
+                      ON r.project_id = p.id AND r.revision = p.head_revision
+                    WHERE p.archived_at IS NULL
+                    """
+                ).fetchall()
+                for row in rows:
+                    project_id = str(row["id"])
+                    head_json = str(row["content_json"])
+                    draft = (show_drafts or {}).get(project_id) or DraftProject.model_validate_json(
+                        head_json
+                    )
+                    if (
+                        not inherits(draft)
+                        or draft.editor_metadata.get("installation_id") != installation_id
+                    ):
+                        continue
+                    try:
+                        inherited_json = _draft_json(
+                            apply_inheritance(draft, document, strict=False)
+                        )
+                    except ValueError as error:
+                        raise InheritanceError(f"Show {row['name']}: {error}") from error
+                    if inherited_json == head_json:
+                        continue
+                    revision = int(row["head_revision"]) + 1
+                    connection.execute(
+                        """
+                        INSERT INTO revisions(
+                            project_id, revision, parent_revision, content_json,
+                            actor, transaction_kind, created_at
+                        ) VALUES (?, ?, ?, ?, ?, 'update', ?)
+                        """,
+                        (project_id, revision, revision - 1, inherited_json, actor, occurred_at),
+                    )
+                    connection.execute(
+                        "UPDATE projects SET head_revision = ?, updated_at = ? WHERE id = ?",
+                        (revision, occurred_at, project_id),
+                    )
+                    updated.append(project_id)
+                self._insert_audit(
+                    connection,
+                    actor=actor,
+                    action=action,
+                    target=installation_id,
+                    result="success",
+                    occurred_at=occurred_at,
+                    authorization_context={
+                        "role": role.value,
+                        "revision": next_revision,
+                        "shows_updated": len(updated),
+                    },
+                )
+                connection.commit()
+            except BaseException:
+                connection.rollback()
+                raise
+        return next_revision, tuple(updated)
 
     def append_audit(
         self,

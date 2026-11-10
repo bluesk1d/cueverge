@@ -60,6 +60,7 @@ from cueverge.gui.contracts import (
     DraftProject,
     InstallationObjectDeleteRequest,
     InstallationObjectEditRequest,
+    InstallationSegmentsRequest,
     InteractionEditRequest,
     InteractionPreviewRequest,
     OperateActionRequest,
@@ -71,6 +72,7 @@ from cueverge.gui.contracts import (
     Role,
     SceneLightingPreviewRequest,
     SceneMediaPreviewRequest,
+    SceneObjectsRequest,
     ShowPlanEditRequest,
     StageReferenceRequest,
     UpdateRevisionReleaseRequest,
@@ -86,8 +88,21 @@ from cueverge.gui.installation_calibration import (
     output_timing_response,
 )
 from cueverge.gui.installation_objects import (
+    adopt_show,
+    installation_inventory,
     installation_object_inventory,
+    remove_unused_objects,
+    save_installation_level_object,
     save_installation_object,
+    save_installation_segments,
+    scene_object_view,
+    show_object_summary,
+)
+from cueverge.gui.installation_objects import (
+    promote_show_object as promote_show_object_service,
+)
+from cueverge.gui.installation_objects import (
+    set_scene_objects as set_scene_objects_service,
 )
 from cueverge.gui.installation_photos import MAX_PHOTO_BYTES, InstallationPhotoError
 from cueverge.gui.installation_timing import InstallationTimingError
@@ -1042,6 +1057,9 @@ def create_mcp_app(services: GuiServices) -> Starlette:
                         "update_lighting_device",
                         "remove_lighting_device",
                         "detect_wled_controller",
+                        "get_installation_objects",
+                        "edit_installation_object",
+                        "set_installation_segments",
                     ],
                 },
                 "description_tool": "describe_installation_photo",
@@ -1501,22 +1519,31 @@ def create_mcp_app(services: GuiServices) -> Starlette:
         except ProjectNotFoundError as error:
             raise ToolError(str(error)) from error
 
+    def object_call(call: Callable[[], Any]) -> Any:
+        try:
+            return call()
+        except (ProjectNotFoundError, ValueError, RevisionConflictError) as error:
+            raise ToolError(str(error)) from error
+
+    def runtime_installation_id() -> str:
+        return services.repository.get_runtime_installation().id
+
     @tool()
     def get_installation_objects() -> dict[str, JsonValue]:
-        """List this show's logical fixtures, segments and ordered paths, including unplaced ones.
+        """List the installation's wiring segments and reusable fixtures/ordered paths.
 
-        Requires read. Includes revision, membership/traversal, reference paths, layout
-        links and available geometry from the bound runtime installation. Definitions
-        belong to the working draft; geometry belongs to the installation. Segments
-        are inspected here, not repartitioned. Equivalent UI: Installation > Objects.
+        Requires read and this runtime's installation. Installation objects are inherited
+        read-only by every show of the installation; used_by lists the shows/scenes using
+        each. Show-only objects are in get_show_objects. revision is the base_revision for
+        edit_installation_object/set_installation_segments. Equivalent UI:
+        Installation > Objects.
         """
-        token = _authorize(services, McpScope.READ)
-        try:
-            return _bounded_result(
-                installation_object_inventory(services, token.project_id).model_dump(mode="json")
-            )
-        except (ProjectNotFoundError, ValueError) as error:
-            raise ToolError(str(error)) from error
+        input_installation_token(McpScope.READ)
+        return _bounded_result(
+            object_call(
+                lambda: installation_inventory(services, runtime_installation_id())
+            ).model_dump(mode="json")
+        )
 
     @tool()
     def edit_installation_object(
@@ -1524,19 +1551,117 @@ def create_mcp_app(services: GuiServices) -> Starlette:
         base_revision: int,
         request: InstallationObjectEditRequest | InstallationObjectDeleteRequest,
     ) -> dict[str, JsonValue]:
-        """Create, update or safely delete a fixture/ordered path in this show's working draft.
+        """Create, update or delete a reusable installation fixture/ordered path.
 
-        Requires direct_edit and the current base_revision from get_installation_objects.
-        IDs stay stable; update cannot rename them. Validates unique known member segments,
-        reversal and fixture precedence. Deletion refuses effect/authoring references.
-        Optional geometry_semantic_ids link existing geometry in the bound installation;
-        clearing links or deleting a definition never deletes installation geometry.
-        Does not edit wiring, place new geometry, publish, apply or send hardware commands.
-        Equivalent UI: Installation > Objects > properties and layout links.
+        Requires installation_edit, an installation author role and the revision from
+        get_installation_objects (0 before the first save). Every inheriting show gets
+        the change as a new draft revision. Creating an ID a show already defines is
+        refused (use promote_show_object); deleting one that effects target is refused.
+        Members may select a pixel range inside a segment ({segment, start, end}).
+        Equivalent UI: Installation > Objects.
+        """
+        token = input_installation_token(McpScope.INSTALLATION_EDIT)
+        revision = object_call(
+            lambda: save_installation_level_object(
+                services,
+                installation_id=runtime_installation_id(),
+                base_revision=base_revision,
+                request=request,
+                action=action,
+                actor=token.username,
+                role=_token_role(services, token),
+            )
+        )
+        _audit(services, token, f"mcp.installation.object.{action}", request.id, "success")
+        return {"revision": revision, "hardware_commands_sent": False}
+
+    @tool()
+    def set_installation_segments(
+        resource: str,
+        segments: list[dict[str, JsonValue]],
+        base_revision: int,
+        names: dict[str, str] | None = None,
+    ) -> dict[str, JsonValue]:
+        """Replace a pixel output's wiring segments (a contiguous partition from pixel 0).
+
+        Requires installation_edit and the revision from get_installation_objects.
+        segments: [{"id", "start", "end"}]. Removing a segment that fixtures, paths or
+        scenes use is refused. Every inheriting show is updated. Equivalent UI:
+        Installation > Objects > Wiring segments.
+        """
+        token = input_installation_token(McpScope.INSTALLATION_EDIT)
+        try:
+            parsed = InstallationSegmentsRequest.model_validate(
+                {"resource": resource, "segments": segments, "names": names or {}}
+            )
+        except ValidationError as error:
+            raise ToolError(str(error)) from error
+        revision = object_call(
+            lambda: save_installation_segments(
+                services,
+                installation_id=runtime_installation_id(),
+                base_revision=base_revision,
+                resource=parsed.resource,
+                segments=parsed.segments,
+                names=parsed.names,
+                actor=token.username,
+                role=_token_role(services, token),
+            )
+        )
+        _audit(services, token, "mcp.installation.segments", resource, "success")
+        return {"revision": revision, "hardware_commands_sent": False}
+
+    @tool()
+    def get_show_objects() -> dict[str, JsonValue]:
+        """List the fixtures/paths/segments this show can use, with owner and scene usage.
+
+        Requires read. owner is installation (inherited, read-only here) or show (this
+        show only). scene_ids lists scenes (and 'ambient') that use each object. inherits
+        is false for legacy shows that keep self-contained definitions (see
+        adopt_installation_objects). Equivalent UI: show page > Show objects.
+        """
+        token = _authorize(services, McpScope.READ)
+        return _bounded_result(
+            object_call(
+                lambda: installation_object_inventory(services, token.project_id)
+            ).model_dump(mode="json")
+        )
+
+    def show_change(
+        token: McpToken, action: str, target: str, updated: Any
+    ) -> dict[str, JsonValue]:
+        _audit(
+            services,
+            token,
+            f"mcp.show.object.{action}",
+            target,
+            "success",
+            details={"created_revision": updated.revision},
+        )
+        return {
+            "project_id": token.project_id,
+            "revision": updated.revision,
+            "hardware_commands_sent": False,
+            "requires_human_approval": False,
+        }
+
+    @tool()
+    def edit_show_object(
+        action: Literal["create", "update", "delete"],
+        base_revision: int,
+        request: InstallationObjectEditRequest | InstallationObjectDeleteRequest,
+    ) -> dict[str, JsonValue]:
+        """Create, update or delete a fixture/ordered path owned by this show only.
+
+        Requires direct_edit and the current base_revision. Installation objects cannot be
+        changed here. request.scene_id (create) also adds the object to that scene. IDs
+        stay stable; deletion refuses effect/authoring references. Members may select a
+        pixel range inside a segment. Equivalent UI: scene objects > New show fixture/path
+        and show page > Show objects.
         """
         token = _authorize(services, McpScope.DIRECT_EDIT)
-        try:
-            updated = save_installation_object(
+        updated = object_call(
+            lambda: save_installation_object(
                 services,
                 project_id=token.project_id,
                 base_revision=base_revision,
@@ -1545,22 +1670,128 @@ def create_mcp_app(services: GuiServices) -> Starlette:
                 actor=token.username,
                 role=_token_role(services, token),
             )
-        except (ProjectNotFoundError, ValueError, RevisionConflictError) as error:
-            raise ToolError(str(error)) from error
-        _audit(
-            services,
-            token,
-            f"mcp.installation.object.{action}",
-            request.id,
-            "success",
-            details={"base_revision": base_revision, "created_revision": updated.revision},
+        )
+        return show_change(token, action, request.id, updated)
+
+    @tool()
+    def promote_show_object(
+        resource: str, kind: Literal["fixture", "path"], id: str, base_revision: int
+    ) -> dict[str, JsonValue]:
+        """Move a show fixture/path into the installation so every show inherits it.
+
+        Requires direct_edit and installation_edit. Refused if another show defines a
+        different object with the same ID. Equivalent UI: Show objects > Promote.
+        """
+        token = _authorize(services, McpScope.DIRECT_EDIT)
+        input_installation_token(McpScope.INSTALLATION_EDIT)
+        updated = object_call(
+            lambda: promote_show_object_service(
+                services,
+                project_id=token.project_id,
+                base_revision=base_revision,
+                resource=resource,
+                kind=kind,
+                object_id=id,
+                actor=token.username,
+                role=_token_role(services, token),
+            )
+        )
+        return show_change(token, "promote", id, updated)
+
+    @tool()
+    def remove_unused_show_objects(base_revision: int) -> dict[str, JsonValue]:
+        """Delete this show's own fixtures/paths that no scene lists or targets (direct_edit).
+
+        Installation objects are never removed. Equivalent UI: Show objects > Remove unused.
+        """
+        token = _authorize(services, McpScope.DIRECT_EDIT)
+        updated, removed = object_call(
+            lambda: remove_unused_objects(
+                services,
+                project_id=token.project_id,
+                base_revision=base_revision,
+                actor=token.username,
+                role=_token_role(services, token),
+            )
         )
         return {
-            "project_id": token.project_id,
-            "revision": updated.revision,
-            "hardware_commands_sent": False,
-            "requires_human_approval": False,
+            **show_change(token, "remove_unused", token.project_id, updated),
+            "removed": [list(key) for key in removed],
         }
+
+    @tool()
+    def adopt_installation_objects(base_revision: int) -> dict[str, JsonValue]:
+        """Make a legacy show inherit its installation's wiring and objects (direct_edit).
+
+        Show segments that subdivide installation wiring become show fixtures with pixel
+        ranges; effects targeting them are re-pointed. Equivalent UI: Show objects > Adopt.
+        """
+        token = _authorize(services, McpScope.DIRECT_EDIT)
+        updated = object_call(
+            lambda: adopt_show(
+                services,
+                project_id=token.project_id,
+                base_revision=base_revision,
+                actor=token.username,
+                role=_token_role(services, token),
+            )
+        )
+        return show_change(token, "adopt", token.project_id, updated)
+
+    @tool()
+    def get_scene_objects(scene_id: str) -> dict[str, JsonValue]:
+        """List the objects a scene uses and the show/installation objects it could add.
+
+        Requires read. Effects in the scene may only target its objects; targeted entries
+        cannot be removed until those effects change. Equivalent UI: scene > Objects.
+        """
+        token = _authorize(services, McpScope.READ)
+        return _bounded_result(
+            object_call(lambda: scene_object_view(services, token.project_id, scene_id)).model_dump(
+                mode="json"
+            )
+        )
+
+    @tool()
+    def set_scene_objects(
+        scene_id: str, objects: list[dict[str, JsonValue]], base_revision: int
+    ) -> dict[str, JsonValue]:
+        """Replace a scene's object list ([{resource, kind, id}]) (direct_edit).
+
+        Adding an installation object to a scene never changes the installation.
+        Equivalent UI: scene > Objects > Add/Remove.
+        """
+        token = _authorize(services, McpScope.DIRECT_EDIT)
+        try:
+            parsed = SceneObjectsRequest.model_validate({"objects": objects})
+        except ValidationError as error:
+            raise ToolError(str(error)) from error
+        updated = object_call(
+            lambda: set_scene_objects_service(
+                services,
+                project_id=token.project_id,
+                base_revision=base_revision,
+                scene_id=scene_id,
+                objects=parsed.objects,
+                actor=token.username,
+                role=_token_role(services, token),
+            )
+        )
+        return show_change(token, "scene_objects", scene_id, updated)
+
+    @tool()
+    def get_show_object_summary() -> dict[str, JsonValue]:
+        """Read-only roll-up of devices and objects used by each scene, deduplicated.
+
+        Requires read. Adds/removes happen per scene (set_scene_objects). Equivalent UI:
+        show page > Devices and objects.
+        """
+        token = _authorize(services, McpScope.READ)
+        return _bounded_result(
+            object_call(lambda: show_object_summary(services, token.project_id)).model_dump(
+                mode="json"
+            )
+        )
 
     @tool()
     def create_scene(base_revision: int, request: CreateSceneRequest) -> dict[str, JsonValue]:
@@ -2402,6 +2633,15 @@ def create_mcp_app(services: GuiServices) -> Starlette:
                     "device_players": "get_device_players",
                     "control_device_player": "control_device_player",
                     "installation_objects": "get_installation_objects",
+                    "set_installation_segments": "set_installation_segments",
+                    "show_objects": "get_show_objects",
+                    "edit_show_object": "edit_show_object",
+                    "promote_show_object": "promote_show_object",
+                    "remove_unused_show_objects": "remove_unused_show_objects",
+                    "adopt_installation_objects": "adopt_installation_objects",
+                    "scene_objects": "get_scene_objects",
+                    "set_scene_objects": "set_scene_objects",
+                    "show_object_summary": "get_show_object_summary",
                     "stage_map": "get_stage_map",
                     "update_stage_reference": "update_stage_reference",
                     "edit_installation_object": "edit_installation_object",

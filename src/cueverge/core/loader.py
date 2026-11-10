@@ -502,7 +502,8 @@ def _resolve_target(
         )
         if lighting_segment is None:
             raise ShowPackageError(f"scene {scene_id} uses unknown pixel segment: {target.id}")
-        references: tuple[tuple[PixelSegment, bool], ...] = ((lighting_segment, False),)
+        indices = tuple(range(lighting_segment.start, lighting_segment.end))
+        return indices, precedence, lighting_segment
     elif target.kind == "fixture":
         fixture = next(
             (fixture for fixture in binding.fixtures if fixture.id == target.id),
@@ -511,22 +512,13 @@ def _resolve_target(
         if fixture is None:
             raise ShowPackageError(f"scene {scene_id} uses unknown pixel fixture: {target.id}")
         precedence = fixture.precedence
-        references = _resolve_references(binding, fixture.segments)
+        references = fixture.segments
     else:
         path = next((path for path in binding.paths if path.id == target.id), None)
         if path is None:
             raise ShowPackageError(f"scene {scene_id} uses unknown pixel path: {target.id}")
-        references = _resolve_references(binding, path.segments)
-    indices = tuple(
-        index
-        for segment, reverse in references
-        for index in (
-            range(segment.end - 1, segment.start - 1, -1)
-            if reverse
-            else range(segment.start, segment.end)
-        )
-    )
-    return indices, precedence, lighting_segment
+        references = path.segments
+    return _member_indices(binding, references), precedence, lighting_segment
 
 
 def _load_cues(
@@ -554,12 +546,16 @@ def _load_cues(
     return tuple(loaded)
 
 
-def _resolve_references(
+def _member_indices(
     binding: ResourceBinding,
     references: tuple[SegmentReference, ...],
-) -> tuple[tuple[PixelSegment, bool], ...]:
+) -> tuple[int, ...]:
     segments = {segment.id: segment for segment in binding.segments}
-    return tuple((segments[reference.segment], reference.reverse) for reference in references)
+    return tuple(
+        index
+        for reference in references
+        for index in reference.pixel_range(segments[reference.segment])
+    )
 
 
 def _validate_asset_id(asset: str) -> str:

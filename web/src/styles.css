@@ -6295,10 +6295,14 @@ p {
 .installation-object-inspector fieldset { min-width: 0; }
 /* Darker blue keeps white button text at WCAG AA contrast (4.5:1). */
 .installation-objects-panel .primary-button,
+.scene-objects .primary-button,
+.show-objects .primary-button,
 .show-header-actions .primary-button,
 .lighting-device-form .primary-button,
 .lighting-device__actions .primary-button { background: #1b63bd; border-color: #1b63bd; }
 .installation-objects-panel .primary-button:hover:not(:disabled),
+.scene-objects .primary-button:hover:not(:disabled),
+.show-objects .primary-button:hover:not(:disabled),
 .show-header-actions .primary-button:hover:not(:disabled),
 .lighting-device-form .primary-button:hover:not(:disabled),
 .lighting-device__actions .primary-button:hover:not(:disabled) { background: #1555a6; }
@@ -7833,3 +7837,19 @@ p {
   display: grid;
   gap: 2px;
 }
+
+.scene-objects .primary-button,
+.show-objects .primary-button { color: white; font-weight: 700; padding-inline: 16px; }
+.scene-objects .object-toolbar { align-items: end; }
+.show-objects { display: grid; gap: 8px; margin-top: 16px; }
+.show-object-scenes { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.show-object-scenes li {
+  display: grid;
+  gap: 2px;
+  padding: 8px 10px;
+  border: 1px solid var(--cv-border);
+  border-radius: var(--cv-radius-control);
+}
+.show-object-scenes small { color: var(--cv-text-muted); }
+.object-member-range { display: flex; flex-wrap: wrap; gap: 8px; align-items: end; }
+.object-issues { color: var(--cv-text-muted); }

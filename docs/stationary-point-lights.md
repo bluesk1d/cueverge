@@ -43,11 +43,11 @@ select the new resource. Each lamp has an independent resource and position;
 lighting compositions sample RGB at that position. A point light has one sample
 at index zero and no traversal.
 
-New shows inherit registered outputs. For an existing show, open **Installation →
-Objects**, select the show and click **Add light.left to this show** (and Right;
-registered WLED controllers get the same button).
-This revises only that working draft. Select the resource when adding a lighting
-output to a scene, author its lighting, then publish/apply through the normal flow.
+New shows inherit registered outputs. For an existing show, open a scene and use
+**Add output**, choosing the registered resource (LIFX bulbs and WLED controllers
+alike). This adds only the device to that show's working draft; another show's
+fixtures are never copied. Author its lighting, then publish/apply through the
+normal flow.
 Registration and draft import alone do not start playback or apply a show.
 The installation outputs remain available when other shows are applied.
 Timing calibration and armed physical output testing can target them directly.

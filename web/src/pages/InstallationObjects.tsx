@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import {
-  getInstallation, importLightingDeviceResource,
-  editInstallationObject, getInstallationObjects, getProjectMembers, getProjects,
-  type InstallationObjectEdit, type InstallationObjectInventory, type InstallationObjectRecord,
-  type ObjectLayoutSelection, type ProjectSummary, type Session,
+  editInstallationObject, getInstallationObjects, setInstallationSegments,
+  type InstallationLevelObjects, type InstallationObjectEdit, type InstallationObjectRecord,
+  type ObjectLayoutSelection, type Session,
 } from "../api";
+import { ObjectDefinitionForm } from "../components/ObjectDefinitionForm";
 import { EmptyState, Panel } from "../components/ui";
 
 const keyOf = (item: { resource: string; kind: string; id: string }) =>
@@ -15,53 +15,38 @@ const KIND_GROUPS = [
   { kind: "segment", label: "Segments (wiring)" },
 ] as const;
 
-export function InstallationObjects({ session, projectId, onProjectChange, onDirtyChange, onLayout }: {
+type WiringRow = { id: string; name: string; count: number };
+
+/** Installation-level objects: wiring segments and reusable fixtures/paths every show inherits. */
+export function InstallationObjects({ session, installationId, onDirtyChange, onLayout }: {
   session?: Session;
-  projectId: string;
-  onProjectChange: (id: string) => void;
+  installationId: string;
   onDirtyChange: (dirty: boolean) => void;
   onLayout: (selection: ObjectLayoutSelection) => void;
 }) {
-  const [projects, setProjects] = useState<ProjectSummary[]>([]);
-  const [inventory, setInventory] = useState<InstallationObjectInventory | null>(null);
-  const [canEdit, setCanEdit] = useState(false);
+  const [inventory, setInventory] = useState<InstallationLevelObjects | null>(null);
   const [selected, setSelected] = useState<InstallationObjectRecord | null>(null);
   const [editing, setEditing] = useState<InstallationObjectEdit | null>(null);
   const [creating, setCreating] = useState(false);
+  const [wiring, setWiring] = useState<{ resource: string; rows: WiringRow[] } | null>(null);
   const [dirty, setDirty] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [search, setSearch] = useState("");
-  const [pointLights, setPointLights] = useState<string[]>([]);
-  useEffect(() => { void getInstallation().then((value) => setPointLights(value.resources.filter((r) => (r.target === "lifx" || r.target === "wled")).map((r) => r.resource))).catch(() => {}); }, []);
   const [retry, setRetry] = useState(0);
   const links = useRef<HTMLFieldSetElement>(null);
+  const canEdit = session !== undefined && ["designer", "publisher", "administrator"].includes(session.role);
   useEffect(() => {
     let current = true;
-    void getProjects().then((value) => { if (current) setProjects(value); })
+    setError(null);
+    void getInstallationObjects(installationId).then((value) => {
+      if (!Array.isArray(value?.objects)) throw new Error("Installation objects are unavailable.");
+      if (current) setInventory(value);
+    })
       .catch((failure: unknown) => { if (current) setError(message(failure)); });
     return () => { current = false; };
-  }, [retry]);
-  useEffect(() => {
-    let current = true;
-    setInventory(null); setCanEdit(false); setSelected(null); setEditing(null);
-    setDirty(false); setNotice(null); setError(null);
-    if (!projectId) return;
-    setLoading(true);
-    void Promise.all([
-      getInstallationObjects(projectId),
-      session?.role === "administrator" ? Promise.resolve(true) :
-        getProjectMembers(projectId).then((members) => members.some((member) =>
-          member.username === session?.username &&
-          ["designer", "publisher", "administrator"].includes(member.role))),
-    ]).then(([value, permitted]) => {
-      if (current) { setInventory(value); setCanEdit(permitted && !value.archived); }
-    }).catch((failure: unknown) => { if (current) setError(message(failure)); })
-      .finally(() => { if (current) setLoading(false); });
-    return () => { current = false; };
-  }, [projectId, retry, session?.role, session?.username]);
+  }, [installationId, retry]);
   useEffect(() => {
     onDirtyChange(dirty);
     const guard = (event: BeforeUnloadEvent) => { if (dirty) event.preventDefault(); };
@@ -70,225 +55,185 @@ export function InstallationObjects({ session, projectId, onProjectChange, onDir
   }, [dirty, onDirtyChange]);
   useEffect(() => () => onDirtyChange(false), [onDirtyChange]);
 
-  function discard() {
-    return !dirty || window.confirm("Discard unsaved object changes?");
-  }
+  const discard = () => !dirty || window.confirm("Discard unsaved object changes?");
+  function close() { setSelected(null); setEditing(null); setCreating(false); setWiring(null); setDirty(false); }
   function choose(item: InstallationObjectRecord) {
     if (!discard()) return;
-    setSelected(item); setCreating(false); setDirty(false); setError(null); setNotice(null);
-    setEditing(item.kind === "segment" ? null : {
-      resource: item.resource, kind: item.kind, id: item.id, name: item.name,
-      segments: item.segments.map((member) => ({ ...member })),
-      precedence: item.precedence, geometry_semantic_ids: [...item.geometry_semantic_ids],
-    });
+    close(); setSelected(item); setError(null); setNotice(null);
+    if (item.kind !== "segment") {
+      setEditing({
+        resource: item.resource, kind: item.kind, id: item.id, name: item.name,
+        segments: item.segments.map((member) => ({ ...member })),
+        precedence: item.precedence, geometry_semantic_ids: [...item.geometry_semantic_ids],
+      });
+    }
   }
-  function start() {
-    if (!discard() || !inventory?.resources.length) return;
-    setSelected(null); setCreating(true); setDirty(true); setError(null); setNotice(null);
-    setEditing({
-      resource: inventory.resources[0].resource, kind: "fixture", id: "", name: "",
-      segments: [], precedence: 0, geometry_semantic_ids: [],
-    });
+  function startWiring(resource: string) {
+    if (!discard() || !inventory) return;
+    const output = inventory.resources.find((value) => value.resource === resource);
+    if (!output) return;
+    close();
+    const names = Object.fromEntries(inventory.objects.filter((item) => item.kind === "segment" && item.resource === resource)
+      .map((item) => [item.id, item.name]));
+    setWiring({ resource, rows: output.segments.length
+      ? output.segments.map((segment) => ({ id: segment.id, name: names[segment.id] ?? "", count: segment.end - segment.start }))
+      : [{ id: "all", name: "Whole output", count: output.pixel_count }] });
   }
-  function change(patch: Partial<InstallationObjectEdit>) {
-    setEditing((value) => value ? { ...value, ...patch } : null);
-    setDirty(true);
-  }
-  async function save(action: "create" | "update" | "delete") {
-    if (!inventory || !editing) return;
-    if (action === "delete" && !window.confirm(`Delete ${editing.name}? Installation geometry is retained.`)) return;
+  async function run(work: () => Promise<InstallationLevelObjects>, done: string) {
     setBusy(true); setError(null); setNotice(null);
-    let saved = false;
     try {
-      await editInstallationObject(projectId, inventory.revision, action, action === "delete"
-        ? { resource: editing.resource, kind: editing.kind, id: editing.id } : editing);
-      saved = true;
-      setDirty(false); setSelected(null); setEditing(null); setCreating(false);
-      setInventory(null);
-      setNotice("Saved to the working draft. Live playback is unchanged.");
-      setInventory(await getInstallationObjects(projectId));
+      setInventory(await work());
+      close();
+      setNotice(done);
     } catch (failure) {
-      setError(saved ? `Object saved, but inventory refresh failed. Refresh objects before editing again. ${message(failure)}` : message(failure));
+      setError(message(failure));
     } finally {
       setBusy(false);
     }
   }
-  const binding = inventory?.resources.find((value) => value.resource === editing?.resource);
-  const members = editing?.segments ?? [];
-  const valid = Boolean(editing?.id.trim() && editing.name.trim() && members.length &&
-    new Set(members.map((member) => member.segment)).size === members.length &&
-    members.every((member) => binding?.segments.some((segment) => segment.id === member.segment)) &&
-    Number.isInteger(editing.precedence) && editing.precedence >= 0 && editing.precedence <= 1000);
-  const traversal = members.flatMap((member) => {
-    const segment = binding?.segments.find((value) => value.id === member.segment);
-    return segment ? [{
-      segment: member.segment,
-      first: member.reverse ? segment.end - 1 : segment.start,
-      last: member.reverse ? segment.start : segment.end - 1,
-      count: segment.end - segment.start,
-    }] : [];
-  });
+  if (!inventory) {
+    return <Panel title="Installation objects" description="Wiring and reusable decorations shared by every show." className="installation-objects-panel">
+      {error ? <p role="alert">{error}</p> : <p role="status">Loading installation objects...</p>}
+    </Panel>;
+  }
+  const outputs = inventory.resources;
+  const query = search.trim().toLowerCase();
+  const wiringOutput = wiring ? outputs.find((value) => value.resource === wiring.resource) : undefined;
+  const wiringTotal = wiring?.rows.reduce((sum, row) => sum + (Number.isFinite(row.count) ? row.count : 0), 0) ?? 0;
+  const wiringValid = Boolean(wiring && wiringOutput && wiringTotal === wiringOutput.pixel_count &&
+    wiring.rows.every((row) => row.id.trim() && Number.isInteger(row.count) && row.count > 0) &&
+    new Set(wiring.rows.map((row) => row.id.trim())).size === wiring.rows.length);
   return <Panel title="Installation objects" className="installation-objects-panel"
-    description="Logical fixtures, segments and ordered paths, including objects without a layout placement.">
-    <label>Definitions from show<select value={projectId} disabled={busy} onChange={(event) => {
-      if (discard()) onProjectChange(event.target.value);
-    }}>
-      <option value="">Choose a show explicitly</option>
-      {projects.map((project) => <option key={project.id} value={project.id}>
-        {project.name}{project.archived_at ? " (archived)" : ""}
-      </option>)}
-    </select></label>
-    {loading && <p role="status">Loading object definitions...</p>}
-    {error && <p role="alert">{error}</p>}
+    description="Wiring segments and reusable fixtures/paths every show of this installation inherits. Show-only decorations are managed inside each show.">
     <div className="object-toolbar">
-      <button className="primary-button" disabled={busy || loading} onClick={() => { if (discard()) setRetry((value) => value + 1); }}>Refresh objects</button>
+      <button className="primary-button" disabled={busy} onClick={() => { if (discard()) { close(); setRetry((value) => value + 1); } }}>Refresh objects</button>
+      {canEdit && <button className="primary-button" disabled={busy || !outputs.some((value) => value.segments.length)} onClick={() => {
+        if (!discard()) return;
+        const first = outputs.find((value) => value.segments.length) ?? outputs[0];
+        close(); setCreating(true); setDirty(true);
+        setEditing({ resource: first.resource, kind: "fixture", id: "", name: "", segments: [], precedence: 0, geometry_semantic_ids: [] });
+      }}>Create installation fixture or path</button>}
     </div>
+    {error && <p role="alert">{error}</p>}
     {notice && <p role="status">{notice}</p>}
-    {!projectId && <p>Select a show to inspect its working draft. No show is chosen automatically from live playback.</p>}
-    {inventory && <>
-      <p>Definitions: <strong>{inventory.project_name}</strong> · Working draft revision {inventory.revision}
-        {inventory.archived && " · Archived (read only)"}</p>
-      <p>Layout: {inventory.layout_available ? `installation ${inventory.installation_id}` : "not bound to this runtime installation"}.
-        Saving definitions does not publish, apply, or change live playback.</p>
-      <div className="object-toolbar">
-      {canEdit && pointLights.filter((r) => !inventory.resources.some((b) => b.resource === r)).map((resource) =>
-        <button key={resource} className="primary-button" disabled={busy || dirty} onClick={() => {
-          setBusy(true); setError(null);
-          void importLightingDeviceResource(projectId, resource, inventory.revision)
-            .then(() => { setNotice(`${resource} added to this show`); setRetry((v) => v + 1); })
-            .catch((e: unknown) => setError(message(e))).finally(() => setBusy(false));
-        }}>Add {resource} to this show</button>)}
-      {canEdit && <button className="primary-button" disabled={busy || !inventory.resources.length} onClick={start}>Create fixture or path</button>}
-      </div>
-      <label>Find an object<input value={search} onChange={(event) => setSearch(event.target.value)} /></label>
-      {!inventory.objects.length && <EmptyState title="No logical objects"
-        description="This show has no saved LED segment, fixture or path definitions. Unplaced objects will appear here too." />}
-      <div className="installation-objects">
-        <div className="object-groups" role="group" aria-label="Logical objects">
-          {inventory.resources.map((resource) => {
-            const query = search.trim().toLowerCase();
-            const items = inventory.objects.filter((item) => item.resource === resource.resource &&
-              `${item.name} ${item.id} ${item.resource} ${item.kind}`.toLowerCase().includes(query));
-            if (!items.length) return null;
-            return <section key={resource.resource} className="object-group" aria-label={`Objects on ${resource.resource}`}>
-              <h3>{resource.resource} <small>{resource.pixel_count} pixels</small></h3>
-              {KIND_GROUPS.map(({ kind, label }) => {
-                const group = items.filter((item) => item.kind === kind);
-                if (!group.length) return null;
-                // Segments mirror wiring and can number in the hundreds; keep them collapsed unless searching.
-                return <details key={kind} className="object-kind-group" open={kind !== "segment" || Boolean(query)}>
-                  <summary>{label} <span className="object-count">{group.length}</span></summary>
-                  <ul className="object-rows">{group.map((item) => <li key={keyOf(item)} className="object-row"
-                    data-selected={selected !== null && keyOf(selected) === keyOf(item)}>
-                    <button type="button" className="object-row__name" disabled={busy}
-                      aria-pressed={selected !== null && keyOf(selected) === keyOf(item)}
-                      onClick={() => choose(item)}><span className="sr-only">Inspect </span>{item.name}</button>
-                    <span className="object-row__meta">{item.pixel_count} px</span>
-                    <span className={`object-badge${item.geometry_ids.length ? " object-badge--placed" : ""}`}>
-                      {item.geometry_ids.length ? "Placed" : "Not placed"}</span>
-                    {item.references.length > 0 && <span className="object-row__meta">{item.references.length} {item.references.length === 1 ? "use" : "uses"}</span>}
-                  </li>)}</ul>
-                </details>;
-              })}
-            </section>;
-          })}
-        </div>
-        {(selected || editing) && <section className="installation-object-inspector" aria-label="Object properties">
-          <h3>{creating ? "New object" : selected?.name}</h3>
-          {selected && <>
-            <p>ID: {selected.id} · Output: {selected.resource} · {selected.pixel_count} pixels</p>
-            {inventory.layout_available && <div className="object-toolbar">
-              {selected.geometry_ids.length > 0 && <button type="button" className="primary-button" disabled={busy} onClick={() => {
-                if (discard()) onLayout({ name: selected.name, geometryIds: selected.geometry_ids });
-              }}>Show in Layout</button>}
-              {canEdit && selected.kind !== "segment" && !selected.geometry_ids.length &&
-                <button type="button" className="primary-button" disabled={busy}
-                  onClick={() => links.current?.scrollIntoView({ block: "nearest" })}>Place in Layout</button>}
+    <p>Changes here apply to every show that inherits installation objects as a new working-draft revision. They never publish, apply or change live playback.</p>
+    <label>Find an object<input value={search} onChange={(event) => setSearch(event.target.value)} /></label>
+    {!outputs.length && <EmptyState title="No pixel outputs" description="Add an LED controller or LIFX bulb under Devices first." />}
+    <div className="installation-objects">
+      <div className="object-groups" role="group" aria-label="Logical objects">
+        {outputs.map((output) => {
+          const items = inventory.objects.filter((item) => item.resource === output.resource &&
+            `${item.name} ${item.id} ${item.resource} ${item.kind}`.toLowerCase().includes(query));
+          return <section key={output.resource} className="object-group" aria-label={`Objects on ${output.resource}`}>
+            <h3>{output.resource} <small>{output.pixel_count} pixels</small></h3>
+            {canEdit && <div className="object-toolbar">
+              <button type="button" disabled={busy} onClick={() => startWiring(output.resource)}>Edit wiring for {output.resource}</button>
             </div>}
-            <details><summary>References ({selected.references.length})</summary>
-              {selected.references.length ? <ul>{selected.references.map((path) => <li key={path}><code>{path}</code></li>)}</ul>
-                : <p>No effect or authoring references.</p>}
-            </details>
-            {selected.missing_geometry_semantic_ids.length > 0 &&
-              <p role="alert">Some linked layout geometry was removed. Clear or replace these links before saving.</p>}
-          </>}
-          {selected?.kind === "segment" && <>
-            <p>Segments are read-only here. Their contiguous pixel partition is preserved; fixture edits never change wiring.</p>
-            <ol>{selected.traversal.map((step) => <li key={step.segment}>
-              Pixels {step.first_pixel} to {step.last_pixel} · {step.pixel_count} pixels
-            </li>)}</ol>
-          </>}
-          {editing && <form onSubmit={(event) => { event.preventDefault(); void save(creating ? "create" : "update"); }}>
-            <fieldset disabled={!canEdit || busy}>
-              <label>Object type<select value={editing.kind} disabled={!creating} onChange={(event) =>
-                change({ kind: event.target.value === "path" ? "path" : "fixture", precedence: 0 })}>
-                <option value="fixture">Fixture</option><option value="path">Ordered path</option>
-              </select></label>
-              <label>Output resource<select value={editing.resource} disabled={!creating} onChange={(event) =>
-                change({ resource: event.target.value, segments: [], geometry_semantic_ids: [] })}>
-                {inventory.resources.map((resource) => <option key={resource.resource}>{resource.resource}</option>)}
-              </select></label>
-              <label>Stable object ID<input required maxLength={200} value={editing.id} disabled={!creating}
-                onChange={(event) => change({ id: event.target.value })} /></label>
-              <label>Object name<input required maxLength={200} value={editing.name} onChange={(event) => change({ name: event.target.value })} /></label>
-              <p>Membership order and reversal determine traversal. A fixture can group several segments; IDs remain stable during edits.</p>
-              <ol className="object-member-list">
-                {members.map((member, index) => <li key={`${index}:${member.segment}`}>
-                  <label>Member segment {index + 1}<select required value={member.segment} onChange={(event) =>
-                    change({ segments: members.map((value, offset) => offset === index ? { ...value, segment: event.target.value } : value) })}>
-                    <option value="">Choose a segment</option>
-                    {binding?.segments.filter((value) => value.id === member.segment || !members.some((item) => item.segment === value.id))
-                      .map((segment) => <option key={segment.id} value={segment.id}>{segment.id} · pixels {segment.start}–{segment.end - 1}</option>)}
-                  </select></label>
-                  <label><input type="checkbox" checked={member.reverse} onChange={(event) =>
-                    change({ segments: members.map((value, offset) => offset === index ? { ...value, reverse: event.target.checked } : value) })} />Reverse member {index + 1}</label>
-                  <button type="button" disabled={index === 0} aria-label={`Move member ${index + 1} up`} onClick={() => {
-                    const reordered = [...members]; [reordered[index - 1], reordered[index]] = [reordered[index], reordered[index - 1]];
-                    change({ segments: reordered });
-                  }}>Up</button>
-                  <button type="button" disabled={index === members.length - 1} aria-label={`Move member ${index + 1} down`} onClick={() => {
-                    const reordered = [...members]; [reordered[index], reordered[index + 1]] = [reordered[index + 1], reordered[index]];
-                    change({ segments: reordered });
-                  }}>Down</button>
-                  <button type="button" aria-label={`Remove member ${index + 1}`} onClick={() => change({ segments: members.filter((_, offset) => offset !== index) })}>Remove member</button>
-                </li>)}
-              </ol>
-              <button type="button" disabled={members.some((member) => !member.segment) || !binding?.segments.some((value) => !members.some((member) => member.segment === value.id))}
-                onClick={() => change({ segments: [...members, { segment: "", reverse: false }] })}>Add member segment</button>
-              {editing.kind === "fixture" && <label>Fixture precedence<input required type="number" min="0" max="1000" step="1" value={editing.precedence}
-                onChange={(event) => change({ precedence: event.target.valueAsNumber })} />
-                <small>Added to cue precedence when resolving overlapping effects. Higher precedence is evaluated later.</small>
-              </label>}
-              <h4>Pixel traversal preview</h4>
-              <ol aria-label="Pixel traversal preview">{traversal.map((step, index) =>
-                <li key={index}>{step.segment}: {step.first} → {step.last} ({step.count} pixels)</li>)}</ol>
-              <p>{traversal.reduce((total, step) => total + step.count, 0)} total pixels</p>
-              <fieldset ref={links} disabled={!inventory.layout_available}>
-                <legend>Link existing layout geometry</legend>
-                <p>Mapped member segments are highlighted automatically. Optionally link an existing fixture marker, path, or same-output segment.
-                  Draw new geometry in Photos &amp; Layout first. Links never create duplicate fixture definitions.</p>
-                {inventory.geometry.filter((shape) => (shape.kind === "pixel_segment" && shape.resource === editing.resource) || shape.kind === editing.kind ||
-                  editing.geometry_semantic_ids.includes(shape.semantic_id)).map((shape) =>
-                  <label key={shape.semantic_id}><input type="checkbox" checked={editing.geometry_semantic_ids.includes(shape.semantic_id)}
-                    onChange={(event) => change({ geometry_semantic_ids: event.target.checked
-                      ? [...editing.geometry_semantic_ids, shape.semantic_id]
-                      : editing.geometry_semantic_ids.filter((id) => id !== shape.semantic_id) })} />{shape.name} · {shape.kind.replaceAll("_", " ")}</label>)}
-                {selected?.missing_geometry_semantic_ids.map((id) => <label key={id}><input type="checkbox"
-                  checked={editing.geometry_semantic_ids.includes(id)} onChange={() =>
-                    change({ geometry_semantic_ids: editing.geometry_semantic_ids.filter((value) => value !== id) })} />Missing geometry: {id}</label>)}
-                {!inventory.geometry.length && <p>No layout geometry yet. The object remains usable as an effect target without placement.</p>}
-                <small>Unlinking geometry only removes the show-owned association. It does not remove geometry or effect references.</small>
-              </fieldset>
-              {canEdit && <button type="submit" className="primary-button" disabled={!valid || !dirty || busy}>{busy ? "Saving..." : "Save object"}</button>}
-            </fieldset>
-            <button type="button" disabled={busy} onClick={() => { if (discard()) { setSelected(null); setEditing(null); setDirty(false); } }}>Close properties</button>
-            {!creating && canEdit && <button type="button" className="danger-button" disabled={busy || Boolean(selected?.references.length)}
-              onClick={() => void save("delete")}>Delete definition</button>}
-            {Boolean(selected?.references.length) && <p>Remove references before deleting this definition. Placement removal is separate.</p>}
-          </form>}
-        </section>}
+            {KIND_GROUPS.map(({ kind, label }) => {
+              const group = items.filter((item) => item.kind === kind);
+              if (!group.length) return null;
+              // Segments mirror wiring and can be numerous; keep them collapsed unless searching.
+              return <details key={kind} className="object-kind-group" open={kind !== "segment" || Boolean(query)}>
+                <summary>{label} <span className="object-count">{group.length}</span></summary>
+                <ul className="object-rows">{group.map((item) => <li key={keyOf(item)} className="object-row"
+                  data-selected={selected !== null && keyOf(selected) === keyOf(item)}>
+                  <button type="button" className="object-row__name" disabled={busy}
+                    aria-pressed={selected !== null && keyOf(selected) === keyOf(item)}
+                    onClick={() => choose(item)}><span className="sr-only">Inspect </span>{item.name}</button>
+                  <span className="object-row__meta">{item.pixel_count} px</span>
+                  <span className={`object-badge${item.geometry_ids.length ? " object-badge--placed" : ""}`}>
+                    {item.geometry_ids.length ? "Placed" : "Not placed"}</span>
+                  {item.used_by.length > 0 && <span className="object-row__meta">
+                    {item.used_by.length} {item.used_by.length === 1 ? "show" : "shows"}</span>}
+                </li>)}</ul>
+              </details>;
+            })}
+          </section>;
+        })}
       </div>
-    </>}
+      {(selected || editing || wiring) && <section className="installation-object-inspector" aria-label="Object properties">
+        <h3>{wiring ? `Wiring for ${wiring.resource}` : creating ? "New installation object" : selected?.name}</h3>
+        {selected && <>
+          <p>ID: {selected.id} · Output: {selected.resource} · {selected.pixel_count} pixels</p>
+          {inventory.layout_available && <div className="object-toolbar">
+            {selected.geometry_ids.length > 0 && <button type="button" className="primary-button" disabled={busy} onClick={() => {
+              if (discard()) onLayout({ name: selected.name, geometryIds: selected.geometry_ids });
+            }}>Show in Layout</button>}
+            {canEdit && selected.kind !== "segment" && !selected.geometry_ids.length &&
+              <button type="button" className="primary-button" disabled={busy}
+                onClick={() => links.current?.scrollIntoView({ block: "nearest" })}>Place in Layout</button>}
+          </div>}
+          <details><summary>Used by ({selected.used_by.length} shows)</summary>
+            {selected.used_by.length ? <ul>{selected.used_by.map((usage) =>
+              <li key={usage.project_id}>{usage.project_name}: {usage.scene_ids.join(", ")}</li>)}</ul>
+              : <p>No show scene uses this object yet. Scenes add installation objects from their Objects panel.</p>}
+          </details>
+          {selected.missing_geometry_semantic_ids.length > 0 &&
+            <p role="alert">Some linked layout geometry was removed. Clear or replace these links before saving.</p>}
+        </>}
+        {selected?.kind === "segment" && !wiring && <>
+          <p>Segments are the physical wiring partition of {selected.resource}. Every show inherits them.</p>
+          <ol>{selected.traversal.map((step) => <li key={step.segment}>
+            Pixels {step.first_pixel} to {step.last_pixel} · {step.pixel_count} pixels
+          </li>)}</ol>
+          {canEdit && <button type="button" className="primary-button" onClick={() => startWiring(selected.resource)}>Edit wiring for {selected.resource}</button>}
+        </>}
+        {wiring && wiringOutput && <form onSubmit={(event) => {
+          event.preventDefault();
+          let start = 0;
+          const segments = wiring.rows.map((row) => { const segment = { id: row.id.trim(), start, end: start + row.count }; start += row.count; return segment; });
+          void run(() => setInstallationSegments(installationId, inventory.revision, {
+            resource: wiring.resource, segments,
+            names: Object.fromEntries(wiring.rows.filter((row) => row.name.trim()).map((row) => [row.id.trim(), row.name.trim()])),
+          }), `Wiring for ${wiring.resource} saved. Inheriting shows were updated.`);
+        }}>
+          <p>Segments run in order from pixel 0 and must cover all {wiringOutput.pixel_count} pixels. Removing a segment that a show uses is refused.</p>
+          <ol className="object-member-list">{wiring.rows.map((row, index) => <li key={index}>
+            <label>Segment {index + 1} ID<input required value={row.id} onChange={(event) => {
+              setDirty(true); setWiring({ ...wiring, rows: wiring.rows.map((value, offset) => offset === index ? { ...value, id: event.target.value } : value) });
+            }} /></label>
+            <label>Segment {index + 1} name<input value={row.name} onChange={(event) => {
+              setDirty(true); setWiring({ ...wiring, rows: wiring.rows.map((value, offset) => offset === index ? { ...value, name: event.target.value } : value) });
+            }} /></label>
+            <label>Segment {index + 1} pixel count<input required type="number" min={1} value={row.count} onChange={(event) => {
+              setDirty(true); setWiring({ ...wiring, rows: wiring.rows.map((value, offset) => offset === index ? { ...value, count: event.target.valueAsNumber } : value) });
+            }} /></label>
+            <button type="button" disabled={wiring.rows.length <= 1} aria-label={`Remove segment ${index + 1}`} onClick={() => {
+              setDirty(true); setWiring({ ...wiring, rows: wiring.rows.filter((_, offset) => offset !== index) });
+            }}>Remove segment</button>
+          </li>)}</ol>
+          <button type="button" onClick={() => { setDirty(true); setWiring({ ...wiring, rows: [...wiring.rows, { id: "", name: "", count: 1 }] }); }}>Add segment</button>
+          <p>{wiringTotal} of {wiringOutput.pixel_count} pixels assigned.</p>
+          <div className="object-toolbar">
+            <button type="submit" className="primary-button" disabled={!wiringValid || busy}>{busy ? "Saving..." : "Save wiring"}</button>
+            <button type="button" disabled={busy} onClick={() => { if (discard()) close(); }}>Cancel</button>
+          </div>
+        </form>}
+        {editing && !wiring && <ObjectDefinitionForm key={creating ? "new" : keyOf(editing)} initial={editing} outputs={outputs}
+          creating={creating} canEdit={canEdit} busy={busy} onDirtyChange={setDirty}
+          onCancel={() => { if (discard()) close(); }}
+          deleteBlocked={selected?.used_by.length ? "Remove this object from every scene that uses it before deleting." : null}
+          onDelete={() => {
+            if (!window.confirm(`Delete ${editing.name} from the installation? Layout geometry is retained.`)) return;
+            void run(() => editInstallationObject(installationId, inventory.revision, "delete",
+              { resource: editing.resource, kind: editing.kind, id: editing.id }), "Installation object deleted.");
+          }}
+          onSave={(value) => void run(() => editInstallationObject(installationId, inventory.revision, creating ? "create" : "update", value),
+            "Saved. Every inheriting show now uses this definition; live playback is unchanged.")}>
+          {(value, change) => <fieldset ref={links} disabled={!inventory.layout_available}>
+            <legend>Link existing layout geometry</legend>
+            <p>Mapped member segments are highlighted automatically. Optionally link an existing fixture marker, path, or same-output segment.</p>
+            {inventory.geometry.filter((shape) => (shape.kind === "pixel_segment" && shape.resource === value.resource) || shape.kind === value.kind ||
+              value.geometry_semantic_ids.includes(shape.semantic_id)).map((shape) =>
+              <label key={shape.semantic_id}><input type="checkbox" checked={value.geometry_semantic_ids.includes(shape.semantic_id)}
+                onChange={(event) => change({ geometry_semantic_ids: event.target.checked
+                  ? [...value.geometry_semantic_ids, shape.semantic_id]
+                  : value.geometry_semantic_ids.filter((id) => id !== shape.semantic_id) })} />{shape.name} · {shape.kind.replaceAll("_", " ")}</label>)}
+            {!inventory.geometry.length && <p>No layout geometry yet. The object remains usable as an effect target without placement.</p>}
+          </fieldset>}
+        </ObjectDefinitionForm>}
+      </section>}
+    </div>
   </Panel>;
 }
 

@@ -55,7 +55,7 @@ def test_objects_are_discoverable_revisioned_and_shared_by_api_mcp_and_runtime(
         occurred_at=datetime.now(UTC).isoformat(),
     )
     project_id = stored.project.id
-    url = f"/api/gui/v1/projects/{project_id}/installation-objects"
+    url = f"/api/gui/v1/projects/{project_id}/objects"
     token = _mcp_token(
         services, project_id, (McpScope.READ, McpScope.DIRECT_EDIT, McpScope.SIMULATION)
     )
@@ -74,15 +74,12 @@ def test_objects_are_discoverable_revisioned_and_shared_by_api_mcp_and_runtime(
             == 428
         )
         inventory = client.get(url).json()
-        assert (
-            inventory
-            == _mcp_tool(client, read_token, "get_installation_objects")["structuredContent"]
-        )
+        assert inventory == _mcp_tool(client, read_token, "get_show_objects")["structuredContent"]
         assert len(inventory["objects"]) == 2
         assert inventory["editable_kinds"] == ["fixture", "path"]
         assert inventory["layout_available"] is True
         schema = _mcp_tool(client, read_token, "get_authoring_schema")["structuredContent"]
-        assert schema["x-installation-objects"]["write_scope"] == "direct_edit"
+        assert schema["x-installation-objects"]["show_tools"]["scope"] == "direct_edit"
         capabilities = _mcp_tool(client, read_token, "get_capabilities")["structuredContent"]
         assert capabilities["features"]["installation_objects"] is True
         assert capabilities["tools"]["edit_installation_object"] == "edit_installation_object"
@@ -90,7 +87,7 @@ def test_objects_are_discoverable_revisioned_and_shared_by_api_mcp_and_runtime(
             _mcp_tool(
                 client,
                 read_token,
-                "edit_installation_object",
+                "edit_show_object",
                 action="create",
                 base_revision=1,
                 request=definition(),
@@ -103,7 +100,7 @@ def test_objects_are_discoverable_revisioned_and_shared_by_api_mcp_and_runtime(
                 result = _mcp_tool(
                     client,
                     token,
-                    "edit_installation_object",
+                    "edit_show_object",
                     action=action,
                     base_revision=revision,
                     request=request,
@@ -138,9 +135,7 @@ def test_objects_are_discoverable_revisioned_and_shared_by_api_mcp_and_runtime(
             }
         ]
         # Creation through either interface is immediately readable through the other.
-        assert (
-            inventory == _mcp_tool(client, token, "get_installation_objects")["structuredContent"]
-        )
+        assert inventory == _mcp_tool(client, token, "get_show_objects")["structuredContent"]
         for body in (
             definition(),
             definition(id="bad", segments=[{"segment": "unknown"}]),
@@ -169,7 +164,7 @@ def test_objects_are_discoverable_revisioned_and_shared_by_api_mcp_and_runtime(
             _mcp_tool(
                 client,
                 token,
-                "edit_installation_object",
+                "edit_show_object",
                 action="update",
                 base_revision=1,
                 request=definition(),
@@ -242,7 +237,7 @@ def test_objects_are_discoverable_revisioned_and_shared_by_api_mcp_and_runtime(
             _mcp_tool(
                 client,
                 token,
-                "edit_installation_object",
+                "edit_show_object",
                 action="delete",
                 base_revision=revision,
                 request=deletion,
@@ -290,7 +285,7 @@ def test_objects_are_discoverable_revisioned_and_shared_by_api_mcp_and_runtime(
             _mcp_tool(
                 client,
                 token,
-                "edit_installation_object",
+                "edit_show_object",
                 action="create",
                 base_revision=revision,
                 request=definition(id="archived"),
@@ -332,13 +327,13 @@ def test_layout_links_and_mapped_members_never_duplicate_or_delete_geometry(tmp_
         result = _mcp_tool(
             client,
             token,
-            "edit_installation_object",
+            "edit_show_object",
             action="create",
             base_revision=1,
             request=definition(geometry_semantic_ids=[geometry["semantic_id"]]),
         )
         assert result["isError"] is False, result
-        inventory = _mcp_tool(client, token, "get_installation_objects")["structuredContent"]
+        inventory = _mcp_tool(client, token, "get_show_objects")["structuredContent"]
         fixture = next(item for item in inventory["objects"] if item["kind"] == "fixture")
         assert fixture["geometry_ids"] == [geometry["id"]]
         assert len(services.installation_geometry.list(installation)) == 1
@@ -370,14 +365,14 @@ def test_layout_links_and_mapped_members_never_duplicate_or_delete_geometry(tmp_
             },
         )
         assert surface.status_code == 200, surface.text
-        result = _mcp_tool(client, token, "get_installation_objects")["structuredContent"]
+        result = _mcp_tool(client, token, "get_show_objects")["structuredContent"]
         fixture = next(item for item in result["objects"] if item["kind"] == "fixture")
         assert set(fixture["geometry_ids"]) == {geometry["id"], segment_id}
         assert (
             _mcp_tool(
                 client,
                 token,
-                "edit_installation_object",
+                "edit_show_object",
                 action="update",
                 base_revision=2,
                 request=definition(),
@@ -389,7 +384,7 @@ def test_layout_links_and_mapped_members_never_duplicate_or_delete_geometry(tmp_
             _mcp_tool(
                 client,
                 token,
-                "edit_installation_object",
+                "edit_show_object",
                 action="delete",
                 base_revision=3,
                 request={"resource": "roofline.demo", "kind": "fixture", "id": "porch"},
@@ -418,7 +413,7 @@ def test_object_edits_enforce_current_permissions(tmp_path: Path) -> None:
         create_app(runtime, gui_services=services), base_url="http://localhost"
     ) as client:
         _login(client)
-        url = f"/api/gui/v1/projects/{project_id}/installation-objects"
+        url = f"/api/gui/v1/projects/{project_id}/objects"
         assert client.get(url).status_code == 200
         assert (
             client.post(
@@ -435,7 +430,7 @@ def test_object_edits_enforce_current_permissions(tmp_path: Path) -> None:
                 "id": 1,
                 "method": "tools/call",
                 "params": {
-                    "name": "edit_installation_object",
+                    "name": "edit_show_object",
                     "arguments": {"action": "create", "base_revision": 1, "request": definition()},
                 },
             },

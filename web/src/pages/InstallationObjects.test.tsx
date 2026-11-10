@@ -1,19 +1,16 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { useState } from "react";
 import {
-  getInstallation, importLightingDeviceResource,
-  editInstallationObject, getInstallationObjects, getProjectMembers, getProjects,
-  type InstallationObjectInventory,
+  editInstallationObject, getInstallationObjects, setInstallationSegments,
+  type InstallationLevelObjects, type InstallationObjectRecord,
 } from "../api";
 import { InstallationObjects } from "./InstallationObjects";
 
 vi.mock("../api", () => ({
-  getInstallation: vi.fn(), importLightingDeviceResource: vi.fn(),
-  editInstallationObject: vi.fn(), getInstallationObjects: vi.fn(),
-  getProjectMembers: vi.fn(), getProjects: vi.fn(),
+  editInstallationObject: vi.fn(), getInstallationObjects: vi.fn(), setInstallationSegments: vi.fn(),
 }));
-const fixture: InstallationObjectInventory["objects"][number] = {
+
+const record = (patch: Partial<InstallationObjectRecord>): InstallationObjectRecord => ({
   resource: "roof", kind: "fixture", id: "porch", name: "Porch outline",
   segments: [{ segment: "left", reverse: false }, { segment: "right", reverse: true }],
   precedence: 20, geometry_semantic_ids: [], pixel_count: 8,
@@ -22,150 +19,89 @@ const fixture: InstallationObjectInventory["objects"][number] = {
     { segment: "right", first_pixel: 7, last_pixel: 3, pixel_count: 5, reverse: true },
   ],
   geometry_ids: [], references: [], missing_geometry_semantic_ids: [],
-};
-const inventory: InstallationObjectInventory = {
-  project_id: "show", project_name: "Halloween", revision: 4, archived: false,
-  installation_id: "home", layout_available: true, editable_kinds: ["fixture", "path"],
-  resources: [{ resource: "roof", kind: "pixel_output", target: "memory", pixel_count: 8,
-    segments: [{ id: "left", start: 0, end: 3 }, { id: "right", start: 3, end: 8 }] }],
-  objects: [fixture],
-  geometry: [
-    { semantic_id: "marker", name: "Porch marker", kind: "fixture", resource: null, geometry_ids: ["shape"] },
-    { semantic_id: "foreign", name: "Another output", kind: "pixel_segment", resource: "other", geometry_ids: ["other"] },
+  owner: "installation", scene_ids: [], used_by: [], ...patch,
+});
+const inventory: InstallationLevelObjects = {
+  installation_id: "home", revision: 4, layout_available: true,
+  resources: [{ resource: "roof", pixel_count: 8, segments: [{ id: "left", start: 0, end: 3 }, { id: "right", start: 3, end: 8 }] }],
+  objects: [
+    record({}),
+    record({ kind: "segment", id: "left", name: "Garage", segments: [{ segment: "left", reverse: false }], pixel_count: 3,
+      traversal: [{ segment: "left", first_pixel: 0, last_pixel: 2, pixel_count: 3, reverse: false }] }),
   ],
+  geometry: [{ semantic_id: "marker", name: "Porch marker", kind: "fixture", resource: null, geometry_ids: ["shape"] }],
 };
 const onLayout = vi.fn(), onDirtyChange = vi.fn();
-function Harness({ role = "administrator" }: { role?: "administrator" | "viewer" }) {
-  const [projectId, setProjectId] = useState("");
-  return <InstallationObjects session={{ username: "admin", role }} projectId={projectId}
-    onProjectChange={setProjectId} onDirtyChange={onDirtyChange} onLayout={onLayout} />;
-}
-async function open(role?: "administrator" | "viewer") {
-  render(<Harness role={role} />);
-  await screen.findByRole("option", { name: "Halloween" });
-  expect(getInstallationObjects).not.toHaveBeenCalled();
-  fireEvent.change(screen.getByRole("combobox", { name: "Definitions from show" }), { target: { value: "show" } });
+
+async function open(role: "administrator" | "viewer" = "administrator") {
+  render(<InstallationObjects session={{ username: "admin", role }} installationId="home"
+    onDirtyChange={onDirtyChange} onLayout={onLayout} />);
   await screen.findByRole("button", { name: "Inspect Porch outline" });
 }
+
 beforeEach(() => {
   vi.resetAllMocks();
-  vi.mocked(getInstallation).mockResolvedValue({installation_id: "home", name: "Home", revision: 1, runtime_active: true, package_schema: "runtime-v1-v2", resources: []});
-  vi.mocked(getProjects).mockResolvedValue([{
-    id: "show", name: "Halloween", head_revision: 4, metadata_revision: 1,
-    archived_at: null, created_at: "", updated_at: "",
-  }]);
   vi.mocked(getInstallationObjects).mockResolvedValue(structuredClone(inventory));
-  vi.mocked(getProjectMembers).mockResolvedValue([]);
   vi.spyOn(window, "confirm").mockReturnValue(true);
 });
-describe("Installation object inventory", () => {
-  it("shows unplaced MCP fixtures, edits stable membership and links without replacing the draft", async () => {
+
+describe("Installation objects", () => {
+  it("edits a reusable fixture with a pixel range member without a show selector", async () => {
+    vi.mocked(editInstallationObject).mockResolvedValue(structuredClone(inventory));
     await open();
-    expect(screen.getByText(/Not placed/)).toBeInTheDocument();
+    expect(screen.queryByRole("combobox", { name: "Definitions from show" })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Inspect Porch outline" }));
     const inspector = screen.getByRole("region", { name: "Object properties" });
-    fireEvent.click(within(inspector).getByRole("button", { name: "Place in Layout" }));
-    expect(within(inspector).getByLabelText("Stable object ID")).toBeDisabled();
-    expect(within(inspector).queryByLabelText(/Another output/)).not.toBeInTheDocument();
-    fireEvent.change(within(inspector).getByLabelText("Object name"), { target: { value: "Roof group" } });
-    fireEvent.click(within(inspector).getByRole("button", { name: "Move member 2 up" }));
-    fireEvent.click(within(inspector).getByLabelText("Reverse member 1"));
+    fireEvent.click(within(inspector).getByLabelText("Only part of right"));
+    fireEvent.change(within(inspector).getByLabelText("First pixel of member 2"), { target: { value: "2" } });
+    fireEvent.change(within(inspector).getByLabelText("Last pixel of member 2"), { target: { value: "4" } });
+    expect(within(inspector).getByRole("list", { name: "Pixel traversal preview" })).toHaveTextContent("right: 6 → 4 (3 pixels)");
     fireEvent.click(within(inspector).getByLabelText(/Porch marker/));
-    expect(within(inspector).getByRole("list", { name: "Pixel traversal preview" })).toHaveTextContent("right: 3 → 7 (5 pixels)");
     fireEvent.click(within(inspector).getByRole("button", { name: "Save object" }));
-    await waitFor(() => expect(editInstallationObject).toHaveBeenCalledWith("show", 4, "update", {
-      resource: "roof", kind: "fixture", id: "porch", name: "Roof group",
-      segments: [{ segment: "right", reverse: false }, { segment: "left", reverse: false }],
-      precedence: 20, geometry_semantic_ids: ["marker"],
-    }));
-    expect(await screen.findByRole("status")).toHaveTextContent("Live playback is unchanged");
-    await waitFor(() => expect(onDirtyChange).toHaveBeenLastCalledWith(false));
+    await waitFor(() => expect(editInstallationObject).toHaveBeenCalledWith("home", 4, "update", expect.objectContaining({
+      id: "porch", segments: [{ segment: "left", reverse: false }, { segment: "right", reverse: true, start: 1, end: 4 }],
+      geometry_semantic_ids: ["marker"],
+    })));
+    expect(await screen.findByRole("status")).toHaveTextContent("Every inheriting show");
   });
-  it("highlights mapped membership and blocks referenced deletion", async () => {
-    vi.mocked(getInstallationObjects).mockResolvedValue({
-      ...inventory, objects: [{ ...fixture, geometry_ids: ["shape"], references: ["/scenes/ambient/lighting"] }],
-    });
+
+  it("shows which shows use an object and blocks deleting it", async () => {
+    vi.mocked(getInstallationObjects).mockResolvedValue({ ...inventory, objects: [record({
+      geometry_ids: ["shape"], used_by: [{ project_id: "show", project_name: "Halloween", scene_ids: ["intro"] }],
+    })] });
     await open();
+    expect(screen.getByText("1 show")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Inspect Porch outline" }));
+    expect(screen.getByText("Halloween: intro")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Delete definition" })).toBeDisabled();
     fireEvent.click(screen.getByRole("button", { name: "Show in Layout" }));
     expect(onLayout).toHaveBeenCalledWith({ name: "Porch outline", geometryIds: ["shape"] });
-    expect(screen.getByText("/scenes/ambient/lighting")).toBeInTheDocument();
   });
-  it("retains unsaved edits on conflicts and guards refresh/navigation", async () => {
-    vi.mocked(editInstallationObject).mockRejectedValue(new Error("Revision conflict (409)"));
+
+  it("replaces an output's wiring with a full contiguous partition", async () => {
+    vi.mocked(setInstallationSegments).mockResolvedValue(structuredClone(inventory));
     await open();
-    fireEvent.click(screen.getByRole("button", { name: "Inspect Porch outline" }));
-    fireEvent.change(screen.getByLabelText("Object name"), { target: { value: "Unsaved" } });
-    fireEvent.click(screen.getByRole("button", { name: "Save object" }));
-    expect(await screen.findByRole("alert")).toHaveTextContent("Revision conflict");
-    expect(screen.getByLabelText("Object name")).toHaveValue("Unsaved");
-    vi.mocked(window.confirm).mockReturnValue(false);
-    fireEvent.click(screen.getByRole("button", { name: "Refresh objects" }));
-    fireEvent.change(screen.getByRole("combobox", { name: "Definitions from show" }), { target: { value: "" } });
-    expect(screen.getByLabelText("Object name")).toHaveValue("Unsaved");
-    expect(getInstallationObjects).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole("button", { name: "Edit wiring for roof" }));
+    const save = screen.getByRole("button", { name: "Save wiring" });
+    fireEvent.change(screen.getByLabelText("Segment 2 pixel count"), { target: { value: "4" } });
+    expect(save).toBeDisabled();
+    expect(screen.getByText("7 of 8 pixels assigned.")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Add segment" }));
+    fireEvent.change(screen.getByLabelText("Segment 3 ID"), { target: { value: "tip" } });
+    fireEvent.click(save);
+    await waitFor(() => expect(setInstallationSegments).toHaveBeenCalledWith("home", 4, {
+      resource: "roof",
+      segments: [{ id: "left", start: 0, end: 3 }, { id: "right", start: 3, end: 7 }, { id: "tip", start: 7, end: 8 }],
+      names: { left: "Garage" },
+    }));
   });
-  it("lets viewers inspect but not change objects or layout associations", async () => {
+
+  it("lets viewers inspect but not change installation objects", async () => {
     await open("viewer");
-    expect(screen.queryByRole("button", { name: "Create fixture or path" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Create installation fixture or path" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Edit wiring for roof" })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Inspect Porch outline" }));
     expect(screen.getByLabelText("Object name")).toBeDisabled();
     expect(screen.queryByRole("button", { name: "Save object" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Delete definition" })).not.toBeInTheDocument();
   });
-  it("does not replay a saved mutation when inventory refresh fails", async () => {
-    vi.mocked(getInstallationObjects).mockResolvedValueOnce(structuredClone(inventory))
-      .mockRejectedValueOnce(new Error("Refresh unavailable"));
-    await open();
-    fireEvent.click(screen.getByRole("button", { name: "Inspect Porch outline" }));
-    fireEvent.change(screen.getByLabelText("Object name"), { target: { value: "Saved name" } });
-    fireEvent.click(screen.getByRole("button", { name: "Save object" }));
-    expect(await screen.findByRole("alert")).toHaveTextContent("Object saved, but inventory refresh failed");
-    expect(screen.queryByRole("button", { name: "Save object" })).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Refresh objects" }));
-    await screen.findByRole("button", { name: "Inspect Porch outline" });
-    expect(editInstallationObject).toHaveBeenCalledTimes(1);
-  });
-  it("creates an ordered path and deletes an unused definition safely", async () => {
-    await open();
-    fireEvent.click(screen.getByRole("button", { name: "Create fixture or path" }));
-    fireEvent.change(screen.getByLabelText("Object type"), { target: { value: "path" } });
-    fireEvent.change(screen.getByLabelText("Stable object ID"), { target: { value: "walk" } });
-    fireEvent.change(screen.getByLabelText("Object name"), { target: { value: "Walk" } });
-    fireEvent.click(screen.getByRole("button", { name: "Add member segment" }));
-    fireEvent.change(screen.getByLabelText("Member segment 1"), { target: { value: "left" } });
-    fireEvent.click(screen.getByRole("button", { name: "Save object" }));
-    await waitFor(() => expect(editInstallationObject).toHaveBeenCalledWith("show", 4, "create", expect.objectContaining({
-      kind: "path", id: "walk", segments: [{ segment: "left", reverse: false }], precedence: 0,
-    })));
-    await screen.findByRole("status");
-    fireEvent.click(screen.getByRole("button", { name: "Inspect Porch outline" }));
-    fireEvent.click(screen.getByRole("button", { name: "Delete definition" }));
-    await waitFor(() => expect(editInstallationObject).toHaveBeenLastCalledWith("show", 4, "delete", {
-      resource: "roof", kind: "fixture", id: "porch",
-    }));
-  });
-});
-
-it("adds a registered point light to an existing show with its current revision", async () => {
-  vi.mocked(getInstallation).mockResolvedValue({installation_id: "home", name: "Home", revision: 1, runtime_active: true, package_schema: "runtime-v1-v2", resources: [{resource: "light.left", kind: "pixel_output", target: "lifx", pixel_count: 1}]});
-  vi.mocked(importLightingDeviceResource).mockResolvedValue({});
-  await open();
-  fireEvent.click(await screen.findByRole("button", {name: "Add light.left to this show"}));
-  await waitFor(() => expect(importLightingDeviceResource).toHaveBeenCalledWith("show", "light.left", 4));
-});
-
-it("groups objects by output and kind, collapsing wiring segments until searched", async () => {
-  const segment = { ...fixture, kind: "segment" as const, id: "left", name: "left", segments: [{ segment: "left", reverse: false }] };
-  vi.mocked(getInstallationObjects).mockResolvedValue({ ...inventory, objects: [fixture, segment] });
-  await open();
-  const group = screen.getByRole("region", { name: "Objects on roof" });
-  expect(within(group).getByText("Fixtures")).toBeInTheDocument();
-  const segments = within(group).getByText("Segments (wiring)").closest("details")!;
-  expect(segments).not.toHaveAttribute("open");
-  expect(screen.getByRole("button", { name: "Inspect Porch outline" })).toBeVisible();
-  fireEvent.change(screen.getByLabelText("Find an object"), { target: { value: "left" } });
-  expect(within(group).getByText("Segments (wiring)").closest("details")).toHaveAttribute("open");
-  expect(screen.queryByRole("button", { name: "Inspect Porch outline" })).not.toBeInTheDocument();
 });

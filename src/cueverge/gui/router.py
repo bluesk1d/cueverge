@@ -4,7 +4,7 @@ from collections.abc import Callable, Collection, Mapping
 from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 from io import BytesIO
-from typing import Annotated, Literal, cast
+from typing import Annotated, Any, Literal, TypeVar, cast
 from urllib.parse import unquote
 from uuid import UUID, uuid4
 
@@ -118,8 +118,10 @@ from cueverge.gui.contracts import (
     InstallationObjectDeleteRequest,
     InstallationObjectEditRequest,
     InstallationObjectInventory,
+    InstallationObjectsInventory,
     InstallationPhotoResponse,
     InstallationResourceResponse,
+    InstallationSegmentsRequest,
     InstallationStatusResponse,
     InstallationSummaryResponse,
     InstallationTimingResponse,
@@ -139,6 +141,7 @@ from cueverge.gui.contracts import (
     McpProposalDispositionRequest,
     McpProposalResponse,
     McpTokenResponse,
+    ObjectKeyRequest,
     ObjectOrganizationRequest,
     OperateActionRequest,
     OperateActionResponse,
@@ -191,11 +194,14 @@ from cueverge.gui.contracts import (
     SceneAuthoringOptions,
     SceneLightingPreviewRequest,
     SceneMediaPreviewRequest,
+    SceneObjectsRequest,
+    SceneObjectsResponse,
     SessionResponse,
     SetDeviceConnectionPolicyRequest,
     SetDeviceEnrollmentStateRequest,
     SetOutputTimingRequest,
     SetResourceAssignmentRequest,
+    ShowObjectSummary,
     ShowPlanEditRequest,
     SimulationRunResponse,
     SimulationScenarioResponse,
@@ -242,8 +248,18 @@ from cueverge.gui.installation_geometry import (
     StoredInstallationGeometry,
 )
 from cueverge.gui.installation_objects import (
+    adopt_show,
+    installation_inventory,
     installation_object_inventory,
+    new_show_draft,
+    promote_show_object,
+    remove_unused_objects,
+    save_installation_level_object,
     save_installation_object,
+    save_installation_segments,
+    scene_object_view,
+    set_scene_objects,
+    show_object_summary,
 )
 from cueverge.gui.installation_photos import (
     MAX_PHOTO_BYTES,
@@ -259,7 +275,6 @@ from cueverge.gui.interactions import (
     describe_interactions,
 )
 from cueverge.gui.lighting_devices import (
-    DEVICE_KINDS,
     LightingDeviceConfig,
     LightingDeviceError,
     LightingDeviceRegistry,
@@ -376,6 +391,9 @@ from cueverge.protocol.device_v2 import (
 
 SESSION_COOKIE = "cueverge_session"
 CSRF_COOKIE = "cueverge_csrf"
+
+
+T = TypeVar("T")
 
 
 def create_gui_router(services: GuiServices) -> APIRouter:
@@ -1348,16 +1366,7 @@ def create_gui_router(services: GuiServices) -> APIRouter:
     ) -> ProjectDraftResponse:
         revision = services.repository.create_project(
             name=body.name,
-            draft=body.draft
-            if body.draft is not None
-            else DraftProject(
-                schema_version=1,
-                installation=services.runtime.catalog.installation,
-                scenes=(),
-                editor_metadata={
-                    "installation_id": services.repository.get_runtime_installation().id
-                },
-            ),
+            draft=body.draft if body.draft is not None else new_show_draft(services),
             actor=identity.username,
             role=identity.role,
             occurred_at=_now_iso(),
@@ -1382,14 +1391,12 @@ def create_gui_router(services: GuiServices) -> APIRouter:
         response: Response,
         identity: Annotated[AuthenticatedSession, author],
     ) -> ProjectDraftResponse:
-        draft = DraftProject(
-            schema_version=1,
-            installation=services.runtime.catalog.installation,
+        draft = new_show_draft(
+            services,
             scenes=tuple(
                 services.runtime.catalog.scenes[scene_id].definition
                 for scene_id in sorted(services.runtime.catalog.scenes)
             ),
-            editor_metadata={"installation_id": services.repository.get_runtime_installation().id},
         )
         revision = services.repository.create_project(
             name=body.name,
@@ -1580,82 +1587,60 @@ def create_gui_router(services: GuiServices) -> APIRouter:
         except ProjectNotFoundError as error:
             raise HTTPException(status_code=404, detail={"code": "project_not_found"}) from error
 
-    @router.post(
-        "/projects/{project_id}/lighting-device-resources/{resource}",
-        response_model=ProjectDraftResponse,
-    )
-    def import_lighting_device_resource(
-        project_id: str,
-        resource: str,
-        identity: Annotated[AuthenticatedSession, project_designer],
-        if_match: Annotated[str | None, Header(alias="If-Match")] = None,
-    ) -> ProjectDraftResponse | JSONResponse:
-        revision = services.repository.get_revision(project_id)
-        if revision.project.archived_at is not None:
-            raise HTTPException(409, "Archived shows cannot be edited")
-        binding = next(
-            (
-                b
-                for b in services.runtime.catalog.installation.resources
-                if b.resource == resource and b.target in DEVICE_KINDS
-            ),
-            None,
-        )
-        if binding is None:
-            raise HTTPException(404, "Registered lighting device not found")
-        if any(b.resource == resource for b in revision.draft.installation.resources):
-            raise HTTPException(409, "Resource is already in this show")
-        draft = revision.draft.model_copy(
-            update={
-                "installation": revision.draft.installation.model_copy(
-                    update={"resources": (*revision.draft.installation.resources, binding)}
-                )
-            }
-        )
+    def object_errors(call: Callable[[], T]) -> T | JSONResponse:
         try:
-            saved = services.repository.update_draft(
-                project_id=project_id,
-                expected_revision=_parse_if_match(if_match),
-                draft=draft,
-                actor=identity.username,
-                role=identity.role,
-                occurred_at=_now_iso(),
-            )
-        except RevisionConflictError as error:
-            return _revision_conflict_response(error)
-        return _project_draft(saved)
-
-    @router.get(
-        "/projects/{project_id}/installation-objects",
-        response_model=InstallationObjectInventory,
-        dependencies=[project_reader],
-    )
-    def get_installation_objects(project_id: str) -> InstallationObjectInventory:
-        try:
-            return installation_object_inventory(services, project_id)
+            return call()
         except ProjectNotFoundError as error:
             raise HTTPException(status_code=404, detail={"code": "project_not_found"}) from error
+        except RevisionConflictError as error:
+            return _revision_conflict_response(error)
         except ValueError as error:
             raise HTTPException(
                 status_code=422,
-                detail={"code": "installation_object_inventory_invalid", "message": str(error)},
+                detail={"code": "object_change_invalid", "message": str(error)},
             ) from error
 
+    def object_draft(response: Response, call: Callable[[], StoredRevision]) -> Any:
+        result = object_errors(call)
+        if isinstance(result, JSONResponse):
+            return result
+        response.headers["ETag"] = _etag(result.revision)
+        return _project_draft(result)
+
+    @router.get(
+        "/projects/{project_id}/objects",
+        response_model=InstallationObjectInventory,
+        dependencies=[project_reader],
+    )
+    def get_show_objects(project_id: str) -> Any:
+        """Objects this show can use: inherited installation objects and its own."""
+        return object_errors(lambda: installation_object_inventory(services, project_id))
+
+    @router.get(
+        "/projects/{project_id}/object-summary",
+        response_model=ShowObjectSummary,
+        dependencies=[project_reader],
+    )
+    def get_show_object_summary(project_id: str) -> Any:
+        """Read-only roll-up of devices and objects used by each scene of the show."""
+        return object_errors(lambda: show_object_summary(services, project_id))
+
     @router.post(
-        "/projects/{project_id}/installation-objects/{action}",
+        "/projects/{project_id}/objects/{action}",
         response_model=ProjectDraftResponse,
     )
-    def edit_installation_object(
+    def edit_show_object(
         project_id: str,
         action: Literal["create", "update", "delete"],
         body: InstallationObjectEditRequest | InstallationObjectDeleteRequest,
         response: Response,
         identity: Annotated[AuthenticatedSession, project_designer],
         if_match: Annotated[str | None, Header(alias="If-Match")] = None,
-    ) -> ProjectDraftResponse | JSONResponse:
+    ) -> Any:
         expected_revision = _parse_if_match(if_match)
-        try:
-            revision = save_installation_object(
+        return object_draft(
+            response,
+            lambda: save_installation_object(
                 services,
                 project_id=project_id,
                 base_revision=expected_revision,
@@ -1663,18 +1648,183 @@ def create_gui_router(services: GuiServices) -> APIRouter:
                 action=action,
                 actor=identity.username,
                 role=identity.role,
+            ),
+        )
+
+    @router.post(
+        "/projects/{project_id}/object-actions/promote", response_model=ProjectDraftResponse
+    )
+    def promote_object(
+        project_id: str,
+        body: ObjectKeyRequest,
+        response: Response,
+        identity: Annotated[AuthenticatedSession, project_designer],
+        _author: Annotated[AuthenticatedSession, author],
+        if_match: Annotated[str | None, Header(alias="If-Match")] = None,
+    ) -> Any:
+        """Move a show fixture/path into the installation so every show inherits it."""
+        expected_revision = _parse_if_match(if_match)
+        return object_draft(
+            response,
+            lambda: promote_show_object(
+                services,
+                project_id=project_id,
+                base_revision=expected_revision,
+                resource=body.resource,
+                kind=body.kind,
+                object_id=body.id,
+                actor=identity.username,
+                role=identity.role,
+            ),
+        )
+
+    @router.post(
+        "/projects/{project_id}/object-actions/remove-unused", response_model=ProjectDraftResponse
+    )
+    def remove_unused_show_objects_route(
+        project_id: str,
+        response: Response,
+        identity: Annotated[AuthenticatedSession, project_designer],
+        if_match: Annotated[str | None, Header(alias="If-Match")] = None,
+    ) -> Any:
+        expected_revision = _parse_if_match(if_match)
+        return object_draft(
+            response,
+            lambda: remove_unused_objects(
+                services,
+                project_id=project_id,
+                base_revision=expected_revision,
+                actor=identity.username,
+                role=identity.role,
+            )[0],
+        )
+
+    @router.post("/projects/{project_id}/object-actions/adopt", response_model=ProjectDraftResponse)
+    def adopt_installation_objects(
+        project_id: str,
+        response: Response,
+        identity: Annotated[AuthenticatedSession, project_designer],
+        if_match: Annotated[str | None, Header(alias="If-Match")] = None,
+    ) -> Any:
+        """Make a legacy show inherit its installation's wiring and objects."""
+        expected_revision = _parse_if_match(if_match)
+        return object_draft(
+            response,
+            lambda: adopt_show(
+                services,
+                project_id=project_id,
+                base_revision=expected_revision,
+                actor=identity.username,
+                role=identity.role,
+            ),
+        )
+
+    @router.get(
+        "/projects/{project_id}/scenes/{scene_id}/objects",
+        response_model=SceneObjectsResponse,
+        dependencies=[project_reader],
+    )
+    def get_scene_objects(project_id: str, scene_id: str) -> Any:
+        return object_errors(lambda: scene_object_view(services, project_id, scene_id))
+
+    @router.put(
+        "/projects/{project_id}/scenes/{scene_id}/objects", response_model=ProjectDraftResponse
+    )
+    def put_scene_objects(
+        project_id: str,
+        scene_id: str,
+        body: SceneObjectsRequest,
+        response: Response,
+        identity: Annotated[AuthenticatedSession, project_designer],
+        if_match: Annotated[str | None, Header(alias="If-Match")] = None,
+    ) -> Any:
+        """Replace the objects a scene uses; adding never changes the installation."""
+        expected_revision = _parse_if_match(if_match)
+        return object_draft(
+            response,
+            lambda: set_scene_objects(
+                services,
+                project_id=project_id,
+                base_revision=expected_revision,
+                scene_id=scene_id,
+                objects=body.objects,
+                actor=identity.username,
+                role=identity.role,
+            ),
+        )
+
+    def runtime_installation(installation_id: str) -> str:
+        if installation_id != services.repository.get_runtime_installation().id:
+            raise HTTPException(409, "Choose the active installation")
+        return installation_id
+
+    @router.get(
+        "/installations/{installation_id}/objects",
+        response_model=InstallationObjectsInventory,
+        dependencies=[reader],
+    )
+    def get_installation_level_objects(installation_id: str) -> Any:
+        """Wiring segments and reusable fixtures/paths every show inherits."""
+        return object_errors(
+            lambda: installation_inventory(services, runtime_installation(installation_id))
+        )
+
+    @router.post(
+        "/installations/{installation_id}/objects/{action}",
+        response_model=InstallationObjectsInventory,
+    )
+    def edit_installation_level_object(
+        installation_id: str,
+        action: Literal["create", "update", "delete"],
+        body: InstallationObjectEditRequest | InstallationObjectDeleteRequest,
+        identity: Annotated[AuthenticatedSession, author],
+        if_match: Annotated[str | None, Header(alias="If-Match")] = None,
+    ) -> Any:
+        expected_revision = _parse_if_match(if_match, minimum=0)
+        current = runtime_installation(installation_id)
+
+        def save() -> InstallationObjectsInventory:
+            save_installation_level_object(
+                services,
+                installation_id=current,
+                base_revision=expected_revision,
+                request=body,
+                action=action,
+                actor=identity.username,
+                role=identity.role,
             )
-        except ProjectNotFoundError as error:
-            raise HTTPException(status_code=404, detail={"code": "project_not_found"}) from error
-        except ValueError as error:
-            raise HTTPException(
-                status_code=422,
-                detail={"code": "installation_object_invalid", "message": str(error)},
-            ) from error
-        except RevisionConflictError as error:
-            return _revision_conflict_response(error)
-        response.headers["ETag"] = _etag(revision.revision)
-        return _project_draft(revision)
+            return installation_inventory(services, current)
+
+        return object_errors(save)
+
+    @router.put(
+        "/installations/{installation_id}/objects/segments",
+        response_model=InstallationObjectsInventory,
+    )
+    def put_installation_segments(
+        installation_id: str,
+        body: InstallationSegmentsRequest,
+        identity: Annotated[AuthenticatedSession, author],
+        if_match: Annotated[str | None, Header(alias="If-Match")] = None,
+    ) -> Any:
+        """Replace an output's wiring segments; every inheriting show is updated."""
+        expected_revision = _parse_if_match(if_match, minimum=0)
+        current = runtime_installation(installation_id)
+
+        def save() -> InstallationObjectsInventory:
+            save_installation_segments(
+                services,
+                installation_id=current,
+                base_revision=expected_revision,
+                resource=body.resource,
+                segments=body.segments,
+                names=body.names,
+                actor=identity.username,
+                role=identity.role,
+            )
+            return installation_inventory(services, current)
+
+        return object_errors(save)
 
     @router.post("/projects/{project_id}/scenes", response_model=ProjectDraftResponse)
     def create_scene(

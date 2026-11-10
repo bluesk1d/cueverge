@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
+import { SceneObjectsPanel } from "../components/SceneObjectsPanel";
 import {
   ApiError, AssetRecord, getInstallationGeometry, getInstallationPhotos,
   getLightingSurface, InstallationGeometry, InstallationPhoto, installationPhotoUrl,
@@ -156,7 +157,7 @@ export function SceneWorkspace({
     return messages;
   });
   const resource = text(output?.resource);
-  const { targets, targetName } = lightingTargets(document.installation, document.editor_metadata, resource, targetNames);
+  const { targets, targetName } = lightingTargets(document.installation, document.editor_metadata, resource, targetNames, sceneId);
   useEffect(() => {
     if (!playing) return;
     let previous = performance.now();
@@ -359,6 +360,9 @@ export function SceneWorkspace({
             setEffectId(id);
           }}>Add light effect</button>}
           </> : <p>This is a media-only scene. Use Add output to include lighting.</p>}
+          <SceneObjectsPanel draft={draft} sceneId={sceneId} canEdit={canEdit}
+            disabledReason={dirty || saving ? "Save or cancel scene edits before changing its objects." : null}
+            onChanged={(updated) => onCreated(updated, sceneId)} />
           {advancedContributions > 0 && <div className="scene-advanced">
             <p>This scene also has {advancedContributions} synchronized cues, transform layers, or compositions. They are edited in the timeline editor.</p>
             <button onClick={() => onOpenTimeline()}>Open timeline editor</button>

@@ -31,41 +31,60 @@ and exact input labels; no particular building layout or narrative is required.
 
 ## Managing fixtures and installation objects
 
-Open **Installation > Objects**, then explicitly choose the show whose working
-draft you want to inspect. From an open show, **Manage installation objects**
-opens the same inventory with that show selected. It never silently chooses the
-currently playing show.
+LED decorations follow the show hierarchy. Each level only sees what it owns or
+inherits:
 
-The inventory includes fixtures, segments and ordered paths created through the
-UI, REST API or MCP, including **Not placed** objects. Search by name, stable ID,
-type or output. Inspect an object to see membership, pixel traversal and effect/
-authoring reference paths. Viewers can inspect; project designers, publishers and
-administrators can edit unarchived shows.
+| Level | Owns | Where to edit |
+| --- | --- | --- |
+| Installation | Each output's wiring segments and reusable fixtures/paths | **Installation > Objects** |
+| Show | Fixtures/paths only this show uses (for example "Klown mouth") | Show plan > **This show's own fixtures and paths** |
+| Scene | The list of decorations the scene uses | Scene > **Objects in this scene** |
 
-Use **Create fixture or path** to group existing segments on one saved LED output.
-In **Object properties**, add/remove members, move them up/down, reverse their
-traversal and give the object a friendly name. Fixture precedence is added to cue
-precedence for overlapping effects. IDs stay stable during editing. Segments are
-read-only here: this editor does not repartition wiring or import runtime bindings.
+An unrelated show only sees installation objects plus its own; it never sees
+another show's fixtures. A scene's **Target decorations** list offers only the
+objects added to that scene.
+
+**Installation > Objects** has no show selector. It lists every pixel output's
+wiring segments (collapsed under **Segments (wiring)**) and reusable fixtures and
+ordered paths, including **Not placed** ones. **Used by** shows which shows and
+scenes use an object. Designers, publishers and administrators can:
+
+- **Edit wiring for** an output: segments run in order from pixel 0 and must cover
+  every pixel. Removing a segment a show uses is refused.
+- **Create installation fixture or path** and edit members, order, reversal,
+  precedence and layout links. A member can be a whole segment or **Only part of**
+  a segment (first/last pixel within it), so effects can address single pixels
+  without changing the wiring.
+
+Saving an installation object updates every inheriting show as a new
+working-draft revision; deleting one that effects still use is refused.
+
+In a scene, **Objects in this scene** lists its decorations with an
+**Installation** or **This show** badge. **Add an object** picks from
+installation objects and this show's objects; adding never changes the
+installation. **New show fixture or path** creates a show-only object and adds it
+to the scene. An object that effects target cannot be removed until those
+effects change.
+
+The show plan shows **Devices and objects used by this show**: a read-only,
+deduplicated roll-up by scene (select a scene to open it). Under **This show's
+own fixtures and paths** you can **Edit** or delete show objects, **Promote**
+one to the installation so every show can reuse it (refused if another show
+defines a different object with that ID), and **Remove unused show objects**.
+Shows created before installation objects existed keep their own copy until you
+choose **Use installation objects**; segments that subdivide the installation
+wiring become show fixtures with pixel ranges and effects keep the same pixels.
 
 **Show in Layout** highlights an object's mapped member segments and explicitly
-linked geometry. A separate marker is optional. To place an unplaced fixture,
-use **Place in Layout**, select existing geometry under **Link existing layout
-geometry**, then **Save object**. If geometry does not exist yet, draw it in
-**Photos & Layout** first, then link it from Objects. No photo is required.
-An unmapped fixture remains a valid effect target.
+linked geometry. To place an unplaced installation fixture, use **Place in
+Layout**, select existing geometry under **Link existing layout geometry**, then
+**Save object**. Draw new geometry in **Photos & Layout** first. No photo is
+required, and an unmapped fixture remains a valid effect target.
 
-Definitions, friendly names and optional semantic geometry links belong to the
-**show's working draft**. Geometry, wiring and calibration belong to the
-**installation**. Saving a definition creates a revision; it does not publish,
-apply, or change live playback. A stale revision is rejected; refresh and
-reconcile before retrying. Archived shows remain inspectable but cannot be edited.
-
-Clear a geometry checkbox to unlink it. **Remove placement** in Layout removes
-geometry only, never the logical definition or its effects. Missing links are
-reported so they can be cleared or replaced. **Delete definition** is separate:
-effect/authoring references block deletion until removed, and deleting an unused
-definition never deletes installation geometry.
+Saving creates revisions; it never publishes, applies or changes live playback.
+A stale revision is rejected; refresh before retrying. **Remove placement** in
+Layout removes geometry only, never a definition, and deleting a definition never
+deletes installation geometry.
 
 ## Orientation and safety
 

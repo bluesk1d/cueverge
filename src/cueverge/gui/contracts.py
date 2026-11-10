@@ -21,6 +21,7 @@ from cueverge.core.models import (
     InstallationDefinition,
     LightingCue,
     OpportunityProgramDefinition,
+    PixelSegment,
     ResourceBinding,
     SceneDefinitionV1,
     SceneDefinitionV2,
@@ -147,6 +148,9 @@ class DraftProject(GuiModel):
                 if identity in identities:
                     raise ValueError("Installation object details must have unique identities.")
                 identities.add(identity)
+        from cueverge.gui.object_hierarchy import validate_scene_objects
+
+        validate_scene_objects(self)
         return self
 
 
@@ -2687,6 +2691,10 @@ class InstallationObjectEditRequest(GuiModel):
     segments: tuple[SegmentReference, ...] = Field(min_length=1)
     precedence: int = Field(default=0, ge=0, le=1000)
     geometry_semantic_ids: tuple[str, ...] = ()
+    scene_id: str | None = Field(
+        default=None,
+        description="Show objects only: also add the new object to this scene's object list.",
+    )
 
     @model_validator(mode="after")
     def validate_object(self) -> "InstallationObjectEditRequest":
@@ -2713,6 +2721,12 @@ class InstallationObjectTraversal(GuiModel):
     reverse: bool
 
 
+class ObjectShowUsage(GuiModel):
+    project_id: str
+    project_name: str
+    scene_ids: tuple[str, ...]
+
+
 class InstallationObjectRecord(InstallationObjectDetails):
     segments: tuple[SegmentReference, ...]
     precedence: int
@@ -2721,6 +2735,87 @@ class InstallationObjectRecord(InstallationObjectDetails):
     references: tuple[str, ...]
     geometry_ids: tuple[str, ...]
     missing_geometry_semantic_ids: tuple[str, ...]
+    owner: Literal["installation", "show"] = Field(
+        default="show",
+        description="installation objects are inherited read-only by shows; show objects "
+        "belong to this show only.",
+    )
+    scene_ids: tuple[str, ...] = Field(
+        default=(), description="Scenes (and 'ambient') of this show that use the object."
+    )
+    used_by: tuple[ObjectShowUsage, ...] = Field(
+        default=(), description="Installation scope: shows and scenes using the object."
+    )
+
+
+class SceneObjectReference(GuiModel):
+    resource: str = Field(min_length=1)
+    kind: Literal["segment", "fixture", "path"]
+    id: str = Field(min_length=1)
+
+
+class SceneObjectsRequest(GuiModel):
+    objects: tuple[SceneObjectReference, ...]
+
+
+class SceneObjectEntry(SceneObjectReference):
+    name: str
+    owner: Literal["installation", "show"]
+    targeted: bool = Field(description="Effects in the scene target it; remove those first.")
+
+
+class SceneObjectsResponse(GuiModel):
+    project_id: str
+    revision: int
+    scene_id: str
+    objects: tuple[SceneObjectEntry, ...]
+    available: tuple[SceneObjectEntry, ...]
+
+
+class ShowSummaryDevice(GuiModel):
+    resource: str
+    kind: str
+    scene_ids: tuple[str, ...]
+
+
+class ShowSummaryObject(SceneObjectReference):
+    name: str
+    owner: Literal["installation", "show"]
+    scene_ids: tuple[str, ...]
+
+
+class ShowSummaryScene(GuiModel):
+    scene_id: str
+    name: str
+    devices: tuple[str, ...]
+    objects: tuple[SceneObjectReference, ...]
+
+
+class ShowObjectSummary(GuiModel):
+    project_id: str
+    revision: int
+    inherits: bool
+    scenes: tuple[ShowSummaryScene, ...]
+    devices: tuple[ShowSummaryDevice, ...]
+    objects: tuple[ShowSummaryObject, ...]
+
+
+class InstallationSegmentsRequest(GuiModel):
+    resource: str = Field(min_length=1)
+    segments: tuple[PixelSegment, ...] = Field(min_length=1)
+    names: dict[str, str] = Field(default_factory=dict)
+
+
+class ObjectKeyRequest(GuiModel):
+    resource: str = Field(min_length=1)
+    kind: Literal["fixture", "path"]
+    id: str = Field(min_length=1)
+
+
+class InstallationPixelResource(GuiModel):
+    resource: str
+    pixel_count: int
+    segments: tuple[PixelSegment, ...]
 
 
 class InstallationObjectGeometry(GuiModel):
@@ -2729,6 +2824,15 @@ class InstallationObjectGeometry(GuiModel):
     kind: str
     resource: str | None
     geometry_ids: tuple[str, ...]
+
+
+class InstallationObjectsInventory(GuiModel):
+    installation_id: str
+    revision: int
+    layout_available: bool
+    resources: tuple[InstallationPixelResource, ...]
+    objects: tuple[InstallationObjectRecord, ...]
+    geometry: tuple[InstallationObjectGeometry, ...]
 
 
 class InstallationObjectInventory(GuiModel):
@@ -2742,6 +2846,10 @@ class InstallationObjectInventory(GuiModel):
     objects: tuple[InstallationObjectRecord, ...]
     geometry: tuple[InstallationObjectGeometry, ...]
     editable_kinds: tuple[Literal["fixture", "path"], ...] = ("fixture", "path")
+    inherits: bool = Field(
+        default=False,
+        description="True when the show inherits wiring and objects from its installation.",
+    )
 
 
 class SceneLightingPreviewRequest(GuiModel):

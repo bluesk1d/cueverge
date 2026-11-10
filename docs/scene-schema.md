@@ -95,10 +95,18 @@ pixel order for traveling effects. Each section can reverse its local wiring
 direction without changing the authoritative segment range. A target cannot
 repeat a segment, and every referenced segment must exist on the same output.
 
-The GUI exposes these definitions under **Installation > Objects**, scoped to an
-explicitly selected show's working draft. MCP exposes the same inventory and
-validated edits through `get_installation_objects` and `edit_installation_object`.
-Unplaced fixtures are valid and remain visible in both interfaces.
+A member may also select a pixel range inside its segment with `start` and `end`
+offsets (end exclusive), e.g. `{"segment": "porch-eave", "start": 3, "end": 4}`.
+Ranges within one target must not overlap.
+
+Segments, and fixtures/paths promoted to the installation, are owned by the
+installation and copied read-only into every inheriting show
+(`editor_metadata.object_inheritance: 1`, mirror in
+`editor_metadata.inherited_objects`). Other fixtures/paths belong to the show.
+`editor_metadata.scene_objects` maps each scene ID to the
+`{resource, kind, id}` objects it uses. The GUI and MCP workflows are described in
+[managing fixtures and installation objects](operator-guide.md#managing-fixtures-and-installation-objects)
+and [MCP operations](operations.md#logical-installation-objects).
 
 Friendly names and optional layout associations are editor metadata, not extra
 fields in `installation.json`. The show draft stores

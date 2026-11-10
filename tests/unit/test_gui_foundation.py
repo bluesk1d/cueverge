@@ -2479,8 +2479,12 @@ def test_new_show_starts_empty_and_can_add_its_first_scene(tmp_path: Path) -> No
     assert draft["scenes"] == []
     assert all(draft[key] is None for key in ("program", "audience", "opportunities", "encounter"))
     assert draft["installation"] == runtime.catalog.installation.model_dump(mode="json")
+    # New shows inherit installation wiring/objects and start with no scene objects.
     assert draft["editor_metadata"] == {
-        "installation_id": services.repository.get_runtime_installation().id
+        "installation_id": services.repository.get_runtime_installation().id,
+        "object_inheritance": 1,
+        "inherited_objects": [],
+        "scene_objects": {},
     }
     assert client.get(f"/api/gui/v1/projects/{project_id}/draft").json()["draft"] == draft
     assert client.get(f"/api/gui/v1/projects/{project_id}/show-plan").status_code == 200

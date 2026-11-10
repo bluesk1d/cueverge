@@ -10,7 +10,7 @@ export const optionalScopes: { value: McpScope; label: string }[] = [
   { value: "activate", label: "Activate staged packages (live output)" },
   { value: "live_operation", label: "Operate the loaded show (physical output; operator/admin)" },
   { value: "input_config", label: "Configure installation camera connections (administrator; real events can trigger shows)" },
-  { value: "installation_edit", label: "Edit installation photo descriptions (installation author; does not grant device control)" },
+  { value: "installation_edit", label: "Edit installation photo descriptions, wiring segments and shared fixtures/paths (installation author; does not grant device control)" },
   { value: "photo_replace", label: "Replace reference photos using this project's image assets (keeps geometry; no device control)" },
   { value: "device_config", label: "Change media host agent settings and add, edit or remove LIFX/WLED lighting devices (administrator)" },
   { value: "device_update", label: "Install controller agent updates on media hosts (administrator; restarts agents in maintenance)" },

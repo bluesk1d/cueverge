@@ -238,14 +238,6 @@ def test_gui_and_mcp_manage_lighting_devices(tmp_path: Path, monkeypatch) -> Non
         assert nodes["output:roofline"]["compatibility"] == "compatible"
 
         document = project.json()
-        imported = client.post(
-            f"/api/gui/v1/projects/{document['project']['id']}/lighting-device-resources/roofline",
-            headers=_mutation_headers(client, if_match=f'"{document["revision"]}"'),
-        )
-        assert imported.status_code == 200, imported.text
-        resources = imported.json()["draft"]["installation"]["resources"]
-        assert (resources[-1]["resource"], resources[-1]["target"]) == ("roofline", "wled")
-        assert resources[-1]["pixel_count"] == 60
         scene = client.post(
             f"/api/gui/v1/projects/{document['project']['id']}/scenes",
             json={
@@ -254,9 +246,13 @@ def test_gui_and_mcp_manage_lighting_devices(tmp_path: Path, monkeypatch) -> Non
                 "duration_ms": 3000,
                 "output": {"output_id": "roof", "resource": "roofline"},
             },
-            headers=_mutation_headers(client, if_match=f'"{imported.json()["revision"]}"'),
+            headers=_mutation_headers(client, if_match=f'"{document["revision"]}"'),
         )
+        # A scene adds the registered device to an existing show (device only, no objects).
         assert scene.status_code == 200, scene.text
+        resources = scene.json()["draft"]["installation"]["resources"]
+        roof = next(item for item in resources if item["resource"] == "roofline")
+        assert (roof["target"], roof["pixel_count"], roof["fixtures"]) == ("wled", 60, [])
 
         assert _mcp_tool(
             client, configure, "remove_lighting_device", resource="roofline", expected_revision=3

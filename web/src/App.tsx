@@ -7,6 +7,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { ShowObjectsPanel } from "./components/ShowObjectsPanel";
 import { PhysicalOutputTestControls } from "./components/PhysicalOutputTestControls";
 import { AssetPreview } from "./components/AssetPreview";
 import { DetailsDialog } from "./components/DetailsDialog";
@@ -165,7 +166,6 @@ function AuthenticatedApp({
 }) {
   const [workspace, setWorkspace] = useState<Workspace>("overview");
   const [installationEntry, setInstallationEntry] = useState<"photos" | "objects" | "devices" | "timing" | "inputs">("photos");
-  const [installationProjectId, setInstallationProjectId] = useState("");
   const [authoringDirty, setAuthoringDirty] = useState(false);
   const navigate = (next: Workspace, setupSection: "photos" | "objects" | "devices" | "timing" | "inputs" = "photos") => {
     if (next === workspace) return;
@@ -310,7 +310,6 @@ function AuthenticatedApp({
       {workspace === "installation" && (
         <InstallationPage
           initialSection={installationEntry}
-          initialProjectId={installationProjectId}
           session={session}
           installation={installation}
           topology={topology}
@@ -322,11 +321,7 @@ function AuthenticatedApp({
           onDirtyChange={setAuthoringDirty}
         />
       )}
-      {workspace === "shows" && <ShowsPage session={session} runtime={runtime} runtimeFresh={runtimeFreshness === "fresh"} onDirtyChange={setAuthoringDirty} onInputs={() => navigate("installation", "inputs")}
-        onObjects={(projectId) => {
-          if (authoringDirty && !window.confirm("Discard unsaved changes and open installation objects?")) return;
-          setInstallationProjectId(projectId); setInstallationEntry("objects"); setWorkspace("installation");
-        }} />}
+      {workspace === "shows" && <ShowsPage session={session} runtime={runtime} runtimeFresh={runtimeFreshness === "fresh"} onDirtyChange={setAuthoringDirty} onInputs={() => navigate("installation", "inputs")} />}
       {workspace === "operate" && (
         <OperatePage
           session={session}
@@ -414,7 +409,6 @@ export function ShowsPage({
   initialProjects,
   onDirtyChange,
   onInputs,
-  onObjects,
   runtime,
   runtimeFresh,
 }: {
@@ -422,7 +416,6 @@ export function ShowsPage({
   initialProjects?: ProjectSummary[];
   onDirtyChange?: (dirty: boolean) => void;
   onInputs?: () => void;
-  onObjects?: (projectId: string) => void;
   runtime?: RuntimeStatus | null;
   runtimeFresh?: boolean;
 }) {
@@ -487,7 +480,6 @@ export function ShowsPage({
       initialView={openedNewProject ? "scenes" : "plan"}
       onDirtyChange={onDirtyChange}
       onInputs={onInputs}
-      onObjects={onObjects}
       runtime={runtime}
       runtimeFresh={runtimeFresh}
     /></>;
@@ -622,7 +614,6 @@ function ProjectCard({
   initialView = "plan",
   onDirtyChange,
   onInputs,
-  onObjects,
   runtime,
   runtimeFresh,
 }: {
@@ -634,7 +625,6 @@ function ProjectCard({
   onClose: () => void;
   onDirtyChange?: (dirty: boolean) => void;
   onInputs?: () => void;
-  onObjects?: (projectId: string) => void;
   runtime?: RuntimeStatus | null;
   runtimeFresh?: boolean;
 }) {
@@ -831,7 +821,6 @@ function ProjectCard({
         <button className="primary-button" disabled={refreshingShow || busy || sceneDirty || interactionDirty}
           title={sceneDirty || interactionDirty ? "Save or discard your edits before refreshing" : "Load the latest saved scenes and assets"}
           onClick={() => void refreshShow()}>{refreshingShow ? "Refreshing show…" : "Refresh show"}</button>
-        {onObjects && <button className="primary-button" onClick={() => onObjects(project.id)}>Manage installation objects</button>}
       </div>
       {(sceneDirty || interactionDirty) && <p className="muted">Save or discard your edits before refreshing the show.</p>}
       {assetError && <p role="alert">{assetError}</p>}
@@ -849,6 +838,9 @@ function ProjectCard({
         <ShowPlan draft={draft} canEdit={canEditScene && !project.archived_at} onUpdated={setDraft}
           onOpenScene={(id) => { setSceneId(id); setShowView("scenes"); }}
           onVisitorResponses={() => setShowView("interactions")} />
+        <ShowObjectsPanel draft={draft} canEdit={canEditScene && !project.archived_at}
+          canEditInstallation={["designer", "publisher", "administrator"].includes(session.role)}
+          onChanged={setDraft} onOpenScene={(id) => { setSceneId(id); setShowView("scenes"); }} />
       </Suspense>}
       {draft && showView === "interactions" && <Suspense fallback={<p>Loading visitor responses…</p>}>
         <VisitorInteractions draft={draft} canEdit={canEditScene && !project.archived_at}

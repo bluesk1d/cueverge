@@ -114,7 +114,6 @@ export function InstallationPage({
   onRefresh,
   onDirtyChange,
   initialSection = "photos",
-  initialProjectId = "",
 }: {
   installation: InstallationStatus | null;
   topology: Topology | null;
@@ -126,13 +125,11 @@ export function InstallationPage({
   onRefresh?: () => Promise<void> | void;
   onDirtyChange?: (dirty: boolean) => void;
   initialSection?: "photos" | "objects" | "devices" | "timing" | "inputs";
-  initialProjectId?: string;
 }) {
   const [section, setSection] = useState(initialSection);
   const [inputDirty, setInputDirty] = useState(false);
   const [layoutDirty, setLayoutDirty] = useState(false);
   const [objectDirty, setObjectDirty] = useState(false);
-  const [objectProjectId, setObjectProjectId] = useState(initialProjectId);
   const [layoutSelection, setLayoutSelection] = useState<ObjectLayoutSelection | null>(null);
   useEffect(() => {
     onDirtyChange?.(inputDirty || layoutDirty || objectDirty);
@@ -174,8 +171,8 @@ export function InstallationPage({
           setInputDirty(false); setLayoutDirty(false); setObjectDirty(false); setSection(value);
         }}>{value === "photos" ? "Photos & Layout" : value === "objects" ? "Objects" : value === "devices" ? "Devices" : value === "timing" ? "Timing" : "Inputs & connections"}</button>)}
       </div>
-      {section === "objects" && <InstallationObjects session={session} projectId={objectProjectId}
-        onProjectChange={setObjectProjectId} onDirtyChange={setObjectDirty}
+      {section === "objects" && installation && <InstallationObjects session={session}
+        installationId={installation.installation_id} onDirtyChange={setObjectDirty}
         onLayout={(selection) => { setLayoutSelection(selection); setSection("photos"); }} />}
       {section === "inputs" && <InputSourcePanel session={session} onDirtyChange={setInputDirty} />}
       {section === "timing" && installation && (

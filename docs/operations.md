@@ -866,60 +866,82 @@ Document intentionally headless/operator-only exceptions. Verify both interfaces
 before declaring a feature complete; see the
 [project contribution requirements](../.github/copilot-instructions.md).
 
-The UI equivalent for logical fixture/path authoring is **Installation > Objects**
-(or **Manage installation objects** from an open show).
-Discover `get_capabilities.features.installation_objects` and
-`get_authoring_schema.x-installation-objects`.
+Objects are scoped installation → show → scene (`get_authoring_schema`
+`x-installation-objects.hierarchy`). Installation wiring and reusable
+fixtures/paths are stored once per installation and materialized read-only into
+every show whose `editor_metadata.object_inheritance` is `1`; compiled packages stay
+self-contained. Shows own their other fixtures/paths. `editor_metadata.scene_objects`
+lists each scene's objects (targets are always members). Fixture/path members may
+select a pixel range inside a segment: `{"segment": "eave", "start": 3, "end": 5}`
+(offsets within the segment, end exclusive).
 
-- `get_installation_objects()` requires `read` and returns the token-bound show's
-  revision, saved LED resources, logical segments/fixtures/paths, traversal ranges,
-  reference paths, explicit geometry links and mapped member geometry IDs.
-  Unplaced objects are included. Layout geometry is available only for the bound
-  runtime installation.
-- `edit_installation_object(action, base_revision, request)` requires `direct_edit`.
-  Actions are `create`, `update`, and `delete`. Fixtures and paths are editable;
-  segments are read-only so contiguous output partitions cannot be accidentally
-  changed. IDs cannot be renamed by update. The same service backs authenticated
-  REST `GET /api/gui/v1/projects/{project_id}/installation-objects` and
-  `POST /api/gui/v1/projects/{project_id}/installation-objects/{action}`. REST
-  mutations require CSRF/Origin authorization and the current `If-Match` revision.
-- Names and optional `geometry_semantic_ids` are saved in show-owned
-  `editor_metadata.installation_object_details`; member definitions remain in
-  installation resource bindings. Layout links reference existing fixture/path
-  geometry or pixel segments on the same output. Mapped member segments are also
-  discovered by output and exact pixel range. Geometry is not created or mutated
-  by these tools; MCP geometry editing remains disabled.
-- Deleting referenced objects is rejected, as are unknown/repeated members,
-  invalid precedence, missing/foreign layout links, archived shows and stale
-  revisions. Unlinking/deleting definitions never deletes geometry. No operation
-  publishes, applies, or sends hardware commands.
+Installation scope (UI: **Installation > Objects**; REST
+`/api/gui/v1/installations/{id}/objects`):
+
+- `get_installation_objects()` (`read`): revision, outputs with wiring, segments,
+  fixtures, paths, layout links and `used_by` shows/scenes.
+- `edit_installation_object(action, base_revision, request)` (`installation_edit`):
+  create/update/delete reusable fixtures/paths. Creating an ID a show already defines
+  and deleting one that effects target are refused. Use revision `0` before the first save.
+- `set_installation_segments(resource, segments, base_revision, names)`
+  (`installation_edit`): replace an output's contiguous wiring partition.
+
+Every installation change re-materializes into inheriting shows as new draft
+revisions in one transaction (audited as `installation.objects.*`). A show draft
+that rewrites inherited wiring or objects is rejected.
+
+Show scope (UI: show plan > **Devices and objects used by this show**; REST
+`/api/gui/v1/projects/{id}/objects`, `/object-summary`, `/object-actions/*`):
+
+- `get_show_objects()` (`read`): every object the show can use with `owner`
+  (`installation` or `show`), `scene_ids`, reference paths and `inherits`.
+- `edit_show_object(action, base_revision, request)` (`direct_edit`): show-only
+  fixtures/paths; `request.scene_id` on create also adds it to that scene.
+- `promote_show_object(resource, kind, id, base_revision)` (`direct_edit` and
+  `installation_edit`), `remove_unused_show_objects(base_revision)` and
+  `adopt_installation_objects(base_revision)` (`direct_edit`).
+- `get_show_object_summary()` (`read`): read-only, deduplicated devices/objects by scene.
+
+Scene scope (UI: scene > **Objects in this scene**; REST
+`/api/gui/v1/projects/{id}/scenes/{scene_id}/objects`):
+
+- `get_scene_objects(scene_id)` (`read`) and
+  `set_scene_objects(scene_id, objects, base_revision)` (`direct_edit`). Objects that
+  effects target cannot be removed.
+
+New shows copy devices and inherited objects only, never another show's
+fixtures/paths. A scene adding an output for a device the show does not yet have
+imports the device binding only. REST mutations require CSRF/Origin and the
+current `If-Match` revision. No object operation publishes, applies, or sends
+hardware commands.
 
 Example (use the revision and segment IDs returned by discovery):
 
 ```json
 {
-  "name": "edit_installation_object",
+  "name": "edit_show_object",
   "arguments": {
     "action": "create",
     "base_revision": 12,
     "request": {
       "resource": "roofline",
       "kind": "fixture",
-      "id": "porch-outline",
-      "name": "Porch outline",
+      "id": "klown-mouth",
+      "name": "Klown mouth",
       "segments": [
-        {"segment": "right-eave", "reverse": false},
-        {"segment": "left-eave", "reverse": true}
+        {"segment": "porch-eave", "start": 10, "end": 24},
+        {"segment": "garage-eave", "reverse": true}
       ],
       "precedence": 100,
-      "geometry_semantic_ids": []
+      "geometry_semantic_ids": [],
+      "scene_id": "klown-intro"
     }
   }
 }
 ```
 
-Read back with `get_installation_objects`, inspect it in Objects, and verify
-effect targeting using `preview_scene_lighting` before publishing.
+Read back with `get_scene_objects`, inspect it in the scene's Objects panel, and
+verify effect targeting using `preview_scene_lighting` before publishing.
 
 ### Creating scenes and adding outputs
 

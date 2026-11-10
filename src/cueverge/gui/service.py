@@ -556,5 +556,9 @@ class GuiServices:
                 config.data_root / "simulation-scenarios"
             ),
         )
+        # Seeds the installation's wiring/objects once and adopts existing shows.
+        from cueverge.gui.installation_objects import ensure_installation_objects
+
+        ensure_installation_objects(services)
         created.append(services)
         return services
