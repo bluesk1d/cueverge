@@ -643,7 +643,9 @@ def create_mcp_app(services: GuiServices) -> Starlette:
         Requires read and this runtime's installation. Each device is one pixel_output
         resource the controller drives directly (kind lifx: 1 pixel, LAN protocol; kind
         wled: pixel_count LEDs over DDP). in_use means the loaded show renders to it;
-        transport holds LIFX send/reply counters (not proof of visible light). Pass the
+        transport holds LIFX send/reply counters (not proof of visible light).
+        managed_by is registry (changeable with these tools) or deployment_config
+        (read-only; set in the controller's CUEVERGE_OUTPUT_CONFIG file). Pass the
         top-level revision as expected_revision to add/update/remove tools. Media players
         and controllers are enrolled cryptographically in the GUI, not listed here.
         """

@@ -1493,7 +1493,8 @@ class ControllerRuntime:
         )
         removed.close()
 
-    def lighting_targets(self) -> tuple[RuntimeLightingTarget, ...]:
+    def network_lighting_sinks(self) -> dict[str, NetworkLightSink]:
+        """DDP/WLED and LIFX drivers by resource, whether registered or file-configured."""
         sinks: Mapping[str, FrameSink]
         if isinstance(self.sink, FrameSinkRouter):
             sinks = self.sink.sinks
@@ -1506,6 +1507,13 @@ class ControllerRuntime:
             sinks = {resource: self.sink for resource in resources} if len(resources) == 1 else {}
         else:
             sinks = {}
+        return {
+            resource: sink
+            for resource, sink in sorted(sinks.items())
+            if isinstance(sink, (DdpUdpSink, LifxUdpSink))
+        }
+
+    def lighting_targets(self) -> tuple[RuntimeLightingTarget, ...]:
         return tuple(
             RuntimeLightingTarget(
                 resource=resource,
@@ -1513,8 +1521,7 @@ class ControllerRuntime:
                 expected_pixel_count=sink.expected_pixel_count,
                 driver="lifx" if isinstance(sink, LifxUdpSink) else "ddp",
             )
-            for resource, sink in sorted(sinks.items())
-            if isinstance(sink, (DdpUdpSink, LifxUdpSink))
+            for resource, sink in self.network_lighting_sinks().items()
         )
 
     def lighting_transport_status(self) -> dict[str, dict[str, object]]:

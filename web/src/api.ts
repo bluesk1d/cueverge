@@ -3654,6 +3654,8 @@ export type WledDeviceConfig = {
 export type LightingDeviceConfig = LifxDeviceConfig | WledDeviceConfig;
 export type LightingDevice = LightingDeviceConfig & {
   pixel_count: number; in_use: boolean; transport: Record<string, unknown> | null;
+  /** deployment_config outputs come from CUEVERGE_OUTPUT_CONFIG and are read-only here. */
+  managed_by: "registry" | "deployment_config";
 };
 export type LightingDevices = { revision: number; kinds: Record<string, string>; devices: LightingDevice[] };
 export type WledDetection = {

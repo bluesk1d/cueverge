@@ -120,17 +120,19 @@ export function LightingDeviceList({ installationId, devices, revision, onChange
   const [editing, setEditing] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   if (!devices.length) {
-    return <p className="muted">No LIFX bulbs or WLED controllers registered. Use Add a device.</p>;
+    return <p className="muted">No LIFX bulbs or WLED controllers yet. Use Add a device.</p>;
   }
   return <div className="policy-list">
     {devices.map((device) => <article key={device.resource} className="lighting-device">
       <div>
         <strong>{device.resource}</strong>
-        <small>{device.kind === "lifx" ? `LIFX bulb · ${device.target}` : `WLED controller · ${device.pixel_count} LEDs`}
+        <small>{device.kind === "lifx" ? `LIFX bulb · ${device.target}` : `WLED / DDP controller · ${device.pixel_count} LEDs`}
           {" "}· {device.host} · cap {Math.round((device.brightness_limit ?? 1) * 100)}%
           {device.in_use ? " · used by the loaded show" : ""}</small>
+        {device.managed_by === "deployment_config" && <small>From the controller's output config file
+          (CUEVERGE_OUTPUT_CONFIG). Change or remove it there; it can't be edited here.</small>}
       </div>
-      {editing === device.resource ? <LightingDeviceForm installationId={installationId} kind={device.kind}
+      {device.managed_by === "deployment_config" ? null : editing === device.resource ? <LightingDeviceForm installationId={installationId} kind={device.kind}
         revision={revision} device={device} onCancel={() => setEditing(null)}
         onSaved={async () => { setEditing(null); await onChanged(); }} /> : <div className="discovered-endpoint-actions">
         <button type="button" onClick={() => { setError(null); setEditing(device.resource); }}>Edit {device.resource}</button>

@@ -322,8 +322,9 @@ settings**; `get_capabilities` describes it under `agent_settings`.
 
 LIFX bulbs and WLED controllers that the controller drives directly are lighting
 devices. `get_lighting_devices` (read) lists them with the registry `revision`, each
-device's settings, `pixel_count`, `in_use` (the loaded show renders to it) and LIFX
-`transport` counters. With the administrator-only `device_config` scope,
+device's settings, `pixel_count`, `in_use` (the loaded show renders to it), LIFX
+`transport` counters and `managed_by` (`registry`, or `deployment_config` for
+read-only outputs from `CUEVERGE_OUTPUT_CONFIG`). With the administrator-only `device_config` scope,
 `add_lighting_device(device, expected_revision=None)` registers
 `{"kind": "lifx", "resource", "host", "target", ...}` or
 `{"kind": "wled", "resource", "host", "expected_pixel_count", ...}`;

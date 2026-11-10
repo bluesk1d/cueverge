@@ -11,7 +11,12 @@ rate, transition and port.
 
 Registered LIFX bulbs and [WLED controllers](ddp.md#registering-wled-controllers-from-the-gui)
 are listed under **Lighting devices (LIFX, WLED)** on the same page, with
-**Edit** (address, target, limits) and **Remove**. The resource name, device type
+**Edit** (address, target, limits) and **Remove**. Outputs defined in the
+controller's `CUEVERGE_OUTPUT_CONFIG` file (or legacy `CUEVERGE_DDP_*` settings)
+are listed there too, marked as coming from the output config file; they are
+read-only in the GUI and MCP (`managed_by: deployment_config`) and must be changed
+in that file. Registering a device whose resource name or address is already in
+the file is refused. The resource name, device type
 and pixel count are fixed; remove and re-add to change them. Remove is refused
 while the loaded show uses the output; show drafts and layout points that
 reference it are kept, and applying such a show fails until it is registered

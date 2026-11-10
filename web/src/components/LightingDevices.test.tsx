@@ -49,10 +49,22 @@ it("detects a WLED controller's LED count before registering it", async () => {
 
 const devices: LightingDevice[] = [
   {kind: "wled", resource: "roofline", host: "192.168.40.80", expected_pixel_count: 60, port: 4048,
-    destination_id: 1, max_payload_bytes: 1440, brightness_limit: 1, pixel_count: 60, in_use: false, transport: null},
+    destination_id: 1, max_payload_bytes: 1440, brightness_limit: 1, pixel_count: 60, in_use: false, transport: null,
+    managed_by: "registry"},
   {kind: "lifx", resource: "light.left", host: "192.168.40.71", target: "d073d58b1a6d", port: 56700,
-    kelvin: 3500, brightness_limit: .25, max_hz: 18, duration_ms: 0, pixel_count: 1, in_use: true, transport: null},
+    kelvin: 3500, brightness_limit: .25, max_hz: 18, duration_ms: 0, pixel_count: 1, in_use: true, transport: null,
+    managed_by: "registry"},
 ];
+
+it("shows output-config devices read-only", () => {
+  render(<LightingDeviceList installationId="home" revision={0} onChanged={vi.fn()} devices={[{
+    ...devices[0], resource: "porch", managed_by: "deployment_config",
+  }]} />);
+  expect(screen.getByText("porch")).toBeInTheDocument();
+  expect(screen.getByText(/CUEVERGE_OUTPUT_CONFIG/)).toBeInTheDocument();
+  expect(screen.queryByRole("button", {name: "Edit porch"})).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", {name: "Remove porch"})).not.toBeInTheDocument();
+});
 
 it("edits and removes registered devices with the registry revision", async () => {
   vi.mocked(updateLightingDevice).mockResolvedValue({} as never);

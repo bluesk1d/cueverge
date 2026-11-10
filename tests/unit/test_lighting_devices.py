@@ -104,6 +104,31 @@ def test_wled_lifecycle_binds_pixels_and_guards_changes(tmp_path: Path) -> None:
         runtime.sink.close()
 
 
+def test_output_config_devices_are_listed_read_only(tmp_path: Path) -> None:
+    from cueverge.lighting.sink import FrameSinkRouter
+
+    porch = DdpUdpSink(host="127.0.0.9", expected_pixel_count=1)
+    runtime = ControllerRuntime(sink=FrameSinkRouter({"roofline.demo": porch}))
+    registry = LightingDeviceRegistry(tmp_path, runtime)
+    try:
+        registry.create(LEFT)
+        devices = {d["resource"]: d for d in registry.view()["devices"]}  # type: ignore[union-attr]
+        assert devices["light.left"]["managed_by"] == "registry"
+        assert devices["roofline.demo"]["managed_by"] == "deployment_config"
+        assert (devices["roofline.demo"]["kind"], devices["roofline.demo"]["host"]) == (
+            "wled",
+            "127.0.0.9",
+        )
+        with pytest.raises(LightingDeviceError, match="CUEVERGE_OUTPUT_CONFIG"):
+            registry.remove("roofline.demo", expected_revision=1)
+        with pytest.raises(LightingDeviceError):
+            registry.create(
+                WledResourceConfig(resource="dup", host="127.0.0.9", expected_pixel_count=1)
+            )
+    finally:
+        runtime.sink.close()
+
+
 def test_wled_requires_private_lan_address() -> None:
     with pytest.raises(ValueError):
         WledResourceConfig(resource="roof", host="8.8.8.8", expected_pixel_count=10)

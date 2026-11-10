@@ -129,6 +129,7 @@ class LightingDeviceRegistry:
     def view(self) -> dict[str, object]:
         stored = self._read()
         transport = self.runtime.lighting_transport_status()
+        registered = {config.resource for config in stored.devices}
         return {
             "revision": stored.revision,
             "kinds": DEVICE_KINDS,
@@ -138,8 +139,21 @@ class LightingDeviceRegistry:
                     "pixel_count": config.expected_pixel_count,
                     "in_use": self.runtime.lighting_output_in_use(config.resource),
                     "transport": transport.get(config.resource),
+                    "managed_by": "registry",
                 }
                 for config in stored.devices
+            ]
+            + [
+                {
+                    **_deployment_fields(sink),
+                    "resource": resource,
+                    "pixel_count": sink.expected_pixel_count,
+                    "in_use": self.runtime.lighting_output_in_use(resource),
+                    "transport": transport.get(resource),
+                    "managed_by": "deployment_config",
+                }
+                for resource, sink in self.runtime.network_lighting_sinks().items()
+                if resource not in registered
             ],
         }
 
@@ -224,7 +238,7 @@ class LightingDeviceRegistry:
         self._check_revision(previous, expected_revision)
         current = next((c for c in previous.devices if c.resource == resource), None)
         if current is None:
-            raise LightingDeviceError("Registered lighting device not found", 404)
+            raise self._not_registered(resource)
         if config.resource != resource or config.kind != current.kind:
             raise LightingDeviceError("A device's resource name and type cannot change", 422)
         if config.expected_pixel_count != current.expected_pixel_count:
@@ -271,7 +285,7 @@ class LightingDeviceRegistry:
         self._check_revision(previous, expected_revision)
         current = next((c for c in previous.devices if c.resource == resource), None)
         if current is None:
-            raise LightingDeviceError("Registered lighting device not found", 404)
+            raise self._not_registered(resource)
         written = False
         try:
             self._commit(previous, tuple(c for c in previous.devices if c.resource != resource))
@@ -282,6 +296,15 @@ class LightingDeviceRegistry:
                 self._rollback(previous)
             raise _translate(error) from error
         self._audit(actor, "remove", resource, {"kind": current.kind, **(context or {})})
+
+    def _not_registered(self, resource: str) -> LightingDeviceError:
+        if resource in self.runtime.network_lighting_sinks():
+            return LightingDeviceError(
+                f"{resource} is configured in the controller's output config file "
+                "(CUEVERGE_OUTPUT_CONFIG); change it there",
+                409,
+            )
+        return LightingDeviceError("Registered lighting device not found", 404)
 
     async def detect_wled(self, host: str) -> WledStatus:
         try:
@@ -296,6 +319,31 @@ class LightingDeviceRegistry:
         assert isinstance(devices, list)
         device = next(d for d in devices if d["resource"] == resource)
         return {**device, "revision": view["revision"]}
+
+
+def _deployment_fields(sink: NetworkLightSink) -> dict[str, object]:
+    """Read-only settings of an output from CUEVERGE_OUTPUT_CONFIG or CUEVERGE_DDP_*."""
+    if isinstance(sink, LifxUdpSink):
+        return {
+            "kind": "lifx",
+            "host": sink.host,
+            "port": sink.port,
+            "target": sink.target.hex(),
+            "kelvin": sink.kelvin,
+            "brightness_limit": sink.brightness_limit,
+            "max_hz": sink.max_hz,
+            "duration_ms": sink.duration_ms,
+            "expected_pixel_count": 1,
+        }
+    return {
+        "kind": "wled",
+        "host": sink.host,
+        "port": sink.port,
+        "destination_id": sink.destination_id,
+        "max_payload_bytes": sink.max_payload_bytes,
+        "expected_pixel_count": sink.expected_pixel_count,
+        "brightness_limit": sink.brightness_limit,
+    }
 
 
 def _translate(error: Exception) -> Exception:
