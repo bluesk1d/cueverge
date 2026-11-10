@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import {
-  getInstallation, importPointLightResource,
+  getInstallation, importLightingDeviceResource,
   editInstallationObject, getInstallationObjects, getProjectMembers, getProjects,
   type InstallationObjectEdit, type InstallationObjectInventory, type InstallationObjectRecord,
   type ObjectLayoutSelection, type ProjectSummary, type Session,
@@ -30,7 +30,7 @@ export function InstallationObjects({ session, projectId, onProjectChange, onDir
   const [notice, setNotice] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [pointLights, setPointLights] = useState<string[]>([]);
-  useEffect(() => { void getInstallation().then((value) => setPointLights(value.resources.filter((r) => r.target === "lifx" && r.pixel_count === 1).map((r) => r.resource))).catch(() => {}); }, []);
+  useEffect(() => { void getInstallation().then((value) => setPointLights(value.resources.filter((r) => (r.target === "lifx" || r.target === "wled")).map((r) => r.resource))).catch(() => {}); }, []);
   const [retry, setRetry] = useState(0);
   const links = useRef<HTMLFieldSetElement>(null);
   useEffect(() => {
@@ -147,7 +147,7 @@ export function InstallationObjects({ session, projectId, onProjectChange, onDir
       {canEdit && pointLights.filter((r) => !inventory.resources.some((b) => b.resource === r)).map((resource) =>
         <button key={resource} disabled={busy || dirty} onClick={() => {
           setBusy(true); setError(null);
-          void importPointLightResource(projectId, resource, inventory.revision)
+          void importLightingDeviceResource(projectId, resource, inventory.revision)
             .then(() => { setNotice(`${resource} added to this show`); setRetry((v) => v + 1); })
             .catch((e: unknown) => setError(message(e))).finally(() => setBusy(false));
         }}>Add {resource} to this show</button>)}

@@ -1602,6 +1602,7 @@ export interface TopologyNode {
   clock_drift_ms: number | null;
   connection_policy?: "continuous" | "on_demand" | "not_applicable";
   reported_pixel_count?: number | null;
+  output_driver?: "ddp" | "lifx" | null;
   signal_percent?: number | null;
   output_on?: boolean | null;
   diagnostic?: string | null;
@@ -3642,14 +3643,60 @@ export async function reportBrowserError(
   });
 }
 
-export async function createPointLightOutput(installationId: string, value: {resource: string; host: string; target: string}) {
-  return request(`/api/gui/v1/installations/${encodeURIComponent(installationId)}/point-lights`, {
-    method: "POST", headers: mutationHeaders(), body: JSON.stringify({kind: "lifx", brightness_limit: .25, ...value}),
+export type LifxDeviceConfig = {
+  kind: "lifx"; resource: string; host: string; target: string;
+  port?: number; kelvin?: number; brightness_limit?: number; max_hz?: number; duration_ms?: number;
+};
+export type WledDeviceConfig = {
+  kind: "wled"; resource: string; host: string; expected_pixel_count: number;
+  port?: number; destination_id?: number; max_payload_bytes?: number; brightness_limit?: number;
+};
+export type LightingDeviceConfig = LifxDeviceConfig | WledDeviceConfig;
+export type LightingDevice = LightingDeviceConfig & {
+  pixel_count: number; in_use: boolean; transport: Record<string, unknown> | null;
+};
+export type LightingDevices = { revision: number; kinds: Record<string, string>; devices: LightingDevice[] };
+export type WledDetection = {
+  connected: boolean; latency_ms: number | null; software_version: string | null;
+  reported_pixel_count: number | null; signal_percent: number | null; output_on: boolean | null;
+  diagnostic: string | null;
+};
+
+function lightingDevicesUrl(installationId: string, resource?: string) {
+  const base = `/api/gui/v1/installations/${encodeURIComponent(installationId)}/lighting-devices`;
+  return resource === undefined ? base : `${base}/${encodeURIComponent(resource)}`;
+}
+
+export function getLightingDevices(installationId: string) {
+  return request<LightingDevices>(lightingDevicesUrl(installationId));
+}
+
+export function createLightingDevice(installationId: string, config: LightingDeviceConfig, revision: number) {
+  return request<LightingDevice & { revision: number }>(lightingDevicesUrl(installationId), {
+    method: "POST", headers: { ...mutationHeaders(), "If-Match": `"${revision}"` }, body: JSON.stringify(config),
   });
 }
 
-export function importPointLightResource(projectId: string, resource: string, revision: number) {
-  return request(`/api/gui/v1/projects/${encodeURIComponent(projectId)}/point-light-resources/${encodeURIComponent(resource)}`, {
+export function updateLightingDevice(installationId: string, config: LightingDeviceConfig, revision: number) {
+  return request<LightingDevice & { revision: number }>(lightingDevicesUrl(installationId, config.resource), {
+    method: "PUT", headers: { ...mutationHeaders(), "If-Match": `"${revision}"` }, body: JSON.stringify(config),
+  });
+}
+
+export function removeLightingDevice(installationId: string, resource: string, revision: number) {
+  return request<void>(lightingDevicesUrl(installationId, resource), {
+    method: "DELETE", headers: { ...mutationHeaders(), "If-Match": `"${revision}"` },
+  });
+}
+
+export function detectWledController(installationId: string, host: string) {
+  return request<WledDetection>(`${lightingDevicesUrl(installationId)}/wled-detect`, {
+    method: "POST", headers: mutationHeaders(), body: JSON.stringify({ host }),
+  });
+}
+
+export function importLightingDeviceResource(projectId: string, resource: string, revision: number) {
+  return request(`/api/gui/v1/projects/${encodeURIComponent(projectId)}/lighting-device-resources/${encodeURIComponent(resource)}`, {
     method: "POST", headers: { ...mutationHeaders(), "If-Match": `"${revision}"` },
   });
 }

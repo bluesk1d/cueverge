@@ -134,6 +134,37 @@ class LifxResourceConfig(RuntimeConfig):
         return value.lower()
 
 
+class WledResourceConfig(RuntimeConfig):
+    """A WLED controller registered from the GUI/MCP and driven over DDP."""
+
+    resource: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
+    kind: Literal["wled"] = "wled"
+    host: str = Field(pattern=r"^\d{1,3}(\.\d{1,3}){3}$")
+    port: int = Field(default=4048, ge=1, le=65535)
+    destination_id: int = Field(default=1, ge=1, le=255)
+    max_payload_bytes: int = Field(default=1440, ge=3, le=65535)
+    expected_pixel_count: int = Field(gt=0, le=10000)
+    brightness_limit: float = Field(default=1.0, gt=0, le=1)
+
+    @field_validator("host")
+    @classmethod
+    def validate_private_ipv4(cls, value: str) -> str:
+        return validate_lan_ipv4(value)
+
+
+def validate_lan_ipv4(value: str) -> str:
+    """Accept one private/loopback IPv4 host, never broadcast, multicast or public."""
+    address = IPv4Address(value)
+    if (
+        address.is_multicast
+        or address.is_unspecified
+        or not address.is_private
+        or str(address) == "255.255.255.255"
+    ):
+        raise ValueError("Use an individual private-network IPv4 address")
+    return str(address)
+
+
 class OutputDeploymentConfig(RuntimeConfig):
     schema_version: Literal[1]
     lighting: tuple[DdpResourceConfig | LifxResourceConfig, ...] = Field(min_length=1)

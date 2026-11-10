@@ -204,11 +204,16 @@ not photo geometry.
 Device cards show identity, display role and connection state. Open **Device
 details** for protocol, formats, storage, transfers, certificates and timing.
 Compatibility conflicts, transfer failures, storage faults and diagnostic messages
-remain visible without opening details. **Add a device** opens the enrollment
-guide: choose its kind, load/review its capability file, then create a one-time
-token. Manual capability JSON is under **Advanced declaration editing**; the
-example template is not a device observation. A compatible declaration does not
-mean connected or ready. **Assign display roles**, connection expectations/checks
+remain visible without opening details. **Add a device** is the single place to
+add hardware; *What are you adding?* selects the workflow. For a **Media player**
+or **Another Cueverge controller** it opens the enrollment guide: load/review its
+capability file, then create a one-time token. Manual capability JSON is under
+**Advanced declaration editing**; the example template is not a device
+observation. A compatible declaration does not mean connected or ready. For a
+**LIFX bulb** or **WLED LED controller** it shows that device's registration form
+(see [stationary point lights](stationary-point-lights.md) and
+[WLED registration](ddp.md#registering-wled-controllers-from-the-gui)); registered
+lights are edited or removed under **Lighting devices (LIFX, WLED)**. **Assign display roles**, connection expectations/checks
 and advanced suspend/revoke controls are separate contextual disclosures.
 
 **Expected result:** the correct enrolled devices and resources appear in

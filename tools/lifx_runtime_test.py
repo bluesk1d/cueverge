@@ -13,7 +13,7 @@ from lifx_probe import Bulb, inspect
 
 from cueverge.config import LifxResourceConfig
 from cueverge.controller.runtime import ControllerRuntime, ShowMode
-from cueverge.gui.point_light_outputs import create_output
+from cueverge.gui.lighting_devices import LightingDeviceRegistry
 
 
 async def main():
@@ -23,10 +23,9 @@ async def main():
     storage = TemporaryDirectory(prefix="cueverge-lifx-test-")
     runtime = ControllerRuntime()
     sinks = ("light.left", "light.right")
+    registry = LightingDeviceRegistry(Path(storage.name), runtime)
     for name, bulb in zip(sinks, bulbs, strict=True):
-        create_output(
-            Path(storage.name),
-            runtime,
+        registry.create(
             LifxResourceConfig(
                 resource=name,
                 host=bulb.host,

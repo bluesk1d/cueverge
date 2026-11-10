@@ -1553,8 +1553,9 @@ Suspension preserves identity and assignment while rejecting subsequent v2
 messages; resume restores the active certificate. Revocation invalidates all
 device certificates, is irreversible, and requires a new enrollment.
 
-Configured DDP/WLED outputs are observed directly through WLED's read-only
-HTTP API when topology is requested. Cueverge reports HTTP reachability,
+Configured and registered DDP/WLED outputs are observed directly through WLED's
+read-only HTTP API when topology is requested; registered LIFX bulbs are not
+probed and report only their LAN acknowledgment state. Cueverge reports HTTP reachability,
 firmware, configured pixel count, Wi-Fi signal, current on/off state, and
 pixel-count compatibility. The probe has a bounded timeout and never changes
 WLED state; probe failures are returned as explicit diagnostics.

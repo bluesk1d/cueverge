@@ -46,6 +46,24 @@ the loaded show. The controller rejects simultaneous use of
 `examples/output-config.example.json` for every available field. Keep real
 addresses and installation limits outside the repository.
 
+## Registering WLED controllers from the GUI
+
+Instead of editing `CUEVERGE_OUTPUT_CONFIG`, an administrator can open
+**Installation → Devices → Add a device**, choose **WLED LED controller**, enter a
+resource name and private-network IPv4 address, then click **Detect WLED**. Detection
+reads WLED's `/json/info` and `/json/state` (read-only) and fills the LED count with
+the controller's configured count; you can also type it. The brightness cap defaults
+to 100%. **Advanced WLED controller settings** holds the DDP port (4048), destination
+ID (1) and maximum packet payload (1440 bytes). Enable realtime DDP reception in WLED.
+
+Registration creates a `pixel_output` resource with `target: wled` and the given
+`pixel_count`, starts a DDP sink, and saves it in `lighting-devices.json` under the
+controller GUI data root so it is restored on startup. Public, broadcast and
+multicast addresses are rejected. Nothing is sent until a show, output test or
+calibration renders to it. Edit, remove, show import and MCP tools behave as
+described for [stationary point lights](stationary-point-lights.md). Do not
+register a WLED host that is also listed in `CUEVERGE_OUTPUT_CONFIG`.
+
 ## Physical maintenance chase
 
 Configured DDP outputs with matching installation pixel counts can run a

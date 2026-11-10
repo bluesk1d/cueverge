@@ -320,6 +320,25 @@ the player only in maintenance mode with nothing playing. Updates are audited as
 `device.agent_settings.update`. The GUI equivalent is **Device details > Agent
 settings**; `get_capabilities` describes it under `agent_settings`.
 
+LIFX bulbs and WLED controllers that the controller drives directly are lighting
+devices. `get_lighting_devices` (read) lists them with the registry `revision`, each
+device's settings, `pixel_count`, `in_use` (the loaded show renders to it) and LIFX
+`transport` counters. With the administrator-only `device_config` scope,
+`add_lighting_device(device, expected_revision=None)` registers
+`{"kind": "lifx", "resource", "host", "target", ...}` or
+`{"kind": "wled", "resource", "host", "expected_pixel_count", ...}`;
+`update_lighting_device(resource, device, expected_revision)` changes address,
+target or limits (not resource, kind or pixel count);
+`remove_lighting_device(resource, expected_revision, confirm_remove=True)`
+unregisters it unless the loaded show uses it; and `detect_wled_controller(host)`
+reads a private-network WLED's LED count and version. All changes require nothing
+playing and no output test or calibration, send no lighting, and are audited as
+`installation.lighting_device.*`. `get_capabilities` describes them (including the
+device JSON schema) under `lighting_devices`, and `get_installation_setup` lists them
+under `device_setup`. The GUI equivalent is **Installation > Devices > Add a device**
+and **Lighting devices (LIFX, WLED)**. Media player and controller enrollment
+remains GUI-only.
+
 Installation output timing is hardware latency compensation shared by every
 show. `get_installation_timing` (read) lists one delay per output of the runtime
 installation (`media` projectors 0–5000 ms start later; `lighting` LED outputs

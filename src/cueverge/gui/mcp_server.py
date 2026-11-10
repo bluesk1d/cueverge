@@ -27,6 +27,7 @@ from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoin
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
+from cueverge.config import LifxResourceConfig, WledResourceConfig
 from cueverge.controller.runtime import SEAMLESS_PRELOAD_LEAD_MS
 from cueverge.controller.timing_calibration import DEFAULT_FLASH_MS, DEFAULT_PERIOD_MS
 from cueverge.core.loader import ShowPackageError
@@ -95,6 +96,12 @@ from cueverge.gui.interactions import (
     InteractionError,
     apply_interaction_edit,
     describe_interactions,
+)
+from cueverge.gui.lighting_devices import (
+    DEVICE_KINDS,
+    LightingDeviceError,
+    LightingDeviceRegistry,
+    lighting_device_adapter,
 )
 from cueverge.gui.lighting_preview import (
     LightingPreviewError,
@@ -607,6 +614,141 @@ def create_mcp_app(services: GuiServices) -> Starlette:
             raise ToolError(str(error)) from error
         return _bounded_result(result.model_dump(mode="json"))
 
+    def lighting_registry() -> LightingDeviceRegistry:
+        if services.lighting_devices is None:
+            raise ToolError("This runtime does not support lighting device registration")
+        return services.lighting_devices
+
+    def lighting_admin_token() -> McpToken:
+        token = input_installation_token(McpScope.DEVICE_CONFIG)
+        if _token_role(services, token) is not Role.ADMINISTRATOR:
+            raise ToolError("Lighting device changes require a current global administrator")
+        return token
+
+    def lighting_context(token: McpToken) -> dict[str, JsonValue]:
+        return {"token_id": token.id, "scope": McpScope.DEVICE_CONFIG.value, "source": "mcp"}
+
+    def parse_lighting_device(
+        device: dict[str, JsonValue],
+    ) -> LifxResourceConfig | WledResourceConfig:
+        try:
+            return lighting_device_adapter.validate_python(device)
+        except ValidationError as error:
+            raise ToolError(f"Invalid lighting device: {error}") from error
+
+    @tool()
+    def get_lighting_devices() -> dict[str, JsonValue]:
+        """List LIFX bulbs and WLED controllers registered as installation lighting outputs.
+
+        Requires read and this runtime's installation. Each device is one pixel_output
+        resource the controller drives directly (kind lifx: 1 pixel, LAN protocol; kind
+        wled: pixel_count LEDs over DDP). in_use means the loaded show renders to it;
+        transport holds LIFX send/reply counters (not proof of visible light). Pass the
+        top-level revision as expected_revision to add/update/remove tools. Media players
+        and controllers are enrolled cryptographically in the GUI, not listed here.
+        """
+        input_installation_token(McpScope.READ)
+        return _bounded_result(lighting_registry().view())
+
+    @tool()
+    async def add_lighting_device(
+        device: dict[str, JsonValue], expected_revision: int | None = None
+    ) -> dict[str, JsonValue]:
+        """Register a LIFX bulb or WLED controller as a new installation lighting output.
+
+        Requires explicit device_config, a current global administrator and this
+        runtime's installation. device is {"kind": "lifx", "resource", "host" (IPv4),
+        "target" (12 hex digit LAN ID), optional brightness_limit (0-1], kelvin,
+        max_hz, duration_ms, port} or {"kind": "wled", "resource", "host" (private
+        IPv4), "expected_pixel_count" (LED count; see detect_wled_controller),
+        optional brightness_limit, port (4048), destination_id, max_payload_bytes}.
+        Resource names, addresses and LIFX targets must be unique. Requires nothing
+        playing and no output test/calibration; sends no lighting. New shows inherit
+        it; add it to an existing show with the GUI's Objects tab or update_project_draft.
+        Same as Installation > Devices > Add a device. Audited as
+        installation.lighting_device.create.
+        """
+        token = lighting_admin_token()
+        config = parse_lighting_device(device)
+        try:
+            created = lighting_registry().create(
+                config,
+                expected_revision=expected_revision,
+                actor=token.username,
+                context=lighting_context(token),
+            )
+        except LightingDeviceError as error:
+            raise ToolError(str(error)) from error
+        return _bounded_result({**created, "hardware_commands_sent": False})
+
+    @tool()
+    async def update_lighting_device(
+        resource: str, device: dict[str, JsonValue], expected_revision: int
+    ) -> dict[str, JsonValue]:
+        """Change a registered lighting device's address, LIFX target or output limits.
+
+        Requires explicit device_config, a current global administrator, this runtime's
+        installation and the revision from get_lighting_devices. Pass the full device
+        (same fields as add_lighting_device); resource, kind and pixel count cannot
+        change (remove and re-add instead). Requires nothing playing. Audited as
+        installation.lighting_device.update.
+        """
+        token = lighting_admin_token()
+        config = parse_lighting_device(device)
+        try:
+            updated = lighting_registry().update(
+                resource,
+                config,
+                expected_revision=expected_revision,
+                actor=token.username,
+                context=lighting_context(token),
+            )
+        except LightingDeviceError as error:
+            raise ToolError(str(error)) from error
+        return _bounded_result(updated)
+
+    @tool()
+    async def remove_lighting_device(
+        resource: str, expected_revision: int, confirm_remove: bool = False
+    ) -> dict[str, JsonValue]:
+        """Unregister a LIFX bulb or WLED controller and stop driving its output.
+
+        Requires explicit device_config, a current global administrator, this runtime's
+        installation, the revision from get_lighting_devices and confirm_remove=True.
+        Refused while playing or while the loaded show uses the resource. Show drafts
+        and layout placements that reference it are kept; applying such a show fails
+        until the device is registered again. Audited as installation.lighting_device.remove.
+        """
+        token = lighting_admin_token()
+        if not confirm_remove:
+            raise ToolError("Explicit confirm_remove=True is required")
+        try:
+            lighting_registry().remove(
+                resource,
+                expected_revision=expected_revision,
+                actor=token.username,
+                context=lighting_context(token),
+            )
+        except LightingDeviceError as error:
+            raise ToolError(str(error)) from error
+        return _bounded_result(lighting_registry().view())
+
+    @tool()
+    async def detect_wled_controller(host: str) -> dict[str, JsonValue]:
+        """Read a WLED controller's LED count, version and signal from its JSON API.
+
+        Requires explicit device_config, a current global administrator and this
+        runtime's installation. host must be a private-network IPv4 address. Read-only
+        HTTP GETs of /json/info and /json/state; use reported_pixel_count as
+        expected_pixel_count when adding the device.
+        """
+        lighting_admin_token()
+        try:
+            status = await lighting_registry().detect_wled(host)
+        except LightingDeviceError as error:
+            raise ToolError(str(error)) from error
+        return cast(dict[str, JsonValue], asdict(status))
+
     def timing_payload() -> dict[str, object]:
         installation_id = services.repository.get_runtime_installation().id
         saved = services.installation_timing.delays(installation_id)
@@ -838,8 +980,9 @@ def create_mcp_app(services: GuiServices) -> Starlette:
         """Read photo-first setup, stable photo/layout IDs and enrollment boundaries.
 
         Requires read and this runtime's installation binding. Geometry is read-only;
-        2D photo overlap is not a physical wiring error. Device enrollment/assignment
-        still require the administrator GUI, origin/CSRF and existing trust checks.
+        2D photo overlap is not a physical wiring error. Media player/controller
+        enrollment and assignment still require the administrator GUI, origin/CSRF and
+        existing trust checks. LIFX/WLED lighting devices use the *_lighting_device tools.
         """
         input_installation_token(McpScope.READ)
         if offset < 0 or not 1 <= limit <= 100:
@@ -881,10 +1024,23 @@ def create_mcp_app(services: GuiServices) -> Starlette:
                 "device_setup": {
                     "enrollment_enabled": services.config.device_enrollment_enabled,
                     "interface": "Installation > Devices > Add a device",
+                    "device_types": {
+                        "media_player": "gui_enrollment",
+                        "downstream_controller": "gui_enrollment",
+                        "lifx": "lighting_device_registration",
+                        "wled": "lighting_device_registration",
+                    },
                     "authorization": (
                         "global_administrator_gui_with_origin_csrf_and_protocol_validation"
                     ),
-                    "mcp_device_writes": False,
+                    "mcp_enrollment_writes": False,
+                    "mcp_lighting_device_tools": [
+                        "get_lighting_devices",
+                        "add_lighting_device",
+                        "update_lighting_device",
+                        "remove_lighting_device",
+                        "detect_wled_controller",
+                    ],
                 },
                 "description_tool": "describe_installation_photo",
                 "layout_guidance": (
@@ -1932,6 +2088,11 @@ def create_mcp_app(services: GuiServices) -> Starlette:
                         "validate_input_source_payload",
                         "get_home_assistant_integration",
                         "configure_home_assistant",
+                        "get_lighting_devices",
+                        "add_lighting_device",
+                        "update_lighting_device",
+                        "remove_lighting_device",
+                        "detect_wled_controller",
                     ],
                 },
                 "home_assistant": {
@@ -1992,6 +2153,22 @@ def create_mcp_app(services: GuiServices) -> Starlette:
                         "configured_on_host": "CUEVERGE_KEEP_AWAKE",
                         "controller_can_change": False,
                     },
+                },
+                "lighting_devices": {
+                    "read_tool": "get_lighting_devices",
+                    "add_tool": "add_lighting_device",
+                    "update_tool": "update_lighting_device",
+                    "remove_tool": "remove_lighting_device",
+                    "detect_tool": "detect_wled_controller",
+                    "scope": "device_config",
+                    "role": "global administrator",
+                    "kinds": cast(JsonValue, DEVICE_KINDS),
+                    "device_schema": lighting_device_adapter.json_schema(),
+                    "revision": "expected_revision from get_lighting_devices",
+                    "requires_idle_runtime": True,
+                    "sends_lighting_on_change": False,
+                    "gui": "Installation > Devices > Add a device / Lighting devices",
+                    "add_to_existing_show": "Installation > Objects > Add <resource> to this show",
                 },
                 "agent_settings": {
                     "read_tool": "get_device_agent_settings",

@@ -612,7 +612,10 @@ audio and update rate; it requires the administrator-only `device_config` scope.
 `update_device_agents` installs the controller's agent bundle on media hosts; it
 requires the separately opted-in, administrator-only `device_update` scope,
 maintenance mode with no scene playing and `confirm_restart=True`.
-Neither grants device enrollment or access administration.
+`device_config` also allows registering, editing and removing LIFX bulbs and WLED
+controllers (`add_lighting_device`, `update_lighting_device`,
+`remove_lighting_device`, `detect_wled_controller`).
+None of these grants device enrollment or access administration.
 
 Global administrators can also issue installation-scoped MCP tokens under
 **Settings > Integrations**. These survive switching the loaded show, and each call

@@ -48,6 +48,7 @@ from cueverge.gui.installation_calibration import (
 from cueverge.gui.installation_geometry import InstallationGeometryService
 from cueverge.gui.installation_photos import InstallationPhotoService
 from cueverge.gui.installation_timing import InstallationTimingService
+from cueverge.gui.lighting_devices import LightingDeviceRegistry
 from cueverge.gui.lighting_surface import LightingSurfaceService
 from cueverge.gui.mapper_export import MapperExportService
 from cueverge.gui.mcp_authoring import (
@@ -195,6 +196,7 @@ class GuiServices:
     agent_updates: DeviceAgentUpdateService
     agent_settings: DeviceAgentSettingsService
     home_assistant: HomeAssistantBridge | None = None
+    lighting_devices: LightingDeviceRegistry | None = None
 
     def runtime_snapshot(self) -> RuntimeStatusResponse:
         inputs = self.input_source.snapshot()
@@ -273,10 +275,13 @@ class GuiServices:
     def create(cls, config: GuiConfig, runtime: RuntimeStatusSource) -> "GuiServices":
         repository = GuiRepository(config.data_root / "gui.sqlite3")
         repository.migrate()
+        wled_status = WledStatusObserver()
+        lighting_devices: LightingDeviceRegistry | None = None
         if isinstance(runtime, ControllerRuntime):
-            from cueverge.gui.point_light_outputs import load_outputs
-
-            load_outputs(config.data_root, runtime)
+            lighting_devices = LightingDeviceRegistry(
+                config.data_root, runtime, repository, wled_status
+            )
+            lighting_devices.load()
         collaboration = CollaborationStore(repository.database_path)
         collaboration.migrate()
         repository.ensure_runtime_installation(
@@ -519,7 +524,8 @@ class GuiServices:
             runtime=runtime,
             device_enrollment=device_enrollment,
             device_sessions=device_sessions,
-            wled_status=WledStatusObserver(),
+            wled_status=wled_status,
+            lighting_devices=lighting_devices,
             endpoint_discovery=EndpointDiscoveryService(),
             asset_upload=asset_upload,
             installation_photos=InstallationPhotoService(config, repository),

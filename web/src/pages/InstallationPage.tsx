@@ -6,7 +6,7 @@ import {
   keepAwakeLabel,
   keepAwakeWarning,
 } from "../status";
-import { PointLightOutputs } from "../components/PointLightOutputs";
+import { LightingDeviceForm, LightingDeviceList, type LightingKind } from "../components/LightingDevices";
 import { InputSourcePanel } from "./InputSourcePanel";
 import { InstallationObjects } from "./InstallationObjects";
 import type { CSSProperties } from "react";
@@ -39,6 +39,8 @@ import {
   DeviceCapabilityDocument,
   DiscoveredEndpoint,
   getDiscoveredEndpoints,
+  getLightingDevices,
+  type LightingDevices,
   getInstallationPhotos,
   getInstallationGeometry,
   getImageAssetLibrary,
@@ -185,7 +187,6 @@ export function InstallationPage({
         />
       )}
       {section === "devices" && <>
-      {session?.role === "administrator" && installation && <PointLightOutputs installationId={installation.installation_id} onRefresh={onRefresh} />}
       <details className="setup-disclosure"><summary>Connection overview</summary>
       <section className="topology-summary" aria-label="Topology summary">
         <Summary
@@ -3259,6 +3260,11 @@ function DeviceManagement({
 }) {
   const [deviceKind, setDeviceKind] =
     useState<PairingToken["device_kind"]>("direct_media_agent");
+  const [addKind, setAddKind] = useState<PairingToken["device_kind"] | LightingKind>("direct_media_agent");
+  const [lighting, setLighting] = useState<LightingDevices | null>(null);
+  const [lightingError, setLightingError] = useState<string | null>(null);
+  const [addNotice, setAddNotice] = useState<string | null>(null);
+  const installationId = installation?.installation_id;
   const [pairingToken, setPairingToken] = useState<PairingToken | null>(null);
   const pairingSection = useRef<HTMLDetailsElement>(null);
   const [creating, setCreating] = useState(false);
@@ -3281,6 +3287,19 @@ function DeviceManagement({
     const timer = window.setInterval(() => setNow(Date.now()), 1_000);
     return () => window.clearInterval(timer);
   }, [pairingToken]);
+
+  const loadLighting = useCallback(async () => {
+    if (!canAdminister || !installationId) return;
+    try {
+      setLighting(await getLightingDevices(installationId));
+      setLightingError(null);
+    } catch (e) {
+      setLighting(null);
+      setLightingError(e instanceof Error ? e.message : "Lighting devices could not be loaded.");
+    }
+  }, [canAdminister, installationId]);
+
+  useEffect(() => { void loadLighting(); }, [loadLighting]);
 
   useEffect(() => {
     if (!canAdminister) {
@@ -3464,27 +3483,50 @@ function DeviceManagement({
           </section>
           </details>
         )}
-        {canAdminister && <details ref={pairingSection} className="device-management__wide"><summary>Device enrollment</summary><section aria-labelledby="pair-device-title">
-          <h3 id="pair-device-title">Pair a device</h3>
-          {enrollmentSupported ? (
+        {canAdminister && <details ref={pairingSection} className="device-management__wide"><summary>Add a device</summary><section aria-labelledby="add-device-title">
+          <h3 id="add-device-title">Add a device</h3>
+          <label>
+            What are you adding?
+            <select
+              value={addKind}
+              onChange={(event) => {
+                const kind = event.target.value as PairingToken["device_kind"] | LightingKind;
+                setAddKind(kind);
+                setAddNotice(null);
+                if (kind === "direct_media_agent" || kind === "downstream_controller") {
+                  setDeviceKind(kind);
+                  setCapabilityJson(JSON.stringify(capabilityTemplate(kind), null, 2));
+                  setCapabilityReview(null);
+                  setPairingToken(null);
+                }
+              }}
+            >
+              <optgroup label="Cueverge devices (secure enrollment)">
+                <option value="direct_media_agent">Media player (projector or screen)</option>
+                <option value="downstream_controller">Another Cueverge controller</option>
+              </optgroup>
+              <optgroup label="Lights driven by this controller">
+                <option value="lifx">LIFX bulb (stationary point light)</option>
+                <option value="wled">WLED LED controller</option>
+              </optgroup>
+            </select>
+          </label>
+          {addNotice && <p role="status">{addNotice}</p>}
+          {(addKind === "lifx" || addKind === "wled") ? (
+            lighting && installationId ? (
+              <LightingDeviceForm key={addKind} installationId={installationId} kind={addKind}
+                revision={lighting.revision}
+                onSaved={async (resource) => {
+                  setAddNotice(`${resource} is ready. Place it in Photos & Layout, and add it to existing shows under Installation → Objects.`);
+                  await loadLighting();
+                  await onRefresh?.();
+                }} />
+            ) : (
+              <p className="muted">{lightingError ?? "Loading lighting devices…"}</p>
+            )
+          ) : enrollmentSupported ? (
             <>
-              <label>
-                1. What are you connecting?
-                <select
-                  value={deviceKind}
-                  onChange={(event) => {
-                    const kind = event.target.value as PairingToken["device_kind"];
-                    setDeviceKind(kind);
-                    setCapabilityJson(JSON.stringify(capabilityTemplate(kind), null, 2));
-                    setCapabilityReview(null);
-                    setPairingToken(null);
-                  }}
-                >
-                  <option value="direct_media_agent">Media player</option>
-                  <option value="downstream_controller">Another Cueverge controller</option>
-                </select>
-              </label>
-              <p>2. Check the device's declared capabilities. A compatible declaration is not proof that the device is connected or ready.</p>
+              <p>1. Check the device's declared capabilities. A compatible declaration is not proof that the device is connected or ready.</p>
               <label>Capability file from the device<input type="file" accept="application/json,.json" onChange={async (event) => {
                 const file = event.target.files?.[0];
                 if (!file) return;
@@ -3583,6 +3625,12 @@ function DeviceManagement({
           ) : (
             <p className="muted">Device enrollment is disabled on this controller. The host administrator must enable verified TLS enrollment and the authenticated device listener before pairing.</p>
           )}
+        </section></details>}
+        {canAdminister && installationId && <details className="device-management__wide"><summary>Lighting devices (LIFX, WLED){lighting ? ` · ${lighting.devices.length}` : ""}</summary><section className="device-management__wide" aria-labelledby="lighting-devices-title">
+          <h3 id="lighting-devices-title">Registered lighting devices</h3>
+          {lighting ? <LightingDeviceList installationId={installationId} devices={lighting.devices}
+            revision={lighting.revision} onChanged={async () => { await loadLighting(); await onRefresh?.(); }} />
+            : <p className="muted">{lightingError ?? "Loading…"}</p>}
         </section></details>}
         {canAdminister && <AgentSoftwareUpdates onRefresh={onRefresh} />}
         {canAdminister && <details><summary>Connection expectations</summary><section aria-labelledby="connection-policy-title">
@@ -4150,7 +4198,9 @@ function NodeCard({
           <Icon size={19} />
         </span>
         <div>
-          <span>{humanize(node.kind)}</span>
+          <span>{node.kind === "controller_output" && node.output_driver
+            ? node.output_driver === "lifx" ? "LIFX bulb" : "WLED / DDP output"
+            : humanize(node.kind)}</span>
           <h3>{node.label}</h3>
         </div>
         <StatusText tone={connection.tone}>{connection.label}</StatusText>

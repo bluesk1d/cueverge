@@ -1927,6 +1927,10 @@ class InstallationResourceResponse(GuiModel):
     pixel_count: int | None = Field(default=None, gt=0)
 
 
+class WledDetectRequest(GuiModel):
+    host: str = Field(min_length=7, max_length=15)
+
+
 class InstallationStatusResponse(GuiModel):
     installation_id: str
     name: str
@@ -2944,6 +2948,9 @@ class TopologyNodeResponse(GuiModel):
     latency_ms: float | None = Field(default=None, ge=0)
     clock_drift_ms: float | None = None
     connection_policy: Literal["continuous", "on_demand", "not_applicable"] = "not_applicable"
+    output_driver: Literal["ddp", "lifx"] | None = Field(
+        default=None, description="Controller lighting driver: ddp (WLED) or lifx."
+    )
     reported_pixel_count: int | None = Field(default=None, gt=0)
     signal_percent: int | None = Field(default=None, ge=0, le=100)
     output_on: bool | None = None

@@ -1,11 +1,30 @@
 # Stationary point lights
 
-As an administrator, open **Installation → Devices → Add stationary point light output**.
-Enter a resource name, IPv4 address and twelve-digit LIFX target ID. Registration
-creates both the one-sample logical output and its live LIFX driver. It is saved
-in `lifx-outputs.json` under the controller GUI data root and restored on startup.
-Registration sends no lighting commands; stop playback/calibration/testing first.
-The form defaults to a 25% brightness cap and 18 Hz transmission.
+As an administrator, open **Installation → Devices → Connect and manage devices →
+Add a device** and choose **LIFX bulb (stationary point light)** under *What are
+you adding?*. Enter a resource name, IPv4 address and twelve-digit LIFX target ID
+(the bulb's MAC address without colons). Registration creates both the one-sample
+logical output and its live LIFX driver. Registration sends no lighting commands;
+stop playback/calibration/testing first. The form defaults to a 25% brightness cap
+and 18 Hz transmission; **Advanced LIFX bulb settings** holds temperature, update
+rate, transition and port.
+
+Registered LIFX bulbs and [WLED controllers](ddp.md#registering-wled-controllers-from-the-gui)
+are listed under **Lighting devices (LIFX, WLED)** on the same page, with
+**Edit** (address, target, limits) and **Remove**. The resource name, device type
+and pixel count are fixed; remove and re-add to change them. Remove is refused
+while the loaded show uses the output; show drafts and layout points that
+reference it are kept, and applying such a show fails until it is registered
+again. Registrations are saved in `lighting-devices.json` under the controller GUI
+data root (with a registry `revision` used for edit/remove conflict checks) and
+restored on startup. An existing `lifx-outputs.json` from earlier versions is
+migrated automatically and renamed `lifx-outputs.json.migrated`. Changes are
+audited as `installation.lighting_device.create|update|remove`. MCP clients use the
+equivalent [lighting device tools](operations.md#mcp-assisted-authoring).
+
+The Devices tree shows every registered device, labelled **LIFX bulb** or
+**WLED / DDP output**. LIFX bulbs are never probed over HTTP; they show as
+connected only while recent LAN acknowledgments are observed.
 
 For the investigated bulbs:
 
@@ -20,7 +39,8 @@ lighting compositions sample RGB at that position. A point light has one sample
 at index zero and no traversal.
 
 New shows inherit registered outputs. For an existing show, open **Installation →
-Objects**, select the show and click **Add light.left to this show** (and Right).
+Objects**, select the show and click **Add light.left to this show** (and Right;
+registered WLED controllers get the same button).
 This revises only that working draft. Select the resource when adding a lighting
 output to a scene, author its lighting, then publish/apply through the normal flow.
 Registration and draft import alone do not start playback or apply a show.

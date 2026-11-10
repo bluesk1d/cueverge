@@ -2,14 +2,14 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useState } from "react";
 import {
-  getInstallation, importPointLightResource,
+  getInstallation, importLightingDeviceResource,
   editInstallationObject, getInstallationObjects, getProjectMembers, getProjects,
   type InstallationObjectInventory,
 } from "../api";
 import { InstallationObjects } from "./InstallationObjects";
 
 vi.mock("../api", () => ({
-  getInstallation: vi.fn(), importPointLightResource: vi.fn(),
+  getInstallation: vi.fn(), importLightingDeviceResource: vi.fn(),
   editInstallationObject: vi.fn(), getInstallationObjects: vi.fn(),
   getProjectMembers: vi.fn(), getProjects: vi.fn(),
 }));
@@ -149,8 +149,8 @@ describe("Installation object inventory", () => {
 
 it("adds a registered point light to an existing show with its current revision", async () => {
   vi.mocked(getInstallation).mockResolvedValue({installation_id: "home", name: "Home", revision: 1, runtime_active: true, package_schema: "runtime-v1-v2", resources: [{resource: "light.left", kind: "pixel_output", target: "lifx", pixel_count: 1}]});
-  vi.mocked(importPointLightResource).mockResolvedValue({});
+  vi.mocked(importLightingDeviceResource).mockResolvedValue({});
   await open();
   fireEvent.click(await screen.findByRole("button", {name: "Add light.left to this show"}));
-  await waitFor(() => expect(importPointLightResource).toHaveBeenCalledWith("show", "light.left", 4));
+  await waitFor(() => expect(importLightingDeviceResource).toHaveBeenCalledWith("show", "light.left", 4));
 });

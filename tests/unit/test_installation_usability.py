@@ -242,7 +242,7 @@ def test_mcp_setup_is_bound_paginated_and_photo_writes_need_separate_scope(tmp_p
         granted = token((McpScope.READ, McpScope.INSTALLATION_EDIT))
         metadata = tool(client, granted, "get_installation_setup")["structuredContent"]
         assert metadata["photos"][0]["description"] == "Original photo"
-        assert metadata["device_setup"]["mcp_device_writes"] is False
+        assert metadata["device_setup"]["mcp_enrollment_writes"] is False
         result = tool(
             client,
             granted,

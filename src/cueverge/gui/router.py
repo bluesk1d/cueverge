@@ -23,8 +23,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from PIL import Image
 from pydantic import JsonValue, ValidationError
 
-from cueverge.config import LifxResourceConfig
-from cueverge.controller.runtime import ControllerRuntime, ShowMode
+from cueverge.controller.runtime import ShowMode
 from cueverge.core.loader import ShowPackageError, load_show_package
 from cueverge.gui.agent_settings import AgentSettingsError
 from cueverge.gui.agent_updates import AgentUpdateError, AgentUpdatePreconditionError
@@ -217,6 +216,7 @@ from cueverge.gui.contracts import (
     UpdateInstallationPhotoRequest,
     UpdateInstallationRequest,
     UpdateRevisionReleaseRequest,
+    WledDetectRequest,
 )
 from cueverge.gui.contracts import (
     PixelPositionOverride as PixelPositionOverrideResponse,
@@ -258,6 +258,12 @@ from cueverge.gui.interactions import (
     apply_interaction_edit,
     describe_interactions,
 )
+from cueverge.gui.lighting_devices import (
+    DEVICE_KINDS,
+    LightingDeviceConfig,
+    LightingDeviceError,
+    LightingDeviceRegistry,
+)
 from cueverge.gui.lighting_preview import (
     LightingPreviewError,
     evaluate_lighting_preview,
@@ -281,7 +287,6 @@ from cueverge.gui.mcp_authoring import (
 from cueverge.gui.output_arming import OutputArmError, StoredOutputArm
 from cueverge.gui.output_tests import mapped_test_segments
 from cueverge.gui.passwords import hash_password
-from cueverge.gui.point_light_outputs import create_output
 from cueverge.gui.preview_evaluation import (
     PreviewEvaluationError,
     evaluate_preview_state,
@@ -1057,29 +1062,85 @@ def create_gui_router(services: GuiServices) -> APIRouter:
             raise HTTPException(status_code=422, detail={"code": "mcp_read_scope_required"})
         return expires_at, scopes
 
-    @router.post("/installations/{installation_id}/point-lights", status_code=201)
-    async def add_point_light_output(
-        installation_id: str,
-        body: LifxResourceConfig,
-        identity: Annotated[AuthenticatedSession, administrator_mutation],
-    ) -> InstallationResourceResponse:
+    def lighting_registry(installation_id: str) -> LightingDeviceRegistry:
         if installation_id != services.repository.get_runtime_installation().id:
             raise HTTPException(409, "Choose the active installation")
-        if not isinstance(services.runtime, ControllerRuntime):
-            raise HTTPException(409, "Runtime does not support output registration")
+        if services.lighting_devices is None:
+            raise HTTPException(409, "Runtime does not support lighting device registration")
+        return services.lighting_devices
+
+    @router.get("/installations/{installation_id}/lighting-devices", dependencies=[administrator])
+    def list_lighting_devices(installation_id: str) -> dict[str, object]:
+        return lighting_registry(installation_id).view()
+
+    @router.post("/installations/{installation_id}/lighting-devices", status_code=201)
+    async def add_lighting_device(
+        installation_id: str,
+        body: LightingDeviceConfig,
+        identity: Annotated[AuthenticatedSession, administrator_mutation],
+        if_match: Annotated[str | None, Header(alias="If-Match")] = None,
+    ) -> dict[str, object]:
+        registry = lighting_registry(installation_id)
         try:
-            create_output(services.config.data_root, services.runtime, body)
-        except (ValueError, RuntimeError, OSError) as error:
-            raise HTTPException(409, str(error)) from error
-        services.repository.append_audit(
-            actor=identity.username,
-            action="installation.point_light.create",
-            target=body.resource,
-            result="success",
-            occurred_at=_now_iso(),
-            authorization_context={"role": identity.role.value},
-        )
-        return _installation_resources(services)[body.resource]
+            return registry.create(
+                body,
+                expected_revision=None if if_match is None else _parse_if_match(if_match),
+                actor=identity.username,
+                context={"role": identity.role.value},
+            )
+        except LightingDeviceError as error:
+            raise HTTPException(error.status, str(error)) from error
+
+    @router.put("/installations/{installation_id}/lighting-devices/{resource}")
+    async def update_lighting_device(
+        installation_id: str,
+        resource: str,
+        body: LightingDeviceConfig,
+        identity: Annotated[AuthenticatedSession, administrator_mutation],
+        if_match: Annotated[str | None, Header(alias="If-Match")] = None,
+    ) -> dict[str, object]:
+        registry = lighting_registry(installation_id)
+        try:
+            return registry.update(
+                resource,
+                body,
+                expected_revision=_parse_if_match(if_match),
+                actor=identity.username,
+                context={"role": identity.role.value},
+            )
+        except LightingDeviceError as error:
+            raise HTTPException(error.status, str(error)) from error
+
+    @router.delete("/installations/{installation_id}/lighting-devices/{resource}", status_code=204)
+    async def remove_lighting_device(
+        installation_id: str,
+        resource: str,
+        identity: Annotated[AuthenticatedSession, administrator_mutation],
+        if_match: Annotated[str | None, Header(alias="If-Match")] = None,
+    ) -> None:
+        registry = lighting_registry(installation_id)
+        try:
+            registry.remove(
+                resource,
+                expected_revision=_parse_if_match(if_match),
+                actor=identity.username,
+                context={"role": identity.role.value},
+            )
+        except LightingDeviceError as error:
+            raise HTTPException(error.status, str(error)) from error
+
+    @router.post(
+        "/installations/{installation_id}/lighting-devices/wled-detect",
+        dependencies=[administrator_mutation],
+    )
+    async def detect_wled_controller(
+        installation_id: str, body: WledDetectRequest
+    ) -> dict[str, object]:
+        try:
+            status = await lighting_registry(installation_id).detect_wled(body.host)
+        except LightingDeviceError as error:
+            raise HTTPException(error.status, str(error)) from error
+        return asdict(status)
 
     @router.get(
         "/integrations/mcp-tokens",
@@ -1518,10 +1579,10 @@ def create_gui_router(services: GuiServices) -> APIRouter:
             raise HTTPException(status_code=404, detail={"code": "project_not_found"}) from error
 
     @router.post(
-        "/projects/{project_id}/point-light-resources/{resource}",
+        "/projects/{project_id}/lighting-device-resources/{resource}",
         response_model=ProjectDraftResponse,
     )
-    def import_point_light_resource(
+    def import_lighting_device_resource(
         project_id: str,
         resource: str,
         identity: Annotated[AuthenticatedSession, project_designer],
@@ -1534,12 +1595,12 @@ def create_gui_router(services: GuiServices) -> APIRouter:
             (
                 b
                 for b in services.runtime.catalog.installation.resources
-                if b.resource == resource and b.pixel_count == 1 and b.target == "lifx"
+                if b.resource == resource and b.target in DEVICE_KINDS
             ),
             None,
         )
         if binding is None:
-            raise HTTPException(404, "Registered point light not found")
+            raise HTTPException(404, "Registered lighting device not found")
         if any(b.resource == resource for b in revision.draft.installation.resources):
             raise HTTPException(409, "Resource is already in this show")
         draft = revision.draft.model_copy(
@@ -6051,6 +6112,8 @@ def create_gui_router(services: GuiServices) -> APIRouter:
         for scene in services.runtime.catalog.scenes.values():
             for lighting_output in scene.lighting_outputs:
                 pixel_resources.add(lighting_output.definition.resource)
+        # Registered LIFX/WLED devices are shown even before a show uses them.
+        pixel_resources.update(target.resource for target in services.runtime.lighting_targets())
 
         nodes = [
             TopologyNodeResponse(
@@ -6223,7 +6286,14 @@ def create_gui_router(services: GuiServices) -> APIRouter:
             for device in services.repository.list_devices()
         )
         targets = {target.resource: target for target in services.runtime.lighting_targets()}
-        target_resources = sorted(pixel_resources & targets.keys())
+        # WLED/DDP controllers expose a JSON API; LIFX bulbs are only observed from
+        # their replies to lighting packets, so never probe them over HTTP.
+        target_resources = sorted(
+            r for r in pixel_resources & targets.keys() if targets[r].driver == "ddp"
+        )
+        transport_status: dict[str, dict[str, object]] = getattr(
+            services.runtime, "lighting_transport_status", dict
+        )()
         statuses = await asyncio.gather(
             *(services.wled_status.observe(targets[resource].host) for resource in target_resources)
         )
@@ -6231,6 +6301,7 @@ def create_gui_router(services: GuiServices) -> APIRouter:
         for resource in sorted(pixel_resources):
             target = targets.get(resource)
             status = status_by_resource.get(resource)
+            lifx = transport_status.get(resource) if target and target.driver == "lifx" else None
             expected_pixels = target.expected_pixel_count if target is not None else None
             compatible = (
                 status is not None
@@ -6247,12 +6318,16 @@ def create_gui_router(services: GuiServices) -> APIRouter:
                     configured=target is not None,
                     connection=(
                         "connected"
-                        if status is not None and status.connected
+                        if (status is not None and status.connected)
+                        or (lifx is not None and lifx.get("reply_recent") is True)
                         else "disconnected"
                         if status is not None
                         else "not_independently_detectable"
                     ),
                     enrollment="not_applicable",
+                    output_driver=(
+                        None if target is None else "lifx" if target.driver == "lifx" else "ddp"
+                    ),
                     compatibility=(
                         "compatible"
                         if compatible
@@ -6268,7 +6343,15 @@ def create_gui_router(services: GuiServices) -> APIRouter:
                     ),
                     signal_percent=status.signal_percent if status is not None else None,
                     output_on=status.output_on if status is not None else None,
-                    diagnostic=status.diagnostic if status is not None else None,
+                    diagnostic=(
+                        status.diagnostic
+                        if status is not None
+                        else str(lifx["error"])
+                        if lifx is not None and lifx.get("error")
+                        else "LIFX replies are observed only while lighting is sent"
+                        if lifx is not None
+                        else None
+                    ),
                 )
             )
         return TopologyResponse(

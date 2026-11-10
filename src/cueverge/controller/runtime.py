@@ -190,11 +190,15 @@ class RuntimeAgentStatus:
     last_seen_age_ms: int
 
 
+NetworkLightSink = DdpUdpSink | LifxUdpSink
+
+
 @dataclass(frozen=True)
 class RuntimeLightingTarget:
     resource: str
     host: str
     expected_pixel_count: int | None
+    driver: Literal["ddp", "lifx"] = "ddp"
 
 
 @dataclass(frozen=True)
@@ -266,12 +270,12 @@ class ControllerRuntime:
         elif len(lighting_resources) > 1:
             raise ValueError("multiple lighting resources require a FrameSinkRouter")
         self.sink = configured_sink
-        self._point_light_bindings: dict[str, ResourceBinding] = {}
+        self._registered_outputs: dict[str, ResourceBinding] = {}
         if isinstance(self.sink, FrameSinkRouter):
             for resource, driver in self.sink.sinks.items():
                 if isinstance(driver, LifxUdpSink):
-                    self._remember_point_light(resource)
-            self.catalog = self._with_point_lights(self.catalog)
+                    self._remember_output(resource, "lifx", 1)
+            self.catalog = self._with_registered_outputs(self.catalog)
         self._output_test: OutputTestRunner | None = None
         self._timing_calibration: TimingCalibrationRun | None = None
         self._scene_starting = False
@@ -1339,29 +1343,29 @@ class ControllerRuntime:
             for agent_id, connection in sorted(self._agents.items())
         )
 
-    def _remember_point_light(self, resource: str) -> None:
+    def _remember_output(self, resource: str, target: str, pixel_count: int) -> None:
         existing = next(
             (b for b in self.catalog.installation.resources if b.resource == resource), None
         )
         if existing is not None and (
-            existing.kind is not ResourceKind.PIXEL_OUTPUT or existing.pixel_count != 1
+            existing.kind is not ResourceKind.PIXEL_OUTPUT or existing.pixel_count != pixel_count
         ):
-            raise ValueError(f"{resource} conflicts with a stationary point light")
-        self._point_light_bindings[resource] = existing or ResourceBinding(
+            raise ValueError(f"{resource} conflicts with an existing output resource")
+        self._registered_outputs[resource] = existing or ResourceBinding(
             resource=resource,
             kind=ResourceKind.PIXEL_OUTPUT,
-            target="lifx",
-            pixel_count=1,
+            target=target,
+            pixel_count=pixel_count,
         )
 
-    def _with_point_lights(self, catalog: SceneCatalog) -> SceneCatalog:
+    def _with_registered_outputs(self, catalog: SceneCatalog) -> SceneCatalog:
         bindings = {b.resource: b for b in catalog.installation.resources}
-        for resource, binding in self._point_light_bindings.items():
+        for resource, binding in self._registered_outputs.items():
             if resource in bindings and (
                 bindings[resource].kind is not ResourceKind.PIXEL_OUTPUT
-                or bindings[resource].pixel_count != 1
+                or bindings[resource].pixel_count != binding.pixel_count
             ):
-                raise ValueError(f"{resource} conflicts with a stationary point light")
+                raise ValueError(f"{resource} conflicts with a registered lighting output")
             bindings.setdefault(resource, binding)
         # Apply rollback must restore the original catalog object. Only create a
         # replacement when installation-owned lights actually add bindings.
@@ -1375,12 +1379,37 @@ class ControllerRuntime:
             }
         )
 
-    def add_point_light(self, resource: str, sink: LifxUdpSink, *, restore: bool = False) -> None:
+    def _require_idle_outputs(self) -> None:
         if self.active_scene or self._scene_starting or self._catalog_loading:
-            raise RuntimeError("Stop playback before adding an output")
+            raise RuntimeError("Stop playback before changing lighting devices")
         test = self.output_test_status()
         if self.timing_calibration_active or (test is not None and test.state == "active"):
             raise RuntimeError("Finish output testing or calibration first")
+
+    def _routed_sinks(self) -> dict[str, FrameSink]:
+        if isinstance(self.sink, FrameSinkRouter):
+            return dict(self.sink.sinks)
+        return {
+            b.resource: self.sink
+            for b in self.catalog.installation.resources
+            if b.kind is ResourceKind.PIXEL_OUTPUT
+        }
+
+    @staticmethod
+    def _same_device(left: FrameSink, right: NetworkLightSink) -> bool:
+        if isinstance(left, LifxUdpSink) and isinstance(right, LifxUdpSink):
+            return left.host == right.host or left.target == right.target
+        if isinstance(left, (DdpUdpSink, LifxUdpSink)):
+            return left.host == right.host
+        return False
+
+    def add_lighting_output(
+        self, resource: str, sink: NetworkLightSink, *, target: str, restore: bool = False
+    ) -> None:
+        """Route a controller-driven LIFX bulb or WLED controller as an installation output."""
+        self._require_idle_outputs()
+        if sink.expected_pixel_count is None:
+            raise ValueError("A registered lighting output needs a pixel count")
         if not restore and any(b.resource == resource for b in self.catalog.installation.resources):
             raise ValueError("Output resource already exists")
         if (
@@ -1395,27 +1424,74 @@ class ControllerRuntime:
             != 1
         ):
             raise ValueError("Configure explicit output routing before adding another light")
-        sinks = (
-            dict(self.sink.sinks)
-            if isinstance(self.sink, FrameSinkRouter)
-            else {
-                b.resource: self.sink
-                for b in self.catalog.installation.resources
-                if b.kind is ResourceKind.PIXEL_OUTPUT
-            }
-        )
-        if any(
-            isinstance(existing, LifxUdpSink)
-            and (existing.host == sink.host or existing.target == sink.target)
-            for existing in sinks.values()
-        ):
-            raise ValueError("This bulb already has an output resource")
+        sinks = self._routed_sinks()
+        if any(self._same_device(existing, sink) for existing in sinks.values()):
+            raise ValueError("This device already has an output resource")
         if restore and resource in sinks and isinstance(sinks[resource], (DdpUdpSink, LifxUdpSink)):
             raise ValueError("Resource already has a configured driver")
+        self._remember_output(resource, target, sink.expected_pixel_count)
         sinks[resource] = sink
-        self._remember_point_light(resource)
         self.sink = FrameSinkRouter(sinks)
-        self.catalog = self._with_point_lights(self.catalog)
+        self.catalog = self._with_registered_outputs(self.catalog)
+
+    def add_point_light(self, resource: str, sink: LifxUdpSink, *, restore: bool = False) -> None:
+        self.add_lighting_output(resource, sink, target="lifx", restore=restore)
+
+    def replace_lighting_output(self, resource: str, sink: NetworkLightSink) -> None:
+        """Swap a registered output's driver (address, limits) keeping its resource binding."""
+        self._require_idle_outputs()
+        binding = self._registered_outputs.get(resource)
+        sinks = self._routed_sinks()
+        current = sinks.get(resource)
+        if binding is None or not isinstance(current, type(sink)):
+            raise ValueError("Registered lighting output not found")
+        if sink.expected_pixel_count != binding.pixel_count:
+            raise ValueError("Remove and re-add the device to change its pixel count")
+        if any(
+            self._same_device(existing, sink)
+            for name, existing in sinks.items()
+            if name != resource
+        ):
+            raise ValueError("This device already has an output resource")
+        sinks[resource] = sink
+        self.sink = FrameSinkRouter(sinks)
+        current.close()
+
+    def lighting_output_in_use(self, resource: str) -> bool:
+        """Whether the loaded catalog's scenes or lighting looks render to this resource."""
+        used = {
+            name for scene in self.catalog.scenes.values() for name in scene.definition.resources
+        } | set(self.catalog.lighting_looks_by_resource)
+        if self.catalog.lighting_looks is not None:
+            used.add(self.catalog.lighting_looks.definition.resource)
+        return resource in used
+
+    def remove_lighting_output(self, resource: str) -> None:
+        """Stop driving a registered output. Refused while the loaded show uses it."""
+        self._require_idle_outputs()
+        sinks = self._routed_sinks()
+        if resource not in self._registered_outputs or resource not in sinks:
+            raise ValueError("Registered lighting output not found")
+        if self.lighting_output_in_use(resource):
+            raise RuntimeError(
+                f"The loaded show uses {resource}; apply a show without it before removing"
+            )
+        removed = sinks.pop(resource)
+        del self._registered_outputs[resource]
+        self._lighting_output_errors.pop(resource, None)
+        self.sink = FrameSinkRouter(sinks)
+        self.catalog = self.catalog.model_copy(
+            update={
+                "installation": self.catalog.installation.model_copy(
+                    update={
+                        "resources": tuple(
+                            b for b in self.catalog.installation.resources if b.resource != resource
+                        )
+                    }
+                )
+            }
+        )
+        removed.close()
 
     def lighting_targets(self) -> tuple[RuntimeLightingTarget, ...]:
         sinks: Mapping[str, FrameSink]
@@ -1435,6 +1511,7 @@ class ControllerRuntime:
                 resource=resource,
                 host=sink.host,
                 expected_pixel_count=sink.expected_pixel_count,
+                driver="lifx" if isinstance(sink, LifxUdpSink) else "ddp",
             )
             for resource, sink in sorted(sinks.items())
             if isinstance(sink, (DdpUdpSink, LifxUdpSink))
@@ -1984,7 +2061,7 @@ class ControllerRuntime:
         self.sink.close()
 
     def validate_catalog_handover(self, catalog: SceneCatalog) -> None:
-        self._with_point_lights(catalog)
+        self._with_registered_outputs(catalog)
         if self._scene_starting or self._catalog_loading:
             raise RuntimeError("another scene/catalog change is in progress")
         test = self.output_test_status()
@@ -2085,7 +2162,7 @@ class ControllerRuntime:
                 await before_load()
             if handover_generation != self._scene_control_generation:
                 raise RuntimeError("catalog load was cancelled by Stop")
-            self.catalog = self._with_point_lights(catalog)
+            self.catalog = self._with_registered_outputs(catalog)
             self._last_output_frames.clear()
             self._monitor_sample = ()
             self._monitor_sample_at = float("-inf")
