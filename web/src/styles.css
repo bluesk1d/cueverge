@@ -7713,9 +7713,20 @@ p {
   border-radius: var(--cv-radius-control);
 }
 
-.lighting-device-form__actions {
+.lighting-device-form__actions,
+.lighting-device__actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 10px;
+}
+
+.lighting-device-form .primary-button,
+.lighting-device__actions .primary-button {
+  padding: 0 16px;
+}
+
+.lighting-device-form > .primary-button {
+  justify-self: start;
 }
 
 .lighting-device {

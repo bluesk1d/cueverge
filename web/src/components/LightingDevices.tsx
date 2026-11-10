@@ -79,7 +79,7 @@ export function LightingDeviceForm({ installationId, kind, revision, device, onS
       onChange={(e) => setTarget(e.target.value)} placeholder="d073d58b1a6d" />
       <small>The bulb's 12-digit MAC address (LIFX app → bulb settings), without colons.</small></label>}
     {kind === "wled" && <>
-      <button type="button" disabled={busy || !new RegExp(`^${IPV4_PATTERN}$`).test(host.trim())} onClick={() => void detect()}>
+      <button type="button" className="primary-button" disabled={busy || !new RegExp(`^${IPV4_PATTERN}$`).test(host.trim())} onClick={() => void detect()}>
         {busy && !detection ? "Detecting…" : "Detect WLED"}</button>
       {detection && <p role="status">{detection.connected
         ? `WLED ${detection.software_version ?? ""} reports ${detection.reported_pixel_count ?? "?"} LEDs` +
@@ -104,7 +104,7 @@ export function LightingDeviceForm({ installationId, kind, revision, device, onS
     </details>
     <div className="lighting-device-form__actions">
       <button className="primary-button" disabled={busy}>{busy ? "Saving…" : editing ? "Save changes" : `Add ${label}`}</button>
-      {onCancel && <button type="button" onClick={onCancel}>Cancel</button>}
+      {onCancel && <button type="button" className="primary-button" onClick={onCancel}>Cancel</button>}
     </div>
     {error && <p role="alert">{error}</p>}
   </form>;
@@ -134,16 +134,16 @@ export function LightingDeviceList({ installationId, devices, revision, onChange
       </div>
       {device.managed_by === "deployment_config" ? null : editing === device.resource ? <LightingDeviceForm installationId={installationId} kind={device.kind}
         revision={revision} device={device} onCancel={() => setEditing(null)}
-        onSaved={async () => { setEditing(null); await onChanged(); }} /> : <div className="discovered-endpoint-actions">
-        <button type="button" onClick={() => { setError(null); setEditing(device.resource); }}>Edit {device.resource}</button>
-        <button type="button" disabled={device.in_use}
+        onSaved={async () => { setEditing(null); await onChanged(); }} /> : <div className="lighting-device__actions">
+        <button type="button" className="primary-button" aria-label={`Edit ${device.resource}`} onClick={() => { setError(null); setEditing(device.resource); }}>Edit</button>
+        <button type="button" className="primary-button" aria-label={`Remove ${device.resource}`} disabled={device.in_use}
           title={device.in_use ? "Apply a show that doesn't use this output first" : undefined}
           onClick={() => {
             if (!window.confirm(`Remove ${device.resource}? Shows and layout points that use it keep the reference but it won't light until registered again.`)) return;
             setError(null);
             void removeLightingDevice(installationId, device.resource, revision)
               .then(() => onChanged()).catch((e: unknown) => setError(message(e)));
-          }}>Remove {device.resource}</button>
+          }}>Remove</button>
       </div>}
     </article>)}
     {error && <p role="alert">{error}</p>}
