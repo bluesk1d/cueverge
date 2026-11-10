@@ -152,7 +152,8 @@ def test_gui_and_mcp_manage_lighting_devices(tmp_path: Path, monkeypatch) -> Non
         )
         assert project.status_code == 201, project.text
         assert client.post(base, json=lifx).status_code == 403
-        created = client.post(base, json=lifx, headers=_mutation_headers(client))
+        # An empty registry is revision 0; the GUI sends it as If-Match.
+        created = client.post(base, json=lifx, headers=_mutation_headers(client, if_match='"0"'))
         assert created.status_code == 201, created.text
         assert created.json()["pixel_count"] == 1
         detect = f"{base}/wled-detect"

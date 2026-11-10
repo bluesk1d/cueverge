@@ -1084,7 +1084,9 @@ def create_gui_router(services: GuiServices) -> APIRouter:
         try:
             return registry.create(
                 body,
-                expected_revision=None if if_match is None else _parse_if_match(if_match),
+                expected_revision=(
+                    None if if_match is None else _parse_if_match(if_match, minimum=0)
+                ),
                 actor=identity.username,
                 context={"role": identity.role.value},
             )
@@ -1104,7 +1106,7 @@ def create_gui_router(services: GuiServices) -> APIRouter:
             return registry.update(
                 resource,
                 body,
-                expected_revision=_parse_if_match(if_match),
+                expected_revision=_parse_if_match(if_match, minimum=0),
                 actor=identity.username,
                 context={"role": identity.role.value},
             )
@@ -1122,7 +1124,7 @@ def create_gui_router(services: GuiServices) -> APIRouter:
         try:
             registry.remove(
                 resource,
-                expected_revision=_parse_if_match(if_match),
+                expected_revision=_parse_if_match(if_match, minimum=0),
                 actor=identity.username,
                 context={"role": identity.role.value},
             )
@@ -6439,7 +6441,7 @@ def _require_allowed_origin(request: Request, services: GuiServices) -> None:
         raise HTTPException(status_code=403, detail={"code": "origin_not_allowed"})
 
 
-def _parse_if_match(value: str | None) -> int:
+def _parse_if_match(value: str | None, *, minimum: int = 1) -> int:
     if value is None:
         raise HTTPException(status_code=428, detail={"code": "if_match_required"})
     normalized = value.strip()
@@ -6451,7 +6453,7 @@ def _parse_if_match(value: str | None) -> int:
         revision = int(normalized)
     except ValueError as error:
         raise HTTPException(status_code=400, detail={"code": "invalid_if_match"}) from error
-    if revision < 1:
+    if revision < minimum:
         raise HTTPException(status_code=400, detail={"code": "invalid_if_match"})
     return revision
 
