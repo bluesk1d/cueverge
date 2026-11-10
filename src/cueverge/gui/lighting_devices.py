@@ -8,7 +8,7 @@ service, so validation, revision checks and audit records are identical.
 import json
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, TypeAdapter
 
@@ -23,8 +23,9 @@ from cueverge.lighting.sink import FrameSinkRouter
 LightingDeviceConfig = Annotated[
     LifxResourceConfig | WledResourceConfig, Field(discriminator="kind")
 ]
+# cast: mypy's view of Annotated unions as TypeAdapter input differs between runs.
 lighting_device_adapter = TypeAdapter[LifxResourceConfig | WledResourceConfig](
-    LightingDeviceConfig  # type: ignore[arg-type]
+    cast(Any, LightingDeviceConfig)
 )
 _legacy_adapter = TypeAdapter(tuple[LifxResourceConfig, ...])
 DEVICE_KINDS: dict[str, str] = {
