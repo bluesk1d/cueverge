@@ -3644,12 +3644,12 @@ export async function reportBrowserError(
 
 export async function createPointLightOutput(installationId: string, value: {resource: string; host: string; target: string}) {
   return request(`/api/gui/v1/installations/${encodeURIComponent(installationId)}/point-lights`, {
-    method: "POST", body: JSON.stringify({kind: "lifx", brightness_limit: .25, ...value}),
+    method: "POST", headers: mutationHeaders(), body: JSON.stringify({kind: "lifx", brightness_limit: .25, ...value}),
   });
 }
 
 export function importPointLightResource(projectId: string, resource: string, revision: number) {
   return request(`/api/gui/v1/projects/${encodeURIComponent(projectId)}/point-light-resources/${encodeURIComponent(resource)}`, {
-    method: "POST", headers: {"If-Match": `"${revision}"`},
+    method: "POST", headers: { ...mutationHeaders(), "If-Match": `"${revision}"` },
   });
 }
