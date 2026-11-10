@@ -90,8 +90,11 @@ def setup(tmp_path: Path):
     return runtime, services, stored
 
 
-async def wait(services: GuiServices, job_id: str):
-    for _ in range(100):
+async def wait(services: GuiServices, job_id: str, timeout_seconds: float = 15):
+    # Apply may bake media; poll until a terminal state rather than a fixed count,
+    # which was too short on loaded CI runners.
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
         job = services.apply.get(job_id)
         if job["state"] in {"completed", "failed", "cancelled"}:
             return job
