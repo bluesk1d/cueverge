@@ -651,10 +651,20 @@ def test_managed_original_media_binds_to_digest_and_missing_optional_device_is_e
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize("with_point_light", [False, True])
 def test_paused_apply_remains_stopped_and_partial_commit_failure_restores_old_catalog(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path, monkeypatch, with_point_light: bool
 ):
     runtime, services, stored = setup(tmp_path)
+    if with_point_light:
+        from cueverge.config import LifxResourceConfig
+        from cueverge.gui.point_light_outputs import create_output
+
+        create_output(
+            tmp_path / "outputs",
+            runtime,
+            LifxResourceConfig(resource="light.left", host="127.0.0.1", target="d073d58b1a6d"),
+        )
 
     async def scenario():
         await runtime.start_scene("ambient")

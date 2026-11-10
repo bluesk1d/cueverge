@@ -17,6 +17,7 @@ def test_registration_restores_resources_and_rejects_duplicates(tmp_path: Path) 
     config = LifxResourceConfig(resource="light.left", host="127.0.0.1", target="d073d58b1a6d")
     try:
         create_output(tmp_path, runtime, config)
+        assert runtime._with_point_lights(runtime.catalog) is runtime.catalog
         assert runtime.catalog.installation.resources[-1].pixel_count == 1
         assert runtime.lighting_targets()[-1].resource == "light.left"
         with pytest.raises(ValueError):

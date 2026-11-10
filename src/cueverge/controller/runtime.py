@@ -1363,6 +1363,10 @@ class ControllerRuntime:
             ):
                 raise ValueError(f"{resource} conflicts with a stationary point light")
             bindings.setdefault(resource, binding)
+        # Apply rollback must restore the original catalog object. Only create a
+        # replacement when installation-owned lights actually add bindings.
+        if len(bindings) == len(catalog.installation.resources):
+            return catalog
         return catalog.model_copy(
             update={
                 "installation": catalog.installation.model_copy(
