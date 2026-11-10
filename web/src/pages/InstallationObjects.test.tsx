@@ -62,8 +62,9 @@ describe("Installation object inventory", () => {
   it("shows unplaced MCP fixtures, edits stable membership and links without replacing the draft", async () => {
     await open();
     expect(screen.getByText(/Not placed/)).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Place in Layout" }));
+    fireEvent.click(screen.getByRole("button", { name: "Inspect Porch outline" }));
     const inspector = screen.getByRole("region", { name: "Object properties" });
+    fireEvent.click(within(inspector).getByRole("button", { name: "Place in Layout" }));
     expect(within(inspector).getByLabelText("Stable object ID")).toBeDisabled();
     expect(within(inspector).queryByLabelText(/Another output/)).not.toBeInTheDocument();
     fireEvent.change(within(inspector).getByLabelText("Object name"), { target: { value: "Roof group" } });
@@ -85,10 +86,10 @@ describe("Installation object inventory", () => {
       ...inventory, objects: [{ ...fixture, geometry_ids: ["shape"], references: ["/scenes/ambient/lighting"] }],
     });
     await open();
-    fireEvent.click(screen.getByRole("button", { name: "Show in Layout" }));
-    expect(onLayout).toHaveBeenCalledWith({ name: "Porch outline", geometryIds: ["shape"] });
     fireEvent.click(screen.getByRole("button", { name: "Inspect Porch outline" }));
     expect(screen.getByRole("button", { name: "Delete definition" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Show in Layout" }));
+    expect(onLayout).toHaveBeenCalledWith({ name: "Porch outline", geometryIds: ["shape"] });
     expect(screen.getByText("/scenes/ambient/lighting")).toBeInTheDocument();
   });
   it("retains unsaved edits on conflicts and guards refresh/navigation", async () => {
@@ -153,4 +154,18 @@ it("adds a registered point light to an existing show with its current revision"
   await open();
   fireEvent.click(await screen.findByRole("button", {name: "Add light.left to this show"}));
   await waitFor(() => expect(importLightingDeviceResource).toHaveBeenCalledWith("show", "light.left", 4));
+});
+
+it("groups objects by output and kind, collapsing wiring segments until searched", async () => {
+  const segment = { ...fixture, kind: "segment" as const, id: "left", name: "left", segments: [{ segment: "left", reverse: false }] };
+  vi.mocked(getInstallationObjects).mockResolvedValue({ ...inventory, objects: [fixture, segment] });
+  await open();
+  const group = screen.getByRole("region", { name: "Objects on roof" });
+  expect(within(group).getByText("Fixtures")).toBeInTheDocument();
+  const segments = within(group).getByText("Segments (wiring)").closest("details")!;
+  expect(segments).not.toHaveAttribute("open");
+  expect(screen.getByRole("button", { name: "Inspect Porch outline" })).toBeVisible();
+  fireEvent.change(screen.getByLabelText("Find an object"), { target: { value: "left" } });
+  expect(within(group).getByText("Segments (wiring)").closest("details")).toHaveAttribute("open");
+  expect(screen.queryByRole("button", { name: "Inspect Porch outline" })).not.toBeInTheDocument();
 });

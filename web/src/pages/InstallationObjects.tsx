@@ -9,6 +9,11 @@ import { EmptyState, Panel } from "../components/ui";
 
 const keyOf = (item: { resource: string; kind: string; id: string }) =>
   JSON.stringify([item.resource, item.kind, item.id]);
+const KIND_GROUPS = [
+  { kind: "fixture", label: "Fixtures" },
+  { kind: "path", label: "Ordered paths" },
+  { kind: "segment", label: "Segments (wiring)" },
+] as const;
 
 export function InstallationObjects({ session, projectId, onProjectChange, onDirtyChange, onLayout }: {
   session?: Session;
@@ -68,7 +73,7 @@ export function InstallationObjects({ session, projectId, onProjectChange, onDir
   function discard() {
     return !dirty || window.confirm("Discard unsaved object changes?");
   }
-  function choose(item: InstallationObjectRecord, place = false) {
+  function choose(item: InstallationObjectRecord) {
     if (!discard()) return;
     setSelected(item); setCreating(false); setDirty(false); setError(null); setNotice(null);
     setEditing(item.kind === "segment" ? null : {
@@ -76,7 +81,6 @@ export function InstallationObjects({ session, projectId, onProjectChange, onDir
       segments: item.segments.map((member) => ({ ...member })),
       precedence: item.precedence, geometry_semantic_ids: [...item.geometry_semantic_ids],
     });
-    if (place) window.setTimeout(() => links.current?.scrollIntoView({ block: "nearest" }), 0);
   }
   function start() {
     if (!discard() || !inventory?.resources.length) return;
@@ -124,7 +128,7 @@ export function InstallationObjects({ session, projectId, onProjectChange, onDir
       count: segment.end - segment.start,
     }] : [];
   });
-  return <Panel title="Installation objects"
+  return <Panel title="Installation objects" className="installation-objects-panel"
     description="Logical fixtures, segments and ordered paths, including objects without a layout placement.">
     <label>Definitions from show<select value={projectId} disabled={busy} onChange={(event) => {
       if (discard()) onProjectChange(event.target.value);
@@ -136,7 +140,9 @@ export function InstallationObjects({ session, projectId, onProjectChange, onDir
     </select></label>
     {loading && <p role="status">Loading object definitions...</p>}
     {error && <p role="alert">{error}</p>}
-    <button disabled={busy || loading} onClick={() => { if (discard()) setRetry((value) => value + 1); }}>Refresh objects</button>
+    <div className="object-toolbar">
+      <button className="primary-button" disabled={busy || loading} onClick={() => { if (discard()) setRetry((value) => value + 1); }}>Refresh objects</button>
+    </div>
     {notice && <p role="status">{notice}</p>}
     {!projectId && <p>Select a show to inspect its working draft. No show is chosen automatically from live playback.</p>}
     {inventory && <>
@@ -144,40 +150,61 @@ export function InstallationObjects({ session, projectId, onProjectChange, onDir
         {inventory.archived && " · Archived (read only)"}</p>
       <p>Layout: {inventory.layout_available ? `installation ${inventory.installation_id}` : "not bound to this runtime installation"}.
         Saving definitions does not publish, apply, or change live playback.</p>
+      <div className="object-toolbar">
       {canEdit && pointLights.filter((r) => !inventory.resources.some((b) => b.resource === r)).map((resource) =>
-        <button key={resource} disabled={busy || dirty} onClick={() => {
+        <button key={resource} className="primary-button" disabled={busy || dirty} onClick={() => {
           setBusy(true); setError(null);
           void importLightingDeviceResource(projectId, resource, inventory.revision)
             .then(() => { setNotice(`${resource} added to this show`); setRetry((v) => v + 1); })
             .catch((e: unknown) => setError(message(e))).finally(() => setBusy(false));
         }}>Add {resource} to this show</button>)}
+      {canEdit && <button className="primary-button" disabled={busy || !inventory.resources.length} onClick={start}>Create fixture or path</button>}
+      </div>
       <label>Find an object<input value={search} onChange={(event) => setSearch(event.target.value)} /></label>
-      {canEdit && <button disabled={busy || !inventory.resources.length} onClick={start}>Create fixture or path</button>}
       {!inventory.objects.length && <EmptyState title="No logical objects"
         description="This show has no saved LED segment, fixture or path definitions. Unplaced objects will appear here too." />}
       <div className="installation-objects">
-        <ul className="resource-list" aria-label="Logical objects">
-          {inventory.objects.filter((item) =>
-            `${item.name} ${item.id} ${item.resource} ${item.kind}`.toLowerCase().includes(search.toLowerCase()))
-            .map((item) => <li key={keyOf(item)}>
-              <div><strong>{item.name}</strong><small>{item.kind} · {item.resource} · {item.pixel_count} pixels</small>
-                <small>{item.geometry_ids.length ? "Placed / member segments mapped" : "Not placed"} · {item.references.length} references</small>
-              </div>
-              <div className="installation-object-actions">
-                <button disabled={busy} aria-pressed={selected !== null && keyOf(selected) === keyOf(item)}
-                  onClick={() => choose(item)}>Inspect {item.name}</button>
-                {inventory.layout_available && item.geometry_ids.length > 0 && <button disabled={busy} onClick={() => {
-                  if (discard()) onLayout({ name: item.name, geometryIds: item.geometry_ids });
-                }}>Show in Layout</button>}
-                {canEdit && inventory.layout_available && item.kind !== "segment" && !item.geometry_ids.length &&
-                  <button disabled={busy} onClick={() => choose(item, true)}>Place in Layout</button>}
-              </div>
-            </li>)}
-        </ul>
+        <div className="object-groups" role="group" aria-label="Logical objects">
+          {inventory.resources.map((resource) => {
+            const query = search.trim().toLowerCase();
+            const items = inventory.objects.filter((item) => item.resource === resource.resource &&
+              `${item.name} ${item.id} ${item.resource} ${item.kind}`.toLowerCase().includes(query));
+            if (!items.length) return null;
+            return <section key={resource.resource} className="object-group" aria-label={`Objects on ${resource.resource}`}>
+              <h3>{resource.resource} <small>{resource.pixel_count} pixels</small></h3>
+              {KIND_GROUPS.map(({ kind, label }) => {
+                const group = items.filter((item) => item.kind === kind);
+                if (!group.length) return null;
+                // Segments mirror wiring and can number in the hundreds; keep them collapsed unless searching.
+                return <details key={kind} className="object-kind-group" open={kind !== "segment" || Boolean(query)}>
+                  <summary>{label} <span className="object-count">{group.length}</span></summary>
+                  <ul className="object-rows">{group.map((item) => <li key={keyOf(item)} className="object-row"
+                    data-selected={selected !== null && keyOf(selected) === keyOf(item)}>
+                    <button type="button" className="object-row__name" disabled={busy}
+                      aria-pressed={selected !== null && keyOf(selected) === keyOf(item)}
+                      onClick={() => choose(item)}><span className="sr-only">Inspect </span>{item.name}</button>
+                    <span className="object-row__meta">{item.pixel_count} px</span>
+                    <span className={`object-badge${item.geometry_ids.length ? " object-badge--placed" : ""}`}>
+                      {item.geometry_ids.length ? "Placed" : "Not placed"}</span>
+                    {item.references.length > 0 && <span className="object-row__meta">{item.references.length} {item.references.length === 1 ? "use" : "uses"}</span>}
+                  </li>)}</ul>
+                </details>;
+              })}
+            </section>;
+          })}
+        </div>
         {(selected || editing) && <section className="installation-object-inspector" aria-label="Object properties">
           <h3>{creating ? "New object" : selected?.name}</h3>
           {selected && <>
-            <p>ID: {selected.id} · Output: {selected.resource}</p>
+            <p>ID: {selected.id} · Output: {selected.resource} · {selected.pixel_count} pixels</p>
+            {inventory.layout_available && <div className="object-toolbar">
+              {selected.geometry_ids.length > 0 && <button type="button" className="primary-button" disabled={busy} onClick={() => {
+                if (discard()) onLayout({ name: selected.name, geometryIds: selected.geometry_ids });
+              }}>Show in Layout</button>}
+              {canEdit && selected.kind !== "segment" && !selected.geometry_ids.length &&
+                <button type="button" className="primary-button" disabled={busy}
+                  onClick={() => links.current?.scrollIntoView({ block: "nearest" })}>Place in Layout</button>}
+            </div>}
             <details><summary>References ({selected.references.length})</summary>
               {selected.references.length ? <ul>{selected.references.map((path) => <li key={path}><code>{path}</code></li>)}</ul>
                 : <p>No effect or authoring references.</p>}

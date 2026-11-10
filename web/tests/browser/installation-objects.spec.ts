@@ -61,6 +61,7 @@ test("MCP-created fixtures remain discoverable, editable, and linked to layout o
   await expect(page.getByRole("combobox", { name: "Definitions from show" })).toHaveValue("");
   await page.getByRole("combobox", { name: "Definitions from show" }).selectOption("halloween");
   await expect(page.getByText(/Not placed/)).toBeVisible();
+  await page.getByRole("button", { name: /^Inspect / }).first().click();
   await page.getByRole("button", { name: "Place in Layout" }).click();
   await expect(page.getByLabel("Stable object ID")).toBeDisabled();
   await page.getByLabel("Object name").fill("Porch outline");
@@ -84,6 +85,7 @@ test("MCP-created fixtures remain discoverable, editable, and linked to layout o
       precedence: 30, geometry_semantic_ids: ["porch-marker"],
     },
   }]);
+  await page.getByRole("button", { name: "Inspect Porch outline" }).click();
   await page.getByRole("button", { name: "Show in Layout" }).click();
   await expect(page.getByRole("status").filter({ hasText: "Showing layout geometry for Porch outline" })).toBeVisible();
   await expect(page.locator('[data-layout-object="marker"][data-object-highlight="true"]')).toBeVisible();

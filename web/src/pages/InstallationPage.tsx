@@ -3291,7 +3291,9 @@ function DeviceManagement({
   const loadLighting = useCallback(async () => {
     if (!canAdminister || !installationId) return;
     try {
-      setLighting(await getLightingDevices(installationId));
+      const value = await getLightingDevices(installationId);
+      if (!Array.isArray(value?.devices)) throw new Error("Lighting devices are unavailable on this controller.");
+      setLighting(value);
       setLightingError(null);
     } catch (e) {
       setLighting(null);

@@ -102,6 +102,21 @@ button:disabled {
   opacity: 0.55;
 }
 
+/* Themed fallback for buttons without a class; any contextual rule overrides it. */
+:where(button:not([class])) {
+  min-height: 36px;
+  padding: 7px 12px;
+  color: var(--cv-text);
+  background: var(--cv-bg);
+  border: 1px solid var(--cv-border);
+  border-radius: var(--cv-radius-control);
+  cursor: pointer;
+}
+
+:where(button:not([class]):not(:disabled):hover) {
+  border-color: var(--cv-primary);
+}
+
 h1,
 h2,
 h3,
@@ -4813,6 +4828,7 @@ p {
 
 .primary-button {
   height: 40px;
+  padding-inline: 16px;
   color: white;
   font-weight: 700;
   background: var(--cv-primary);
@@ -6204,15 +6220,91 @@ p {
   gap: 1rem;
   margin-top: 1rem;
 }
-.installation-objects .resource-list li { flex-wrap: wrap; }
-.installation-object-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+.show-header-actions,
+.object-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-block: 8px; }
+.object-groups { display: grid; gap: 12px; align-content: start; min-width: 0; }
+.object-group {
+  display: grid;
+  gap: 6px;
+  padding: 12px;
+  background: var(--cv-surface-raised);
+  border: 1px solid var(--cv-border);
+  border-radius: var(--cv-radius-control);
+}
+.object-group h3 { margin: 0; font-size: 14px; }
+.object-group h3 small { color: var(--cv-text-muted); font-weight: 400; }
+.object-kind-group > summary { cursor: pointer; padding: 4px 0; font-weight: 600; }
+.object-count {
+  margin-left: 6px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--cv-bg);
+  color: var(--cv-text-muted);
+  font-size: 12px;
+  font-weight: 400;
+}
+.object-rows {
+  display: grid;
+  gap: 4px;
+  max-height: 360px;
+  margin: 6px 0 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+.object-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 36px;
+  padding: 0 10px 0 0;
+  background: var(--cv-bg);
+  border: 1px solid var(--cv-border);
+  border-radius: var(--cv-radius-control);
+}
+.object-row:hover,
+.object-row[data-selected="true"] { border-color: var(--cv-primary); }
+.object-row[data-selected="true"] { background: var(--cv-surface-raised); }
+.object-row__name {
+  flex: 1;
+  min-width: 0;
+  min-height: 34px;
+  padding: 6px 10px;
+  overflow: hidden;
+  color: var(--cv-text);
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: none;
+  border: 0;
+  border-radius: var(--cv-radius-control);
+  cursor: pointer;
+}
+.object-row__meta { color: var(--cv-text-muted); font-size: 12px; white-space: nowrap; }
+.object-badge {
+  padding: 1px 8px;
+  border-radius: 999px;
+  color: var(--cv-text-muted);
+  background: var(--cv-surface-raised);
+  font-size: 11px;
+  white-space: nowrap;
+}
+.object-badge--placed { color: white; background: #1b63bd; }
 .installation-object-inspector { min-width: 0; }
 .installation-object-inspector code { overflow-wrap: anywhere; }
 .installation-object-inspector fieldset { min-width: 0; }
-.installation-object-inspector .primary-button { background: #1b63bd; }
-.installation-object-inspector .primary-button:hover { background: #1555a6; }
+/* Darker blue keeps white button text at WCAG AA contrast (4.5:1). */
+.installation-objects-panel .primary-button,
+.show-header-actions .primary-button,
+.lighting-device-form .primary-button,
+.lighting-device__actions .primary-button { background: #1b63bd; border-color: #1b63bd; }
+.installation-objects-panel .primary-button:hover:not(:disabled),
+.show-header-actions .primary-button:hover:not(:disabled),
+.lighting-device-form .primary-button:hover:not(:disabled),
+.lighting-device__actions .primary-button:hover:not(:disabled) { background: #1555a6; }
 .object-member-list { padding-left: 1.5rem; }
 .object-member-list li { margin-block: 0.75rem; }
+.object-member-list li > button { margin: 6px 8px 0 0; }
 [data-object-highlight="true"] .geometry-shape {
   stroke-width: 7;
   filter: drop-shadow(0 0 4px #6ee7ff);

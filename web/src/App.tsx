@@ -827,11 +827,13 @@ function ProjectCard({
         if ((!sceneDirty && !interactionDirty) || window.confirm("Discard unsaved edits and return to the show library?")) onClose();
       }}>Back to shows</button>
       <h1>{project.name}</h1>
-      <button disabled={refreshingShow || busy || sceneDirty || interactionDirty}
-        title={sceneDirty || interactionDirty ? "Save or discard your edits before refreshing" : "Load the latest saved scenes and assets"}
-        onClick={() => void refreshShow()}>{refreshingShow ? "Refreshing show…" : "Refresh show"}</button>
+      <div className="show-header-actions">
+        <button className="primary-button" disabled={refreshingShow || busy || sceneDirty || interactionDirty}
+          title={sceneDirty || interactionDirty ? "Save or discard your edits before refreshing" : "Load the latest saved scenes and assets"}
+          onClick={() => void refreshShow()}>{refreshingShow ? "Refreshing show…" : "Refresh show"}</button>
+        {onObjects && <button className="primary-button" onClick={() => onObjects(project.id)}>Manage installation objects</button>}
+      </div>
       {(sceneDirty || interactionDirty) && <p className="muted">Save or discard your edits before refreshing the show.</p>}
-      {onObjects && <button onClick={() => onObjects(project.id)}>Manage installation objects</button>}
       {assetError && <p role="alert">{assetError}</p>}
       {permissionError && <p role="alert">{permissionError}</p>}
       <div className="show-workspace-tabs" role="group" aria-label="Show workspace">
