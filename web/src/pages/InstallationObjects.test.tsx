@@ -2,12 +2,14 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useState } from "react";
 import {
+  getInstallation, importPointLightResource,
   editInstallationObject, getInstallationObjects, getProjectMembers, getProjects,
   type InstallationObjectInventory,
 } from "../api";
 import { InstallationObjects } from "./InstallationObjects";
 
 vi.mock("../api", () => ({
+  getInstallation: vi.fn(), importPointLightResource: vi.fn(),
   editInstallationObject: vi.fn(), getInstallationObjects: vi.fn(),
   getProjectMembers: vi.fn(), getProjects: vi.fn(),
 }));
@@ -47,6 +49,7 @@ async function open(role?: "administrator" | "viewer") {
 }
 beforeEach(() => {
   vi.resetAllMocks();
+  vi.mocked(getInstallation).mockResolvedValue({installation_id: "home", name: "Home", revision: 1, runtime_active: true, package_schema: "runtime-v1-v2", resources: []});
   vi.mocked(getProjects).mockResolvedValue([{
     id: "show", name: "Halloween", head_revision: 4, metadata_revision: 1,
     archived_at: null, created_at: "", updated_at: "",
@@ -142,4 +145,12 @@ describe("Installation object inventory", () => {
       resource: "roof", kind: "fixture", id: "porch",
     }));
   });
+});
+
+it("adds a registered point light to an existing show with its current revision", async () => {
+  vi.mocked(getInstallation).mockResolvedValue({installation_id: "home", name: "Home", revision: 1, runtime_active: true, package_schema: "runtime-v1-v2", resources: [{resource: "light.left", kind: "pixel_output", target: "lifx", pixel_count: 1}]});
+  vi.mocked(importPointLightResource).mockResolvedValue({});
+  await open();
+  fireEvent.click(await screen.findByRole("button", {name: "Add light.left to this show"}));
+  await waitFor(() => expect(importPointLightResource).toHaveBeenCalledWith("show", "light.left", 4));
 });

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import {
+  getInstallation, importPointLightResource,
   editInstallationObject, getInstallationObjects, getProjectMembers, getProjects,
   type InstallationObjectEdit, type InstallationObjectInventory, type InstallationObjectRecord,
   type ObjectLayoutSelection, type ProjectSummary, type Session,
@@ -28,6 +29,8 @@ export function InstallationObjects({ session, projectId, onProjectChange, onDir
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [search, setSearch] = useState("");
+  const [pointLights, setPointLights] = useState<string[]>([]);
+  useEffect(() => { void getInstallation().then((value) => setPointLights(value.resources.filter((r) => r.target === "lifx" && r.pixel_count === 1).map((r) => r.resource))).catch(() => {}); }, []);
   const [retry, setRetry] = useState(0);
   const links = useRef<HTMLFieldSetElement>(null);
   useEffect(() => {
@@ -141,6 +144,13 @@ export function InstallationObjects({ session, projectId, onProjectChange, onDir
         {inventory.archived && " · Archived (read only)"}</p>
       <p>Layout: {inventory.layout_available ? `installation ${inventory.installation_id}` : "not bound to this runtime installation"}.
         Saving definitions does not publish, apply, or change live playback.</p>
+      {canEdit && pointLights.filter((r) => !inventory.resources.some((b) => b.resource === r)).map((resource) =>
+        <button key={resource} disabled={busy || dirty} onClick={() => {
+          setBusy(true); setError(null);
+          void importPointLightResource(projectId, resource, inventory.revision)
+            .then(() => { setNotice(`${resource} added to this show`); setRetry((v) => v + 1); })
+            .catch((e: unknown) => setError(message(e))).finally(() => setBusy(false));
+        }}>Add {resource} to this show</button>)}
       <label>Find an object<input value={search} onChange={(event) => setSearch(event.target.value)} /></label>
       {canEdit && <button disabled={busy || !inventory.resources.length} onClick={start}>Create fixture or path</button>}
       {!inventory.objects.length && <EmptyState title="No logical objects"

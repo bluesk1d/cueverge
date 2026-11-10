@@ -11,6 +11,7 @@ from pydantic import JsonValue
 from cueverge.config import FrigateMqttConfig
 from cueverge.controller.runtime import (
     ActiveScene,
+    ControllerRuntime,
     RuntimeAgentStatus,
     RuntimeLightingTarget,
     ShowMode,
@@ -272,6 +273,10 @@ class GuiServices:
     def create(cls, config: GuiConfig, runtime: RuntimeStatusSource) -> "GuiServices":
         repository = GuiRepository(config.data_root / "gui.sqlite3")
         repository.migrate()
+        if isinstance(runtime, ControllerRuntime):
+            from cueverge.gui.point_light_outputs import load_outputs
+
+            load_outputs(config.data_root, runtime)
         collaboration = CollaborationStore(repository.database_path)
         collaboration.migrate()
         repository.ensure_runtime_installation(

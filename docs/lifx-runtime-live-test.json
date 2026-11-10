@@ -20,16 +20,16 @@
       "hsbk": [
         0,
         0,
-        65535,
-        3508
+        59085,
+        2702
       ],
       "power": 65535,
       "label": "",
       "query_rtt": {
         "count": 20,
-        "median_ms": 3.6585694979294203,
-        "p95_ms": 8.135790994856507,
-        "max_ms": 8.74951099831378
+        "median_ms": 8.88480949993209,
+        "p95_ms": 36.58113800020146,
+        "max_ms": 54.93663800007198
       }
     },
     {
@@ -52,29 +52,50 @@
       "hsbk": [
         0,
         0,
-        65535,
-        3508
+        59085,
+        2702
       ],
       "power": 65535,
       "label": "",
       "query_rtt": {
         "count": 20,
-        "median_ms": 5.34008349859505,
-        "p95_ms": 8.111442002700642,
-        "max_ms": 11.498934996780008
+        "median_ms": 4.742611999972723,
+        "p95_ms": 13.359497000010379,
+        "max_ms": 17.65983900008905
       }
     }
   ],
-  "calibration_id": "07617572-2275-4c4a-8bdc-a6f70a5001e9",
+  "registered_resources": [
+    {
+      "resource": "light.left",
+      "kind": "pixel_output",
+      "target": "lifx",
+      "pixel_count": 1,
+      "segments": [],
+      "fixtures": [],
+      "paths": []
+    },
+    {
+      "resource": "light.right",
+      "kind": "pixel_output",
+      "target": "lifx",
+      "pixel_count": 1,
+      "segments": [],
+      "fixtures": [],
+      "paths": []
+    }
+  ],
+  "calibration_id": "13964dda-77c8-423f-9344-ba253dd40a10",
   "transport_during_calibration": {
     "light.left": {
       "driver": "lifx",
       "frames_sent": 179,
       "frames_coalesced": 421,
-      "acknowledgments": 179,
-      "last_ack_age_ms": 67,
-      "last_ack_rtt_ms": 19.399601995246485,
-      "last_sent_at": 38089.339405073,
+      "acknowledgments": 180,
+      "last_ack_age_ms": 0,
+      "last_ack_rtt_ms": 22.99526399997376,
+      "ack_timing_note": "Includes worker polling delay; not optical latency",
+      "last_sent_at": 1651.55706113,
       "reply_recent": true,
       "error": null,
       "visible_output_verified": false
@@ -83,10 +104,11 @@
       "driver": "lifx",
       "frames_sent": 179,
       "frames_coalesced": 421,
-      "acknowledgments": 180,
-      "last_ack_age_ms": 17,
-      "last_ack_rtt_ms": 13.54922899918165,
-      "last_sent_at": 38089.339271255,
+      "acknowledgments": 179,
+      "last_ack_age_ms": 66,
+      "last_ack_rtt_ms": 13.192799000080413,
+      "ack_timing_note": "Includes worker polling delay; not optical latency",
+      "last_sent_at": 1651.557037354,
       "reply_recent": true,
       "error": null,
       "visible_output_verified": false
@@ -103,9 +125,10 @@
       "frames_sent": 217,
       "frames_coalesced": 506,
       "acknowledgments": 218,
-      "last_ack_age_ms": 446,
-      "last_ack_rtt_ms": 50.11169499630341,
-      "last_sent_at": 38091.647153546,
+      "last_ack_age_ms": 445,
+      "last_ack_rtt_ms": 50.14878699989822,
+      "ack_timing_note": "Includes worker polling delay; not optical latency",
+      "last_sent_at": 1653.849135036,
       "reply_recent": true,
       "error": null,
       "visible_output_verified": false
@@ -115,9 +138,10 @@
       "frames_sent": 180,
       "frames_coalesced": 422,
       "acknowledgments": 181,
-      "last_ack_age_ms": 2698,
-      "last_ack_rtt_ms": 50.11712299892679,
-      "last_sent_at": 38089.395021612,
+      "last_ack_age_ms": 2681,
+      "last_ack_rtt_ms": 50.22652800016658,
+      "ack_timing_note": "Includes worker polling delay; not optical latency",
+      "last_sent_at": 1651.612759466,
       "reply_recent": true,
       "error": null,
       "visible_output_verified": false

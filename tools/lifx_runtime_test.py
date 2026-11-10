@@ -6,25 +6,43 @@ import struct
 import sys
 import time
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from lifx_probe import Bulb, inspect
 
+from cueverge.config import LifxResourceConfig
 from cueverge.controller.runtime import ControllerRuntime, ShowMode
-from cueverge.lighting.lifx import LifxUdpSink
-from cueverge.lighting.sink import FrameSinkRouter, MemoryFrameSink
+from cueverge.gui.point_light_outputs import create_output
 
 
 async def main():
     bulbs = [Bulb(host) for host in ("192.168.40.71", "192.168.40.194")]
     originals = [inspect(bulb) for bulb in bulbs]
     Path("docs/lifx-runtime-originals.json").write_text(json.dumps(originals, indent=2))
-    sinks = {
-        name: LifxUdpSink(b.host, b.target[:6].hex(), brightness_limit=0.12, duration_ms=50)
-        for name, b in zip(("light.left", "light.right"), bulbs, strict=True)
+    storage = TemporaryDirectory(prefix="cueverge-lifx-test-")
+    runtime = ControllerRuntime()
+    sinks = ("light.left", "light.right")
+    for name, bulb in zip(sinks, bulbs, strict=True):
+        create_output(
+            Path(storage.name),
+            runtime,
+            LifxResourceConfig(
+                resource=name,
+                host=bulb.host,
+                target=bulb.target[:6].hex(),
+                brightness_limit=0.12,
+                duration_ms=50,
+            ),
+        )
+    evidence = {
+        "originals": originals,
+        "registered_resources": [
+            b.model_dump(mode="json")
+            for b in runtime.catalog.installation.resources
+            if b.resource in sinks
+        ],
     }
-    runtime = ControllerRuntime(sink=FrameSinkRouter({**sinks, "roofline.demo": MemoryFrameSink()}))
-    evidence = {"originals": originals}
     try:
         await runtime.set_show_mode(ShowMode.MAINTENANCE)
         status = runtime.start_timing_calibration(
@@ -70,6 +88,7 @@ async def main():
                 bulb.sock.close()
         Path("docs/lifx-runtime-live-test.json").write_text(json.dumps(evidence, indent=2))
         print(json.dumps(evidence, indent=2))
+        storage.cleanup()
 
 
 if __name__ == "__main__":

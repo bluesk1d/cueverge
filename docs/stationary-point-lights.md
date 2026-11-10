@@ -1,21 +1,35 @@
 # Stationary point lights
 
-Use **Stationary point light** in the installation layout's Add menu. Place one
-point and assign a saved one-pixel output resource. Each lamp has an independent
-resource and spatial position; lighting compositions sample their RGB color at
-that position. A point light has one sample at index zero and no traversal.
-The first supported hardware brand is LIFX, using IPv4 UDP LAN control.
+As an administrator, open **Installation → Devices → Add stationary point light output**.
+Enter a resource name, IPv4 address and twelve-digit LIFX target ID. Registration
+creates both the one-sample logical output and its live LIFX driver. It is saved
+in `lifx-outputs.json` under the controller GUI data root and restored on startup.
+Registration sends no lighting commands; stop playback/calibration/testing first.
+The form defaults to a 25% brightness cap and 18 Hz transmission.
 
-Create one `pixel_output` installation resource with `pixel_count: 1` per bulb,
-and bind your scene's lighting output to that resource. The existing RGB lighting
-timeline, surface mapping, brightness limits and timing controls apply.
-Transport configuration stays in the controller's output deployment JSON.
+For the investigated bulbs:
 
-The [two-bulb example](../examples/lifx-outputs.json) uses the investigated Left
-and Right lamps with a 25% output cap. Set `CUEVERGE_OUTPUT_CONFIG` to its path
-in the controller filesystem. Merge entries with any existing DDP outputs;
-the resource names must match the show installation. This example is not enabled
-automatically. Hardware output tests still require maintenance mode and arming.
+| Resource | IPv4 | Target ID |
+| --- | --- | --- |
+| light.left | 192.168.40.71 | d073d58b1a6d |
+| light.right | 192.168.40.194 | d073d58b1e1f |
+
+In **Photos & Layout**, choose **Stationary point light**, place one point and
+select the new resource. Each lamp has an independent resource and position;
+lighting compositions sample RGB at that position. A point light has one sample
+at index zero and no traversal.
+
+New shows inherit registered outputs. For an existing show, open **Installation →
+Objects**, select the show and click **Add light.left to this show** (and Right).
+This revises only that working draft. Select the resource when adding a lighting
+output to a scene, author its lighting, then publish/apply through the normal flow.
+Registration and draft import alone do not start playback or apply a show.
+The installation outputs remain available when other shows are applied.
+Timing calibration and armed physical output testing can target them directly.
+
+File-managed deployments can instead use the [two-bulb example](../examples/lifx-outputs.json)
+with `CUEVERGE_OUTPUT_CONFIG`; LIFX drivers also register their logical resources
+at runtime startup. Do not register the same bulb through both mechanisms.
 
 LIFX entries use `kind: lifx`, `host`, and the twelve-digit LAN `target` ID.
 Optional fields are `port` (56700), `kelvin` (3500), `brightness_limit` (1),

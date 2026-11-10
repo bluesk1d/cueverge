@@ -23,7 +23,8 @@ from fastapi.responses import FileResponse, JSONResponse
 from PIL import Image
 from pydantic import JsonValue, ValidationError
 
-from cueverge.controller.runtime import ShowMode
+from cueverge.config import LifxResourceConfig
+from cueverge.controller.runtime import ControllerRuntime, ShowMode
 from cueverge.core.loader import ShowPackageError, load_show_package
 from cueverge.gui.agent_settings import AgentSettingsError
 from cueverge.gui.agent_updates import AgentUpdateError, AgentUpdatePreconditionError
@@ -280,6 +281,7 @@ from cueverge.gui.mcp_authoring import (
 from cueverge.gui.output_arming import OutputArmError, StoredOutputArm
 from cueverge.gui.output_tests import mapped_test_segments
 from cueverge.gui.passwords import hash_password
+from cueverge.gui.point_light_outputs import create_output
 from cueverge.gui.preview_evaluation import (
     PreviewEvaluationError,
     evaluate_preview_state,
@@ -1055,6 +1057,30 @@ def create_gui_router(services: GuiServices) -> APIRouter:
             raise HTTPException(status_code=422, detail={"code": "mcp_read_scope_required"})
         return expires_at, scopes
 
+    @router.post("/installations/{installation_id}/point-lights", status_code=201)
+    async def add_point_light_output(
+        installation_id: str,
+        body: LifxResourceConfig,
+        identity: Annotated[AuthenticatedSession, administrator_mutation],
+    ) -> InstallationResourceResponse:
+        if installation_id != services.repository.get_runtime_installation().id:
+            raise HTTPException(409, "Choose the active installation")
+        if not isinstance(services.runtime, ControllerRuntime):
+            raise HTTPException(409, "Runtime does not support output registration")
+        try:
+            create_output(services.config.data_root, services.runtime, body)
+        except (ValueError, RuntimeError, OSError) as error:
+            raise HTTPException(409, str(error)) from error
+        services.repository.append_audit(
+            actor=identity.username,
+            action="installation.point_light.create",
+            target=body.resource,
+            result="success",
+            occurred_at=_now_iso(),
+            authorization_context={"role": identity.role.value},
+        )
+        return _installation_resources(services)[body.resource]
+
     @router.get(
         "/integrations/mcp-tokens",
         response_model=list[McpTokenResponse],
@@ -1490,6 +1516,51 @@ def create_gui_router(services: GuiServices) -> APIRouter:
             return scene_authoring_options(services, project_id)
         except ProjectNotFoundError as error:
             raise HTTPException(status_code=404, detail={"code": "project_not_found"}) from error
+
+    @router.post(
+        "/projects/{project_id}/point-light-resources/{resource}",
+        response_model=ProjectDraftResponse,
+    )
+    def import_point_light_resource(
+        project_id: str,
+        resource: str,
+        identity: Annotated[AuthenticatedSession, project_designer],
+        if_match: Annotated[str | None, Header(alias="If-Match")] = None,
+    ) -> ProjectDraftResponse | JSONResponse:
+        revision = services.repository.get_revision(project_id)
+        if revision.project.archived_at is not None:
+            raise HTTPException(409, "Archived shows cannot be edited")
+        binding = next(
+            (
+                b
+                for b in services.runtime.catalog.installation.resources
+                if b.resource == resource and b.pixel_count == 1 and b.target == "lifx"
+            ),
+            None,
+        )
+        if binding is None:
+            raise HTTPException(404, "Registered point light not found")
+        if any(b.resource == resource for b in revision.draft.installation.resources):
+            raise HTTPException(409, "Resource is already in this show")
+        draft = revision.draft.model_copy(
+            update={
+                "installation": revision.draft.installation.model_copy(
+                    update={"resources": (*revision.draft.installation.resources, binding)}
+                )
+            }
+        )
+        try:
+            saved = services.repository.update_draft(
+                project_id=project_id,
+                expected_revision=_parse_if_match(if_match),
+                draft=draft,
+                actor=identity.username,
+                role=identity.role,
+                occurred_at=_now_iso(),
+            )
+        except RevisionConflictError as error:
+            return _revision_conflict_response(error)
+        return _project_draft(saved)
 
     @router.get(
         "/projects/{project_id}/installation-objects",

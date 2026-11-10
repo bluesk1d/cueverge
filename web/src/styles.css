@@ -4331,6 +4331,10 @@ p {
   vector-effect: non-scaling-stroke;
 }
 
+.geometry-shape--point_light {
+  stroke-width: 2;
+}
+
 .geometry-canvas--path-traversal .geometry-shape--path {
   stroke-dasharray: 18 10;
   animation: geometry-traversal 0.8s linear infinite;

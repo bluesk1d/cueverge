@@ -6,6 +6,7 @@ import {
   keepAwakeLabel,
   keepAwakeWarning,
 } from "../status";
+import { PointLightOutputs } from "../components/PointLightOutputs";
 import { InputSourcePanel } from "./InputSourcePanel";
 import { InstallationObjects } from "./InstallationObjects";
 import type { CSSProperties } from "react";
@@ -184,6 +185,7 @@ export function InstallationPage({
         />
       )}
       {section === "devices" && <>
+      {session?.role === "administrator" && installation && <PointLightOutputs installationId={installation.installation_id} onRefresh={onRefresh} />}
       <details className="setup-disclosure"><summary>Connection overview</summary>
       <section className="topology-summary" aria-label="Topology summary">
         <Summary
@@ -2605,7 +2607,7 @@ function GeometryMapper({
                     cx={pixel.x * 1000}
                     cy={pixel.y * 600}
                     key={`${item.id}:${pixel.outputIndex}`}
-                    r="7"
+                    r={item.kind === "point_light" ? 3.5 : 7}
                     style={{
                       fill: `hsl(${(pixel.outputIndex * 47) % 360} 90% 60%)`,
                     }}
@@ -2643,7 +2645,7 @@ function GeometryMapper({
                   className="geometry-pixel-footprint"
                   cx={pixel.x * 1000}
                   cy={pixel.y * 600}
-                  r="5"
+                  r={editing.kind === "point_light" ? 2.5 : 5}
                 />
                 <text
                   className="geometry-pixel-label"
@@ -2919,7 +2921,7 @@ function GeometryShape({
           style={{ fill: geometry.color, stroke: geometry.color }}
           cx={point.x * 1000}
           cy={point.y * 600}
-          r="9"
+          r={geometry.kind === "point_light" ? 4.5 : 9}
         />
         {geometry.label_visible && (
           <text
@@ -3114,7 +3116,7 @@ function SimulationPhotoCanvas({
               cx={pixel.x * 1000}
               cy={pixel.y * 600}
               key={`${item.id}:${pixel.outputIndex}`}
-              r="7"
+              r={item.kind === "point_light" ? 3.5 : 7}
               style={{
                 fill: `hsl(${(pixel.outputIndex * 47) % 360} 90% 60%)`,
               }}

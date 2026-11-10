@@ -1,9 +1,18 @@
 import os
 import sys
+from ipaddress import IPv4Address
 from pathlib import Path
 from typing import Literal
 
-from pydantic import AnyUrl, BaseModel, ConfigDict, Field, SecretStr, model_validator
+from pydantic import (
+    AnyUrl,
+    BaseModel,
+    ConfigDict,
+    Field,
+    SecretStr,
+    field_validator,
+    model_validator,
+)
 
 
 class RuntimeConfig(BaseModel):
@@ -98,7 +107,7 @@ class DdpResourceConfig(RuntimeConfig):
 
 
 class LifxResourceConfig(RuntimeConfig):
-    resource: str = Field(min_length=1)
+    resource: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
     kind: Literal["lifx"] = "lifx"
     host: str = Field(pattern=r"^\d{1,3}(\.\d{1,3}){3}$")
     target: str = Field(pattern=r"^[0-9a-fA-F]{12}$")
@@ -108,6 +117,21 @@ class LifxResourceConfig(RuntimeConfig):
     brightness_limit: float = Field(default=1.0, gt=0, le=1)
     max_hz: float = Field(default=18, ge=1, le=20)
     duration_ms: int = Field(default=0, ge=0, le=1000)
+
+    @field_validator("host")
+    @classmethod
+    def validate_ipv4(cls, value: str) -> str:
+        address = IPv4Address(value)
+        if address.is_multicast or address.is_unspecified or str(address) == "255.255.255.255":
+            raise ValueError("LIFX output requires an individual IPv4 address")
+        return str(address)
+
+    @field_validator("target")
+    @classmethod
+    def validate_target(cls, value: str) -> str:
+        if not any(bytes.fromhex(value)):
+            raise ValueError("LIFX output requires an individual target ID")
+        return value.lower()
 
 
 class OutputDeploymentConfig(RuntimeConfig):
