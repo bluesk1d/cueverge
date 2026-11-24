@@ -321,7 +321,16 @@ function AuthenticatedApp({
           onDirtyChange={setAuthoringDirty}
         />
       )}
-      {workspace === "shows" && <ShowsPage session={session} runtime={runtime} runtimeFresh={runtimeFreshness === "fresh"} onDirtyChange={setAuthoringDirty} onInputs={() => navigate("installation", "inputs")} />}
+      {workspace === "shows" && (
+        <ShowsPage
+          session={session}
+          runtime={runtime}
+          runtimeFresh={runtimeFreshness === "fresh"}
+          refreshKey={refreshVersion}
+          onDirtyChange={setAuthoringDirty}
+          onInputs={() => navigate("installation", "inputs")}
+        />
+      )}
       {workspace === "operate" && (
         <OperatePage
           session={session}
@@ -411,6 +420,7 @@ export function ShowsPage({
   onInputs,
   runtime,
   runtimeFresh,
+  refreshKey = 0,
 }: {
   session: Session;
   initialProjects?: ProjectSummary[];
@@ -418,6 +428,7 @@ export function ShowsPage({
   onInputs?: () => void;
   runtime?: RuntimeStatus | null;
   runtimeFresh?: boolean;
+  refreshKey?: number;
 }) {
   const [projects, setProjects] = useState<ProjectSummary[] | null>(
     initialProjects ?? null,
@@ -482,6 +493,7 @@ export function ShowsPage({
       onInputs={onInputs}
       runtime={runtime}
       runtimeFresh={runtimeFresh}
+      refreshKey={refreshKey}
     /></>;
   }
   return (
@@ -616,6 +628,7 @@ function ProjectCard({
   onInputs,
   runtime,
   runtimeFresh,
+  refreshKey,
 }: {
   project: ProjectSummary;
   initialView?: "plan" | "scenes";
@@ -627,6 +640,7 @@ function ProjectCard({
   onInputs?: () => void;
   runtime?: RuntimeStatus | null;
   runtimeFresh?: boolean;
+  refreshKey: number;
 }) {
   const [name, setName] = useState(project.name);
   const [assets, setAssets] = useState<AssetRecord[] | null>(null);
@@ -634,6 +648,7 @@ function ProjectCard({
   const [draft, setDraft] = useState<ProjectDraftRecord | null>(null);
   const [assetSearch, setAssetSearch] = useState("");
   const [refreshingShow, setRefreshingShow] = useState(false);
+  const lastRefreshKey = useRef(refreshKey);
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [assetError, setAssetError] = useState<string | null>(null);
   const [timelineWorkspace, setTimelineWorkspace] = useState(false);
@@ -721,15 +736,21 @@ function ProjectCard({
     return () => window.clearTimeout(timer);
   }, [assets, loadAssets]);
 
-  async function refreshShow() {
-    if (refreshingShow || sceneDirtyRef.current || interactionDirtyRef.current) return;
+  const refreshShow = useCallback(async () => {
+    if (refreshingShow || busy || sceneDirtyRef.current || interactionDirtyRef.current) return;
     setRefreshingShow(true);
     try {
       await loadAssets();
     } finally {
       setRefreshingShow(false);
     }
-  }
+  }, [busy, loadAssets, refreshingShow]);
+
+  useEffect(() => {
+    if (lastRefreshKey.current === refreshKey) return;
+    lastRefreshKey.current = refreshKey;
+    if (showView === "scenes" && !timelineWorkspace) void refreshShow();
+  }, [refreshKey, refreshShow, showView, timelineWorkspace]);
 
   async function upload(file: File) {
     setUploadProgress(0);

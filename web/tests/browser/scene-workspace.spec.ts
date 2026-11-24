@@ -207,6 +207,23 @@ async function openScenes(page: Page) {
   await openShowScenes(page);
 }
 
+test("header refresh shows a newly saved scene without leaving the current scene", async ({ page }) => {
+  const state = await sceneRoutes(page);
+  await openScenes(page);
+  const selected = page.getByRole("heading", { name: state.document.scenes[0].name, exact: true });
+  await expect(selected).toBeVisible();
+
+  const externalScene = page.getByRole("button", { name: /^Externally added scene / });
+  state.document.scenes.push({ ...state.document.scenes[0], id: "external-scene", name: "Externally added scene" });
+  state.revision += 1;
+  await expect(externalScene).toHaveCount(0);
+
+  await page.getByRole("button", { name: "Refresh status", exact: true }).click();
+  await expect(externalScene).toBeVisible();
+  await expect(selected).toBeVisible();
+  expect(state.saves).toHaveLength(0);
+});
+
 test("effect targets list only the scene's objects and the show page never manages installation objects", async ({ page }) => {
   const state = await sceneRoutes(page);
   const sceneId = state.document.scenes[0].id;

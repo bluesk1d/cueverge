@@ -778,6 +778,9 @@ end behavior, installation resource, and output name/ID. A scene starts with
 one output; add others with **Add output** on the selected scene.
 Save or cancel pending scene and visitor-response edits first.
 
+To see scenes saved elsewhere while **Scenes** is open, click **Refresh status**
+in the header or **Refresh show**. Save or discard pending edits before refreshing.
+
 To rename or remove an output, select its track in the timeline editor (or use
 the output under **Lighting output** / **Media in this scene** on the Scenes page),
 then use **Rename output** or **Remove output**. Each action saves a new working
